@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,6 +124,62 @@ func TestCollectSessionChangedPathsParsesEditToolOutputs(t *testing.T) {
 		if !strings.Contains(joined, needle) {
 			t.Fatalf("expected changed paths to include %q, got %#v", needle, paths)
 		}
+	}
+}
+
+func TestParseGitStatusShortPathPreservesFirstPathCharacter(t *testing.T) {
+	tests := map[string]string{
+		" M MCP-SKILLS.md":              "MCP-SKILLS.md",
+		"?? mcp_server.go":              "mcp_server.go",
+		"R  old/name.go -> new/name.go": "new/name.go",
+	}
+	for input, want := range tests {
+		got, ok := parseGitStatusShortPath(input)
+		if !ok {
+			t.Fatalf("parseGitStatusShortPath(%q) returned !ok", input)
+		}
+		if got != want {
+			t.Fatalf("parseGitStatusShortPath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestGitChangedFilesPreservesFirstPathCharacter(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := runGitCommand(ctx, root, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config user.email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	path := filepath.Join(root, "MCP-SKILLS.md")
+	if err := os.WriteFile(path, []byte("initial\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "add", "MCP-SKILLS.md"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+
+	changed, err := gitChangedFiles(ctx, root)
+	if err != nil {
+		t.Fatalf("gitChangedFiles: %v", err)
+	}
+	if !containsString(changed, "MCP-SKILLS.md") || containsString(changed, "CP-SKILLS.md") {
+		t.Fatalf("unexpected changed files: %#v", changed)
 	}
 }
 

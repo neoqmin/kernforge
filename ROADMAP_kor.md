@@ -1341,17 +1341,17 @@ MVP rule set:
 ### Root-Cause Investigation
 
 주요 파일:
-- `commands_find_root_cause.go`
-- `commands_find_root_cause_test.go`
-- `commands_root_cause_patterns.go`
-- `root_cause_patterns.go`
-- `root_cause_patterns_test.go`
-- `root_cause_patterns/builtin.json`
-- `analysis_project.go`
-- `analysis_mode.go`
-- `analysis_handoff.go`
-- `completion.go`
-- `config.go`
+- `cmd/kernforge/commands_find_root_cause.go`
+- `cmd/kernforge/commands_find_root_cause_test.go`
+- `cmd/kernforge/commands_root_cause_patterns.go`
+- `cmd/kernforge/root_cause_patterns.go`
+- `cmd/kernforge/root_cause_patterns_test.go`
+- `cmd/kernforge/root_cause_patterns/builtin.json`
+- `cmd/kernforge/analysis_project.go`
+- `cmd/kernforge/analysis_mode.go`
+- `cmd/kernforge/analysis_handoff.go`
+- `cmd/kernforge/completion.go`
+- `cmd/kernforge/config.go`
 
 주요 연결 지점:
 1. `runtimeState.handleFindRootCauseCommand`

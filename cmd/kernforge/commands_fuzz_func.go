@@ -223,6 +223,8 @@ type FunctionFuzzExecution struct {
 	MissingSettings      []string `json:"missing_settings,omitempty"`
 	RecoveryNotes        []string `json:"recovery_notes,omitempty"`
 	ContinueCommand      string   `json:"continue_command,omitempty"`
+	BuildArgv            []string `json:"build_argv,omitempty"`
+	RunArgv              []string `json:"run_argv,omitempty"`
 }
 
 type FunctionFuzzRun struct {
@@ -499,15 +501,31 @@ func normalizeFunctionFuzzExecution(execState FunctionFuzzExecution) FunctionFuz
 	execState.CrashDir = functionFuzzNormalizeOptionalPath(execState.CrashDir)
 	execState.BackgroundJobID = strings.TrimSpace(execState.BackgroundJobID)
 	execState.LastOutput = compactPersistentMemoryText(execState.LastOutput, 260)
-	execState.BuildCommand = compactPersistentMemoryText(execState.BuildCommand, 400)
-	execState.RunCommand = compactPersistentMemoryText(execState.RunCommand, 320)
+	execState.BuildCommand = compactPersistentMemoryText(execState.BuildCommand, 1600)
+	execState.RunCommand = compactPersistentMemoryText(execState.RunCommand, 1200)
 	execState.MissingSettings = uniqueStrings(execState.MissingSettings)
 	execState.RecoveryNotes = uniqueStrings(execState.RecoveryNotes)
 	execState.ContinueCommand = strings.TrimSpace(execState.ContinueCommand)
+	execState.BuildArgv = normalizeFunctionFuzzCommandArgv(execState.BuildArgv)
+	execState.RunArgv = normalizeFunctionFuzzCommandArgv(execState.RunArgv)
 	if execState.CrashCount < 0 {
 		execState.CrashCount = 0
 	}
 	return execState
+}
+
+func normalizeFunctionFuzzCommandArgv(items []string) []string {
+	out := []string{}
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeFunctionFuzzSinkSignals(items []FunctionFuzzSinkSignal) []FunctionFuzzSinkSignal {
@@ -4734,6 +4752,12 @@ func functionFuzzFriendlyExecutionStatusWithConfig(cfg Config, status string) st
 		return functionFuzzLocalizedText(cfg, "running", "실행 중")
 	case "completed":
 		return functionFuzzLocalizedText(cfg, "completed", "완료됨")
+	case "build_succeeded":
+		return functionFuzzLocalizedText(cfg, "build-only succeeded", "빌드 전용 성공")
+	case "build_failed":
+		return functionFuzzLocalizedText(cfg, "build-only failed", "빌드 전용 실패")
+	case "build_timed_out":
+		return functionFuzzLocalizedText(cfg, "build-only timed out", "빌드 전용 시간 초과")
 	case "failed":
 		return functionFuzzLocalizedText(cfg, "failed", "실패")
 	case "canceled":
@@ -8956,6 +8980,8 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 		return
 	}
 	runArgs := functionFuzzRunArgs(*run, execState)
+	execState.BuildArgv = append([]string{execState.CompilerResolvedPath}, buildArgs...)
+	execState.RunArgv = append([]string{execState.ExecutablePath}, runArgs...)
 	execState.BuildCommand = functionFuzzRenderDisplayCommand(execState.CompilerResolvedPath, buildArgs)
 	execState.RunCommand = functionFuzzRenderDisplayCommand(execState.ExecutablePath, runArgs)
 
@@ -9296,11 +9322,42 @@ func functionFuzzResolveCompilerPath(candidate string) string {
 		if _, err := os.Stat(candidate); err == nil {
 			return filepath.Clean(candidate)
 		}
+		return ""
 	}
 	if resolved, err := exec.LookPath(candidate); err == nil {
 		return filepath.Clean(resolved)
 	}
+	for _, path := range functionFuzzCompilerSearchPaths(candidate) {
+		if _, err := os.Stat(path); err == nil {
+			return filepath.Clean(path)
+		}
+	}
 	return ""
+}
+
+func functionFuzzCompilerSearchPaths(candidate string) []string {
+	base := filepath.Base(strings.TrimSpace(candidate))
+	if base == "" || strings.Contains(base, string(os.PathSeparator)) {
+		return nil
+	}
+	if filepath.Ext(base) == "" {
+		base += ".exe"
+	}
+	dirs := []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "LLVM", "bin"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "LLVM", "bin"),
+		filepath.Join(os.Getenv("LLVM_HOME"), "bin"),
+		filepath.Join(os.Getenv("LLVM_INSTALL_DIR"), "bin"),
+	}
+	out := []string{}
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || strings.EqualFold(dir, "LLVM"+string(os.PathSeparator)+"bin") || strings.EqualFold(dir, "bin") {
+			continue
+		}
+		out = append(out, filepath.Join(dir, base))
+	}
+	return uniqueStrings(out)
 }
 
 func functionFuzzCompilerStyle(candidate string) string {

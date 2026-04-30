@@ -3277,21 +3277,25 @@ func gitHasUpstream(ctx context.Context, dir string) (bool, error) {
 }
 
 func gitChangedFiles(ctx context.Context, dir string) ([]string, error) {
-	out, err := runGitCommand(ctx, dir, "status", "--short")
+	cmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "status", "--short")
+	cmd.Dir = dir
+	data, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		text := strings.TrimSpace(string(data))
+		if text == "" {
+			text = err.Error()
+		}
+		return nil, fmt.Errorf("git status --short failed: %s", text)
 	}
-	if out == "(no output)" || strings.TrimSpace(out) == "" {
+	out := strings.TrimRight(string(data), "\r\n")
+	if strings.TrimSpace(out) == "" {
 		return nil, nil
 	}
 	var files []string
 	for _, line := range strings.Split(out, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if len(trimmed) > 3 {
-			files = append(files, strings.TrimSpace(trimmed[3:]))
+		path, ok := parseGitStatusShortPath(line)
+		if ok {
+			files = append(files, path)
 		}
 	}
 	return uniqueStrings(files), nil

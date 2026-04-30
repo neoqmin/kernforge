@@ -1209,6 +1209,98 @@ func readRPCMessage(r *bufio.Reader) (map[string]any, error) {
 	return msg, nil
 }
 
+type rpcFrameMode int
+
+const (
+	rpcFrameModeHeader rpcFrameMode = iota
+	rpcFrameModeJSONLine
+)
+
+func writeRPCMessageFramed(w io.Writer, payload map[string]any, mode rpcFrameMode) error {
+	if mode == rpcFrameModeJSONLine {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(append(body, '\n')); err != nil {
+			return err
+		}
+		return nil
+	}
+	return writeRPCMessage(w, payload)
+}
+
+func readRPCMessageFramed(r *bufio.Reader) (map[string]any, rpcFrameMode, error) {
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			if err == io.EOF && strings.TrimSpace(line) == "" {
+				return nil, rpcFrameModeHeader, io.EOF
+			}
+			if err != io.EOF {
+				return nil, rpcFrameModeHeader, err
+			}
+		}
+
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "\ufeff"))
+		if trimmed == "" {
+			if err == io.EOF {
+				return nil, rpcFrameModeHeader, io.EOF
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "{") {
+			var msg map[string]any
+			if err := json.Unmarshal([]byte(trimmed), &msg); err != nil {
+				return nil, rpcFrameModeJSONLine, err
+			}
+			return msg, rpcFrameModeJSONLine, nil
+		}
+
+		msg, err := readRPCHeaderMessageFromFirstLine(r, line)
+		if err != nil {
+			return nil, rpcFrameModeHeader, err
+		}
+		return msg, rpcFrameModeHeader, nil
+	}
+}
+
+func readRPCHeaderMessageFromFirstLine(r *bufio.Reader, firstLine string) (map[string]any, error) {
+	length := -1
+	line := firstLine
+	for {
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			break
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 && strings.EqualFold(strings.TrimSpace(parts[0]), "Content-Length") {
+			n, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+			if err != nil {
+				return nil, err
+			}
+			length = n
+		}
+		next, err := r.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		line = next
+	}
+	if length < 0 {
+		return nil, fmt.Errorf("missing Content-Length header")
+	}
+	body := make([]byte, length)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return nil, err
+	}
+	var msg map[string]any
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
 func rpcIDMatches(raw any, expected int64) bool {
 	switch value := raw.(type) {
 	case float64:
