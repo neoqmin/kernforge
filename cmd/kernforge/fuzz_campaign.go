@@ -2532,7 +2532,14 @@ func renderFuzzCampaign(campaign FuzzCampaign) string {
 	if len(campaign.SeedArtifacts) > 0 {
 		fmt.Fprintf(&b, "Seed artifacts:\n")
 		for _, artifact := range limitFuzzCampaignSeedArtifacts(campaign.SeedArtifacts, 8) {
-			fmt.Fprintf(&b, "- %s | %s\n", filepath.ToSlash(artifact.Path), artifact.Scenario)
+			line := fmt.Sprintf("- %s | %s", filepath.ToSlash(artifact.Path), artifact.Scenario)
+			if strings.TrimSpace(artifact.SourceHint) != "" {
+				line += " source=" + filepath.ToSlash(artifact.SourceHint)
+			}
+			if len(artifact.Inputs) > 0 {
+				line += " trigger=" + strings.Join(limitStrings(artifact.Inputs, 2), "; ")
+			}
+			fmt.Fprintln(&b, line)
 		}
 	}
 	if len(campaign.NativeResults) > 0 {
@@ -2547,6 +2554,9 @@ func renderFuzzCampaign(campaign FuzzCampaign) string {
 			}
 			if len(result.ArtifactIDs) > 0 {
 				line += fmt.Sprintf(" artifacts=%d", len(result.ArtifactIDs))
+			}
+			if strings.TrimSpace(result.CrashDir) != "" {
+				line += " trigger=" + filepath.ToSlash(result.CrashDir)
 			}
 			if strings.TrimSpace(result.ReportPath) != "" {
 				line += " report=" + filepath.ToSlash(result.ReportPath)
@@ -2563,6 +2573,9 @@ func renderFuzzCampaign(campaign FuzzCampaign) string {
 			}
 			if strings.TrimSpace(artifact.Path) != "" {
 				line += " path=" + filepath.ToSlash(artifact.Path)
+			}
+			if strings.TrimSpace(artifact.SourceAnchor) != "" {
+				line += " source=" + filepath.ToSlash(artifact.SourceAnchor)
 			}
 			if strings.TrimSpace(artifact.Summary) != "" {
 				line += " | " + artifact.Summary

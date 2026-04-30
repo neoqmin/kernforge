@@ -126,6 +126,8 @@ func run(args []string) error {
 		resumeFlag        string
 		permissionFlag    string
 		yesFlag           bool
+		mcpServerFlag     bool
+		mcpDaemonProxy    bool
 	)
 
 	fs.StringVar(&cwdFlag, "cwd", "", "working directory")
@@ -142,6 +144,8 @@ func run(args []string) error {
 	fs.StringVar(&resumeFlag, "resume", "", "resume session by id")
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
+	fs.BoolVar(&mcpServerFlag, "mcp-server", false, "run KernForge as a stdio MCP server")
+	fs.BoolVar(&mcpDaemonProxy, "mcp-daemon-proxy", false, "proxy stdio MCP requests through the local KernForge daemon")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -191,6 +195,33 @@ func run(args []string) error {
 	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
+	}
+	if fs.NArg() > 0 && strings.EqualFold(strings.TrimSpace(fs.Arg(0)), "daemon") {
+		return runKernforgeDaemonCommand(cwd, cfg, resumeFlag, fs.Args()[1:], mcpServerRunOptions{
+			ConfigOverrides: mcpServerConfigOverrides{
+				Provider:       providerFlag,
+				Model:          modelFlag,
+				BaseURL:        baseURLFlag,
+				PermissionMode: permissionFlag,
+				ForceBypass:    yesFlag,
+			},
+			LoadWorkspaceConfig: true,
+		})
+	}
+	if mcpServerFlag {
+		if mcpDaemonProxy {
+			return runKernforgeMCPDaemonProxy(cwd, os.Stdin, os.Stdout)
+		}
+		return runKernforgeMCPServer(cwd, cfg, resumeFlag, os.Stdin, os.Stdout, mcpServerRunOptions{
+			ConfigOverrides: mcpServerConfigOverrides{
+				Provider:       providerFlag,
+				Model:          modelFlag,
+				BaseURL:        baseURLFlag,
+				PermissionMode: permissionFlag,
+				ForceBypass:    yesFlag,
+			},
+			LoadWorkspaceConfig: true,
+		})
 	}
 
 	store := NewSessionStore(cfg.SessionDir)

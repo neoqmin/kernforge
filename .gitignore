@@ -1,4 +1,6 @@
 .build/
 versioninfo_windows_*.syso
-kernforge
-kernforge.exe
+/kernforge
+/kernforge.exe
+/kernforge.exe~
+/kernforge.zip

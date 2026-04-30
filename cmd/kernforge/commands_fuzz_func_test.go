@@ -27,6 +27,24 @@ func TestHelpTextIncludesFuzzFuncCommand(t *testing.T) {
 	}
 }
 
+func TestFunctionFuzzResolveCompilerPathChecksLLVMHome(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	compiler := filepath.Join(bin, "custom-clang-cl.exe")
+	if err := os.WriteFile(compiler, []byte("test"), 0o755); err != nil {
+		t.Fatalf("write compiler: %v", err)
+	}
+	t.Setenv("LLVM_HOME", root)
+
+	got := functionFuzzResolveCompilerPath("custom-clang-cl")
+	if !strings.EqualFold(got, compiler) {
+		t.Fatalf("functionFuzzResolveCompilerPath returned %q, want %q", got, compiler)
+	}
+}
+
 func TestHandleFuzzFuncCommandStatusShowsFileHintUsage(t *testing.T) {
 	root := t.TempDir()
 	var output bytes.Buffer

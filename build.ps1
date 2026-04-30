@@ -125,7 +125,7 @@ $baselineVersion = Get-BaselineVersion
 $nextParts = Increment-Version (Parse-VersionParts $baselineVersion)
 $nextVersion = Format-Version $nextParts
 
-& go build -buildvcs=false -ldflags "-X main.appVersion=$nextVersion" -o $outputPath .
+& go build -buildvcs=false -ldflags "-X main.appVersion=$nextVersion" -o $outputPath ./cmd/kernforge
 if ($LASTEXITCODE -ne 0) {
 	throw "go build failed with exit code $LASTEXITCODE"
 }

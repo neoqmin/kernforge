@@ -20,6 +20,24 @@ Kernforge is now centered on `project analysis -> performance lens -> adaptive v
 
 The current product direction has three main pillars. The first is whole-project analysis and documentation. The second is a specialized fuzzing toolchain that runs from source-based triage into native fuzzing execution. The third is a symptom-driven `/find-root-cause` diagnostic loop that narrows user-reported failures into reviewed causal candidates. The Korean and English README files should contain the same content, with each document maintained as a translation of the same feature scope and roadmap direction.
 
+## Source-Level Fuzzing
+
+Kernforge source-level fuzzing can summarize a function input model, the problematic code location, trigger values, and generated harness/report artifact paths before any native build is required. When called through MCP in the Codex App, the result is designed to lead with `Result`, `Top candidate`, `Problem location`, `Trigger conditions KernForge generated`, and `Artifacts`.
+
+![Codex App source-level fuzz result](./docs/assets/codex-app-source-fuzz-result.png)
+
+This stage is not a confirmed native crash or sanitizer finding. It is a source-level finding meant to accelerate security review and harness design. From there, the natural path is `native_preview -> build_only -> runtime fuzzing` to validate compileability, execution, and crash/sanitizer reproduction.
+
+## Repository Layout
+
+To keep the GitHub landing page readable, the repository root is reserved for docs, build scripts, branding assets, and release assets. The actual Go application package lives under `cmd/kernforge`, and builds should target that package.
+
+- `cmd/kernforge`: Kernforge CLI, MCP server, daemon, analysis, fuzzing, verification implementation, and Go tests
+- `cmd/kernforge/.kernforge/mcp`: embedded web-research MCP script source copy
+- `cmd/kernforge/root_cause_patterns`: embedded root-cause pattern packs
+- `docs/assets`: screenshots and documentation assets used by README and MCP guides
+- `branding`, `buildtools`, `release`: product imagery, Windows resource build tooling, and release artifacts
+
 ## Flagship Capability
 
 If Kernforge has one feature to understand first, it is `multi-agent project analysis`.
@@ -40,6 +58,8 @@ Quick Start:
 Guides:
 - [English Feature Usage Guide](./FEATURE_USAGE_GUIDE.md)
 - [한국어 기능 활용 가이드](./FEATURE_USAGE_GUIDE_kor.md)
+- [MCP And Skills](./MCP-SKILLS.md)
+- [Korean MCP Server Mode Guide](./MCP_SERVER_MODE_kor.md)
 
 Playbooks:
 - [Driver Playbook](./PLAYBOOK_driver.md)
@@ -279,7 +299,7 @@ Its current differentiators are:
 ### Build
 
 ```powershell
-go build -o kernforge.exe .
+go build -o kernforge.exe ./cmd/kernforge
 ```
 
 ### WebView2 Runtime
@@ -842,7 +862,7 @@ Mention syntax:
 @mcp:docs:getting-started summarize this resource
 ```
 
-For live web research, Kernforge now deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` either through your shell environment or through `mcp_servers[].env` in config, then run `/reload` if you changed config or environment after startup. This workspace also includes a ready-to-run script at `.kernforge/mcp/web-research-mcp.js` plus a matching `.kernforge/config.json` entry. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection. `/init config` also enables the bundled web-research MCP by default when the script is available.
+For live web research, Kernforge deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` either through your shell environment or through `mcp_servers[].env` in config, then run `/reload` if you changed config or environment after startup. The bundled script lives with the app source under `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`; runtime workspaces normally use the deployed copy under the user config directory. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection. `/init config` also enables the bundled web-research MCP by default when the script is available.
 
 Minimal workspace config example:
 

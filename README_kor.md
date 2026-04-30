@@ -20,6 +20,24 @@
 
 현재 제품 방향은 세 축으로 정리됩니다. 첫 번째는 전체 프로젝트 분석 및 문서화입니다. 두 번째는 소스 기반 triage에서 native fuzzing 실행까지 이어지는 퍼징 전문 도구입니다. 세 번째는 사용자가 보고한 증상에서 근본 원인을 좁혀 가는 `/find-root-cause` 기반 진단 루프입니다. README 한국어/영어 문서는 같은 내용을 담고, 각 언어 문서는 같은 기능 범위와 로드맵 방향을 서로 번역한 형태로 유지합니다.
 
+## 소스코드 퍼징
+
+Kernforge의 source-level fuzzing은 코드를 먼저 컴파일하지 않아도 함수 입력 모델, 문제가 되는 코드 위치, 트리거 값, 하네스와 리포트 산출물 경로를 한 번에 정리한다. Codex 앱에서 MCP로 호출하면 아래처럼 `Result`, `Top candidate`, `Problem location`, `Trigger conditions KernForge generated`, `Artifacts`가 먼저 보이도록 설계되어 있다.
+
+![Codex App source-level fuzz result](./docs/assets/codex-app-source-fuzz-result.png)
+
+이 단계는 native crash나 sanitizer finding을 확정하는 런타임 퍼징이 아니라, 보안 리뷰와 하네스 설계를 빠르게 시작하기 위한 source-level finding이다. 이후 `native_preview -> build_only -> runtime fuzzing` 순서로 올리면 컴파일 가능성, 실제 실행, crash/sanitizer 재현까지 이어갈 수 있다.
+
+## 저장소 구조
+
+GitHub에서 README와 문서를 먼저 읽기 쉽도록 루트에는 문서, 빌드 스크립트, branding asset, release asset을 두고 실제 Go application package는 `cmd/kernforge` 아래에 둔다. 빌드 대상도 이 패키지다.
+
+- `cmd/kernforge`: Kernforge CLI, MCP server, daemon, analysis, fuzzing, verification 구현 및 Go tests
+- `cmd/kernforge/.kernforge/mcp`: embedded web-research MCP script source copy
+- `cmd/kernforge/root_cause_patterns`: embedded root-cause pattern packs
+- `docs/assets`: README와 MCP guide에서 쓰는 스크린샷 및 문서 asset
+- `branding`, `buildtools`, `release`: 제품 이미지, Windows resource build, 배포 산출물
+
 ## 대표 강점
 
 Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent project analysis`입니다.
@@ -39,7 +57,9 @@ Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent
 
 가이드:
 - [한국어 기능 활용 가이드](./FEATURE_USAGE_GUIDE_kor.md)
+- [한국어 MCP Server Mode 사용 가이드](./MCP_SERVER_MODE_kor.md)
 - [English Feature Usage Guide](./FEATURE_USAGE_GUIDE.md)
+- [MCP And Skills](./MCP-SKILLS.md)
 
 플레이북:
 - [Driver 플레이북](./PLAYBOOK_driver_kor.md)
@@ -276,7 +296,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 ### 빌드
 
 ```powershell
-go build -o kernforge.exe .
+go build -o kernforge.exe ./cmd/kernforge
 ```
 
 ### WebView2 Runtime
@@ -843,7 +863,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 @mcp:docs:getting-started 이 리소스를 요약해줘
 ```
 
-실시간 웹 리서치를 위해 Kernforge는 시작 시 번들된 MCP 스크립트를 `~/.kernforge/mcp/web-research-mcp.js`로 배포하고, 아직 동등한 웹 검색 MCP가 없다면 `~/.kernforge/config.json`에 대응되는 `web-research` 항목도 자동으로 추가합니다. `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, `SERPAPI_API_KEY`는 셸 환경 변수로 넣어도 되고, `config.json`의 `mcp_servers[].env`에 넣어도 됩니다. 시작 이후에 설정이나 환경 변수를 바꿨다면 `/reload`를 실행하면 됩니다. 이 워크스페이스에는 바로 실행 가능한 `.kernforge/mcp/web-research-mcp.js`와 대응되는 `.kernforge/config.json`도 들어 있습니다. 연결되면 Kernforge는 최신/현재 리서치 요청에서 로컬 파일 검사보다 해당 MCP를 먼저 사용하려고 시도합니다. `/init config`도 스크립트를 찾을 수 있으면 기본 활성 상태로 `web-research` MCP를 넣습니다.
+실시간 웹 리서치를 위해 Kernforge는 시작 시 번들된 MCP 스크립트를 `~/.kernforge/mcp/web-research-mcp.js`로 배포하고, 아직 동등한 웹 검색 MCP가 없다면 `~/.kernforge/config.json`에 대응되는 `web-research` 항목도 자동으로 추가합니다. `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, `SERPAPI_API_KEY`는 셸 환경 변수로 넣어도 되고, `config.json`의 `mcp_servers[].env`에 넣어도 됩니다. 시작 이후에 설정이나 환경 변수를 바꿨다면 `/reload`를 실행하면 됩니다. 번들 스크립트는 앱 소스 트리의 `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`에 있고, 실제 runtime workspace는 보통 사용자 config 디렉터리로 배포된 사본을 사용합니다. 연결되면 Kernforge는 최신/현재 리서치 요청에서 로컬 파일 검사보다 해당 MCP를 먼저 사용하려고 시도합니다. `/init config`도 스크립트를 찾을 수 있으면 기본 활성 상태로 `web-research` MCP를 넣습니다.
 
 최소 워크스페이스 설정 예시는 다음과 같습니다.
 

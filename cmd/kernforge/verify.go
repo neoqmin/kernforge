@@ -408,7 +408,7 @@ func loadLatestAnalysisDocsManifest(root string) (AnalysisDocsManifest, bool) {
 		if err != nil {
 			continue
 		}
-		if len(manifest.Documents) > 0 || len(manifest.VerificationMatrix) > 0 {
+		if len(manifest.Documents) > 0 || len(manifest.VerificationMatrix) > 0 || len(manifest.FuzzTargets) > 0 {
 			return manifest, true
 		}
 	}
@@ -916,7 +916,7 @@ func collectGitChangedPaths(root string) []string {
 	}
 	var out []string
 	for _, args := range [][]string{
-		{"status", "--short"},
+		{"-c", "core.quotePath=false", "status", "--short"},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
@@ -924,18 +924,30 @@ func collectGitChangedPaths(root string) []string {
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			if strings.TrimSpace(line) == "" || len(line) < 4 {
+		for _, line := range strings.Split(strings.TrimRight(string(data), "\r\n"), "\n") {
+			path, ok := parseGitStatusShortPath(line)
+			if !ok {
 				continue
 			}
-			path := strings.TrimSpace(line[3:])
-			if idx := strings.Index(path, " -> "); idx >= 0 {
-				path = strings.TrimSpace(path[idx+4:])
-			}
-			out = append(out, filepath.ToSlash(path))
+			out = append(out, path)
 		}
 	}
 	return uniqueStrings(out)
+}
+
+func parseGitStatusShortPath(line string) (string, bool) {
+	line = strings.TrimRight(line, "\r")
+	if strings.TrimSpace(line) == "" || len(line) < 4 {
+		return "", false
+	}
+	path := strings.TrimSpace(line[3:])
+	if idx := strings.Index(path, " -> "); idx >= 0 {
+		path = strings.TrimSpace(path[idx+4:])
+	}
+	if path == "" {
+		return "", false
+	}
+	return filepath.ToSlash(path), true
 }
 
 func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string, plan VerificationPlan) VerificationReport {
