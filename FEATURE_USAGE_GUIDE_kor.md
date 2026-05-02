@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-04-30
+- 코드베이스 기준: 2026-05-02
 
 대상 사용자:
 - Windows security 엔지니어
@@ -30,7 +30,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 7. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
 8. `/verify`로 verification plan을 돌린다.
 9. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
-10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, specialist action 뒤에 출력되는 handoff block을 따라가면 명령 순서를 외우지 않아도 된다.
+10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, specialist action 뒤에 출력되는 handoff block과 `/continuity` packet을 따라가면 명령 순서를 외우지 않아도 된다.
 11. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
 핵심 해석:
@@ -134,34 +134,140 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 5. `/suggest mode confirm` 상태에서 `/suggest accept <id>`를 실행하면 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review-pr` 같은 허용된 safe command만 자동 실행된다.
 6. accepted/dismissed suggestion은 persistent memory에도 preference record로 남아 session을 넘는 반복 제안 억제와 선호 학습의 기반이 된다.
 
+### Session Dashboard
+
+목적:
+1. 현재 thread, TaskGraph, automation 상태, changed files, artifact refs를 하나의 로컬 HTML 화면에서 본다.
+2. 긴 세션을 다시 이어갈 때 transcript 전체를 읽지 않아도 핵심 상태를 확인한다.
+3. due/failed automation을 open task graph node와 최근 runtime event 옆에서 같이 본다.
+
+대표 명령:
+- `/session-dashboard-html`
+- `/events tail 20`
+- `/events export`
+
+현재 동작:
+1. 현재 workspace에 `.kernforge/session_dashboard/latest.html`을 생성한다.
+2. session/provider metadata, context size, task status count, open task graph node, automation due/failed/paused count, recent conversation event, changed files, background job/bundle, artifact ref를 포함한다.
+3. dashboard 경로를 conversation event log에 기록하고, interactive mode에서는 가능한 경우 자동으로 연다.
+4. `/events tail [n]`은 최근 session event를 JSONL record로 출력하고, `/events export [path]`는 `.kernforge/events/<session-id>.jsonl`과 `.kernforge/events/latest.jsonl`에 durable local event stream을 저장한다.
+
+### Continuity Packet과 Local Jobs
+
+목적:
+1. 로컬 shell 명령 실패, verification 실패, stale background 작업에서 로그를 다시 붙여넣지 않고 자연스럽게 복구한다.
+2. 긴 작업이 compact, 모델 전환, handoff 이후에도 이어질 수 있도록 로컬 resume packet을 남긴다.
+3. background job/bundle을 모델 tool call로만 보지 않고 터미널에서 직접 확인하고 취소할 수 있게 한다.
+
+대표 명령:
+- `/continuity`
+- `/continuity continue Codex parity work`
+- `/recover`
+- `/recover continue failed verification`
+- `/recover execute-safe continue failed verification`
+- `/completion-audit`
+- `/completion-audit finish Codex parity work`
+- `/jobs status`
+- `/jobs check latest`
+- `/jobs bundle latest`
+- `/jobs cancel <job-id> stale verification`
+- `/jobs cancel-bundle <bundle-id> superseded`
+- `/worktree list`
+- `/worktree enter`
+- `/worktree attach <path> [branch]`
+
+현재 동작:
+1. `/continuity`는 `.kernforge/continuity/latest.md`와 `.kernforge/continuity/latest.json`을 생성한다.
+2. packet에는 active/base workspace root, branch, provider/model, changed files, open task graph node, worktree lease, active edit loop, active failure repair, 최신 verification failure, background job/bundle, 최근 runtime error, artifact ref, recovery action, next command, continuation prompt가 포함된다.
+3. 직접 실행한 `!shell` 실패는 `command_error` conversation event로 저장되므로, 이후 `/continuity`와 최근 오류 답변이 사용자의 로그 재입력 없이 실패 맥락을 회수할 수 있다.
+4. `/jobs`는 저장된 background job/bundle 상태를 동기화해 보여주고, id 또는 `latest` 기준으로 직접 polling/cancel을 지원한다.
+5. `/worktree list`는 session worktree, specialist editable worktree lease, `git worktree list --porcelain` 출력을 한 화면에 모아 root 전환이나 재개 전에 확인하게 한다.
+6. `/worktree enter`는 `/worktree leave` 이후 기록된 isolated worktree로 다시 들어가고, `/worktree attach <path> [branch]`는 기존 worktree를 unmanaged session worktree로 붙인다.
+7. `/recover`는 최신 error, verification failure, failure-repair 상태, background job, open task, next command를 `.kernforge/recovery/latest.md/json`에 더 좁은 failure runbook으로 저장한다. runbook에는 structured diagnosis, 안정적인 failure signature, action plan status, execution log가 포함된다.
+8. `/completion-audit`는 finalizing 전에 blocker, warning, required artifact, 최신 verification, open task, background job, 최근 error, coding harness evidence를 `.kernforge/completion_audit/latest.md/json`으로 저장한다.
+9. `/recover execute-safe`는 safe-auto recovery action만 실행하고 그 상태를 기록한다. shell replay는 chaining/redirection이 없는 whitelisted verification/status 명령으로 제한된다.
+10. slash action은 실행 여부만 보지 않고 기록된 artifact를 다시 확인한다. `/verify` 실패 report와 `ready=false`인 `/completion-audit` 결과는 recovery action 실패로 승격되고, `stop_on_failure`가 있으면 뒤 액션은 skip된다.
+11. safe-auto shell whitelist는 `go test`, `go vet`, `go list`, `git status`, `git diff --check` 같은 좁은 명령만 허용하며 외부 도구 실행이나 side artifact 생성을 유발할 수 있는 고위험 Go/Git flag는 거부한다.
+
 ### Local Automations MVP
 
 목적:
-1. Codex식 recurring workflow의 최소 기반을 로컬 session 상태로 제공한다.
+1. Codex식 recurring workflow의 최소 기반을 로컬 session 상태와 시간 기반 due 판단으로 제공한다.
 2. 반복 verification과 PR review report 생성을 suggestion/TaskGraph 흐름과 연결한다.
-3. 아직 시간 기반 scheduler나 GitHub API를 붙이지 않고도 운영 루프를 검증할 수 있게 한다.
+3. GitHub API나 cloud job 없이도 로컬에서 due 확인, safe command 실행, report 기록 루프를 검증할 수 있게 한다.
 
 대표 명령:
 - `/automation`
 - `/automation add recurring-verification /verify`
+- `/automation add recurring-verification --every 2h /verify`
 - `/automation add pr-review /review-pr`
+- `/automation due`
+- `/automation digest`
+- `/automation monitor`
+- `/automation monitor --notify`
+- `/automation watch --interval 5m --notify`
+- `/automation daemon-start --interval 5m --notify`
+- `/automation daemon-status`
+- `/automation daemon-stop`
+- `/automation notify --webhook-url https://example.invalid/kernforge`
+- `/automation notify`
+- `kernforge -command "/automation monitor --notify"`
+- `/automation run-due`
 - `/automation run <id>`
 - `/automation pause <id>`
 - `/automation resume <id>`
 - `/automation remove <id>`
 - `/review-pr`
+- `/review-pr --github`
+- `/review-pr --github --draft-comments`
+- `/review-pr --github --post-comments`
+- `/review-pr --resolve-thread <thread-id>`
+- `/review-pr --draft-issue`
+- `/review-pr --create-issue`
+- `/review-pr --create-issue --label bug,security --assignee <login> --milestone "May 2026"`
 
 현재 동작:
 1. automation slot은 session JSON의 `automations`에 저장된다.
-2. `/automation run <id>`는 safe command dispatcher를 통해 등록된 명령을 실행한다.
-3. `/review-pr`는 git status, diff stat, changed files, review checklist를 `.kernforge/pr_review/latest.md`에 기록하고 conversation event에 artifact ref를 남긴다.
-4. verification gap이나 dirty diff가 있으면 `/suggest`가 recurring verification/PR review automation 등록을 다음 행동으로 제안할 수 있다.
+2. `--every`, `--hourly`, `--daily` schedule은 `next_run_at`과 `NextRunHint`를 만들고, `/automation due`에서 실행 시점이 지난 슬롯을 보여준다.
+3. `/automation run <id>`와 `/automation run-due`는 safe command dispatcher를 통해 등록된 명령을 실행한다.
+4. `/automation digest`, `/automation monitor`, `/status`, REPL 시작 notice는 due/failed/paused automation 수와 실패 결과를 노출해 반복 작업 실패를 놓치지 않게 한다.
+5. `/automation notify`와 `/automation monitor --notify`는 `.kernforge/automation/latest_digest.md`를 써서 외부 watcher, CI step, shell script가 terminal output을 긁지 않고 최신 automation 상태를 읽게 한다.
+6. `/automation notify|monitor|watch --webhook-url <url>`은 digest JSON을 외부 receiver로 POST한다. webhook URL은 conversation event에 redacted 형태로 저장된다.
+7. `/automation watch [--interval 5m] [--cycles N|--once] [--notify] [--webhook-url <url>]`는 foreground standing monitor loop를 실행한다. 각 cycle은 due safe automation을 실행하고 digest를 출력하며, 필요하면 digest artifact를 갱신하거나 webhook을 전송한다.
+8. `/automation daemon-start|daemon-status|daemon-stop`은 process-detached local automation watcher를 관리하고 `.kernforge/automation/daemon.json` 및 `daemon.log`에 state/log를 남긴다.
+9. `-command "/automation monitor --notify"`는 Windows Task Scheduler, service wrapper, CI가 REPL 없이 slash command를 실행할 수 있게 한다.
+10. `/review-pr`는 git status, diff stat, changed files, review checklist를 `.kernforge/pr_review/latest.md`에 기록하고 conversation event에 artifact ref를 남긴다.
+11. `/review-pr --github`는 `gh pr view --json ...`으로 현재 branch PR metadata, review decision, comments, checks 요약을 같은 report에 붙인다. `gh`가 없거나 인증/PR이 없으면 로컬 section은 유지하고 GitHub unavailable reason을 기록한다.
+12. `/review-pr --draft-comments`는 `.kernforge/pr_review/comments.md`에 file-level review comment draft를 만들며 GitHub에는 게시하지 않는다.
+13. `/review-pr --post-comments`는 draft 생성 후 `gh pr review --comment --body-file .kernforge/pr_review/comments.md`를 실행한다. 이 write-side 작업은 명시적 명령에서만 허용되고 suggestion accept나 scheduled automation에서는 차단된다.
+14. `/review-pr --resolve-thread <thread-id>`는 `gh api graphql`로 GitHub `resolveReviewThread` mutation을 실행한다. 이 write-side 작업도 명시적 명령에서만 허용된다.
+15. `/review-pr --draft-issue`는 `.kernforge/pr_review/issue.md`를 쓰고, `/review-pr --create-issue`는 `gh issue create --title ... --body-file ...`로 해당 draft를 게시한다. issue 생성도 명시적 명령에서만 허용된다.
+16. issue draft와 create 호출은 반복/쉼표 구분 `--label`, 반복/쉼표 구분 `--assignee`, quoted `--milestone` 값을 받는다. create mode에서는 해당 값들을 `gh issue create` flag로 그대로 넘긴다.
+17. verification gap이나 dirty diff가 있으면 `/suggest`가 recurring verification/PR review automation 등록을 다음 행동으로 제안할 수 있다.
+
+### Delegation Handoff
+
+목적:
+1. Codex cloud task나 다른 로컬 agent에게 현재 작업을 넘길 때 필요한 최소 상태를 transcript 전체보다 작게 저장한다.
+2. changed files, open task graph node, 최근 event/artifact, verification 상태, 이어받기 prompt를 한 곳에 묶는다.
+3. 다른 agent나 cloud task의 result packet을 import해 task status와 artifact ref를 현재 session에 merge한다.
+
+대표 명령:
+- `/handoff`
+- `/handoff continue automation scheduler work`
+- `/handoff import .kernforge/handoff/imports/cloud_result.json`
+
+현재 동작:
+1. `.kernforge/handoff/latest.md`와 `.kernforge/handoff/latest.json`을 생성한다.
+2. 생성된 artifact ref는 conversation event에 남는다.
+3. 다른 agent는 `Suggested Prompt`와 `Changed Files`, `Open Tasks`, `Artifact Refs`부터 읽고 이어서 작업할 수 있다.
+4. `/handoff import <path>`는 JSON 또는 markdown result를 `.kernforge/handoff/imports/*.json` 및 `*.md`로 정규화하고 conversation event를 남기며, `completed_tasks` ID가 TaskGraph node와 맞으면 completed로 표시한다.
 
 ### Coding Harness와 Repair Loop
 
 목적:
 1. 모델이 실제 workspace 상태와 다른 최종 답변을 내지 않도록 final answer 직전에 검문한다.
-2. Codex식 작업 완료 루프에 필요한 acceptance, artifact, scenario, subagent evidence, test impact, background job, failure repair, user-change isolation을 구조화한다.
+2. Codex식 작업 완료 루프에 필요한 acceptance, artifact, scenario, subagent evidence, test impact, open task, background job, failure repair, completion audit, user-change isolation을 구조화한다.
 3. blocker는 최종 답변을 막고 모델에게 수정, 재검증, disclosure 중 하나를 요구한다.
 
 현재 동작:
@@ -172,8 +278,9 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 5. subagent orchestration harness는 root-cause 답변이 worker evidence와 reviewer validation을 실제 causal bridge로 연결하는지 확인한다. worker가 보고한 문제가 사용자 증상으로 이어질 수 있는지 reviewer가 검증하지 못했거나 review failure를 숨기면 blocker가 된다.
 6. test impact harness는 code-like path 변경을 보고 verification planner가 추천하는 좁은 명령을 기록하고, 성공한 verification evidence가 없으면 warning으로 남긴다.
 7. job supervisor harness는 background job/bundle이 실패, stale, running 상태인데 최종 답변에서 숨기지 않도록 막는다.
-8. failure repair harness는 verification 실패 시 첫 의미 있는 실패 줄, 반복 횟수, 좁은 재실행 명령, 다음 repair step을 active context로 유지한다.
-9. user-change isolation은 turn 시작 이후 사용자가 target path를 바꿨는데 agent가 그 파일을 덮어쓰려 하면 edit를 막고 fresh read와 merge-aware edit을 요구한다.
+8. `/completion-audit`는 final readiness gate를 `.kernforge/completion_audit/latest.md/json`으로 외부화해서, 사람이나 scheduler가 모델 턴 밖에서도 blocker와 warning을 볼 수 있게 한다.
+9. failure repair harness는 verification 실패 시 첫 의미 있는 실패 줄, 반복 횟수, 좁은 재실행 명령, 다음 repair step을 active context로 유지한다.
+10. user-change isolation은 turn 시작 이후 사용자가 target path를 바꿨는데 agent가 그 파일을 덮어쓰려 하면 edit를 막고 fresh read와 merge-aware edit을 요구한다.
 
 실무 해석:
 1. "완료했습니다"라고 말하기 전에 Kernforge는 실제 artifact와 verification evidence를 다시 본다.

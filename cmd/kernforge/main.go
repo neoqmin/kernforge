@@ -124,6 +124,7 @@ func run(args []string) error {
 		viewerFileFlag    string
 		viewerResultFlag  string
 		promptFlag        string
+		commandFlag       string
 		resumeFlag        string
 		permissionFlag    string
 		yesFlag           bool
@@ -142,6 +143,7 @@ func run(args []string) error {
 	fs.StringVar(&viewerFileFlag, "viewer-file", "", "internal viewer file path")
 	fs.StringVar(&viewerResultFlag, "viewer-result-file", "", "internal viewer result path")
 	fs.StringVar(&promptFlag, "prompt", "", "single prompt mode")
+	fs.StringVar(&commandFlag, "command", "", "single slash command mode")
 	fs.StringVar(&resumeFlag, "resume", "", "resume session by id")
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
@@ -248,6 +250,9 @@ func run(args []string) error {
 	if strings.TrimSpace(imageFlag) != "" && strings.TrimSpace(promptFlag) == "" {
 		return fmt.Errorf("-image requires -prompt; use @path/to/image.png in the interactive prompt")
 	}
+	if strings.TrimSpace(promptFlag) != "" && strings.TrimSpace(commandFlag) != "" {
+		return fmt.Errorf("-prompt and -command cannot be used together")
+	}
 	cliImages, err := parseImageInputList(sess.WorkingDir, imageFlag)
 	if err != nil {
 		return err
@@ -272,7 +277,7 @@ func run(args []string) error {
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
 		modelRoutes:    defaultModelRouteScheduler(),
-		interactive:    promptFlag == "",
+		interactive:    promptFlag == "" && commandFlag == "",
 	}
 	defer rt.closeExtensions()
 
@@ -352,6 +357,9 @@ func run(args []string) error {
 	if promptFlag != "" {
 		return rt.runSinglePrompt(promptFlag, cliImages)
 	}
+	if commandFlag != "" {
+		return rt.runSingleCommand(commandFlag)
+	}
 	return rt.runREPL()
 }
 
@@ -419,6 +427,22 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	return nil
 }
 
+func (rt *runtimeState) runSingleCommand(command string) error {
+	line := strings.TrimSpace(command)
+	if line == "" {
+		return fmt.Errorf("-command requires a slash command or !shell command")
+	}
+	if strings.HasPrefix(line, "!") {
+		return rt.runShell(strings.TrimPrefix(line, "!"))
+	}
+	cmd, ok := ParseCommand(line)
+	if !ok {
+		return fmt.Errorf("-command only accepts slash commands or !shell commands: %s", command)
+	}
+	_, err := rt.handleCommand(cmd)
+	return err
+}
+
 func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	if !rt.interactive {
 		return true, nil
@@ -477,6 +501,7 @@ func (rt *runtimeState) redrawScreen() {
 
 func (rt *runtimeState) runREPL() error {
 	rt.redrawScreen()
+	rt.printAutomationStartupNotice(time.Now())
 
 	for {
 		nextTurn := rt.promptTurn + 1
@@ -1510,6 +1535,7 @@ func (rt *runtimeState) runShell(command string) error {
 	if strings.TrimSpace(out) != "" {
 		fmt.Fprintln(rt.writer, rt.ui.shell(out))
 	}
+	rt.noteLocalShellCommand(trimmed, out, err)
 	return err
 }
 
@@ -4847,6 +4873,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("persistent_memory", fmt.Sprintf("%d", rt.persistentMemoryCount())),
 			kv("evidence_records", fmt.Sprintf("%d", rt.evidenceCount())),
 		)
+		automationSummary := summarizeAutomations(rt.session.Automations, time.Now())
+		if automationSummary.Total > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("automations", automationSummaryLine(automationSummary)))
+		}
 		if rt.investigations != nil {
 			if count, active, last, err := rt.investigations.Stats(rt.workspace.BaseRoot); err == nil {
 				fmt.Fprintln(rt.writer, rt.ui.statusKV("investigation_sessions", fmt.Sprintf("%d", count)))
@@ -4964,6 +4994,30 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "suggest-dashboard-html":
 		if err := rt.handleSuggestDashboardHTMLCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "session-dashboard-html":
+		if err := rt.handleSessionDashboardHTMLCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "events":
+		if err := rt.handleEventsCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "continuity":
+		if err := rt.handleContinuityCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "completion-audit":
+		if err := rt.handleCompletionAuditCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "recover":
+		if err := rt.handleRecoverCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "jobs":
+		if err := rt.handleJobsCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "automation":
@@ -5412,6 +5466,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.section("Sessions"))
 		for _, item := range items {
 			fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
+		}
+	case "handoff":
+		if err := rt.handleDelegationHandoffCommand(cmd.Args); err != nil {
+			return false, err
 		}
 	case "tasks":
 		if len(rt.session.Plan) == 0 {
