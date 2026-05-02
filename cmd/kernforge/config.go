@@ -1868,10 +1868,17 @@ Conversation And Sessions:
 /resume <session-id>   Resume a saved session
 /session               Show the current session id and storage path
 /sessions              List recent sessions
+/handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
 /suggest [status]      Show proactive situation judgment and suggested next actions
 /suggest-dashboard-html Render proactive suggestions as an HTML dashboard
-/automation [status]   Show or manage local verification and PR review automations
-/review-pr             Generate a local PR review automation report
+/session-dashboard-html Generate and open a session thread, task graph, automation, and artifact dashboard
+/events [tail|export] Tail or export session conversation events as JSONL for local clients
+/continuity [note]     Generate a long-task resume/recovery packet with worktrees, jobs, failures, and next commands
+/completion-audit [note] Generate a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence
+/recover [note]        Generate a focused recovery brief from recent errors, verification failure, jobs, and next commands
+/jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
+/automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
+/review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Generate a local PR review automation report, optionally with gh PR metadata or explicit GitHub writes
 /tasks                 Show the current task list
 
 Provider And Models:
@@ -1976,7 +1983,7 @@ Workspace Setup:
 /init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
 /init verify           Create a workspace .kernforge/verify.json template
 /locale-auto [on|off]  Show or change automatic locale insertion in prompts
-/worktree [subcommand] Manage isolated git worktrees and suggest tracked-feature follow-up
+/worktree [status|list|create|enter|attach|leave|cleanup] Manage isolated git worktrees and suggest tracked-feature follow-up
 
 MCP And Skills:
 /mcp                   Show configured MCP servers and tool status
@@ -2025,20 +2032,134 @@ func HelpDetail(topic string) (string, bool) {
 /suggest-dashboard-html
 - Render the current situation and ranked suggestions as a local HTML dashboard.
 
+/session-dashboard-html
+- Generate .kernforge/session_dashboard/latest.html with session metadata, task graph status, automation due/failed state, recent thread events, changed files, background jobs, and artifact refs.
+- In interactive mode, Kernforge tries to open the generated dashboard automatically.
+
+/events [tail [n]]
+- Print recent session conversation events as JSONL records with session id, workspace, provider, model, and event payload.
+
+/events export [path]
+- Write the current session event stream to .kernforge/events/<session-id>.jsonl and refresh .kernforge/events/latest.jsonl unless an explicit path is provided.
+- Use this as the local app-server style event feed for dashboards, schedulers, test harnesses, and external supervisors.
+
 /automation [list|status]
-- Show saved automation slots for recurring verification and PR review.
+- Show saved automation slots for recurring verification and PR review, including interval schedule and due state.
 
-/automation add recurring-verification [/verify args]
-- Register a reusable verification automation that can be run with /automation run <id>.
+/automation add recurring-verification [--every 30m|--hourly|--daily|--manual] [/verify args]
+- Register a reusable verification automation. Interval schedules can be checked with /automation due and executed with /automation run-due.
 
-/automation add pr-review [/review-pr]
+/automation add pr-review [--every 1d|--manual] [/review-pr]
 - Register a reusable PR review automation report generator.
 
 /automation run <id>
 - Run a configured automation through the same safe command dispatcher used by accepted suggestions.
 
-/review-pr
+/automation due
+- Show active scheduled automations whose next_run_at has passed.
+
+/automation digest
+- Summarize total, scheduled, due, failed, and paused automations, and print the due or failed items.
+
+/automation monitor [--notify] [--webhook-url <url>]
+- Print the automation digest, run due active scheduled automations, then print the post-run digest. With --notify, also write .kernforge/automation/latest_digest.md for external watchers. With --webhook-url, POST the digest JSON to an external receiver.
+
+/automation watch [--interval 5m] [--cycles N|--once] [--notify] [--webhook-url <url>]
+- Run a foreground automation monitor loop. Each cycle checks due active scheduled automations, runs them through the safe dispatcher, prints the digest, and optionally refreshes .kernforge/automation/latest_digest.md or POSTs digest JSON to a webhook. Without --cycles or --once, the loop continues until the process is interrupted.
+
+/automation daemon-start [--interval 5m] [--notify] [--webhook-url <url>]
+- Start a process-detached automation daemon that runs /automation watch through the non-interactive -command runner. State and logs are written to .kernforge/automation/daemon.json and daemon.log.
+
+/automation daemon-status
+- Show whether the detached automation daemon recorded for this workspace is running or stale.
+
+/automation daemon-stop
+- Stop the detached automation daemon recorded for this workspace and remove its state file.
+
+/automation notify [--webhook-url <url>] [--no-file]
+- Print the automation digest and write .kernforge/automation/latest_digest.md without running due automations. With --webhook-url, also POST digest JSON; --no-file sends only the webhook.
+
+/automation run-due
+- Run all due active scheduled automations through the safe command dispatcher.
+
+/review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--draft-issue|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>]
 - Generate .kernforge/pr_review/latest.md from git status, diff stat, changed files, and a review checklist.
+- With --github, collect current PR metadata through gh pr view --json when the gh CLI is installed and authenticated. If gh is unavailable or the branch has no PR, the report keeps the local review sections and records the GitHub reason.
+- With --draft-comments, generate .kernforge/pr_review/comments.md as a safe file-level review comment draft. It does not post to GitHub.
+- With --post-comments, also run gh pr review --comment --body-file .kernforge/pr_review/comments.md. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
+- With --resolve-thread <id>, run the GitHub GraphQL resolveReviewThread mutation through gh api graphql. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
+- With --draft-issue, generate .kernforge/pr_review/issue.md. With --create-issue, also run gh issue create --title ... --body-file .kernforge/pr_review/issue.md. Issue creation is explicit-only.
+- Issue drafts and create calls accept repeated --label, --assignee, and --milestone values. Comma-separated labels or assignees are split and passed as repeated gh flags.
+`), true
+	case "events", "event-stream":
+		return strings.TrimSpace(`
+/events
+/events tail [n]
+- Print recent session conversation events as JSONL records.
+- Each record includes session_id, workspace, provider, model, and the normalized event payload.
+
+/events export [path]
+- Write a durable JSONL event stream for the current session.
+- Without a path, Kernforge writes .kernforge/events/<session-id>.jsonl and refreshes .kernforge/events/latest.jsonl.
+- Use the exported stream as a local Codex App Server style feed for dashboards, schedulers, test harnesses, or external supervisors.
+`), true
+	case "continuity", "resume-brief", "recovery":
+		return strings.TrimSpace(`
+/continuity [note]
+- Generate .kernforge/continuity/latest.md and latest.json as a local long-task resume and failure-recovery packet.
+- The packet includes active/base workspace roots, branch, provider/model, changed files, open task graph nodes, worktree leases, active edit loop, active failure repair, latest verification failure, background jobs/bundles, recent runtime errors, artifact refs, recovery actions, next commands, and a suggested continuation prompt.
+- Use it before resuming after context compaction, switching models, delegating work, or recovering from a failed verification/shell command.
+- Direct !shell command failures are recorded as command_error conversation events, so /continuity can surface them without requiring you to paste the error again.
+`), true
+	case "completion-audit", "completion", "final-audit":
+		return strings.TrimSpace(`
+/completion-audit [note]
+- Generate .kernforge/completion_audit/latest.md and latest.json as an explicit completion readiness gate.
+- The audit checks the objective, acceptance contract, required artifacts, latest verification, open task graph nodes, active edit/failure-repair state, background jobs/bundles, recent runtime errors, and the latest coding harness report.
+- Status is blocked when hard evidence is missing or failing, needs_review when warnings or uncertainty remain, and ready only when no blockers or warnings remain.
+- Use this before finalizing long coding work so the final answer does not overclaim completed tasks, verification, artifacts, or background job state.
+`), true
+	case "recover", "failure-recovery":
+		return strings.TrimSpace(`
+/recover [note]
+- Generate .kernforge/recovery/latest.md and latest.json as a focused failure recovery brief.
+- The brief pulls from the most recent provider/tool/command error, latest verification failure, active failure repair attempt, failed/stale/running background jobs or bundles, changed files, open tasks, worktrees, and artifact refs.
+- It prints a primary failure, structured diagnosis, action plan with lifecycle status, recovery actions, next commands, and a continuation prompt so a local user or -command runner can resume without pasting logs back into the model.
+- Use /recover immediately after a failed shell command, failed /verify, stale background job, or provider/tool error.
+
+/recover execute-safe [note]
+- Generate the same recovery brief, then execute only safe_auto actions such as whitelisted verification reruns, /jobs inspection, /continuity, and /completion-audit.
+- Shell commands are not replayed unless they pass the recovery safe-auto whitelist, for example go test, go vet, go list, git status, or git diff --check without shell chaining or redirection.
+- Execution status and output are recorded in the recovery action plan and execution log.
+`), true
+	case "jobs", "background-jobs", "background":
+		return strings.TrimSpace(`
+/jobs
+/jobs status
+- Show persisted background shell jobs and bundles, including running, completed, failed, stale, canceled, preempted, and superseded counts.
+
+/jobs check <job-id|latest>
+- Poll one background shell job and show its latest status, exit code, log path, and output tail.
+
+/jobs bundle <bundle-id|latest>
+- Poll one background shell bundle and summarize the member jobs.
+
+/jobs cancel <job-id|latest> [reason]
+- Cancel one background shell job when it is stale, superseded, or no longer needed.
+
+/jobs cancel-bundle <bundle-id|latest> [reason]
+- Cancel every job in a background shell bundle and mark the bundle canceled.
+`), true
+	case "handoff", "delegation":
+		return strings.TrimSpace(`
+/handoff [note]
+- Generate .kernforge/handoff/latest.md and latest.json as a compact delegation packet for another local agent, Codex cloud task, or human reviewer.
+- The packet includes workspace, branch, provider/model, changed files, open task graph nodes, last verification summary, recent events, artifact refs, and a suggested continuation prompt.
+- The command does not push, post, or run external services.
+
+/handoff import <artifact.json|result.md>
+- Import a result packet from another local agent, human reviewer, or cloud task.
+- The import is normalized into .kernforge/handoff/imports/*.json and *.md, added to the conversation event log, and any completed_tasks IDs are marked completed in the TaskGraph when they match existing nodes.
 `), true
 	case "find-root-cause", "root-cause":
 		return strings.TrimSpace(`
@@ -2102,7 +2223,7 @@ General commands cover high-level runtime inspection and app control.
 /version
 - Show the current application version.
 `), true
-	case "conversation", "sessions", "session":
+	case "conversation", "sessions", "session", "session-dashboard-html":
 		return strings.TrimSpace(`
 Conversation and session commands manage chat history and saved sessions.
 
@@ -2123,6 +2244,18 @@ Conversation and session commands manage chat history and saved sessions.
 
 /session
 - Show the current session id and save location.
+
+/session-dashboard-html
+- Generate and open .kernforge/session_dashboard/latest.html for the current session thread, task graph, automations, and artifact refs.
+
+/continuity [note]
+- Generate .kernforge/continuity/latest.md and latest.json for long-task resume, recovery actions, background jobs, worktrees, and next commands.
+
+/completion-audit [note]
+- Generate .kernforge/completion_audit/latest.md and latest.json with completion blockers, warnings, verification, tasks, background jobs, and artifact evidence.
+
+/recover [note]
+- Generate .kernforge/recovery/latest.md and latest.json from recent errors, verification failure, active failure repair, background jobs, open tasks, and next commands.
 
 /sessions
 - List recent saved sessions.
@@ -2579,10 +2712,20 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 /worktree status
 - Show the base workspace root, active root, configured worktree root directory, and any attached isolated worktree metadata.
 
+/worktree list
+- Show the session worktree, editable specialist worktree leases, and git worktree list --porcelain output in one terminal view.
+- Use this before switching roots or resuming delegated work so edits do not cross into the wrong worktree.
+
 /worktree create [name]
 - Create and attach an isolated git worktree rooted under the configured worktree isolation root.
 - The optional name influences the branch and directory slug.
 - When a tracked feature is active, creation points back to /new-feature status so Kernforge can choose the right next step.
+
+/worktree enter
+- Re-enter the recorded isolated worktree after /worktree leave without creating a new branch.
+
+/worktree attach <path> [branch]
+- Attach an existing git worktree path to this session. Kernforge records it as unmanaged, switches the active root to that path, and preserves the base workspace root for later /worktree leave.
 
 /worktree leave
 - Detach from the current isolated worktree and return the session to the base workspace root without deleting the worktree.

@@ -6,11 +6,11 @@
 |---|---|---|---|
 | Best fit | Windows security, anti-cheat, telemetry, driver workflows, large-project analysis, evidence-backed verification | General coding agent work, local editing loops, task delegation, automation, PR-oriented workflows | General agentic coding, configurable hooks, subagents, external integrations, team policy workflows |
 | Main strength | Turns a large workspace into reusable project intelligence, security docs, fuzz targets, verification history, evidence, and persistent memory | Feels natural when asked to finish a task end to end: inspect, edit, test, recover, summarize | Strong customization surface: hooks, subagents, MCP-style integrations, organization-specific workflows |
-| Conversation memory | Stores conversation events, active state, recent errors, suggestion memory, task graph, and persistent memory | Very strong thread/workspace awareness and task continuity | Strong conversational context with configurable project instructions and agent setup |
+| Conversation memory | Stores conversation events, active state, recent errors, recovery briefs, suggestion memory, task graph, session dashboard, continuity packet, and persistent memory | Very strong thread/workspace awareness and task continuity | Strong conversational context with configurable project instructions and agent setup |
 | Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong at deciding the next practical step during implementation | Strong when workflows are encoded through hooks, subagents, and project conventions |
 | Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong test/command loop, but domain evidence modeling is generic | Strong tool loop, but evidence modeling depends on user/project setup |
 | Windows/security specialization | Deeply tuned for IOCTL, ETW, drivers, memory scanning, Unreal, telemetry, signing, fuzzing, and anti-cheat surfaces | Broad coding agent, not domain-specific by default | Broad coding agent, not domain-specific by default |
-| Automation maturity | Local MVP: `/automation`, recurring verification slots, `/review-pr` report, suggestion-to-task graph; scheduler/GitHub API still pending | Mature automation and PR/task workflow direction | Automation often comes through hooks and external workflow integration |
+| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review-pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session-dashboard-html`, suggestion-to-task graph; cloud jobs still pending | Mature automation and PR/task workflow direction | Automation often comes through hooks and external workflow integration |
 | Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More polished general agent experience, less specialized security/fuzzing knowledge out of the box | More configurable ecosystem, less built-in Windows security/fuzz workbench depth |
 
 `Kernforge` is a project intelligence and fuzzing workbench for Windows security, anti-cheat engineering, and evidence-backed verification. It is written in Go, runs as a terminal-first local agent, and is tuned for telemetry, driver-oriented workflows, memory inspection, Unreal security, and large project analysis.
@@ -71,6 +71,7 @@ Playbooks:
 
 Specs And Roadmap:
 - [Korean Roadmap](./ROADMAP_kor.md)
+- [Korean Fuzzing And Security Tools Gap Analysis](./FUZZING_SECURITY_TOOLS_GAP_ANALYSIS_kor.md)
 - [Korean Hook Engine Spec](./HOOK_ENGINE_SPEC_kor.md)
 - [Korean Live Investigation Mode Spec](./LIVE_INVESTIGATION_SPEC_kor.md)
 - [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
@@ -105,13 +106,14 @@ Its current differentiators are:
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
-- Interactive REPL and one-shot `-prompt` mode
+- Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, patch, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
 - Session persistence, resume, rename, clear, compact, and Markdown export
+- Natural failure recovery with `/continuity`, `/recover`, `/recover execute-safe`, `/completion-audit`, `/jobs`, local event export, and session dashboards
 - Project memory files plus cross-session persistent memory with trust/importance metadata
 - Evidence store, evidence search, and evidence dashboards
 - Local `SKILL.md` skills with discovery and per-request activation
@@ -180,6 +182,8 @@ Its current differentiators are:
 - Security-aware verification for driver, telemetry, Unreal, and memory-scan changes
 - Verification history and verification dashboards
 - `/verify` now ends with a `Verification handoff`: failures point back to repair/retry dashboards, while passing runs suggest checkpointing and either feature status or close depending on tracked feature state; native fuzz findings are pulled into targeted planner steps
+- `/recover execute-safe` treats failed `/verify` reports and non-ready `/completion-audit` artifacts as failed recovery actions instead of marking a dispatched slash command as complete
+- Safe recovery shell replay is limited to narrow Go/Git verification and status commands, rejects shell chaining/redirection, and blocks high-risk flags such as external test executors, vet tools, and output-writing diff/profile options
 - Structured evidence capture from verification
 - Evidence search and evidence dashboards
 - `/investigate` and `/simulate` now print handoffs into snapshots, risk simulation, `/verify`, and evidence dashboards so the user does not need to memorize the analysis loop
@@ -212,7 +216,7 @@ Its current differentiators are:
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
 - Each edit request keeps an apply/verify/retry ledger so main edits, worker edits, patch transaction ids, background verification bundles, verification reports, retry decisions, final-review verdicts, and remaining risk stay tied together through compaction and final handoff
-- Before a final answer, the coding harness checks the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, and background job state
+- Before a final answer, the coding harness and `/completion-audit` check the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, open tasks, verification, and background job state
 - The final-answer reviewer receives the edit-loop ledger plus a typed outcome contract and expects one coherent summary of what changed, what verified, what was retried, and what risk remains
 - If a requested document or report artifact is placeholder/TODO content or does not cover the requested topic, the artifact-quality gate blocks the final answer
 - If the user provided a bug scenario with trigger/expected/observed behavior, a code-changing fix claim must include replay/verification evidence or explicitly disclose that the replay was not run
@@ -263,7 +267,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -559,7 +563,10 @@ Isolated implementation:
 - `/specialists assign <node-id> <specialist> [glob,glob2]`
 - `/set-specialist-model <specialist> <provider> [model]`
 - `/worktree status`
+- `/worktree list`
 - `/worktree create [name]`
+- `/worktree enter`
+- `/worktree attach <path> [branch]`
 - `/worktree leave`
 - `/worktree cleanup`
 
@@ -572,6 +579,7 @@ Isolated implementation:
 | `-model <name>` | Select the model |
 | `-base-url <url>` | Override the provider base URL |
 | `-prompt "<text>"` | Run a single prompt and exit |
+| `-command "<slash-command>"` | Run a single slash command or `!shell` command and exit |
 | `-image <paths>` / `-i` | Attach one or more images in one-shot mode, comma-separated |
 | `-resume <session-id>` | Resume a saved session |
 | `-permission-mode <mode>` | Set the permission mode |
@@ -580,6 +588,7 @@ Isolated implementation:
 Notes:
 
 - `-image` requires `-prompt`.
+- `-command` is intended for automation and external schedulers, for example `-command "/automation monitor --notify"`.
 - `-preview-file`, `-preview-result-file`, `-viewer-file`, and `-viewer-result-file` are internal window helper flags.
 
 ## Workspace And Configuration
@@ -710,6 +719,11 @@ Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` valu
 - `run_shell` now supports scoped workspace writes when the agent provides `allow_workspace_writes=true` together with `write_paths`. This path is intended for formatters, code generators, or setup commands that are safer to run than re-creating the change by hand.
 - Long-running build, test, and verification commands can use `run_shell_background` and `check_shell_job` so the agent can poll an existing job instead of restarting the same expensive command. Matching running jobs are reused automatically.
 - Independent long-running verification commands can also use `run_shell_bundle_background` and `check_shell_bundle` to run and poll several background jobs in parallel. Bundle metadata is persisted in the session, so the agent can resume polling with `bundle_id="latest"` even after compaction.
+- `/jobs status|check|bundle|cancel|cancel-bundle` exposes those persisted background jobs and bundles to the terminal, so a human or a `-command` runner can poll or cancel long work without waiting for a model turn.
+- `/events tail [n]` prints recent session events as JSONL, and `/events export [path]` writes `.kernforge/events/<session-id>.jsonl` plus `.kernforge/events/latest.jsonl` as a local app-server style feed for dashboards, schedulers, harnesses, and external supervisors.
+- `/continuity [note]` writes `.kernforge/continuity/latest.md/json` with changed files, open tasks, worktrees, active failure repair, latest verification failure, recent shell/provider/tool errors, background jobs, recovery actions, and next commands. Direct `!shell` failures are recorded as `command_error` events so the packet can recover from local command failures without pasted logs.
+- `/recover [note]` writes `.kernforge/recovery/latest.md/json` as a focused failure runbook from the latest provider/tool/command error, verification failure, active failure repair, background jobs, open tasks, and next commands. It now includes a structured diagnosis, stable failure signature, action-plan lifecycle statuses, and execution log. `/recover execute-safe [note]` runs only safe-auto recovery actions such as whitelisted `go test`, `go vet`, `go list`, `git status`, `git diff --check`, `/jobs`, `/continuity`, and `/completion-audit`.
+- `/completion-audit [note]` writes `.kernforge/completion_audit/latest.md/json` with completion blockers, warnings, required artifacts, latest verification, open tasks, background jobs, recent errors, and coding harness evidence before a final answer overclaims done state.
 - Background work is now node-aware. Long-running verification carries `owner_node_id` and owner lease context, newer verification bundles for the same owner or same lease supersede older ones, and verification-like bundle completion syncs back into the owning plan node automatically.
 - Secondary executor nodes can now run not only automatic read-only worker follow-ups but also automatic editable workers. On disjoint leases, a specialist can patch in its own worktree and persist both the edit summary and follow-up verification bundle state back into the task graph.
 
@@ -989,8 +1003,22 @@ Explain the structure of this repository
 /resume <session-id>
 /session
 /sessions
+/handoff [note]
+/handoff import <path>
+/session-dashboard-html
+/events [tail|export]
+/continuity [note]
+/recover [note]
+/completion-audit [note]
+/jobs [status|check|bundle|cancel|cancel-bundle]
 /tasks
 ```
+
+- `/handoff` writes `.kernforge/handoff/latest.md/json` with changed files, open tasks, verification, recent events, artifact refs, and a continuation prompt for another agent or cloud task. `/handoff import <path>` normalizes a returned result packet and marks matching `completed_tasks` in the TaskGraph.
+- `/session-dashboard-html` writes `.kernforge/session_dashboard/latest.html` with the current thread events, task graph, automation due/failed state, changed files, background jobs, and artifact refs.
+- `/events` tails or exports session conversation events as JSONL for local dashboards, schedulers, harnesses, and app-server style clients.
+- `/continuity` writes `.kernforge/continuity/latest.md/json` as a local resume and recovery packet; `/recover` writes `.kernforge/recovery/latest.md/json` as a narrower failure runbook; `/jobs` lets you poll or cancel persisted background shell work from the terminal.
+- `/completion-audit` writes `.kernforge/completion_audit/latest.md/json` as a local final-readiness gate for blockers, warnings, verification, tasks, jobs, and artifact evidence.
 
 ### Provider And Planning Commands
 
@@ -1011,7 +1039,7 @@ Explain the structure of this repository
 /do-plan-review <task>
 /new-feature <task>
 /specialists
-/worktree [status|create [name]|leave|cleanup]
+/worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
 /permissions [mode]
 /set-max-tool-iterations <n>
 /locale-auto [on|off]

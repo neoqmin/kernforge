@@ -155,7 +155,10 @@ func (s *Session) ApproxChars() int {
 	for _, automation := range s.Automations {
 		total += len(automation.ID) + len(automation.Type) + len(automation.Name)
 		total += len(automation.Command) + len(automation.Status) + len(automation.Schedule)
-		total += len(automation.LastResult)
+		total += len(automation.NextRunHint) + len(automation.LastResult)
+		if !automation.NextRunAt.IsZero() {
+			total += len(automation.NextRunAt.Format(time.RFC3339))
+		}
 	}
 	for _, event := range s.ConversationEvents {
 		total += len(event.Kind) + len(event.Severity) + len(event.Summary) + len(event.Raw) + len(event.CorrelationID)
