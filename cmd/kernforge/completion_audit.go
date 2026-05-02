@@ -725,6 +725,9 @@ func completionAuditObjectiveEvidence(root string, artifact *CompletionAuditArti
 	if objective == "" {
 		return
 	}
+	if !completionAuditHasKernforgeSourceRoot(root) {
+		return
+	}
 	if containsAny(objective, "failure recovery", "natural failure", "recover", "recovery", "실패", "복구") {
 		completionAuditFeatureEvidence(root, artifact, "Natural failure recovery command and tests", []string{
 			"cmd/kernforge/recovery.go::handleRecoverCommand",
@@ -808,14 +811,37 @@ func completionAuditObjectiveEvidence(root string, artifact *CompletionAuditArti
 	}
 }
 
+func completionAuditHasKernforgeSourceRoot(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	anchors := []string{
+		filepath.Join(root, "cmd", "kernforge", "completion_audit.go"),
+		filepath.Join(root, "cmd", "kernforge", "goals.go"),
+		filepath.Join(root, "cmd", "kernforge", "recovery.go"),
+	}
+	found := 0
+	for _, anchor := range anchors {
+		if exists(anchor) {
+			found++
+		}
+	}
+	return found >= 2
+}
+
 func completionAuditFeatureEvidence(root string, artifact *CompletionAuditArtifact, requirement string, specs []string) {
 	evidence := []string{}
 	missing := []string{}
+	missingFiles := 0
 	for _, spec := range specs {
 		path, symbol := splitCompletionAuditEvidenceSpec(spec)
 		abs := filepath.Join(root, filepath.FromSlash(path))
 		data, err := os.ReadFile(abs)
 		if err != nil {
+			if os.IsNotExist(err) {
+				missingFiles++
+			}
 			missing = append(missing, path+": "+err.Error())
 			continue
 		}
@@ -824,6 +850,9 @@ func completionAuditFeatureEvidence(root string, artifact *CompletionAuditArtifa
 			continue
 		}
 		evidence = append(evidence, spec)
+	}
+	if len(evidence) == 0 && missingFiles == len(specs) {
+		return
 	}
 	status := completionAuditStatusPassed
 	text := "Evidence: " + strings.Join(limitStrings(evidence, 6), " | ")

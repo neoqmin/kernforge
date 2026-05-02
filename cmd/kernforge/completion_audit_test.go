@@ -445,6 +445,37 @@ func TestCompletionAuditObjectiveEvidenceMapsGoalArtifacts(t *testing.T) {
 	}
 }
 
+func TestCompletionAuditObjectiveEvidenceSkipsKernforgeChecksOutsideKernforgeRepo(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	rt := &runtimeState{
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	artifact := rt.buildCompletionAuditArtifact(root, "natural failure recovery long-task continuity local edit command loop Codex autonomous goals")
+
+	for _, requirement := range []string{
+		"Natural failure recovery command and tests",
+		"Long-task continuity packet and job polling",
+		"Local edit and command loop recovery gates",
+		"Codex-style local event stream",
+		"Autonomous goals command and loop",
+	} {
+		if item, ok := completionAuditChecklistItem(artifact, requirement); ok {
+			t.Fatalf("expected kernforge-specific objective evidence to be skipped outside kernforge repo, got %#v", item)
+		}
+	}
+	for _, blocker := range artifact.Blockers {
+		if strings.Contains(blocker, "cmd/kernforge/") {
+			t.Fatalf("expected no kernforge source blocker outside kernforge repo, got %q", blocker)
+		}
+	}
+}
+
 func completionAuditChecklistItem(artifact CompletionAuditArtifact, requirement string) (CompletionAuditItem, bool) {
 	for _, item := range artifact.Checklist {
 		if item.Requirement == requirement {
