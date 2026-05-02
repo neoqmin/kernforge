@@ -557,6 +557,8 @@ func (rt *runtimeState) auditGoalBySelector(selector string) error {
 		return fmt.Errorf("goal not found: %s", valueOrDefault(selector, "latest"))
 	}
 	goal := rt.session.Goals[index]
+	rt.primeGoalRuntimeState(&goal, "audit")
+	rt.session.UpsertGoal(goal)
 	audit, err := rt.runGoalCompletionAudit(goal)
 	if err != nil {
 		return err
@@ -569,8 +571,11 @@ func (rt *runtimeState) auditGoalBySelector(selector string) error {
 		Warnings: append([]string(nil), audit.Warnings...),
 	}
 	if audit.Ready {
-		goal.LastError = ""
-		if !goalStatusTerminal(goal.Status) {
+		if goal.LastSemanticReview != nil && !goal.LastSemanticReview.Approved && !goalStatusTerminal(goal.Status) {
+			goal.Status = goalStatusBlocked
+			goal.LastError = "goal still needs final semantic approval: " + compactPromptSection(goal.LastSemanticReview.Feedback, 500)
+		} else if !goalStatusTerminal(goal.Status) {
+			goal.LastError = ""
 			goal.Status = goalStatusPending
 		}
 	} else if !goalStatusTerminal(goal.Status) {
@@ -603,6 +608,7 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 		return nil
 	}
 	rt.primeGoalRuntimeState(&goal, "complete")
+	rt.session.UpsertGoal(goal)
 	goal.updateUsageEstimate(rt.session)
 	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
 		goal.Status = goalStatusBlocked
