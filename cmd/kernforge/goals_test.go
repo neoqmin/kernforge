@@ -340,6 +340,118 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	}
 }
 
+func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "NEEDS_REVISION: keep the final gate blocked", nil
+			}
+			return "APPROVED: unused", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := rt.handleVerifyCommand("--full"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := rt.handleGoalCommand("complete latest"); err == nil {
+		t.Fatalf("expected complete to reject semantic review")
+	}
+	if err := rt.handleGoalCommand("audit latest"); err != nil {
+		t.Fatalf("audit goal: %v", err)
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusBlocked || !strings.Contains(goal.LastError, "semantic approval") {
+		t.Fatalf("expected semantic rejection to remain blocked after audit, got %#v", goal)
+	}
+	if goal.LastSemanticReview == nil || goal.LastSemanticReview.Approved {
+		t.Fatalf("expected rejected semantic review to remain, got %#v", goal.LastSemanticReview)
+	}
+}
+
+func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "APPROVED: selected goal audit and verification satisfy the objective", nil
+			}
+			return "APPROVED: unused", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish first sample objective"); err != nil {
+		t.Fatalf("create first goal: %v", err)
+	}
+	first, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected first goal")
+	}
+	if err := rt.handleGoalCommand("start --no-run finish second sample objective"); err != nil {
+		t.Fatalf("create second goal: %v", err)
+	}
+	second, ok := session.ActiveGoal()
+	if !ok || second.ID == first.ID {
+		t.Fatalf("expected second active goal, got %#v first=%s", second, first.ID)
+	}
+	if err := rt.handleVerifyCommand("--full"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := rt.handleGoalCommand("complete " + first.ID); err != nil {
+		t.Fatalf("complete selected goal: %v", err)
+	}
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.ID != first.ID || active.Status != goalStatusComplete {
+		t.Fatalf("expected selected first goal to become active and complete, got %#v", active)
+	}
+	index, ok := session.GoalIndex(second.ID)
+	if !ok {
+		t.Fatalf("expected second goal to remain tracked")
+	}
+	if session.Goals[index].Status != goalStatusPending {
+		t.Fatalf("expected second goal to remain pending, got %#v", session.Goals[index])
+	}
+}
+
 func TestGoalProgressBlocksRepeatedNoProgress(t *testing.T) {
 	goal := GoalState{ID: "goal-1", Objective: "finish", Status: goalStatusRunning}
 	progress := GoalProgressState{
