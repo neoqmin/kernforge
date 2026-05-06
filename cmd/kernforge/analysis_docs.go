@@ -58,6 +58,8 @@ type AnalysisFuzzTargetCatalogEntry struct {
 	Confidence            string   `json:"confidence,omitempty"`
 	CoverageGapScore      int      `json:"coverage_gap_score,omitempty"`
 	CoverageFeedback      []string `json:"coverage_feedback,omitempty"`
+	SourceCandidateScore  int      `json:"source_candidate_score,omitempty"`
+	SourceCandidateIDs    []string `json:"source_candidate_ids,omitempty"`
 }
 
 type AnalysisVerificationMatrixEntry struct {
@@ -483,7 +485,7 @@ func buildAnalysisFuzzTargetsDoc(run ProjectAnalysisRun) string {
 	}
 	fmt.Fprintf(&b, "\n## Target Catalog\n\n")
 	analysisDocsWriteSectionMetadata(&b, run, "FUZZ_TARGETS.md", "fuzz.target_catalog", symbolFiles(analysisFuzzTargetSymbols(run)))
-	fmt.Fprintf(&b, "| Priority | Target | Input Surface | Coverage Feedback | Build Context | Harness | Suggested Command |\n")
+	fmt.Fprintf(&b, "| Priority | Target | Input Surface | Coverage Feedback / Source Signals | Build Context | Harness | Suggested Command |\n")
 	fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, target := range limitAnalysisFuzzTargetCatalog(targets, 20) {
 		name := firstNonBlankAnalysisString(target.Name, target.SymbolID)
@@ -501,6 +503,14 @@ func buildAnalysisFuzzTargetsDoc(run ProjectAnalysisRun) string {
 		coverage := "none"
 		if target.CoverageGapScore > 0 {
 			coverage = fmt.Sprintf("+%d %s", target.CoverageGapScore, strings.Join(limitStrings(target.CoverageFeedback, 2), ", "))
+		}
+		if target.SourceCandidateScore > 0 {
+			sourceSignals := fmt.Sprintf("source +%d %s", target.SourceCandidateScore, strings.Join(limitStrings(target.SourceCandidateIDs, 2), ", "))
+			if coverage == "none" {
+				coverage = sourceSignals
+			} else {
+				coverage += "; " + sourceSignals
+			}
 		}
 		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | `%s` |\n",
 			target.PriorityScore,
@@ -521,6 +531,9 @@ func buildAnalysisFuzzTargetsDoc(run ProjectAnalysisRun) string {
 		}
 		if len(target.CoverageFeedback) > 0 {
 			fmt.Fprintf(&b, "- Coverage feedback: +%d; %s\n", target.CoverageGapScore, strings.Join(limitStrings(target.CoverageFeedback, 4), ", "))
+		}
+		if len(target.SourceCandidateIDs) > 0 {
+			fmt.Fprintf(&b, "- Source candidate feedback: +%d; %s\n", target.SourceCandidateScore, strings.Join(limitStrings(target.SourceCandidateIDs, 4), ", "))
 		}
 		if strings.TrimSpace(target.File) != "" {
 			fmt.Fprintf(&b, "- File: `%s`\n", target.File)
@@ -719,6 +732,7 @@ func analysisFuzzTargetCatalog(run ProjectAnalysisRun) []AnalysisFuzzTargetCatal
 		overlayCounts[strings.TrimSpace(edge.SourceID)]++
 	}
 	coverageFeedback := analysisFuzzCoverageFeedback(run)
+	sourceCandidateFeedback := analysisFuzzSourceCandidateFeedback(run)
 	out := make([]AnalysisFuzzTargetCatalogEntry, 0, len(symbols))
 	for _, symbol := range symbols {
 		params := buildFunctionFuzzParameterStrategies(symbol.Signature)
@@ -742,6 +756,15 @@ func analysisFuzzTargetCatalog(run ProjectAnalysisRun) []AnalysisFuzzTargetCatal
 		if feedback := coverageFeedback.match(symbol, entry); feedback.Score > 0 {
 			entry.CoverageGapScore = feedback.Score
 			entry.CoverageFeedback = feedback.Reasons
+			entry.PriorityScore += feedback.Score
+			if entry.PriorityScore > 100 {
+				entry.PriorityScore = 100
+			}
+			entry.PriorityReasons = analysisUniqueStrings(append(entry.PriorityReasons, feedback.Reasons...))
+		}
+		if feedback := sourceCandidateFeedback.match(symbol, entry); feedback.Score > 0 {
+			entry.SourceCandidateScore = feedback.Score
+			entry.SourceCandidateIDs = feedback.Matches
 			entry.PriorityScore += feedback.Score
 			if entry.PriorityScore > 100 {
 				entry.PriorityScore = 100

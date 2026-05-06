@@ -238,6 +238,11 @@ type FunctionFuzzRun struct {
 	TargetSymbolName    string                        `json:"target_symbol_name"`
 	TargetSignature     string                        `json:"target_signature,omitempty"`
 	TargetFile          string                        `json:"target_file,omitempty"`
+	SourceCandidateID   string                        `json:"source_candidate_id,omitempty"`
+	SourceMatcherSlug   string                        `json:"source_matcher_slug,omitempty"`
+	SourceScanMode      string                        `json:"source_scan_mode,omitempty"`
+	SourceScanRunID     string                        `json:"source_scan_run_id,omitempty"`
+	SourceScanSummary   string                        `json:"source_scan_summary,omitempty"`
 	AnalysisRunID       string                        `json:"analysis_run_id,omitempty"`
 	AnalysisGoal        string                        `json:"analysis_goal,omitempty"`
 	CreatedAt           time.Time                     `json:"created_at"`
@@ -302,6 +307,15 @@ type functionFuzzResolvedPlan struct {
 	ScopeFiles []string
 	ExtraNotes []string
 }
+
+type functionFuzzSourceScanMode string
+
+const (
+	functionFuzzSourceScanModeOff       functionFuzzSourceScanMode = "off"
+	functionFuzzSourceScanModeFocused   functionFuzzSourceScanMode = "focused"
+	functionFuzzSourceScanModeFull      functionFuzzSourceScanMode = "full"
+	functionFuzzSourceScanModeCandidate functionFuzzSourceScanMode = "candidate"
+)
 
 func NewFunctionFuzzStore() *FunctionFuzzStore {
 	return &FunctionFuzzStore{
@@ -443,6 +457,11 @@ func normalizeFunctionFuzzRun(run FunctionFuzzRun) FunctionFuzzRun {
 	run.TargetSymbolName = strings.TrimSpace(run.TargetSymbolName)
 	run.TargetSignature = functionFuzzSanitizeSignature(run.TargetSignature)
 	run.TargetFile = filepath.ToSlash(strings.TrimSpace(run.TargetFile))
+	run.SourceCandidateID = strings.TrimSpace(run.SourceCandidateID)
+	run.SourceMatcherSlug = strings.ToLower(strings.TrimSpace(run.SourceMatcherSlug))
+	run.SourceScanMode = strings.ToLower(strings.TrimSpace(run.SourceScanMode))
+	run.SourceScanRunID = strings.TrimSpace(run.SourceScanRunID)
+	run.SourceScanSummary = compactPersistentMemoryText(run.SourceScanSummary, 260)
 	run.AnalysisRunID = strings.TrimSpace(run.AnalysisRunID)
 	run.AnalysisGoal = compactPersistentMemoryText(run.AnalysisGoal, 240)
 	run.QueryMode = strings.TrimSpace(run.QueryMode)
@@ -1234,7 +1253,70 @@ func (rt *runtimeState) showFunctionFuzzStatus() error {
 }
 
 func functionFuzzUsage() string {
-	return "/fuzz-func <function-name> [--file <path>|@<path>] or /fuzz-func [--file <path>|@<path>]"
+	return "/fuzz-func <function-name> [--file <path>|@<path>] [--source-scan off|focused|full] or /fuzz-func [--file <path>|@<path>]"
+}
+
+func parseFunctionFuzzSourceScanMode(query string, defaultMode functionFuzzSourceScanMode) (string, functionFuzzSourceScanMode, error) {
+	fields := splitAnalysisCommandLine(strings.TrimSpace(query))
+	if defaultMode == "" {
+		defaultMode = functionFuzzSourceScanModeFocused
+	}
+	mode := defaultMode
+	rest := []string{}
+	for i := 0; i < len(fields); i++ {
+		token := strings.TrimSpace(fields[i])
+		lower := strings.ToLower(token)
+		switch {
+		case lower == "--no-source-scan":
+			mode = functionFuzzSourceScanModeOff
+		case lower == "--with-source-scan":
+			mode = functionFuzzSourceScanModeFocused
+		case lower == "--source-scan":
+			if i+1 >= len(fields) {
+				return "", mode, fmt.Errorf("--source-scan requires off, focused, or full")
+			}
+			parsed, err := parseFunctionFuzzSourceScanModeValue(fields[i+1])
+			if err != nil {
+				return "", mode, err
+			}
+			mode = parsed
+			i++
+		case strings.HasPrefix(lower, "--source-scan="):
+			parsed, err := parseFunctionFuzzSourceScanModeValue(strings.TrimSpace(token[len("--source-scan="):]))
+			if err != nil {
+				return "", mode, err
+			}
+			mode = parsed
+		default:
+			rest = append(rest, token)
+		}
+	}
+	return joinFunctionFuzzQueryTokens(rest), mode, nil
+}
+
+func parseFunctionFuzzSourceScanModeValue(value string) (functionFuzzSourceScanMode, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "false", "none", "disabled", "disable", "no":
+		return functionFuzzSourceScanModeOff, nil
+	case "focused", "focus", "auto", "on", "true", "yes":
+		return functionFuzzSourceScanModeFocused, nil
+	case "full", "all":
+		return functionFuzzSourceScanModeFull, nil
+	default:
+		return "", fmt.Errorf("unsupported --source-scan mode: %s", value)
+	}
+}
+
+func joinFunctionFuzzQueryTokens(fields []string) string {
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		out = append(out, functionFuzzDisplayCommandPart(field))
+	}
+	return strings.Join(out, " ")
 }
 
 func (rt *runtimeState) handleFunctionFuzzLanguage(args string) error {
@@ -1336,19 +1418,47 @@ func (rt *runtimeState) handleFunctionFuzzPlan(query string) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("workspace root is not available")
 	}
-	commandCfg := configWithResponseLanguageForUserText(rt.cfg, query)
-	run, err := buildFunctionFuzzRun(commandCfg, root, query)
+	query, sourceScanMode, err := parseFunctionFuzzSourceScanMode(query, functionFuzzSourceScanModeFocused)
 	if err != nil {
 		return err
+	}
+	resolvedQuery, sourceCandidate, fromCandidate, err := rt.resolveFunctionFuzzSourceCandidateQuery(query)
+	if err != nil {
+		return err
+	}
+	commandCfg := configWithResponseLanguageForUserText(rt.cfg, resolvedQuery)
+	run, artifacts, err := buildFunctionFuzzRunWithArtifacts(commandCfg, root, resolvedQuery)
+	if err != nil {
+		return err
+	}
+	run, linkedCandidate, linkSourceCandidate, err := rt.attachFunctionFuzzSourceScanContext(root, run, artifacts, sourceCandidate, fromCandidate, sourceScanMode)
+	if err != nil {
+		return err
+	}
+	if rt.interactive && functionFuzzExecutionNeedsConfirmation(run.Execution) {
+		saved, err := rt.saveFunctionFuzzRun(run, linkedCandidate, linkSourceCandidate)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.section("Function Fuzz"))
+		fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, commandCfg))
+		rt.printFunctionFuzzCampaignHandoff(saved)
+		if err := rt.maybeConfirmFunctionFuzzExecution(&saved); err != nil {
+			return err
+		}
+		rt.maybeLaunchFunctionFuzzExecution(&saved)
+		saved, err = rt.saveFunctionFuzzRun(saved, linkedCandidate, linkSourceCandidate)
+		if err != nil {
+			return err
+		}
+		rt.printFunctionFuzzExecutionPromptResult(saved, commandCfg)
+		return nil
 	}
 	if err := rt.maybeConfirmFunctionFuzzExecution(&run); err != nil {
 		return err
 	}
 	rt.maybeLaunchFunctionFuzzExecution(&run)
-	if err := writeFunctionFuzzPlanJSON(&run); err != nil {
-		return err
-	}
-	saved, err := rt.functionFuzz.Upsert(run)
+	saved, err := rt.saveFunctionFuzzRun(run, linkedCandidate, linkSourceCandidate)
 	if err != nil {
 		return err
 	}
@@ -1356,6 +1466,295 @@ func (rt *runtimeState) handleFunctionFuzzPlan(query string) error {
 	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, commandCfg))
 	rt.printFunctionFuzzCampaignHandoff(saved)
 	return nil
+}
+
+func (rt *runtimeState) saveFunctionFuzzRun(run FunctionFuzzRun, sourceCandidate SourceCandidateRecord, linkSourceCandidate bool) (FunctionFuzzRun, error) {
+	if err := writeFunctionFuzzPlanJSON(&run); err != nil {
+		return FunctionFuzzRun{}, err
+	}
+	saved, err := rt.functionFuzz.Upsert(run)
+	if err != nil {
+		return FunctionFuzzRun{}, err
+	}
+	if linkSourceCandidate && rt.sourceScan != nil && strings.TrimSpace(sourceCandidate.ID) != "" {
+		linked := linkSourceCandidateToFunctionFuzz(sourceCandidate, saved)
+		if _, err := rt.sourceScan.UpsertCandidate(linked); err != nil {
+			return FunctionFuzzRun{}, err
+		}
+	}
+	return saved, nil
+}
+
+func (rt *runtimeState) attachFunctionFuzzSourceScanContext(root string, run FunctionFuzzRun, artifacts latestAnalysisArtifacts, explicitCandidate SourceCandidateRecord, fromCandidate bool, mode functionFuzzSourceScanMode) (FunctionFuzzRun, SourceCandidateRecord, bool, error) {
+	run = normalizeFunctionFuzzRun(run)
+	if mode == "" {
+		mode = functionFuzzSourceScanModeFocused
+	}
+	if fromCandidate {
+		explicitCandidate = normalizeSourceCandidateRecord(explicitCandidate)
+		run.SourceCandidateID = explicitCandidate.ID
+		run.SourceMatcherSlug = explicitCandidate.MatcherSlug
+		run.SourceScanMode = string(functionFuzzSourceScanModeCandidate)
+		run.SourceScanRunID = explicitCandidate.RunID
+		run.SourceScanSummary = fmt.Sprintf("Using source candidate %s matched by %s.", explicitCandidate.ID, valueOrUnset(explicitCandidate.MatcherSlug))
+		run.Notes = uniqueStrings(append(run.Notes, "Started from source candidate "+explicitCandidate.ID+" matched by "+explicitCandidate.MatcherSlug+"."))
+		return normalizeFunctionFuzzRun(run), explicitCandidate, true, nil
+	}
+	if mode == functionFuzzSourceScanModeOff {
+		run.SourceScanMode = string(mode)
+		run.SourceScanSummary = "Source-scan context disabled for this function fuzz run."
+		run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+		return normalizeFunctionFuzzRun(run), SourceCandidateRecord{}, false, nil
+	}
+	if rt == nil || rt.sourceScan == nil {
+		return normalizeFunctionFuzzRun(run), SourceCandidateRecord{}, false, nil
+	}
+	run.SourceScanMode = string(mode)
+	if existing, ok, err := rt.bestSourceCandidateForFunctionFuzzRun(root, run); err != nil {
+		return FunctionFuzzRun{}, SourceCandidateRecord{}, false, err
+	} else if ok {
+		run.SourceCandidateID = existing.ID
+		run.SourceMatcherSlug = existing.MatcherSlug
+		run.SourceScanRunID = existing.RunID
+		run.SourceScanSummary = fmt.Sprintf("Reused source candidate %s matched by %s.", existing.ID, valueOrUnset(existing.MatcherSlug))
+		run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+		return normalizeFunctionFuzzRun(run), existing, true, nil
+	}
+	if !hasSemanticIndexV2Data(artifacts.IndexV2) {
+		run.SourceScanSummary = "Source-scan context skipped because no semantic index was available."
+		run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+		return normalizeFunctionFuzzRun(run), SourceCandidateRecord{}, false, nil
+	}
+	options := SourceScanOptions{}
+	if mode == functionFuzzSourceScanModeFocused {
+		options.Files = functionFuzzSourceScanFocusFiles(root, run)
+		options.Limit = 32
+	}
+	scanID := functionFuzzSourceScanRunID(run, mode)
+	candidates := buildSourceScanCandidates(root, scanID, artifacts.IndexV2, options)
+	var savedCandidates []SourceCandidateRecord
+	if len(candidates) > 0 || mode == functionFuzzSourceScanModeFull {
+		scanRun := SourceScanRun{
+			ID:        scanID,
+			Workspace: root,
+			Goal:      "function fuzz source scan for " + firstNonBlankString(run.TargetSymbolName, run.TargetQuery),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Options:   options,
+			Notes:     []string{"Created automatically while planning " + run.ID + "."},
+		}
+		if err := writeSourceScanArtifacts(root, &scanRun, candidates); err != nil {
+			return FunctionFuzzRun{}, SourceCandidateRecord{}, false, err
+		}
+		savedRun, normalized, err := rt.sourceScan.UpsertRunWithCandidates(scanRun, candidates)
+		if err != nil {
+			return FunctionFuzzRun{}, SourceCandidateRecord{}, false, err
+		}
+		run.SourceScanRunID = savedRun.ID
+		savedCandidates = normalized
+	} else {
+		savedCandidates = candidates
+	}
+	best, ok := bestSourceCandidateForFunctionFuzzRun(run, savedCandidates)
+	if !ok {
+		run.SourceScanSummary = fmt.Sprintf("%s source scan captured %d candidate(s), but none matched the target closure.", string(mode), len(savedCandidates))
+		run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+		return normalizeFunctionFuzzRun(run), SourceCandidateRecord{}, false, nil
+	}
+	run.SourceCandidateID = best.ID
+	run.SourceMatcherSlug = best.MatcherSlug
+	run.SourceScanRunID = firstNonBlankString(run.SourceScanRunID, best.RunID)
+	run.SourceScanSummary = fmt.Sprintf("%s source scan captured %d candidate(s); linked %s via %s.", string(mode), len(savedCandidates), best.ID, valueOrUnset(best.MatcherSlug))
+	run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+	return normalizeFunctionFuzzRun(run), best, true, nil
+}
+
+func (rt *runtimeState) bestSourceCandidateForFunctionFuzzRun(root string, run FunctionFuzzRun) (SourceCandidateRecord, bool, error) {
+	if rt == nil || rt.sourceScan == nil {
+		return SourceCandidateRecord{}, false, nil
+	}
+	items, err := rt.sourceScan.ListCandidates(root, 1000)
+	if err != nil {
+		return SourceCandidateRecord{}, false, err
+	}
+	best, ok := bestSourceCandidateForFunctionFuzzRun(run, items)
+	return best, ok, nil
+}
+
+func bestSourceCandidateForFunctionFuzzRun(run FunctionFuzzRun, candidates []SourceCandidateRecord) (SourceCandidateRecord, bool) {
+	best := SourceCandidateRecord{}
+	bestScore := 0
+	for _, candidate := range candidates {
+		score := sourceCandidateFunctionFuzzMatchScore(candidate, run)
+		if score <= 0 {
+			continue
+		}
+		if best.ID == "" || score > bestScore || (score == bestScore && candidate.Score > best.Score) {
+			best = normalizeSourceCandidateRecord(candidate)
+			bestScore = score
+		}
+	}
+	if strings.TrimSpace(best.ID) == "" {
+		return SourceCandidateRecord{}, false
+	}
+	return best, true
+}
+
+func sourceCandidateFunctionFuzzMatchScore(candidate SourceCandidateRecord, run FunctionFuzzRun) int {
+	candidate = normalizeSourceCandidateRecord(candidate)
+	run = normalizeFunctionFuzzRun(run)
+	switch strings.ToLower(strings.TrimSpace(candidate.Status)) {
+	case "source-false-positive", "false-positive", "fixed":
+		return 0
+	}
+	score := 0
+	candidateFile := functionFuzzNormalizeOptionalPath(candidate.File)
+	targetFile := functionFuzzNormalizeOptionalPath(run.TargetFile)
+	sameFile := candidateFile != "" && targetFile != "" && strings.EqualFold(candidateFile, targetFile)
+	fileCompatible := candidateFile == "" || targetFile == "" || sameFile || sourceCandidateFileInFunctionFuzzScope(candidateFile, run)
+	if candidate.SymbolID != "" && run.TargetSymbolID != "" && strings.EqualFold(candidate.SymbolID, run.TargetSymbolID) {
+		score += 120
+	}
+	if candidate.SymbolName != "" && run.TargetSymbolName != "" && strings.EqualFold(candidate.SymbolName, run.TargetSymbolName) && fileCompatible {
+		score += 90
+	}
+	lineInTarget := sourceCandidateLineIntersectsFunctionFuzzTarget(candidate, run)
+	reachableSymbol := candidate.SymbolName != "" && fileCompatible && sourceCandidateNameInFunctionFuzzReachability(candidate.SymbolName, run)
+	if lineInTarget {
+		score += 80
+	}
+	if sameFile && (score > 0 || lineInTarget) {
+		score += 35
+	}
+	if candidateFile != "" && sourceCandidateFileInFunctionFuzzScope(candidateFile, run) && (score > 0 || reachableSymbol) {
+		score += 20
+	}
+	if reachableSymbol {
+		score += 25
+	}
+	if score == 0 {
+		return 0
+	}
+	score += candidate.Score
+	if strings.EqualFold(candidate.NoiseTier, "precise") {
+		score += 8
+	}
+	return score
+}
+
+func sourceCandidateLineIntersectsFunctionFuzzTarget(candidate SourceCandidateRecord, run FunctionFuzzRun) bool {
+	if run.TargetStartLine <= 0 || run.TargetEndLine <= 0 {
+		return false
+	}
+	candidateFile := functionFuzzNormalizeOptionalPath(candidate.File)
+	targetFile := functionFuzzNormalizeOptionalPath(run.TargetFile)
+	if candidateFile == "" || targetFile == "" || !strings.EqualFold(candidateFile, targetFile) {
+		return false
+	}
+	for _, line := range candidate.LineNumbers {
+		if line >= run.TargetStartLine && line <= run.TargetEndLine {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceCandidateFileInFunctionFuzzScope(file string, run FunctionFuzzRun) bool {
+	file = strings.ToLower(functionFuzzNormalizeOptionalPath(file))
+	if file == "" {
+		return false
+	}
+	for _, item := range append(append([]string{}, run.ScopeFiles...), run.ReachableFiles...) {
+		if strings.EqualFold(functionFuzzNormalizeOptionalPath(item), file) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceCandidateNameInFunctionFuzzReachability(name string, run FunctionFuzzRun) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	for _, item := range run.ReachableSymbols {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item == name || strings.Contains(item, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func functionFuzzSourceScanFocusFiles(root string, run FunctionFuzzRun) []string {
+	candidates := append([]string{}, run.TargetFile, run.ScopeRootFile)
+	candidates = append(candidates, run.ScopeFiles...)
+	candidates = append(candidates, run.ReachableFiles...)
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range candidates {
+		normalized := functionFuzzNormalizeSourceScanFocusFile(root, item)
+		if normalized == "" {
+			continue
+		}
+		key := strings.ToLower(normalized)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, normalized)
+		if len(out) >= 48 {
+			break
+		}
+	}
+	return out
+}
+
+func functionFuzzNormalizeSourceScanFocusFile(root string, value string) string {
+	value = filepath.ToSlash(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	if filepath.IsAbs(value) && strings.TrimSpace(root) != "" {
+		if rel, err := filepath.Rel(root, filepath.FromSlash(value)); err == nil && !strings.HasPrefix(rel, "..") {
+			value = filepath.ToSlash(rel)
+		}
+	}
+	value = strings.TrimPrefix(value, "./")
+	return functionFuzzNormalizeOptionalPath(value)
+}
+
+func functionFuzzSourceScanRunID(run FunctionFuzzRun, mode functionFuzzSourceScanMode) string {
+	base := strings.TrimSpace(run.ID)
+	if base == "" {
+		base = time.Now().Format("20060102-150405")
+	}
+	modeText := strings.TrimSpace(string(mode))
+	if modeText == "" {
+		modeText = string(functionFuzzSourceScanModeFocused)
+	}
+	return sourceDraftSlug("source-scan-"+modeText, base)
+}
+
+func (rt *runtimeState) printFunctionFuzzExecutionPromptResult(run FunctionFuzzRun, cfg Config) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	if strings.TrimSpace(run.Execution.Status) == "" {
+		return
+	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.section("Native Auto-Run"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_exec", functionFuzzFriendlyExecutionStatusWithConfig(cfg, run.Execution.Status)))
+	if strings.TrimSpace(run.Execution.Reason) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("reason", run.Execution.Reason))
+	}
+	if strings.TrimSpace(run.Execution.ContinueCommand) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("continue", run.Execution.ContinueCommand))
+	}
+	if strings.TrimSpace(run.Execution.BackgroundJobID) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("background_job", run.Execution.BackgroundJobID))
+	}
 }
 
 func (rt *runtimeState) handleFunctionFuzzContinue(args string) error {
@@ -1484,11 +1883,25 @@ func renderFunctionFuzzCampaignHandoff(plan fuzzCampaignAutomationPlan) string {
 }
 
 func buildFunctionFuzzRun(cfg Config, root string, query string) (FunctionFuzzRun, error) {
+	run, _, err := buildFunctionFuzzRunWithArtifacts(cfg, root, query)
+	return run, err
+}
+
+func buildFunctionFuzzRunWithArtifacts(cfg Config, root string, query string) (FunctionFuzzRun, latestAnalysisArtifacts, error) {
+	cleanQuery, _, err := parseFunctionFuzzSourceScanMode(query, functionFuzzSourceScanModeOff)
+	if err != nil {
+		return FunctionFuzzRun{}, latestAnalysisArtifacts{}, err
+	}
+	query = cleanQuery
 	artifacts, notes, err := prepareFunctionFuzzArtifactsForPlanning(cfg, root, query)
 	if err != nil {
-		return FunctionFuzzRun{}, err
+		return FunctionFuzzRun{}, latestAnalysisArtifacts{}, err
 	}
-	return buildFunctionFuzzRunFromArtifacts(cfg, root, query, artifacts, notes)
+	run, err := buildFunctionFuzzRunFromArtifacts(cfg, root, query, artifacts, notes)
+	if err != nil {
+		return FunctionFuzzRun{}, latestAnalysisArtifacts{}, err
+	}
+	return run, artifacts, nil
 }
 
 func prepareFunctionFuzzArtifactsForPlanning(cfg Config, root string, query string) (latestAnalysisArtifacts, []string, error) {
@@ -7630,6 +8043,12 @@ func functionFuzzStatusLines(cfg Config, run FunctionFuzzRun) []string {
 	lines := []string{}
 	if scopeSummary := functionFuzzScopeSummary(cfg, run); strings.TrimSpace(scopeSummary) != "" {
 		lines = append(lines, scopeSummary)
+	}
+	if strings.TrimSpace(run.SourceCandidateID) != "" {
+		lines = append(lines, "Source candidate: "+run.SourceCandidateID+" matcher="+valueOrUnset(run.SourceMatcherSlug))
+	}
+	if strings.TrimSpace(run.SourceScanSummary) != "" {
+		lines = append(lines, "Source scan: "+run.SourceScanSummary)
 	}
 	lines = append(lines,
 		functionFuzzLocalizedText(cfg, "Planning: ", "계획 상태: ")+functionFuzzPlanStatusWithConfig(cfg, run),

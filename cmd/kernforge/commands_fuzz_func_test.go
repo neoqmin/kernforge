@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +44,48 @@ func TestFunctionFuzzResolveCompilerPathChecksLLVMHome(t *testing.T) {
 	got := functionFuzzResolveCompilerPath("custom-clang-cl")
 	if !strings.EqualFold(got, compiler) {
 		t.Fatalf("functionFuzzResolveCompilerPath returned %q, want %q", got, compiler)
+	}
+}
+
+func writeFunctionFuzzTestAnalysisArtifacts(t *testing.T, root string, runID string, index SemanticIndexV2) {
+	t.Helper()
+	cfg := DefaultConfig(root)
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis: %v", err)
+	}
+	if strings.TrimSpace(index.RunID) == "" {
+		index.RunID = runID
+	}
+	if strings.TrimSpace(index.Goal) == "" {
+		index.Goal = "function fuzz test analysis"
+	}
+	if strings.TrimSpace(index.Root) == "" {
+		index.Root = root
+	}
+	if index.GeneratedAt.IsZero() {
+		index.GeneratedAt = time.Now()
+	}
+	pack := KnowledgePack{
+		RunID:       runID,
+		Goal:        index.Goal,
+		Root:        root,
+		GeneratedAt: time.Now(),
+	}
+	packData, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), packData, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+	indexData, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal structural index v2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "structural_index_v2.json"), indexData, 0o644); err != nil {
+		t.Fatalf("write structural index v2: %v", err)
 	}
 }
 
@@ -129,6 +173,76 @@ func TestParseFunctionFuzzTargetSpecAllowsAtFileAlias(t *testing.T) {
 	}
 	if filepath.ToSlash(spec.FileHint) != "src/driver.cpp" {
 		t.Fatalf("expected @ file-only alias to populate file hint, got %q", spec.FileHint)
+	}
+}
+
+func TestParseFunctionFuzzSourceScanModeStripsPlanningFlags(t *testing.T) {
+	query, mode, err := parseFunctionFuzzSourceScanMode(`ValidateRequest --source-scan full --file "src/guard.cpp"`, functionFuzzSourceScanModeFocused)
+	if err != nil {
+		t.Fatalf("parse source scan mode: %v", err)
+	}
+	if mode != functionFuzzSourceScanModeFull {
+		t.Fatalf("expected full source scan mode, got %q", mode)
+	}
+	if query != "ValidateRequest --file src/guard.cpp" {
+		t.Fatalf("unexpected cleaned query: %q", query)
+	}
+
+	query, mode, err = parseFunctionFuzzSourceScanMode(`ValidateRequest --no-source-scan`, functionFuzzSourceScanModeFocused)
+	if err != nil {
+		t.Fatalf("parse no source scan: %v", err)
+	}
+	if mode != functionFuzzSourceScanModeOff || query != "ValidateRequest" {
+		t.Fatalf("unexpected no-source-scan parse: query=%q mode=%q", query, mode)
+	}
+}
+
+func TestSourceCandidateFunctionFuzzMatchRejectsUnrelatedSameFileCandidate(t *testing.T) {
+	run := FunctionFuzzRun{
+		ID:               "fuzz-match",
+		TargetSymbolID:   "func:ValidateRequest@src/guard.cpp",
+		TargetSymbolName: "ValidateRequest",
+		TargetFile:       "src/guard.cpp",
+		TargetStartLine:  40,
+		TargetEndLine:    60,
+		ReachableSymbols: []string{"ValidateRequest", "ParseHeader"},
+		ReachableFiles:   []string{"src/guard.cpp"},
+	}
+	unrelated := SourceCandidateRecord{
+		ID:          "sc-unrelated",
+		Status:      "pending",
+		MatcherSlug: "size-contract-drift",
+		File:        "src/guard.cpp",
+		LineNumbers: []int{12},
+		SymbolID:    "func:CleanupRequest@src/guard.cpp",
+		SymbolName:  "CleanupRequest",
+		Score:       100,
+	}
+	if score := sourceCandidateFunctionFuzzMatchScore(unrelated, run); score != 0 {
+		t.Fatalf("expected unrelated same-file candidate to be rejected, got score %d", score)
+	}
+	inTarget := unrelated
+	inTarget.ID = "sc-in-target"
+	inTarget.LineNumbers = []int{45}
+	inTarget.SymbolID = ""
+	inTarget.SymbolName = ""
+	if score := sourceCandidateFunctionFuzzMatchScore(inTarget, run); score <= 0 {
+		t.Fatalf("expected in-target line candidate to match, got score %d", score)
+	}
+	reachable := unrelated
+	reachable.ID = "sc-reachable"
+	reachable.SymbolID = "func:ParseHeader@src/guard.cpp"
+	reachable.SymbolName = "ParseHeader"
+	if score := sourceCandidateFunctionFuzzMatchScore(reachable, run); score <= 0 {
+		t.Fatalf("expected reachable symbol candidate to match, got score %d", score)
+	}
+	sameNameWrongFile := unrelated
+	sameNameWrongFile.ID = "sc-wrong-file"
+	sameNameWrongFile.File = "src/other_guard.cpp"
+	sameNameWrongFile.SymbolID = "func:ValidateRequest@src/other_guard.cpp"
+	sameNameWrongFile.SymbolName = "ValidateRequest"
+	if score := sourceCandidateFunctionFuzzMatchScore(sameNameWrongFile, run); score != 0 {
+		t.Fatalf("expected same-name candidate in another file to be rejected, got score %d", score)
 	}
 }
 
@@ -362,6 +476,246 @@ func TestHandleFuzzFuncCommandCreatesArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Campaign handoff:") || !strings.Contains(output.String(), "Continue: /fuzz-campaign run") {
 		t.Fatalf("expected campaign handoff guidance, got %q", output.String())
+	}
+}
+
+func TestHandleFuzzFuncCommandReusesMatchingSourceCandidate(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "guard.cpp"), []byte("bool ValidateRequest(const uint8_t* data, size_t size) { return size > 0 && data != nullptr; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	index := SemanticIndexV2{
+		RunID: "run-fuzz-source-candidate-reuse",
+		Goal:  "reuse existing source scan candidate",
+		Files: []FileRecord{
+			{Path: "src/guard.cpp", Extension: ".cpp", Language: "cpp"},
+		},
+		Symbols: []SymbolRecord{
+			{
+				ID:        "func:ValidateRequest@src/guard.cpp",
+				Name:      "ValidateRequest",
+				Kind:      "function",
+				Language:  "cpp",
+				File:      "src/guard.cpp",
+				Signature: "bool ValidateRequest(const uint8_t* data, size_t size)",
+				StartLine: 1,
+				EndLine:   1,
+			},
+		},
+	}
+	writeFunctionFuzzTestAnalysisArtifacts(t, root, index.RunID, index)
+
+	sourceStore := &SourceScanStore{Path: filepath.Join(root, "source_scan.json")}
+	candidate := SourceCandidateRecord{
+		ID:          "sc-existing",
+		Workspace:   root,
+		RunID:       "source-scan-existing",
+		Status:      "pending",
+		MatcherSlug: "size-contract-drift",
+		NoiseTier:   "normal",
+		File:        "src/guard.cpp",
+		SymbolID:    "func:ValidateRequest@src/guard.cpp",
+		SymbolName:  "ValidateRequest",
+		Score:       88,
+	}
+	if _, err := sourceStore.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("upsert source candidate: %v", err)
+	}
+
+	var output bytes.Buffer
+	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
+	rt := &runtimeState{
+		cfg:          DefaultConfig(root),
+		writer:       &output,
+		ui:           NewUI(),
+		functionFuzz: store,
+		sourceScan:   sourceStore,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleFuzzFuncCommand("ValidateRequest"); err != nil {
+		t.Fatalf("handle fuzz-func: %v", err)
+	}
+	runs, err := store.ListRecent(root, 1)
+	if err != nil {
+		t.Fatalf("list function fuzz runs: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected one fuzz run, got %d", len(runs))
+	}
+	run := runs[0]
+	if run.SourceCandidateID != "sc-existing" {
+		t.Fatalf("expected reused source candidate, got %+v", run)
+	}
+	if run.SourceMatcherSlug != "size-contract-drift" {
+		t.Fatalf("expected matcher slug to be carried, got %+v", run)
+	}
+	if !strings.Contains(run.SourceScanSummary, "Reused source candidate sc-existing") {
+		t.Fatalf("expected source scan reuse summary, got %+v", run)
+	}
+	linked, ok, err := sourceStore.GetCandidate("sc-existing")
+	if err != nil || !ok {
+		t.Fatalf("get linked candidate: ok=%v err=%v", ok, err)
+	}
+	if !containsString(linked.LinkedFuzzRunIDs, run.ID) {
+		t.Fatalf("expected candidate to link fuzz run %s, got %#v", run.ID, linked.LinkedFuzzRunIDs)
+	}
+}
+
+func TestHandleFuzzFuncCommandRunsFocusedSourceScanWhenNoCandidateExists(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	source := strings.Join([]string{
+		"#include <cstring>",
+		"#include <cstddef>",
+		"static unsigned char g_Buffer[16];",
+		"bool ValidateRequest(const unsigned char* data, size_t size)",
+		"{",
+		"    if (size < 4)",
+		"    {",
+		"        return false;",
+		"    }",
+		"    memcpy(g_Buffer, data, size);",
+		"    return true;",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(root, "src", "guard.cpp"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	index := SemanticIndexV2{
+		RunID: "run-fuzz-focused-source-scan",
+		Goal:  "focused source scan",
+		Files: []FileRecord{
+			{Path: "src/guard.cpp", Extension: ".cpp", Language: "cpp"},
+		},
+		Symbols: []SymbolRecord{
+			{
+				ID:        "func:ValidateRequest@src/guard.cpp",
+				Name:      "ValidateRequest",
+				Kind:      "function",
+				Language:  "cpp",
+				File:      "src/guard.cpp",
+				Signature: "bool ValidateRequest(const unsigned char* data, size_t size)",
+				StartLine: 4,
+				EndLine:   11,
+			},
+		},
+	}
+	writeFunctionFuzzTestAnalysisArtifacts(t, root, index.RunID, index)
+
+	sourceStore := &SourceScanStore{Path: filepath.Join(root, "source_scan.json")}
+	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
+	rt := &runtimeState{
+		cfg:          DefaultConfig(root),
+		writer:       io.Discard,
+		ui:           NewUI(),
+		functionFuzz: store,
+		sourceScan:   sourceStore,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleFuzzFuncCommand("ValidateRequest"); err != nil {
+		t.Fatalf("handle fuzz-func: %v", err)
+	}
+	runs, err := store.ListRecent(root, 1)
+	if err != nil {
+		t.Fatalf("list function fuzz runs: %v", err)
+	}
+	run := runs[0]
+	if run.SourceCandidateID == "" || run.SourceScanRunID == "" {
+		t.Fatalf("expected focused source scan to link a candidate, got %+v", run)
+	}
+	if run.SourceScanMode != string(functionFuzzSourceScanModeFocused) {
+		t.Fatalf("expected focused source scan mode, got %+v", run)
+	}
+	candidate, ok, err := sourceStore.GetCandidate(run.SourceCandidateID)
+	if err != nil || !ok {
+		t.Fatalf("get generated source candidate: ok=%v err=%v", ok, err)
+	}
+	if filepath.ToSlash(candidate.File) != "src/guard.cpp" {
+		t.Fatalf("expected generated candidate to stay in focus file, got %+v", candidate)
+	}
+	if !containsString(candidate.LinkedFuzzRunIDs, run.ID) {
+		t.Fatalf("expected generated candidate to link fuzz run %s, got %#v", run.ID, candidate.LinkedFuzzRunIDs)
+	}
+}
+
+func TestHandleFuzzFuncCommandCanDisableAutomaticSourceScan(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	source := "bool ValidateRequest(const unsigned char* data, size_t size) { if (size < 4) { return false; } memcpy(g_Buffer, data, size); return true; }\n"
+	if err := os.WriteFile(filepath.Join(root, "src", "guard.cpp"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	index := SemanticIndexV2{
+		RunID: "run-fuzz-no-source-scan",
+		Goal:  "disabled source scan",
+		Files: []FileRecord{
+			{Path: "src/guard.cpp", Extension: ".cpp", Language: "cpp"},
+		},
+		Symbols: []SymbolRecord{
+			{
+				ID:        "func:ValidateRequest@src/guard.cpp",
+				Name:      "ValidateRequest",
+				Kind:      "function",
+				Language:  "cpp",
+				File:      "src/guard.cpp",
+				Signature: "bool ValidateRequest(const unsigned char* data, size_t size)",
+				StartLine: 1,
+				EndLine:   1,
+			},
+		},
+	}
+	writeFunctionFuzzTestAnalysisArtifacts(t, root, index.RunID, index)
+
+	sourceStore := &SourceScanStore{Path: filepath.Join(root, "source_scan.json")}
+	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
+	rt := &runtimeState{
+		cfg:          DefaultConfig(root),
+		writer:       io.Discard,
+		ui:           NewUI(),
+		functionFuzz: store,
+		sourceScan:   sourceStore,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleFuzzFuncCommand("ValidateRequest --no-source-scan"); err != nil {
+		t.Fatalf("handle fuzz-func: %v", err)
+	}
+	runs, err := store.ListRecent(root, 1)
+	if err != nil {
+		t.Fatalf("list function fuzz runs: %v", err)
+	}
+	run := runs[0]
+	if run.SourceCandidateID != "" {
+		t.Fatalf("expected no linked source candidate, got %+v", run)
+	}
+	if run.SourceScanMode != string(functionFuzzSourceScanModeOff) {
+		t.Fatalf("expected source scan off mode, got %+v", run)
+	}
+	candidates, err := sourceStore.ListCandidates(root, 10)
+	if err != nil {
+		t.Fatalf("list source candidates: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected disabled source scan to create no candidates, got %#v", candidates)
 	}
 }
 
@@ -1123,6 +1477,114 @@ func TestHandleFuzzFuncCommandContinueApprovesPendingRun(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Native auto-run: ready to run") {
 		t.Fatalf("expected rendered output to show friendly planned native execution status, got %q", output.String())
+	}
+}
+
+func TestHandleFuzzFuncCommandShowsPlanBeforeRecoveredBuildPrompt(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "include"), 0o755); err != nil {
+		t.Fatalf("mkdir include: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "guard.cpp"), []byte("bool ValidateRequest(const uint8_t*, size_t, uint32_t) { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write guard source: %v", err)
+	}
+
+	fakeCompiler := filepath.Join(root, "toolchain", "clang++.exe")
+	if err := os.MkdirAll(filepath.Dir(fakeCompiler), 0o755); err != nil {
+		t.Fatalf("mkdir toolchain: %v", err)
+	}
+	if err := os.WriteFile(fakeCompiler, []byte(""), 0o644); err != nil {
+		t.Fatalf("write fake compiler: %v", err)
+	}
+
+	index := SemanticIndexV2{
+		RunID:       "run-fuzz-confirm-order",
+		Goal:        "show plan before recovered build prompt",
+		Root:        root,
+		GeneratedAt: time.Now(),
+		BuildContexts: []BuildContextRecord{
+			{
+				ID:           "buildctx:compile:guard",
+				Name:         "Guard compile context",
+				Kind:         "compile_context",
+				Directory:    root,
+				Files:        []string{"src/guard.cpp"},
+				Compiler:     fakeCompiler,
+				IncludePaths: []string{"include"},
+				Defines:      []string{"GUARD_MODE=1"},
+			},
+		},
+		Symbols: []SymbolRecord{
+			{
+				ID:             "func:ValidateRequest@src/guard.cpp",
+				Name:           "ValidateRequest",
+				Kind:           "function",
+				Language:       "cpp",
+				File:           "src/guard.cpp",
+				BuildContextID: "buildctx:compile:guard",
+				Signature:      "bool ValidateRequest(const uint8_t* data, size_t size, uint32_t flags)",
+			},
+		},
+	}
+	indexData, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal structural index v2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "structural_index_v2.json"), indexData, 0o644); err != nil {
+		t.Fatalf("write structural index v2: %v", err)
+	}
+
+	var output bytes.Buffer
+	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
+	rt := &runtimeState{
+		cfg:          cfg,
+		reader:       bufio.NewReader(strings.NewReader("n\n")),
+		writer:       &output,
+		ui:           NewUI(),
+		functionFuzz: store,
+		interactive:  true,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleFuzzFuncCommand("ValidateRequest"); err != nil {
+		t.Fatalf("handle fuzz-func with recovered prompt: %v", err)
+	}
+
+	rendered := output.String()
+	planIndex := strings.Index(rendered, "Function Fuzz")
+	findingsIndex := strings.Index(rendered, "Risk-ranked findings")
+	promptIndex := strings.Index(rendered, "Start autonomous fuzzing")
+	if planIndex < 0 || findingsIndex < 0 || promptIndex < 0 {
+		t.Fatalf("expected plan, source-only findings, and prompt in output, got %q", rendered)
+	}
+	if promptIndex < planIndex || promptIndex < findingsIndex {
+		t.Fatalf("expected recovered build prompt after rendered source-only plan, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Native Auto-Run") {
+		t.Fatalf("expected post-prompt native auto-run status, got %q", rendered)
+	}
+
+	items, err := store.ListRecent(root, 1)
+	if err != nil {
+		t.Fatalf("list function fuzz runs: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected saved function fuzz run, got %d", len(items))
+	}
+	if items[0].Execution.Status != "pending_confirmation" {
+		t.Fatalf("expected declined prompt to preserve pending confirmation, got %+v", items[0].Execution)
 	}
 }
 

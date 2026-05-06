@@ -49,6 +49,8 @@ type FuzzCampaignNativeResult struct {
 	CrashDir           string    `json:"crash_dir,omitempty"`
 	ArtifactIDs        []string  `json:"artifact_ids,omitempty"`
 	EvidenceID         string    `json:"evidence_id,omitempty"`
+	SourceCandidateID  string    `json:"source_candidate_id,omitempty"`
+	FeedbackDraftPaths []string  `json:"feedback_draft_paths,omitempty"`
 	RecordedAt         time.Time `json:"recorded_at,omitempty"`
 }
 
@@ -439,6 +441,8 @@ func normalizeFuzzCampaignNativeResults(items []FuzzCampaignNativeResult) []Fuzz
 		item.CrashDir = functionFuzzNormalizeOptionalPath(item.CrashDir)
 		item.ArtifactIDs = uniqueStrings(item.ArtifactIDs)
 		item.EvidenceID = strings.TrimSpace(item.EvidenceID)
+		item.SourceCandidateID = strings.TrimSpace(item.SourceCandidateID)
+		item.FeedbackDraftPaths = uniqueStrings(normalizeOptionalPaths(item.FeedbackDraftPaths))
 		if item.CrashCount < 0 {
 			item.CrashCount = 0
 		}
@@ -1248,6 +1252,35 @@ func (rt *runtimeState) captureFuzzCampaignNativeResults(campaign FuzzCampaign, 
 				runArtifacts[i].EvidenceID = record.ID
 			}
 		}
+		if sourceScanNativeResultWarrantsDraft(result) {
+			candidate := sourceCandidateFromFunctionFuzzRun(run, result)
+			if rt != nil && rt.sourceScan != nil && strings.TrimSpace(run.SourceCandidateID) != "" {
+				if loaded, ok, loadErr := rt.sourceScan.GetCandidate(run.SourceCandidateID); loadErr == nil && ok {
+					candidate = loaded
+				}
+			}
+			paths, err := sourceScanWriteFeedbackDrafts(campaign, candidate, run, result)
+			if err != nil {
+				return campaign, nil, err
+			}
+			if len(paths) > 0 {
+				result.FeedbackDraftPaths = uniqueStrings(append(result.FeedbackDraftPaths, paths...))
+				runArtifacts = append(runArtifacts, fuzzCampaignFeedbackRunArtifacts(campaign, run, result, paths)...)
+				result.ArtifactIDs = fuzzCampaignRunArtifactIDs(runArtifacts)
+				if reportPath, err := writeFuzzCampaignNativeResultReport(campaign, run, result); err == nil {
+					result.ReportPath = reportPath
+				} else {
+					return campaign, nil, err
+				}
+				if rt != nil && rt.sourceScan != nil {
+					candidate = linkSourceCandidateToNativeFeedback(candidate, campaign, result, paths)
+					if _, err := rt.sourceScan.UpsertCandidate(candidate); err != nil {
+						return campaign, nil, err
+					}
+				}
+			}
+		}
+		result.ArtifactIDs = fuzzCampaignRunArtifactIDs(runArtifacts)
 		campaign.RunArtifacts = normalizeFuzzCampaignRunArtifacts(append(campaign.RunArtifacts, runArtifacts...))
 		campaign.Findings = upsertFuzzCampaignFinding(campaign.Findings, buildFuzzCampaignNativeFinding(campaign, run, result))
 		campaign.CoverageReports = normalizeFuzzCampaignCoverageReports(append(campaign.CoverageReports, collectFuzzCampaignCoverageReports(campaign, run, result)...))
@@ -1301,6 +1334,7 @@ func buildFuzzCampaignNativeResult(campaign FuzzCampaign, run FunctionFuzzRun) (
 		BuildLogPath:       run.Execution.BuildLogPath,
 		RunLogPath:         run.Execution.RunLogPath,
 		CrashDir:           run.Execution.CrashDir,
+		SourceCandidateID:  run.SourceCandidateID,
 		RecordedAt:         time.Now(),
 	}
 	normalized := normalizeFuzzCampaignNativeResults([]FuzzCampaignNativeResult{result})
@@ -1886,6 +1920,12 @@ func writeFuzzCampaignNativeResultReport(campaign FuzzCampaign, run FunctionFuzz
 	}
 	if len(result.ArtifactIDs) > 0 {
 		fmt.Fprintf(&b, "- Run artifacts: `%s`\n", strings.Join(result.ArtifactIDs, ", "))
+	}
+	if strings.TrimSpace(result.SourceCandidateID) != "" {
+		fmt.Fprintf(&b, "- Source candidate: `%s`\n", result.SourceCandidateID)
+	}
+	if len(result.FeedbackDraftPaths) > 0 {
+		fmt.Fprintf(&b, "- Feedback drafts: `%s`\n", strings.Join(normalizeOptionalPaths(result.FeedbackDraftPaths), ", "))
 	}
 	if strings.TrimSpace(result.MinimizeCommand) != "" {
 		fmt.Fprintf(&b, "\n## Minimization\n\n```text\n%s\n```\n", result.MinimizeCommand)

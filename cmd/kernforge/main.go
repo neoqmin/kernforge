@@ -49,6 +49,7 @@ type runtimeState struct {
 	simulations                *SimulationStore
 	functionFuzz               *FunctionFuzzStore
 	fuzzCampaigns              *FuzzCampaignStore
+	sourceScan                 *SourceScanStore
 	hookOverrides              *HookOverrideStore
 	checkpoints                *CheckpointManager
 	autoCP                     *AutoCheckpointController
@@ -311,6 +312,7 @@ func run(args []string) error {
 		simulations:    NewSimulationStore(),
 		functionFuzz:   NewFunctionFuzzStore(),
 		fuzzCampaigns:  NewFuzzCampaignStore(),
+		sourceScan:     NewSourceScanStore(),
 		hookOverrides:  NewHookOverrideStore(),
 		checkpoints:    NewCheckpointManager(),
 		autoCP:         &AutoCheckpointController{},
@@ -5876,6 +5878,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "fuzz-campaign":
 		if err := rt.handleFuzzCampaignCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "source-scan":
+		if err := rt.handleSourceScanCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "find-root-cause":

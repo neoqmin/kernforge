@@ -79,10 +79,15 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 소스 레벨 fuzzing:
 - `/fuzz-func <function-name>`
 - `/fuzz-func <function-name> --file <path>`
+- `/fuzz-func <function-name> --source-scan focused`
+- `/fuzz-func --from-candidate <candidate-id>`
 - `/fuzz-func @<path>`
 - `/fuzz-func status`
 - `/fuzz-func show [id|latest]`
 - `/fuzz-func language [system|english]`
+- `/source-scan run`
+- `/source-scan list`
+- `/source-scan show [id|latest]`
 
 선택 영역 작업:
 - `/open <path>`
@@ -136,13 +141,17 @@ provider 및 런타임 확인:
 
 ```text
 /fuzz-func ValidateRequest --file src/guard.cpp
+/fuzz-func ValidateRequest --source-scan focused
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/source-scan run --limit 50
+/fuzz-func --from-candidate <candidate-id>
 /fuzz-func show latest
 ```
 
 이 시나리오의 의미:
 1. 함수를 바로 알고 있으면 함수명과 파일 경로로 좁힌다.
 2. 함수를 모르면 파일만 지정해도 Kernforge가 대표 루트와 input-facing 경로를 고른다.
+3. `/fuzz-func`는 기본적으로 focused source-scan context를 붙인다. 후보를 먼저 보고 고르고 싶으면 `/source-scan run` 후 `/fuzz-func --from-candidate <candidate-id>`로 이어간다.
 3. 결과에서 가장 높은 점수의 finding, `가장 유용한 분기 차이 요약`, `먼저 볼 관련 소스`를 먼저 읽는다.
 
 ### 증상 기반 root-cause 조사

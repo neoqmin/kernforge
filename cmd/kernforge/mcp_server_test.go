@@ -1939,6 +1939,98 @@ func TestKernforgeMCPServerFuzzFuncExecutePendingSummarizesNativePlan(t *testing
 	}
 }
 
+func TestKernforgeMCPServerFuzzFuncReportsSourceScanContext(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	root := server.rt.workspace.BaseRoot
+	srcDir := filepath.Join(root, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "guard.cpp"), []byte("bool ValidateRequest(const uint8_t* data, size_t size) { return data != nullptr && size > 0; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	index := SemanticIndexV2{
+		RunID: "run-mcp-source-scan-context",
+		Goal:  "mcp source scan context",
+		Files: []FileRecord{
+			{Path: "src/guard.cpp", Extension: ".cpp", Language: "cpp"},
+		},
+		Symbols: []SymbolRecord{
+			{
+				ID:        "func:ValidateRequest@src/guard.cpp",
+				Name:      "ValidateRequest",
+				Kind:      "function",
+				Language:  "cpp",
+				File:      "src/guard.cpp",
+				Signature: "bool ValidateRequest(const uint8_t* data, size_t size)",
+				StartLine: 1,
+				EndLine:   1,
+			},
+		},
+	}
+	writeFunctionFuzzTestAnalysisArtifacts(t, root, index.RunID, index)
+	candidate := SourceCandidateRecord{
+		ID:          "sc-mcp-existing",
+		Workspace:   root,
+		RunID:       "source-scan-mcp-existing",
+		Status:      "pending",
+		MatcherSlug: "size-contract-drift",
+		NoiseTier:   "normal",
+		File:        "src/guard.cpp",
+		SymbolID:    "func:ValidateRequest@src/guard.cpp",
+		SymbolName:  "ValidateRequest",
+		Score:       88,
+	}
+	if _, err := server.rt.sourceScan.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("upsert candidate: %v", err)
+	}
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_fuzz_func",
+			"arguments": map[string]any{
+				"query":       "ValidateRequest",
+				"execute":     false,
+				"source_scan": "focused",
+				"max_chars":   float64(50000),
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("fuzz func produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	for _, want := range []string{
+		`"source_candidate_id": "sc-mcp-existing"`,
+		`"source_matcher_slug": "size-contract-drift"`,
+		`"source_scan_mode": "focused"`,
+		"Reused source candidate sc-mcp-existing",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected MCP fuzz output to contain %q: %s", want, text)
+		}
+	}
+	runs, err := server.rt.functionFuzz.ListRecent(root, 1)
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].SourceCandidateID != "sc-mcp-existing" {
+		t.Fatalf("expected stored run to keep source candidate context, got %#v", runs)
+	}
+	linked, ok, err := server.rt.sourceScan.GetCandidate("sc-mcp-existing")
+	if err != nil || !ok {
+		t.Fatalf("get linked candidate: ok=%v err=%v", ok, err)
+	}
+	if !containsString(linked.LinkedFuzzRunIDs, runs[0].ID) {
+		t.Fatalf("expected MCP fuzz run link, got %#v", linked.LinkedFuzzRunIDs)
+	}
+}
+
 func TestMCPFunctionFuzzResultSummaryReportsMeaningfulAndEmptyResults(t *testing.T) {
 	empty := mcpFunctionFuzzResultSummary(FunctionFuzzRun{}, true)
 	if boolValue(empty, "meaningful_result", true) {
@@ -2131,6 +2223,7 @@ func newTestKernforgeMCPServer(t *testing.T) (*kernforgeMCPServer, func()) {
 	rt.evidence = &EvidenceStore{Path: filepath.Join(stateDir, "evidence.json"), MaxEntries: 100}
 	rt.verifyHistory = &VerificationHistoryStore{Path: filepath.Join(stateDir, "verification-history.json"), MaxEntries: 100}
 	rt.longMem = &PersistentMemoryStore{Path: filepath.Join(stateDir, "persistent-memory.json"), MaxEntries: 100}
+	rt.sourceScan = &SourceScanStore{Path: filepath.Join(stateDir, "source-scan.json"), MaxRuns: 100, MaxCandidates: 100}
 	if rt.agent != nil {
 		rt.agent.Evidence = rt.evidence
 		rt.agent.VerifyHistory = rt.verifyHistory

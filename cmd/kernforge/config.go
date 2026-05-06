@@ -2135,10 +2135,12 @@ Verification And Checkpoints:
 /investigate-dashboard  Show an investigation dashboard for this workspace
 /investigate-dashboard-html Generate and open an HTML investigation dashboard
 /simulate [profile]   Run risk-oriented simulation profiles and guide verification or evidence follow-up
-/fuzz-func <name> [--file <path>|@<path>] Auto-plan directed function fuzzing for one function, recover build settings when possible, and ask before heuristic execution
+/fuzz-func <name> [--file <path>|@<path>] [--source-scan off|focused|full] Auto-plan directed function fuzzing for one function, reuse or run source-scan context, recover build settings when possible, and ask before heuristic execution
 /fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
+/fuzz-func --from-candidate <candidate-id> Start focused function fuzzing from a saved /source-scan candidate
 /fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
 /fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
+/source-scan [status|run|list|show|revalidate] Scan source with built-in bug-pattern matchers, persist candidates, and guide /fuzz-func --from-candidate
 /find-root-cause <problem> Analyze a reported symptom with 1-8 route-limited worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
@@ -2646,7 +2648,7 @@ Provider and model commands control which model is active and how planning/revie
 - Use /set-specialist-model status to show effective specialist model routing.
 - Use /set-specialist-model <specialist> <provider> [model] to set an override, or /set-specialist-model clear <specialist|all> to remove overrides.
 `), true
-	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func", "fuzz-campaign":
+	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func", "fuzz-campaign", "source-scan", "source_scan", "sourcescan":
 		return strings.TrimSpace(`
 Verification and checkpoint commands help you validate changes and recover safely.
 
@@ -2666,17 +2668,23 @@ Verification and checkpoint commands help you validate changes and recover safel
 /verify-dashboard-html [all]
 - Generate an HTML verification dashboard and try to open it.
 
-/fuzz-func <name> [--file <path>|@<path>]
+/fuzz-func <name> [--file <path>|@<path>] [--source-scan off|focused|full]
 - Resolve one function-like symbol from the latest structural_index_v2 or an on-demand workspace scan and plan a directed fuzzing run automatically.
 - Kernforge expands the reachable call closure, infers parameter mutation strategy, scores the risk surface, and writes a harness scaffold plus report artifacts.
+- By default, Kernforge reuses a matching /source-scan candidate or runs a focused scan over the target and reachable files before saving the plan.
 - Minimal input is preferred: pass only the function name unless you need a more explicit symbol match.
 - Use --file <path> when the same function name exists in multiple translation units or you want to pin the target file directly.
 - You can also write @<path> as a shorter file-hint alias.
+- Use --source-scan off to disable this context, --source-scan focused for the default target-scoped scan, or --source-scan full to scan the whole indexed workspace.
 - If exact build settings are missing, Kernforge recovers what it can, shows the missing pieces, and asks before heuristic autonomous execution starts.
 
 /fuzz-func --file <path> or /fuzz-func @<path>
 - Analyze the selected file together with files it includes or imports, then let Kernforge choose the best input-facing function inside that file scope automatically.
 - Use this when you know the file you care about but do not want to guess the best starting function by hand.
+
+/fuzz-func --from-candidate <candidate-id>
+- Load a saved /source-scan candidate and derive the focused function, source file, matcher context, and scenario hints from that record.
+- The saved /fuzz-func plan keeps SourceCandidateID and SourceMatcherSlug so campaign and native feedback can update the original candidate later.
 
 /fuzz-func list
 - Show recent function fuzz planning runs for the current workspace.
@@ -2692,6 +2700,13 @@ Verification and checkpoint commands help you validate changes and recover safel
 - Use system to follow the PC language.
 - Use english to force English output regardless of the PC language.
 - After a /fuzz-func run produces source-only scenarios, Kernforge prints a campaign handoff with the single next command to run.
+
+/source-scan [status|run|list|show <id|latest>|revalidate <id|latest>]
+- Run built-in source matchers for Windows kernel, C/C++ parser boundaries, Unreal RPC/trust surfaces, and telemetry parsers before native fuzzing exists.
+- A run writes candidate records to ~/.kernforge/source_scan.json and artifacts under .kernforge/source_scan/<run-id>/.
+- Candidates are scored and tiered from source evidence only. Treat them as source-only until /fuzz-func, /fuzz-campaign, or native verifier feedback confirms the behavior.
+- After run/list/show output, Kernforge guides the next focused command as /fuzz-func --from-candidate <candidate-id>.
+- revalidate attaches source-only or native verifier verdicts and can promote a candidate to needs-native or native-confirmed.
 
 /fuzz-campaign [status|run|new <name>|list|show <id|latest>]
 - Create and inspect campaign-level fuzzing manifests without forcing the user to remember internal ordering.
