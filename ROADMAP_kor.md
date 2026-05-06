@@ -425,18 +425,20 @@ Kernforge가 차별화해야 할 방향:
 7. `/fuzz-func continue`로 pending native 실행 승인 흐름 지원
 8. generated `FUZZ_TARGETS.md` catalog와 `docs_manifest.json`을 target ranking에 반영
 9. help/completion에서 파일 기반, 함수 기반, language, continue 흐름을 노출
-10. `/fuzz-campaign` MVP가 campaign manifest와 `.kernforge/fuzz/<campaign-id>/` artifact layout을 생성
-11. campaign seed target은 최신 generated `FUZZ_TARGETS.md` catalog에서 초기 후보를 가져옴
-12. `/fuzz-campaign` planner가 현재 상태를 보고 다음 한 단계를 제안
-13. `/fuzz-campaign run`이 campaign 생성, latest `/fuzz-func` attach, source-only `VirtualScenarios`의 `corpus/<run-id>/scenario-XX-*.json` 승격을 자동 수행
-14. `/fuzz-func` 결과 출력이 campaign handoff를 자동 표시해 사용자가 다음 명령을 추측하지 않아도 됨
-15. 완료: `/investigate`, `/simulate`, `/verify`, `/analyze-performance`가 각각 Investigation/Simulation/Verification/Performance handoff를 출력해 dashboard, simulation, verification, evidence, checkpoint, tracked feature status/close로 자연스럽게 이어짐
-16. 완료: `/evidence`, `/mem`, `/checkpoint`, `/new-feature status|implement|close`, `/worktree create|leave|cleanup`, `/specialists assign`도 Evidence/Memory/Checkpoint/Feature/Worktree/Specialist handoff를 출력해 verify, dashboard, confirm/promote, diff, cleanup, feature status로 이어짐
-17. 완료: `/fuzz-campaign run`이 attached `/fuzz-func` native execution 상태, crash directory, build/run log를 수집해 campaign native result report와 `kind=fuzz_native_result` evidence로 기록함
-18. 완료: native result report에 crash fingerprint, suspected invariant, minimization command, corpus/crash path를 남김
-19. 완료: campaign manifest에 finding lifecycle과 artifact graph schema를 추가해 seed, native result, evidence, source anchor, verification gate, tracked feature gate를 연결함
-20. 완료: campaign manifest의 coverage gap을 다음 `analyze-project` docs refresh에서 `FUZZ_TARGETS.md` ranking feedback으로 반영함
-21. 완료: native crash finding을 crash fingerprint, source anchor, suspected invariant 기준으로 dedup하고 duplicate count와 병합된 native/evidence link를 manifest에 보존함
+10. 완료: `/source-scan`이 built-in source matcher 후보를 저장하고 `/fuzz-func --from-candidate <candidate-id>` handoff를 안내함
+11. 완료: `/fuzz-func`가 기본적으로 기존 source candidate를 재사용하거나 target/reachable file 범위 focused source-scan을 실행해 plan에 `source_candidate_id`, `source_scan_mode`, `source_scan_summary`를 남김
+12. `/fuzz-campaign` MVP가 campaign manifest와 `.kernforge/fuzz/<campaign-id>/` artifact layout을 생성
+13. campaign seed target은 최신 generated `FUZZ_TARGETS.md` catalog에서 초기 후보를 가져옴
+14. `/fuzz-campaign` planner가 현재 상태를 보고 다음 한 단계를 제안
+15. `/fuzz-campaign run`이 campaign 생성, latest `/fuzz-func` attach, source-only `VirtualScenarios`의 `corpus/<run-id>/scenario-XX-*.json` 승격을 자동 수행
+16. `/fuzz-func` 결과 출력이 campaign handoff를 자동 표시해 사용자가 다음 명령을 추측하지 않아도 됨
+17. 완료: `/investigate`, `/simulate`, `/verify`, `/analyze-performance`가 각각 Investigation/Simulation/Verification/Performance handoff를 출력해 dashboard, simulation, verification, evidence, checkpoint, tracked feature status/close로 자연스럽게 이어짐
+18. 완료: `/evidence`, `/mem`, `/checkpoint`, `/new-feature status|implement|close`, `/worktree create|leave|cleanup`, `/specialists assign`도 Evidence/Memory/Checkpoint/Feature/Worktree/Specialist handoff를 출력해 verify, dashboard, confirm/promote, diff, cleanup, feature status로 이어짐
+19. 완료: `/fuzz-campaign run`이 attached `/fuzz-func` native execution 상태, crash directory, build/run log를 수집해 campaign native result report와 `kind=fuzz_native_result` evidence로 기록함
+20. 완료: native result report에 crash fingerprint, suspected invariant, minimization command, corpus/crash path를 남김
+21. 완료: campaign manifest에 finding lifecycle과 artifact graph schema를 추가해 seed, native result, evidence, source anchor, verification gate, tracked feature gate를 연결함
+22. 완료: campaign manifest의 coverage gap을 다음 `analyze-project` docs refresh에서 `FUZZ_TARGETS.md` ranking feedback으로 반영함
+23. 완료: native crash finding을 crash fingerprint, source anchor, suspected invariant 기준으로 dedup하고 duplicate count와 병합된 native/evidence link를 manifest에 보존함
 
 우선 강화할 전문 기능:
 1. target discovery

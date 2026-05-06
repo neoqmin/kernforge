@@ -737,11 +737,28 @@ Codex 같은 외부 agent가 실제 산출물 경로를 찾아 열 수 있도록
   "name": "kernforge_fuzz_func",
   "arguments": {
     "query": "ValidateRequest --file src/guard.cpp",
+    "source_scan": "focused",
     "execute": false,
     "max_chars": 50000
   }
 }
 ```
+
+`source_scan`은 `focused`, `full`, `off`를 받는다. 기본값인 `focused`는 저장된 source candidate가 target과 맞으면 재사용하고, 없으면 target/file scope/reachable file만 source-scan으로 훑어 function fuzz plan에 연결한다. `full`은 indexed workspace 전체를 스캔하고, `off`는 candidate 재사용과 자동 source-scan을 모두 끈다.
+
+CLI와 같은 명시 handoff가 필요하면 query에 `--from-candidate <candidate-id>`를 넣는다.
+
+```json
+{
+  "name": "kernforge_fuzz_func",
+  "arguments": {
+    "query": "--from-candidate sc-0123456789abcdef",
+    "execute": false
+  }
+}
+```
+
+응답 summary에는 source candidate context가 있으면 `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, `source_scan_summary`가 포함된다. 이 필드는 source-only finding을 campaign/native feedback으로 이어갈 때 원래 source matcher signal을 되찾는 데 사용한다.
 
 파일만 주고 대표 fuzz root를 자동 선택하게 할 수도 있다.
 

@@ -49,6 +49,7 @@ var slashCommands = []string{
 	"simulate",
 	"fuzz-func",
 	"fuzz-campaign",
+	"source-scan",
 	"find-root-cause",
 	"root-cause-patterns",
 	"simulate-dashboard",
@@ -172,6 +173,7 @@ var slashCommandDescriptions = map[string]string{
 	"simulate":                   "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
 	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
+	"source-scan":                "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
 	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
@@ -421,6 +423,13 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"new":    "Create a fuzz campaign under .kernforge/fuzz/<campaign-id>/.",
 		"list":   "List recent fuzz campaigns for this workspace.",
 		"show":   "Show one fuzz campaign by id or latest.",
+	},
+	"source-scan": {
+		"status":     "Show recent source candidate scan state.",
+		"run":        "Run built-in source matchers and persist candidate records.",
+		"list":       "List recent source candidates for this workspace.",
+		"show":       "Show one source candidate by id or latest.",
+		"revalidate": "Attach a source-only or native verifier verdict to one candidate.",
 	},
 	"find-root-cause": {
 		"<problem>": "Describe the runtime symptom or failure; Kernforge selects likely source shards and reports plausible root causes.",
@@ -756,8 +765,9 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
 		"investigate":           {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard-html"},
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
-		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
+		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
 		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
+		"source-scan":           {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
 		"automation":            {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
@@ -927,6 +937,12 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
 		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "--from-candidate") {
+			return rt.recentSourceCandidateIDs(), 1, true
+		}
+		if len(fields) >= 2 && strings.EqualFold(fields[len(fields)-2], "--source-scan") {
+			return []string{"focused", "full", "off"}, len(fields) - 1, true
+		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "language") || strings.EqualFold(fields[0], "lang")) {
 			return []string{"system", "english"}, 1, true
 		}
@@ -945,6 +961,14 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
 			return append([]string{"latest"}, rt.recentFuzzCampaignIDs()...), 1, true
+		}
+		return nil, 0, false
+	case "source-scan":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "show") || strings.EqualFold(fields[0], "revalidate")) {
+			return append([]string{"latest"}, rt.recentSourceCandidateIDs()...), 1, true
 		}
 		return nil, 0, false
 	case "init":
@@ -1176,10 +1200,20 @@ func commandCompletionDescription(item string) string {
 		return "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically."
 	case "/fuzz-func @<path>":
 		return "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically."
+	case "/fuzz-func --from-candidate <id>":
+		return "Start /fuzz-func from a persisted /source-scan candidate and link the resulting plan back to that candidate."
+	case "/fuzz-func <function-name> --source-scan focused":
+		return "Reuse a matching source candidate or run a target-scoped source scan while planning /fuzz-func."
+	case "/fuzz-func <function-name> --source-scan full":
+		return "Run workspace-wide source matchers during /fuzz-func planning before linking the best matching candidate."
+	case "/fuzz-func <function-name> --no-source-scan":
+		return "Plan /fuzz-func without source-scan candidate reuse or automatic source matcher execution."
 	case "/fuzz-func language":
 		return "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English."
 	case "/fuzz-campaign":
 		return "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback."
+	case "/source-scan":
+		return "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func."
 	}
 
 	fields := strings.Fields(strings.TrimPrefix(trimmed, "/"))
@@ -1198,6 +1232,11 @@ func commandCompletionDescription(item string) string {
 			}
 		}
 	}
+	if commandName == "source-scan" {
+		if description := sourceScanCompletionDescription(fields[1:]); description != "" {
+			return description
+		}
+	}
 	if len(fields) >= 2 {
 		rawSubcommand := strings.TrimSpace(fields[1])
 		subcommand := strings.ToLower(rawSubcommand)
@@ -1214,6 +1253,41 @@ func commandCompletionDescription(item string) string {
 		}
 	}
 	return strings.TrimSpace(slashCommandDescriptions[commandName])
+}
+
+func sourceScanCompletionDescription(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	subcommand := strings.ToLower(strings.TrimSpace(args[0]))
+	switch subcommand {
+	case "status":
+		return "Show recent source-scan runs, candidate counts, and the best next /fuzz-func handoff."
+	case "run":
+		for index := 1; index < len(args); index++ {
+			option := strings.ToLower(strings.TrimSpace(args[index]))
+			switch option {
+			case "--limit":
+				return "Cap the scan to the top ranked candidates before writing source-scan artifacts."
+			case "--only-slugs":
+				return "Run only the listed matcher slugs for a focused scan of specific bug-pattern families."
+			case "--skip-slugs":
+				return "Run the scan while excluding the listed matcher slugs."
+			case "--filter":
+				return "Scan only files whose path or symbol context matches the filter text."
+			case "--files", "--file":
+				return "Restrict the scan to the listed comma-separated source files."
+			}
+		}
+		return "Run all enabled source matchers and persist ranked candidate records."
+	case "list":
+		return "List recent source-scan candidates with ids, matcher slugs, tiers, and /fuzz-func handoff hints."
+	case "show":
+		return "Show one source-scan candidate by id or latest, including evidence and the exact /fuzz-func handoff."
+	case "revalidate":
+		return "Attach source-only or native verifier feedback to one candidate and update its lifecycle state."
+	}
+	return ""
 }
 
 func (rt *runtimeState) completeMentionPath(buffer string) (string, []string, bool) {

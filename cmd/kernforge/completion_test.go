@@ -62,11 +62,12 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/investigate start d", wantBuffer: "/investigate start driver-visibility "},
 		{input: "/simulate ", wantSuggest: []string{"/simulate status", "/simulate show", "/simulate list", "/simulate dashboard", "/simulate dashboard-html", "/simulate tamper-surface", "/simulate stealth-surface", "/simulate forensic-blind-spot"}},
 		{input: "/simulate t", wantBuffer: "/simulate tamper-surface "},
-		{input: "/fuzz-func ", wantSuggest: []string{"/fuzz-func <function-name>", "/fuzz-func <function-name> --file <path>", "/fuzz-func <function-name> @<path>", "/fuzz-func --file <path>", "/fuzz-func @<path>", "/fuzz-func status", "/fuzz-func show", "/fuzz-func list", "/fuzz-func continue", "/fuzz-func language"}},
+		{input: "/fuzz-func ", wantSuggest: []string{"/fuzz-func <function-name>", "/fuzz-func <function-name> --file <path>", "/fuzz-func <function-name> @<path>", "/fuzz-func <function-name> --source-scan focused", "/fuzz-func <function-name> --source-scan full", "/fuzz-func <function-name> --no-source-scan", "/fuzz-func --from-candidate <id>", "/fuzz-func --file <path>", "/fuzz-func @<path>", "/fuzz-func status", "/fuzz-func show", "/fuzz-func list", "/fuzz-func continue", "/fuzz-func language"}},
 		{input: "/fuzz-func sh", wantBuffer: "/fuzz-func show "},
 		{input: "/fuzz-func language ", wantSuggest: []string{"/fuzz-func language system", "/fuzz-func language english"}},
 		{input: "/fuzz-campaign ", wantSuggest: []string{"/fuzz-campaign status", "/fuzz-campaign run", "/fuzz-campaign new", "/fuzz-campaign list", "/fuzz-campaign show"}},
 		{input: "/fuzz-campaign sh", wantBuffer: "/fuzz-campaign show "},
+		{input: "/source-scan ", wantSuggest: []string{"/source-scan status", "/source-scan run", "/source-scan run --limit 50", "/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector", "/source-scan run --files driver/nsi.c,api/registry.c", "/source-scan list", "/source-scan show", "/source-scan revalidate"}},
 		{input: "/init ", wantSuggest: []string{"/init config", "/init hooks", "/init memory-policy", "/init skill", "/init verify"}},
 		{input: "/init m", wantBuffer: "/init memory-policy "},
 	}
@@ -351,53 +352,83 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 
 func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) {
 	cases := map[string]string{
-		"/status":                                  "Show current session state, approvals, and extension status.",
-		"/effort high":                             "Favor deeper reasoning.",
-		"/provider status":                         "Show the current provider, base URL, key state, and billing visibility.",
-		"/codex-auth login":                        "Start device OAuth login for OpenAI Codex.",
-		"/verify":                                  "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
-		"/specialists":                             "Show specialist profiles plus editable ownership and worktree routing state.",
-		"/specialists cleanup":                     "Remove one or all specialist worktrees recorded for this session.",
-		"/worktree cleanup":                        "Remove the recorded isolated worktree after it is clean.",
-		"/new-feature status":                      "Show the current state of a tracked feature.",
-		"/analyze-project":                         "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
-		"/analyze-project --path":                  "Limit analysis to one workspace directory or file path; a goal is optional.",
-		"/analyze-project --mode map":              "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.",
-		"/analyze-project --mode trace":            "Follow one runtime or request flow through callers, callees, dispatch points, ownership transitions, and source anchors.",
-		"/analyze-project --mode impact":           "Estimate change blast radius: upstream/downstream dependencies, affected files, retest targets, and stale documentation risks.",
-		"/analyze-project --mode surface":          "Inventory exposed entry surfaces: IOCTL, RPC, parsers, handles, memory-copy paths, telemetry decoders, network inputs, and fuzz targets.",
-		"/analyze-project --mode security":         "Analyze trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks.",
-		"/analyze-project --mode performance":      "Map performance risk: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order.",
-		"/analyze-project --path src/ --mode map":  "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.",
-		"/analyze-project surface":                 "Focus on concrete IOCTL, RPC, parser, handle, memory, and network surfaces.",
-		"/analyze-dashboard":                       "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
-		"/analyze-dashboard latest":                "Open the latest analyze-project document portal.",
-		"/docs-refresh":                            "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
-		"/set-specialist-model planner":            "Configure the provider and model used by the planner specialist subagent.",
-		"/simulate tamper-surface":                 "Model obvious tamper vectors and exposed surfaces.",
-		"/fuzz-func":                               "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
-		"/fuzz-func <function-name>":               "Target one function by name and let Kernforge resolve the best matching symbol automatically.",
-		"/fuzz-func <function-name> --file <path>": "Target one function by name and pin matching to a specific source file when names collide.",
-		"/fuzz-func <function-name> @<path>":       "Target one function by name and use @<path> as a short file-hint alias.",
-		"/fuzz-func --file <path>":                 "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
-		"/fuzz-func @<path>":                       "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
-		"/fuzz-func language":                      "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English.",
-		"/fuzz-func show":                          "Open one saved function fuzz plan by id.",
-		"/fuzz-func continue":                      "Approve a pending recovered build configuration and start autonomous fuzzing.",
-		"/fuzz-campaign":                           "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback.",
-		"/evidence":                                "Review evidence records and suggest verification, dashboard, or source follow-up.",
-		"/mem":                                     "Show persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
-		"/checkpoint":                              "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
-		"/worktree":                                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
-		"/events":                                  "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
-		"/completion-audit":                        "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
-		"/recover":                                 "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
+		"/status":                                          "Show current session state, approvals, and extension status.",
+		"/effort high":                                     "Favor deeper reasoning.",
+		"/provider status":                                 "Show the current provider, base URL, key state, and billing visibility.",
+		"/codex-auth login":                                "Start device OAuth login for OpenAI Codex.",
+		"/verify":                                          "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
+		"/specialists":                                     "Show specialist profiles plus editable ownership and worktree routing state.",
+		"/specialists cleanup":                             "Remove one or all specialist worktrees recorded for this session.",
+		"/worktree cleanup":                                "Remove the recorded isolated worktree after it is clean.",
+		"/new-feature status":                              "Show the current state of a tracked feature.",
+		"/analyze-project":                                 "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
+		"/analyze-project --path":                          "Limit analysis to one workspace directory or file path; a goal is optional.",
+		"/analyze-project --mode map":                      "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.",
+		"/analyze-project --mode trace":                    "Follow one runtime or request flow through callers, callees, dispatch points, ownership transitions, and source anchors.",
+		"/analyze-project --mode impact":                   "Estimate change blast radius: upstream/downstream dependencies, affected files, retest targets, and stale documentation risks.",
+		"/analyze-project --mode surface":                  "Inventory exposed entry surfaces: IOCTL, RPC, parsers, handles, memory-copy paths, telemetry decoders, network inputs, and fuzz targets.",
+		"/analyze-project --mode security":                 "Analyze trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks.",
+		"/analyze-project --mode performance":              "Map performance risk: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order.",
+		"/analyze-project --path src/ --mode map":          "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.",
+		"/analyze-project surface":                         "Focus on concrete IOCTL, RPC, parser, handle, memory, and network surfaces.",
+		"/analyze-dashboard":                               "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
+		"/analyze-dashboard latest":                        "Open the latest analyze-project document portal.",
+		"/docs-refresh":                                    "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
+		"/set-specialist-model planner":                    "Configure the provider and model used by the planner specialist subagent.",
+		"/simulate tamper-surface":                         "Model obvious tamper vectors and exposed surfaces.",
+		"/fuzz-func":                                       "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
+		"/fuzz-func <function-name>":                       "Target one function by name and let Kernforge resolve the best matching symbol automatically.",
+		"/fuzz-func <function-name> --file <path>":         "Target one function by name and pin matching to a specific source file when names collide.",
+		"/fuzz-func <function-name> @<path>":               "Target one function by name and use @<path> as a short file-hint alias.",
+		"/fuzz-func <function-name> --source-scan focused": "Reuse a matching source candidate or run a target-scoped source scan while planning /fuzz-func.",
+		"/fuzz-func <function-name> --source-scan full":    "Run workspace-wide source matchers during /fuzz-func planning before linking the best matching candidate.",
+		"/fuzz-func <function-name> --no-source-scan":      "Plan /fuzz-func without source-scan candidate reuse or automatic source matcher execution.",
+		"/fuzz-func --file <path>":                         "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
+		"/fuzz-func @<path>":                               "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
+		"/fuzz-func language":                              "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English.",
+		"/fuzz-func show":                                  "Open one saved function fuzz plan by id.",
+		"/fuzz-func continue":                              "Approve a pending recovered build configuration and start autonomous fuzzing.",
+		"/fuzz-campaign":                                   "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback.",
+		"/source-scan":                                     "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func.",
+		"/source-scan run":                                 "Run all enabled source matchers and persist ranked candidate records.",
+		"/source-scan run --limit 50":                      "Cap the scan to the top ranked candidates before writing source-scan artifacts.",
+		"/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector": "Run only the listed matcher slugs for a focused scan of specific bug-pattern families.",
+		"/source-scan run --files driver/nsi.c,api/registry.c":                        "Restrict the scan to the listed comma-separated source files.",
+		"/source-scan show":       "Show one source-scan candidate by id or latest, including evidence and the exact /fuzz-func handoff.",
+		"/source-scan revalidate": "Attach source-only or native verifier feedback to one candidate and update its lifecycle state.",
+		"/evidence":               "Review evidence records and suggest verification, dashboard, or source follow-up.",
+		"/mem":                    "Show persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
+		"/checkpoint":             "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
+		"/worktree":               "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
+		"/events":                 "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
+		"/completion-audit":       "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
+		"/recover":                "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
 	}
 
 	for item, want := range cases {
 		if got := commandCompletionDescription(item); got != want {
 			t.Fatalf("%q: got %q want %q", item, got, want)
 		}
+	}
+}
+
+func TestSourceScanRunCompletionDescriptionsAreDistinct(t *testing.T) {
+	items := []string{
+		"/source-scan run",
+		"/source-scan run --limit 50",
+		"/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector",
+		"/source-scan run --files driver/nsi.c,api/registry.c",
+	}
+	seen := map[string]string{}
+	for _, item := range items {
+		description := commandCompletionDescription(item)
+		if strings.TrimSpace(description) == "" {
+			t.Fatalf("%q: expected a source-scan completion description", item)
+		}
+		if previous, ok := seen[description]; ok {
+			t.Fatalf("%q and %q share completion description %q", previous, item, description)
+		}
+		seen[description] = item
 	}
 }
 
@@ -428,6 +459,7 @@ func TestCompletionSuggestionsHaveSpecificDescriptions(t *testing.T) {
 		"/fuzz-func ",
 		"/fuzz-func language ",
 		"/fuzz-campaign ",
+		"/source-scan ",
 		"/init ",
 	}
 

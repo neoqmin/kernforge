@@ -491,6 +491,10 @@ Pattern pack 운영:
 - `/fuzz-func <function-name>`
 - `/fuzz-func <function-name> --file <path>`
 - `/fuzz-func <function-name> @<path>`
+- `/fuzz-func <function-name> --source-scan focused`
+- `/fuzz-func <function-name> --source-scan full`
+- `/fuzz-func <function-name> --no-source-scan`
+- `/fuzz-func --from-candidate <candidate-id>`
 - `/fuzz-func --file <path>`
 - `/fuzz-func @<path>`
 - `/fuzz-func status`
@@ -500,6 +504,12 @@ Pattern pack 운영:
 - `/fuzz-func language [system|english]`
 - `/fuzz-campaign`
 - `/fuzz-campaign run`
+- `/source-scan run`
+- `/source-scan run --limit 50`
+- `/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector`
+- `/source-scan run --files driver/nsi.c,api/registry.c`
+- `/source-scan list`
+- `/source-scan show [id|latest]`
 
 특히 좋은 상황:
 1. IOCTL handler, parser, validator, buffer-processing 함수처럼 공격자 입력이 직접 들어가는 경로를 빨리 triage하고 싶을 때
@@ -512,14 +522,16 @@ Pattern pack 운영:
 3. 실제 소스에서 guard/probe/copy/dispatch/cleanup 관찰을 추출하고, 그 관찰을 기반으로 공격자 입력 상태를 합성한다.
 4. 위험도가 높은 finding에는 구체 입력 예시, 소스에서 뽑은 비교식, 최소 반례, 분기 뒤 대표 결과, 후속 호출 체인이 붙는다.
 5. 결과는 `결론`, `위험도 점수표`, `상위 예측 문제`, `소스 기반 공격 표면` 순으로 나와서 핵심 finding을 먼저 읽기 쉽다.
-6. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
-7. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
-8. `/fuzz-func`는 source-only scenario가 준비되면 campaign handoff를 자동 출력하므로, 사용자는 campaign 내부 단계를 배우지 않고 `/fuzz-campaign run`으로 이어갈 수 있다.
-9. `/fuzz-campaign`은 다음 권장 campaign 단계를 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 run attach, source-only scenario의 `corpus/<run-id>/` 승격, dedup된 finding lifecycle과 coverage gap 갱신, libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact 수집, native run 결과의 report/evidence 기록 같은 안전한 자동 단계를 수행한다.
-10. campaign manifest에는 target, seed, native result, coverage report, sanitizer/verifier artifact, evidence id, source anchor, verification gate, tracked-feature gate를 연결하는 finding 목록, dedup key, duplicate count, 병합된 native/evidence link, parsed coverage report, run artifact, coverage gap, artifact graph가 포함된다.
-11. native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합되어 반복 실행이 하나의 tracked issue를 강화한다.
-12. coverage gap은 다음 생성 `FUZZ_TARGETS.md` refresh에 반영되어 아직 충분히 실행되지 않은 seed target이 ranking feedback을 받는다.
-13. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
+6. 기본적으로 `/fuzz-func`는 매칭되는 `/source-scan` 후보를 재사용하고, 없으면 target과 reachable file만 focused source-scan으로 훑은 뒤 plan에 연결한다. 필요하면 `--source-scan off`, `--source-scan focused`, `--source-scan full`, `--no-source-scan`으로 제어한다.
+7. `/source-scan run`은 source candidate를 점수순으로 저장하고, 명시 handoff가 필요하면 `/fuzz-func --from-candidate <candidate-id>`를 다음 명령으로 안내한다.
+8. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
+9. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
+10. `/fuzz-func`는 source-only scenario가 준비되면 campaign handoff를 자동 출력하므로, 사용자는 campaign 내부 단계를 배우지 않고 `/fuzz-campaign run`으로 이어갈 수 있다.
+11. `/fuzz-campaign`은 다음 권장 campaign 단계를 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 run attach, source-only scenario의 `corpus/<run-id>/` 승격, dedup된 finding lifecycle과 coverage gap 갱신, libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact 수집, native run 결과의 report/evidence 기록 같은 안전한 자동 단계를 수행한다.
+12. campaign manifest에는 target, seed, native result, coverage report, sanitizer/verifier artifact, evidence id, source anchor, verification gate, tracked-feature gate를 연결하는 finding 목록, dedup key, duplicate count, 병합된 native/evidence link, parsed coverage report, run artifact, coverage gap, artifact graph가 포함된다.
+13. native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합되어 반복 실행이 하나의 tracked issue를 강화한다.
+14. coverage gap은 다음 생성 `FUZZ_TARGETS.md` refresh에 반영되어 아직 충분히 실행되지 않은 seed target이 ranking feedback을 받는다.
+15. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
 
 실무 해석:
 1. `가장 유용한 분기 차이 요약`은 사용자가 가장 먼저 볼 한 줄 결론이다.
@@ -1125,7 +1137,13 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /fuzz-func ValidateRequest
 /fuzz-func ValidateRequest --file src/guard.cpp
 /fuzz-func ValidateRequest @src/guard.cpp
+/fuzz-func ValidateRequest --source-scan focused
+/fuzz-func ValidateRequest --source-scan full
+/fuzz-func ValidateRequest --no-source-scan
+/fuzz-func --from-candidate sc-0123456789abcdef
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/source-scan run --limit 50
+/source-scan show latest
 /fuzz-func show latest
 /fuzz-func language system
 /fuzz-campaign
@@ -1138,7 +1156,8 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 3. 같은 경로의 probe/copy/alloc/publish sink
 4. representative root에서 이어지는 caller/callee chain
 5. 시작 파일에서 target source까지 이어지는 file expansion path
-6. build context, `compile_commands.json`, snapshot/semantic index availability
+6. 저장된 source candidate, focused source-scan 결과, function fuzz plan을 연결한 matcher slug
+7. build context, `compile_commands.json`, snapshot/semantic index availability
 
 좋은 사용 예:
 1. 드라이버나 anti-cheat 코드에서 input-facing 함수의 branch flip과 sink reachability를 빨리 보고 싶을 때
@@ -1154,9 +1173,11 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 운영 메모:
 1. 함수명만 넣으면 자동 resolve하고, `--file`이나 `@path`를 주면 ambiguity를 크게 줄일 수 있다.
 2. 파일만 지정한 `/fuzz-func @path`는 함수명을 몰라도 시작 파일 기준의 representative root를 고른다.
-3. 네이티브 자동 실행이 차단돼도 source-only fuzzing 결과는 여전히 유효할 수 있다.
-4. campaign 하위 단계를 외우지 말고 `/fuzz-campaign`으로 다음 안전한 단계를 확인한 뒤 `/fuzz-campaign run`으로 적용한다. native run artifact가 있으면 dedup된 finding lifecycle, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, evidence 기록까지 이어진다.
-5. `compile_commands.json`이 있으면 후속 네이티브 fuzzing 품질이 좋아지지만, source-only planning 자체의 선행조건은 아니다.
+3. `/fuzz-func`는 기본적으로 focused source-scan context를 붙인다. candidate linkage 없이 순수 function fuzz plan만 원하면 `--no-source-scan` 또는 `--source-scan off`를 쓴다.
+4. 여러 source matcher 후보를 먼저 훑고 골라야 하면 `/source-scan run`을 먼저 실행한 뒤 `/fuzz-func --from-candidate <candidate-id>`로 이어간다.
+5. 네이티브 자동 실행이 차단돼도 source-only fuzzing 결과는 여전히 유효할 수 있다.
+6. campaign 하위 단계를 외우지 말고 `/fuzz-campaign`으로 다음 안전한 단계를 확인한 뒤 `/fuzz-campaign run`으로 적용한다. native run artifact가 있으면 dedup된 finding lifecycle, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, evidence 기록까지 이어진다.
+7. `compile_commands.json`이 있으면 후속 네이티브 fuzzing 품질이 좋아지지만, source-only planning 자체의 선행조건은 아니다.
 
 ## 5. 대시보드는 언제 어떤 것을 보면 좋은가
 

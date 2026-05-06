@@ -79,10 +79,15 @@ Root-cause investigation:
 Source-level fuzzing:
 - `/fuzz-func <function-name>`
 - `/fuzz-func <function-name> --file <path>`
+- `/fuzz-func <function-name> --source-scan focused`
+- `/fuzz-func --from-candidate <candidate-id>`
 - `/fuzz-func @<path>`
 - `/fuzz-func status`
 - `/fuzz-func show [id|latest]`
 - `/fuzz-func language [system|english]`
+- `/source-scan run`
+- `/source-scan list`
+- `/source-scan show [id|latest]`
 
 Selection workflow:
 - `/open <path>`
@@ -136,13 +141,17 @@ Provider and runtime inspection:
 
 ```text
 /fuzz-func ValidateRequest --file src/guard.cpp
+/fuzz-func ValidateRequest --source-scan focused
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/source-scan run --limit 50
+/fuzz-func --from-candidate <candidate-id>
 /fuzz-func show latest
 ```
 
 What this means:
 1. If you know the function, pin it with a file path.
 2. If you only know the suspicious file, let Kernforge pick the representative root and reachable input-facing path.
+3. `/fuzz-func` uses focused source-scan context by default; `/source-scan run` is useful when you want to inspect and choose the candidate before fuzz planning.
 3. Read the highest-score finding, the branch-delta summary, and the first source location before anything else.
 
 ### Symptom-driven root-cause investigation

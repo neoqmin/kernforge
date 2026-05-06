@@ -133,6 +133,8 @@ When the user starts with "KernForge ..." or asks to use KernForge, call the def
 
 When the user explicitly says fuzz/fuzzing/퍼징/퍼즈/하네스, call `kernforge_fuzz` first. Its default mode is `source`, so it creates a source-level fuzz plan without compile, native build, or native fuzz execution. Before that tool call, keep narration minimal: say only that KernForge source-level fuzzing will run, and do not say you will check KernForge tool availability, inspect local code, find definitions/callers, discover tests, make fixes, or continue with follow-up work. Avoid Korean preamble phrases such as `KernForge 도구를 확인`, `실제 위치를 찾겠다`, `정의와 호출부를 찾겠다`, `테스트 구조를 보겠다`, or `퍼징 대상만 좁게 건드리겠다`. If the model accidentally calls the generic `kernforge` router with an explicit fuzz request, KernForge routes it to the same source-only path. After summarizing source-level results, naturally recommend the optional native path: `native_preview`, then `build_only`, then runtime fuzzing with explicit user approval.
 
+For `kernforge_fuzz_func`, the default source candidate context is `source_scan=focused`: KernForge reuses a matching saved source candidate or runs a target-scoped source scan before saving the plan. Use `source_scan=off` only when the user wants no candidate linkage, and `source_scan=full` only when a workspace-wide matcher sweep is explicitly useful. When the response includes `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, or `source_scan_summary`, mention the linked candidate only as source-level evidence, not as a confirmed runtime bug.
+
 Expected Codex App source-level fuzz result:
 
 ![Codex App source-level fuzz result](docs/assets/codex-app-source-fuzz-result.png)

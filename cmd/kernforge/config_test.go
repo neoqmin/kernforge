@@ -1144,6 +1144,39 @@ func TestHelpTextIncludesFuzzCampaignCommand(t *testing.T) {
 	}
 }
 
+func TestHelpTextIncludesSourceScanCommand(t *testing.T) {
+	help := HelpText()
+	for _, needle := range []string{
+		"/source-scan [status|run|list|show|revalidate]",
+		"/fuzz-func --from-candidate <candidate-id>",
+		"built-in bug-pattern matchers",
+	} {
+		if !strings.Contains(help, needle) {
+			t.Fatalf("expected help text to include %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesSourceScanWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("source_scan")
+	if !ok {
+		t.Fatalf("expected source_scan help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/source-scan [status|run|list|show <id|latest>|revalidate <id|latest>]",
+		"Windows kernel",
+		"Unreal RPC",
+		"~/.kernforge/source_scan.json",
+		".kernforge/source_scan/<run-id>/",
+		"/fuzz-func --from-candidate <candidate-id>",
+		"native-confirmed",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected source-scan detail to include %q", needle)
+		}
+	}
+}
+
 func TestHelpDetailIncludesFuzzCampaignWorkflow(t *testing.T) {
 	detail, ok := HelpDetail("fuzz-campaign")
 	if !ok {

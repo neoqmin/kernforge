@@ -405,6 +405,7 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		simulations:    NewSimulationStore(),
 		functionFuzz:   NewFunctionFuzzStore(),
 		fuzzCampaigns:  NewFuzzCampaignStore(),
+		sourceScan:     NewSourceScanStore(),
 		hookOverrides:  NewHookOverrideStore(),
 		checkpoints:    NewCheckpointManager(),
 		autoCP:         &AutoCheckpointController{},
@@ -596,6 +597,7 @@ func (s *kernforgeMCPServer) registerTools() {
 		"query":                   map[string]any{"type": "string", "description": "Function fuzz target query, e.g. ValidateRequest --file src/guard.cpp or @src/driver.cpp."},
 		"execute":                 map[string]any{"type": "boolean", "description": "Start native background fuzz execution when the generated plan is eligible."},
 		"approve_recovered_build": map[string]any{"type": "boolean", "description": "Allow execution with partial or heuristic recovered build settings."},
+		"source_scan":             map[string]any{"type": "string", "enum": []string{"", "off", "focused", "full"}, "description": "Source candidate context mode. Default focused reuses a matching candidate or runs a target-scoped source scan; full scans the whole indexed workspace; off disables it."},
 		"max_chars":               map[string]any{"type": "integer", "description": "Maximum response text characters. Source-only output enforces a larger minimum so problem code, trigger values, and artifact paths stay visible."},
 	}, "query"), s.toolFuzzFunc)
 	s.addTool("kernforge_fuzz_func_preview", "Preview native function fuzz eligibility, build command, run command, missing settings, and artifacts without saving history or starting background fuzz execution.", mcpObjectSchema(map[string]any{
@@ -1794,6 +1796,9 @@ func (s *kernforgeMCPServer) toolArtifactIndex(ctx context.Context, args map[str
 	if s.rt.fuzzCampaigns != nil {
 		stores["fuzz_campaigns"] = s.rt.fuzzCampaigns.Path
 	}
+	if s.rt.sourceScan != nil {
+		stores["source_scan"] = s.rt.sourceScan.Path
+	}
 	payload := map[string]any{
 		"workspace": root,
 		"analysis": map[string]any{
@@ -1926,8 +1931,27 @@ func (s *kernforgeMCPServer) toolFuzzFunc(ctx context.Context, args map[string]a
 	if strings.TrimSpace(root) == "" {
 		return "", fmt.Errorf("workspace root is not available")
 	}
-	commandCfg := configWithResponseLanguageForUserText(s.rt.cfg, query)
-	run, err := buildFunctionFuzzRun(commandCfg, root, query)
+	query, sourceScanMode, err := parseFunctionFuzzSourceScanMode(query, functionFuzzSourceScanModeFocused)
+	if err != nil {
+		return "", err
+	}
+	if rawMode := strings.TrimSpace(stringValue(args, "source_scan")); rawMode != "" {
+		parsed, err := parseFunctionFuzzSourceScanModeValue(rawMode)
+		if err != nil {
+			return "", err
+		}
+		sourceScanMode = parsed
+	}
+	resolvedQuery, sourceCandidate, fromCandidate, err := s.rt.resolveFunctionFuzzSourceCandidateQuery(query)
+	if err != nil {
+		return "", err
+	}
+	commandCfg := configWithResponseLanguageForUserText(s.rt.cfg, resolvedQuery)
+	run, artifacts, err := buildFunctionFuzzRunWithArtifacts(commandCfg, root, resolvedQuery)
+	if err != nil {
+		return "", err
+	}
+	run, linkedCandidate, linkSourceCandidate, err := s.rt.attachFunctionFuzzSourceScanContext(root, run, artifacts, sourceCandidate, fromCandidate, sourceScanMode)
 	if err != nil {
 		return "", err
 	}
@@ -1949,10 +1973,7 @@ func (s *kernforgeMCPServer) toolFuzzFunc(ctx context.Context, args map[string]a
 	if execute && strings.EqualFold(strings.TrimSpace(run.Execution.Status), "planned") {
 		s.rt.maybeLaunchFunctionFuzzExecution(&run)
 	}
-	if err := writeFunctionFuzzPlanJSON(&run); err != nil {
-		return "", err
-	}
-	saved, err := s.rt.functionFuzz.Upsert(run)
+	saved, err := s.rt.saveFunctionFuzzRun(run, linkedCandidate, linkSourceCandidate)
 	if err != nil {
 		return "", err
 	}
@@ -2270,6 +2291,11 @@ func mcpFunctionFuzzRunSummary(run FunctionFuzzRun) map[string]any {
 		"target_query":               run.TargetQuery,
 		"target":                     run.TargetSymbolName,
 		"target_file":                run.TargetFile,
+		"source_candidate_id":        run.SourceCandidateID,
+		"source_matcher_slug":        run.SourceMatcherSlug,
+		"source_scan_mode":           run.SourceScanMode,
+		"source_scan_run_id":         run.SourceScanRunID,
+		"source_scan_summary":        run.SourceScanSummary,
 		"risk_score":                 run.RiskScore,
 		"primary_engine":             run.PrimaryEngine,
 		"harness_ready":              run.HarnessReady,
@@ -2421,6 +2447,11 @@ func mcpFunctionFuzzExecutionSummary(run FunctionFuzzRun) map[string]any {
 		"meaningful_result_summary": resultSummary["summary"],
 	}
 	mcpPutString(payload, "workspace", run.Workspace)
+	mcpPutString(payload, "source_candidate_id", run.SourceCandidateID)
+	mcpPutString(payload, "source_matcher_slug", run.SourceMatcherSlug)
+	mcpPutString(payload, "source_scan_mode", run.SourceScanMode)
+	mcpPutString(payload, "source_scan_run_id", run.SourceScanRunID)
+	mcpPutString(payload, "source_scan_summary", run.SourceScanSummary)
 	mcpPutString(payload, "auto_exec", execState.Status)
 	mcpPutString(payload, "auto_exec_label", functionFuzzFriendlyExecutionStatusWithConfig(functionFuzzEnglishConfig(), execState.Status))
 	mcpPutString(payload, "reason", execState.Reason)
@@ -2544,6 +2575,11 @@ func mcpFunctionFuzzSourceOnlySummary(run FunctionFuzzRun, includeArtifacts bool
 	}
 	mcpPutString(payload, "workspace", run.Workspace)
 	mcpPutString(payload, "scope_mode", run.ScopeMode)
+	mcpPutString(payload, "source_candidate_id", run.SourceCandidateID)
+	mcpPutString(payload, "source_matcher_slug", run.SourceMatcherSlug)
+	mcpPutString(payload, "source_scan_mode", run.SourceScanMode)
+	mcpPutString(payload, "source_scan_run_id", run.SourceScanRunID)
+	mcpPutString(payload, "source_scan_summary", run.SourceScanSummary)
 	mcpPutString(payload, "primary_engine", run.PrimaryEngine)
 	mcpPutString(payload, "artifact_dir", run.ArtifactDir)
 	mcpPutString(payload, "plan_path", run.PlanPath)
