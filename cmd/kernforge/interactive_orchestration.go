@@ -12,6 +12,7 @@ import (
 
 const backgroundShellJobPendingCheck = "Poll the active background shell job(s) before concluding."
 const verificationPendingCheck = "Run verification or a focused build/test after the latest edits."
+const interactivePlanReviewBudget = 2 * time.Minute
 
 func (a *Agent) initializeTaskState(userText string) {
 	state := a.Session.StartTaskState(userText)
@@ -64,6 +65,28 @@ func (a *Agent) reviewerOrDefaultModel() string {
 	return ""
 }
 
+func interactivePlanReviewPolicy(a *Agent) ModelRequestPolicy {
+	policy := modelRequestPolicyFromAgent(a)
+	if policy.Timeout <= 0 || policy.Timeout > interactivePlanReviewBudget {
+		policy.Timeout = interactivePlanReviewBudget
+	}
+	// The interactive preflight is opportunistic. One slow retry should not
+	// delay the real tool loop.
+	policy.MaxRetries = 0
+	return policy
+}
+
+func interactivePlanReviewContext(ctx context.Context, policy ModelRequestPolicy) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := interactivePlanReviewBudget
+	if policy.Timeout > 0 && policy.Timeout < timeout {
+		timeout = policy.Timeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) error {
 	if a == nil || a.Session == nil || a.Session.TaskState == nil {
 		return nil
@@ -72,16 +95,19 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 	if !shouldPrimeInteractivePlan(state, readOnlyAnalysis, explicitEditRequest, explicitGitRequest) {
 		return nil
 	}
-	if a.EmitProgress != nil {
-		a.EmitProgress("Building an execution plan before the main tool loop...")
-	}
 	reviewerClient, reviewerModel := a.ensureInteractiveReviewerClient()
 	if a.Client == nil || reviewerClient == nil || strings.TrimSpace(reviewerModel) == "" {
 		return nil
 	}
+	if a.EmitProgress != nil {
+		a.EmitProgress("Building an execution plan before the main tool loop...")
+	}
 	memoryContext := strings.TrimSpace(a.Memory.Combined())
+	policy := interactivePlanReviewPolicy(a)
+	planCtx, cancel := interactivePlanReviewContext(ctx, policy)
+	defer cancel()
 	result, err := RunPlanReviewWithPolicy(
-		ctx,
+		planCtx,
 		a.Client,
 		a.Session.Model,
 		reviewerClient,
@@ -91,10 +117,18 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 		memoryContext,
 		max(768, a.Config.MaxTokens/2),
 		a.Config.Temperature,
-		nil,
-		modelRequestPolicyFromAgent(a),
+		a.EmitProgress,
+		policy,
 	)
 	if err != nil {
+		if ctx != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+		}
+		if a.EmitProgress != nil {
+			a.EmitProgress("Execution-plan preflight unavailable; continuing with the main tool loop.")
+		}
 		state.SetReviewerGuidance("planner_error", "Planner/reviewer preflight was unavailable: "+err.Error())
 		state.SetNextStep("Inspect the relevant code directly and proceed without the preflight plan.")
 		return nil
@@ -240,29 +274,7 @@ func (a *Agent) ensureInteractiveReviewerClient() (ProviderClient, string) {
 	if a.ReviewerClient != nil && strings.TrimSpace(a.ReviewerModel) != "" {
 		return a.ReviewerClient, strings.TrimSpace(a.ReviewerModel)
 	}
-	if a.AuxReviewerClient != nil && strings.TrimSpace(a.AuxReviewerModel) != "" {
-		return a.AuxReviewerClient, strings.TrimSpace(a.AuxReviewerModel)
-	}
-	if a.Session == nil {
-		return nil, ""
-	}
-	cfg := a.Config
-	if strings.TrimSpace(cfg.Provider) == "" {
-		cfg.Provider = strings.TrimSpace(a.Session.Provider)
-	}
-	if strings.TrimSpace(cfg.Model) == "" {
-		cfg.Model = strings.TrimSpace(a.Session.Model)
-	}
-	if strings.TrimSpace(cfg.Provider) == "" || strings.TrimSpace(cfg.Model) == "" {
-		return nil, ""
-	}
-	client, err := NewProviderClient(cfg)
-	if err != nil {
-		return nil, ""
-	}
-	a.AuxReviewerClient = client
-	a.AuxReviewerModel = cfg.Model
-	return a.AuxReviewerClient, a.AuxReviewerModel
+	return nil, ""
 }
 
 func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reason string) string {
@@ -280,8 +292,11 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	if a.Client == nil || reviewerClient == nil || strings.TrimSpace(reviewerModel) == "" {
 		return ""
 	}
+	policy := interactivePlanReviewPolicy(a)
+	planCtx, cancel := interactivePlanReviewContext(ctx, policy)
+	defer cancel()
 	result, err := RunPlanReviewWithPolicy(
-		ctx,
+		planCtx,
 		a.Client,
 		a.Session.Model,
 		reviewerClient,
@@ -291,8 +306,8 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 		strings.TrimSpace(a.Memory.Combined()),
 		max(768, a.Config.MaxTokens/2),
 		a.Config.Temperature,
-		nil,
-		modelRequestPolicyFromAgent(a),
+		a.EmitProgress,
+		policy,
 	)
 	if err != nil {
 		return ""

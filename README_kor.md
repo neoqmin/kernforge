@@ -138,12 +138,16 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - local model 실행에서는 shard 제한을 명시하지 않은 경우 provider, 모델 크기, max token, request timeout을 보고 shard 크기를 자동 조절한다. 그래도 최종 provider timeout 또는 5xx/overload 계열 오류로 run이 멈추면 사용자에게 더 작은 shard로 재시도한다고 알리고, `max_lines_per_shard` / `max_files_per_shard`를 줄이고 shard 상한을 올려 한 번 더 실행한다. rate limit은 shard를 줄이면 요청 수가 늘 수 있으므로 이 자동 재실행 대상에서 제외한다.
 - worker와 reviewer가 같은 provider/model route를 공유하면 shard concurrency는 model route limit을 따른다. local provider의 기본 route limit은 1이라 직렬 실행되지만, cloud/API route는 강제로 1로 낮추지 않고 설정된 동시성을 유지한다.
 - 실행 중에는 shard wave, 완료/실패 shard 수, cache/review 상태, `worker runtime: ...` 또는 `reviewer security_rpc: ...`처럼 analysis stage와 shard 이름이 붙은 model progress line을 보여준다.
+- 각 실행은 worker 시작 전에 추론된 intent, effective mode, scope, 필요한 index, provider/runtime feedback, shard contract, 성공 기준을 담은 `analysis_preflight.json`을 남긴다.
+- 각 shard는 `type`, `objective`, `required_evidence`, `success_criteria` contract를 갖고, worker report는 source anchor가 붙은 `claims`를 포함한다. reviewer와 synthesis는 직접 사실, 추론, 위험, 미확인 항목을 이 claim contract 기준으로 구분한다.
+- worker/reviewer 이후에는 mode별 coverage, claim/evidence support, review approval, deterministic coverage gap을 담은 `mode_scorecard.json`을 생성한다. 의미 있는 빈틈이 있으면 최종 synthesis 전에 제한된 gap-filling shard pass를 한 번 더 실행한다.
 - `surface` 모드는 IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, network entry point 같은 노출면을 정식 분석 대상으로 둔다.
 - `security` 모드에서는 관련 경로가 있을 때 `driver`, `IOCTL`, `handle`, `memory`, `RPC` surface로 결과를 분해해서 본다.
 - 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
 - goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다. 범위를 명시적으로 고정하고 실행 전에 검증하고 싶으면 `--path <dir>`를 사용한다.
 - interactive 실행에서는 hidden directory나 external-looking directory를 보여 주고 이번 분석에서 제외할지 확인할 수 있다.
 - semantic fingerprint 기반 invalidation으로 file hash만으로 놓치기 쉬운 구조 변화까지 다시 분석
+- semantic invalidation은 network, security, build/startup, asset/config, runtime-flow contract 변화처럼 더 구체적인 reason/class로 정제되어 incremental rerun에서 왜 재분석됐는지 설명한다.
 - `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, `compile_commands.json`를 build alignment에 반영해 재사용 가능한 build context를 만든다.
 - `structural_index_v2`는 이제 file 중심 요약을 넘어 symbol anchor, build ownership edge, function-level call edge, overlay edge를 함께 담는다.
 - `trace`, `impact`, `security` retrieval은 graph neighborhood를 확장하고 `build_context_v2`, `path_v2` 근거를 함께 남긴다.
@@ -292,6 +296,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - thinking elapsed 표시는 phase 전환마다 다시 기준 시간을 잡고, 비정상적으로 오래 남은 stale timer 값은 2시간 표시로 clamp한다.
 - 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
 - `progress_display`가 진행 표시 방식을 제어하며, REPL에서는 `/progress-display auto|compact|stream`으로 바로 바꿀 수 있다. `auto`는 중요한 tool/model/route와 project analysis 진행 event를 transcript ledger로 남기고, `compact`는 footer 중심으로 조용하게 보여주며, `stream`은 모든 progress update를 본문에 지속 기록한다.
+- provider, tool, command 실패는 `.kernforge/logs/errors.jsonl` capped JSONL에도 함께 기록된다. Kernforge는 이 파일을 100MB 이하로 유지하므로 UI가 지나간 뒤에도 retry-only provider 실패 원인을 추적할 수 있다.
 - OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 노출해서 모델이 어떤 tool을 준비 중이고 언제 인자가 완성됐는지 REPL에서 볼 수 있다.
 - progress event만 켜진 모델 stream도 일반 assistant stream과 같은 incomplete-stream fallback을 사용한다. OpenAI-compatible streamed response가 비어 있거나 불완전하면, progress event가 켜져 있다는 이유만으로 다시 streaming 경로에 들어가지 않고 non-stream retry로 전환한다.
 - `auto` 모드에서는 고빈도 shell output과 heartbeat는 transient footer에 두고, tool start/result/retry 같은 durable event는 본문에 남긴다.

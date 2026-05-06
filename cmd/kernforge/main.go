@@ -505,6 +505,9 @@ func (rt *runtimeState) runSingleCommand(command string) error {
 		return fmt.Errorf("-command only accepts slash commands or !shell commands: %s", command)
 	}
 	_, err := rt.handleCommand(cmd)
+	if err != nil {
+		rt.noteCommandError(line, err)
+	}
 	return err
 }
 
@@ -633,6 +636,7 @@ func (rt *runtimeState) runREPL() error {
 		if cmd, ok := ParseCommand(line); ok {
 			exit, err := rt.handleCommand(cmd)
 			if err != nil {
+				rt.noteCommandError(line, err)
 				fmt.Fprintln(rt.writer, rt.ui.errorLine("command error: "+err.Error()))
 			}
 			if exit {
@@ -2503,7 +2507,7 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Saved provider=%s model=%s", rt.cfg.Provider, rt.cfg.Model)))
 	if rt.hasInheritedRoleModels() {
-		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Role targets marked as not configured will follow the main model; explicit role model profiles stay unchanged."))
+		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer and plan-review stay disabled until explicitly configured."))
 	}
 	return nil
 }
@@ -2853,14 +2857,14 @@ func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent st
 	if roles == nil {
 		roles = &ProfileRoleModels{}
 	}
-	rt.renderStoredProfileRoleLine(indent, "plan_reviewer", roles.PlanReviewer, "not configured; follows profile main model")
+	rt.renderStoredProfileRoleLine(indent, "plan_reviewer", roles.PlanReviewer, "not configured; automatic reviewer disabled")
 	rt.renderStoredProfileRoleLine(indent, "analysis_worker", roles.AnalysisWorker, "not configured; follows profile main model")
 	if roles.AnalysisReviewer != nil {
 		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", roles.AnalysisReviewer, "")
 	} else if roles.AnalysisWorker != nil {
-		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV("analysis_reviewer", "not configured; follows profile analysis_worker model -> "+formatProviderModelLabel(roles.AnalysisWorker.Provider, roles.AnalysisWorker.Model)))
+		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV("analysis_reviewer", "not configured; non-root-cause review skipped"))
 	} else {
-		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", nil, "not configured; follows profile main model")
+		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", nil, "not configured; non-root-cause review skipped")
 	}
 	if len(roles.Specialists) == 0 {
 		return
@@ -4115,7 +4119,7 @@ func (rt *runtimeState) showReasoningEffortStatus() error {
 	if rt.cfg.PlanReview != nil {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", formatProviderModelEffortLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.ReasoningEffort)))
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", unconfiguredPlanReviewLabel()))
 	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)))
@@ -4438,6 +4442,10 @@ func inheritedMainModelLabel(provider string, model string, effort ...string) st
 	return "not configured; follows main model -> " + formatProviderModelEffortLabel(provider, model, currentEffort)
 }
 
+func unconfiguredPlanReviewLabel() string {
+	return "not configured; automatic reviewer disabled"
+}
+
 func inheritedWorkerModelLabel(provider string, model string, effort ...string) string {
 	currentEffort := ""
 	if len(effort) > 0 {
@@ -4449,9 +4457,6 @@ func inheritedWorkerModelLabel(provider string, model string, effort ...string) 
 func (rt *runtimeState) hasInheritedRoleModels() bool {
 	if rt == nil {
 		return false
-	}
-	if rt.cfg.PlanReview == nil {
-		return true
 	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
 		return true
@@ -4468,8 +4473,7 @@ func (rt *runtimeState) describePlanReviewModel() string {
 	if rt != nil && rt.cfg.PlanReview != nil {
 		return formatProviderModelEffortLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.ReasoningEffort)
 	}
-	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
-	return inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)
+	return unconfiguredPlanReviewLabel()
 }
 
 func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
@@ -4485,10 +4489,7 @@ func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
 		if rt != nil && rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
 			return formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model, rt.cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)
 		}
-		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
-			return inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
-		}
-		return inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)
+		return "not configured; non-root-cause review skipped"
 	default:
 		return mainLabel
 	}
@@ -5555,6 +5556,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("base_root", sessionBaseWorkingDir(rt.session)),
 			kv("session", rt.session.ID),
 			kv("sessions_dir", rt.store.Root()),
+			kv("runtime_error_log", runtimeErrorLogPath(sessionBaseWorkingDir(rt.session))),
 		)
 		if rt.session.Worktree != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_root", valueOrUnset(rt.session.Worktree.Root)))
@@ -8266,6 +8268,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("planner", rt.session.Provider+" / "+rt.session.Model))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("conductor_model", rt.session.Provider+" / "+rt.session.Model))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", rt.session.WorkingDir))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("runtime_error_log", runtimeErrorLogPath(rt.workspace.BaseRoot)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_mode", projectAnalysisModeStatus(mode, goal)))
 	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
 	analysisWorkspace, analysisPaths, err := prepareExplicitAnalysisWorkspace(rt.workspace, parsed.Paths)

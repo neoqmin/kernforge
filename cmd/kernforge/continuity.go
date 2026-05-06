@@ -466,7 +466,7 @@ func (rt *runtimeState) noteLocalShellCommand(command string, output string, err
 		summary = "shell command failed: " + summarizeShellCommand(command)
 		raw = compactPromptSection(strings.TrimSpace(output+"\n"+err.Error()), 1200)
 	}
-	rt.session.AppendConversationEvent(ConversationEvent{
+	event := ConversationEvent{
 		Kind:     kind,
 		Severity: severity,
 		Summary:  summary,
@@ -475,7 +475,11 @@ func (rt *runtimeState) noteLocalShellCommand(command string, output string, err
 			"tool":    "shell",
 			"command": command,
 		},
-	})
+	}
+	rt.session.AppendConversationEvent(event)
+	if err != nil {
+		rt.appendRuntimeErrorConversationEvent(event, nil)
+	}
 	if rt.store != nil {
 		_ = rt.store.Save(rt.session)
 	}

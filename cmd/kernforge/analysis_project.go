@@ -60,6 +60,7 @@ type ProjectAnalysisSummary struct {
 	ReviewQualityIssues    int       `json:"review_quality_issues,omitempty"`
 	RefinedShards          int       `json:"refined_shards,omitempty"`
 	EvidenceShards         int       `json:"evidence_shards,omitempty"`
+	GapShards              int       `json:"gap_shards,omitempty"`
 	TotalShards            int       `json:"total_shards"`
 }
 
@@ -270,9 +271,14 @@ type ProjectEdge struct {
 type AnalysisShard struct {
 	ID                           string               `json:"id"`
 	Name                         string               `json:"name"`
+	Type                         string               `json:"type,omitempty"`
 	ParentShardID                string               `json:"parent_shard_id,omitempty"`
 	EvidenceRequestID            string               `json:"evidence_request_id,omitempty"`
+	CoverageGapID                string               `json:"coverage_gap_id,omitempty"`
 	RefinementStage              int                  `json:"refinement_stage,omitempty"`
+	Objective                    string               `json:"objective,omitempty"`
+	RequiredEvidence             []string             `json:"required_evidence,omitempty"`
+	SuccessCriteria              []string             `json:"success_criteria,omitempty"`
 	PrimaryFiles                 []string             `json:"primary_files"`
 	ReferenceFiles               []string             `json:"reference_files,omitempty"`
 	EstimatedFiles               int                  `json:"estimated_files"`
@@ -284,6 +290,8 @@ type AnalysisShard struct {
 	ReferenceSemanticFingerprint string               `json:"reference_semantic_fingerprint,omitempty"`
 	CacheStatus                  string               `json:"cache_status,omitempty"`
 	InvalidationReason           string               `json:"invalidation_reason,omitempty"`
+	InvalidationClass            string               `json:"invalidation_class,omitempty"`
+	InvalidationSignals          []string             `json:"invalidation_signals,omitempty"`
 	InvalidationDiff             []string             `json:"invalidation_diff,omitempty"`
 	InvalidationChanges          []InvalidationChange `json:"invalidation_changes,omitempty"`
 }
@@ -305,6 +313,7 @@ type WorkerReport struct {
 	Responsibilities    []string             `json:"responsibilities"`
 	Facts               []string             `json:"facts,omitempty"`
 	Inferences          []string             `json:"inferences,omitempty"`
+	Claims              []AnalysisClaim      `json:"claims,omitempty"`
 	KeyFiles            []string             `json:"key_files"`
 	EntryPoints         []string             `json:"entry_points"`
 	InternalFlow        []string             `json:"internal_flow"`
@@ -522,6 +531,7 @@ type KnowledgeSubsystem struct {
 	Responsibilities     []string             `json:"responsibilities,omitempty"`
 	Facts                []string             `json:"facts,omitempty"`
 	Inferences           []string             `json:"inferences,omitempty"`
+	Claims               []AnalysisClaim      `json:"claims,omitempty"`
 	KeyFiles             []string             `json:"key_files,omitempty"`
 	EvidenceFiles        []string             `json:"evidence_files,omitempty"`
 	EntryPoints          []string             `json:"entry_points,omitempty"`
@@ -642,6 +652,8 @@ type ReviewDecision struct {
 	Status                     string                     `json:"status"`
 	Issues                     []string                   `json:"issues,omitempty"`
 	RevisionPrompt             string                     `json:"revision_prompt,omitempty"`
+	ClaimCoverageStatus        string                     `json:"claim_coverage_status,omitempty"`
+	ClaimIssues                []string                   `json:"claim_issues,omitempty"`
 	SymptomPossible            string                     `json:"symptom_possible,omitempty"`
 	SymptomCausality           []string                   `json:"symptom_causality,omitempty"`
 	SymptomReproductionBridge  []string                   `json:"symptom_reproduction_bridge,omitempty"`
@@ -660,10 +672,12 @@ type ReviewDecision struct {
 
 type ProjectAnalysisRun struct {
 	Summary          ProjectAnalysisSummary  `json:"summary"`
+	Preflight        AnalysisPreflight       `json:"preflight,omitempty"`
 	Snapshot         ProjectSnapshot         `json:"snapshot"`
 	Shards           []AnalysisShard         `json:"shards"`
 	Reports          []WorkerReport          `json:"reports"`
 	Reviews          []ReviewDecision        `json:"reviews"`
+	ModeScorecard    AnalysisModeScorecard   `json:"mode_scorecard,omitempty"`
 	FinalDocument    string                  `json:"final_document"`
 	ConductorProfile string                  `json:"conductor_profile,omitempty"`
 	WorkerProfile    string                  `json:"worker_profile,omitempty"`
@@ -2936,12 +2950,21 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.ConductorProfile = strings.TrimSpace(a.cfg.Provider) + " / " + strings.TrimSpace(a.cfg.Model)
 	run.WorkerProfile = describeAnalysisProfile(a.analysisCfg.WorkerProfile, a.workerOrDefaultClient(), a.workerModel())
 	run.ReviewerProfile = describeAnalysisProfile(a.analysisCfg.ReviewerProfile, a.reviewerOrDefaultClient(), a.reviewerModel())
+	if a.shouldSkipModelReviewerForMode(run.Summary.Mode) {
+		run.ReviewerProfile = "not configured; skipped in single-model mode"
+	}
 	a.debug(fmt.Sprintf("analysis run started: goal=%q conductor=%s worker=%s reviewer=%s", run.Summary.Goal, run.ConductorProfile, run.WorkerProfile, run.ReviewerProfile))
 
 	a.status("Scanning workspace...")
 	snapshot, err := a.scanProject()
 	if err != nil {
 		return run, err
+	}
+	runtimeFeedback := analysisRuntimeFeedbackFromLog(firstNonBlankAnalysisString(a.workspace.BaseRoot, a.workspace.Root), a.workerModel())
+	for _, note := range a.applyRuntimeFeedbackToAnalysisConfig(runtimeFeedback) {
+		runtimeFeedback.AppliedAdjustments = append(runtimeFeedback.AppliedAdjustments, note)
+		a.status(note)
+		a.debug(note)
 	}
 	for _, note := range a.applyAdaptiveAnalysisShardSizing(snapshot) {
 		a.status(note)
@@ -3005,6 +3028,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		a.status(fmt.Sprintf("Loaded map baseline %s for %s analysis.", baseline.RunID, run.Summary.Mode))
 		a.debug(fmt.Sprintf("loaded map baseline: run_id=%s artifact=%s docs_manifest=%s", baseline.RunID, baseline.ArtifactPath, baseline.DocsManifestPath))
 	}
+	shards = annotateAnalysisShards(snapshot, shards, goal)
 	if agentCount > len(shards) {
 		agentCount = len(shards)
 	}
@@ -3015,6 +3039,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.Summary.AgentCount = agentCount
 	run.Summary.TotalShards = len(shards)
 	run.Shards = shards
+	run.Preflight = a.buildAnalysisPreflight(snapshot, goal, mode, scope, shards, agentCount, runtimeFeedback)
+	a.status(fmt.Sprintf("Analysis preflight ready: mode=%s shards=%d workers=%d depth=%s.", run.Preflight.EffectiveMode, len(shards), agentCount, run.Preflight.RecommendedDepth))
+	a.debug(fmt.Sprintf("analysis preflight prepared: mode=%s shards=%d warnings=%d runtime_errors=%d", run.Preflight.EffectiveMode, len(shards), len(run.Preflight.Warnings), run.Preflight.RuntimeFeedback.RecentProviderErrors))
 
 	previousRun, _ := a.loadPreviousRun(goal, run.Summary.Mode)
 	if previousRun != nil {
@@ -3084,6 +3111,35 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 			reports = append(reports, evidenceReports...)
 			reviews = append(reviews, evidenceReviews...)
 		}
+	}
+	run.ModeScorecard = buildAnalysisModeScorecard(snapshot, shards, reports, reviews, goal, run.Summary.Mode)
+	gapShardLimit := 3
+	if runtimeFeedback.RecentRateLimitCount >= 2 || runtimeFeedback.RecentProviderErrors >= 4 {
+		gapShardLimit = 1
+	}
+	gapShards := a.planCoverageGapShards(snapshot, shards, reports, reviews, run.ModeScorecard, gapShardLimit)
+	if len(gapShards) > 0 {
+		run.Summary.GapShards = len(gapShards)
+		a.status(fmt.Sprintf("Filling %d analysis coverage gap shard(s)...", len(gapShards)))
+		a.debug(fmt.Sprintf("coverage gap fill planned: shards=%d gaps=%d score=%d status=%s", len(gapShards), len(run.ModeScorecard.CoverageGaps), run.ModeScorecard.Score, run.ModeScorecard.Status))
+		gapReports, gapReviews, err := a.executeShards(ctx, snapshot, gapShards, goal, previousRun, analysisReuseState{}, agentCount)
+		if err != nil {
+			return run, err
+		}
+		auditShards = append(auditShards, gapShards...)
+		auditReports = append(auditReports, gapReports...)
+		auditReviews = append(auditReviews, gapReviews...)
+		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+			memoryChanges := buildRootCauseRegressionMemoryChangeState(previousRun, shards)
+			gapReports = filterRootCauseReportsByReview(snapshot, gapReports, gapReviews)
+			gapReports = applyRootCauseDeterministicQualityGate(snapshot, gapShards, gapReports, gapReviews)
+			gapReports = applyRootCauseRegressionMemoryToReportsWithChanges(gapReports, snapshot.RootCause.RegressionMemory, memoryChanges)
+			gapReports = enhanceRootCauseReportProbesWithRepoCommands(snapshot, gapReports)
+		}
+		shards = append(shards, gapShards...)
+		reports = append(reports, gapReports...)
+		reviews = append(reviews, gapReviews...)
+		run.ModeScorecard = buildAnalysisModeScorecard(snapshot, shards, reports, reviews, goal, run.Summary.Mode)
 	}
 	run.Shards = shards
 	run.Reports = reports
@@ -6369,6 +6425,7 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			)
 		}
 	}
+	refineSemanticInvalidation(&shard)
 	a.debug(fmt.Sprintf("shard %s cache miss: reason=%s", shard.Name, shard.InvalidationReason))
 	revisionPrompt := ""
 	lastReport := WorkerReport{}
@@ -6402,6 +6459,11 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			}
 			report.Unknowns = analysisUniqueStrings(append(report.Unknowns, "Root-cause worker lint issues remained after revisions: "+strings.Join(limitStrings(lintIssues, 4), " | ")))
 		}
+		if a.shouldSkipModelReviewer(snapshot) {
+			review := skippedModelReviewDecision(shard, report)
+			a.debug(fmt.Sprintf("reviewer skipped: shard=%s reason=single-model", shard.Name))
+			return report, review, shard, nil
+		}
 		a.debug(fmt.Sprintf("reviewer start: shard=%s attempt=%d model=%s", shard.Name, attempt+1, a.reviewerModel()))
 		review, err := a.reviewReport(ctx, snapshot, shard, report, goal, previousRun, reuseState)
 		if err != nil {
@@ -6425,6 +6487,28 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 		a.debug(fmt.Sprintf("shard revision requested: %s", shard.Name))
 	}
 	return lastReport, lastReview, shard, nil
+}
+
+func (a *projectAnalyzer) shouldSkipModelReviewer(snapshot ProjectSnapshot) bool {
+	return a.shouldSkipModelReviewerForMode(snapshot.AnalysisMode)
+}
+
+func (a *projectAnalyzer) shouldSkipModelReviewerForMode(mode string) bool {
+	if a == nil || a.analysisCfg.ReviewerProfile != nil {
+		return false
+	}
+	if normalizeProjectAnalysisMode(mode) == "root-cause" {
+		return false
+	}
+	return strings.TrimSpace(a.cfg.Provider) != "" && strings.TrimSpace(a.cfg.Model) != ""
+}
+
+func skippedModelReviewDecision(shard AnalysisShard, report WorkerReport) ReviewDecision {
+	return ReviewDecision{
+		Status:              "approved",
+		ClaimCoverageStatus: "review_skipped_single_model",
+		Raw:                 fmt.Sprintf("Model reviewer skipped for shard %s because no dedicated analysis reviewer is configured.", firstNonBlankString(shard.Name, report.Title, "unknown")),
+	}
 }
 
 func buildWorkerRevisionPromptFromReview(review ReviewDecision) string {
@@ -6451,6 +6535,8 @@ func buildWorkerRevisionPromptFromReview(review ReviewDecision) string {
 	addText("Reviewer revision prompt", review.RevisionPrompt)
 	addList("Reviewer issues", review.Issues)
 	addText("Failure kind", review.FailureKind)
+	addText("Claim coverage", review.ClaimCoverageStatus)
+	addList("Claim issues", review.ClaimIssues)
 	addText("Symptom possible", review.SymptomPossible)
 	addList("Symptom causality", review.SymptomCausality)
 	addList("Symptom reproduction bridge", review.SymptomReproductionBridge)
@@ -6566,6 +6652,7 @@ func (a *projectAnalyzer) planRefinementShards(snapshot ProjectSnapshot, shards 
 				EstimatedLines:  sumLines(chunk),
 			}
 			a.finalizeShard(snapshot, &child, 12)
+			annotateAnalysisShardContract(snapshot, &child, "")
 			refined = append(refined, child)
 			nextID++
 		}
@@ -6640,6 +6727,7 @@ func (a *projectAnalyzer) planRootCauseEvidenceRequestShards(snapshot ProjectSna
 			}
 			nextID++
 			a.finalizeShard(snapshot, &shard, 12)
+			annotateAnalysisShardContract(snapshot, &shard, "")
 			out = append(out, shard)
 			for _, path := range shard.PrimaryFiles {
 				existingPrimary[path] = struct{}{}
@@ -8991,6 +9079,7 @@ type synthesisSection struct {
 	Responsibilities    []string             `json:"responsibilities,omitempty"`
 	Facts               []string             `json:"facts,omitempty"`
 	Inferences          []string             `json:"inferences,omitempty"`
+	Claims              []AnalysisClaim      `json:"claims,omitempty"`
 	KeyFiles            []string             `json:"key_files,omitempty"`
 	EvidenceFiles       []string             `json:"evidence_files,omitempty"`
 	EntryPoints         []string             `json:"entry_points,omitempty"`
@@ -9063,6 +9152,7 @@ func mergeSynthesisSection(section *synthesisSection, shard AnalysisShard, repor
 	section.Responsibilities = analysisUniqueStrings(append(section.Responsibilities, report.Responsibilities...))
 	section.Facts = analysisUniqueStrings(append(section.Facts, report.Facts...))
 	section.Inferences = analysisUniqueStrings(append(section.Inferences, report.Inferences...))
+	section.Claims = append(section.Claims, report.Claims...)
 	section.KeyFiles = analysisUniqueStrings(append(section.KeyFiles, report.KeyFiles...))
 	section.EvidenceFiles = analysisUniqueStrings(append(section.EvidenceFiles, report.EvidenceFiles...))
 	section.EntryPoints = analysisUniqueStrings(append(section.EntryPoints, report.EntryPoints...))
@@ -10150,9 +10240,11 @@ func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, 
 			return ChatResponse{}, err
 		}
 		if !shouldRetryProviderError(err) || attempt == maxRetries {
+			a.logProviderRuntimeError(stage, shardName, model, err, true, attempt+1, maxRetries+1)
 			return ChatResponse{}, err
 		}
 
+		a.logProviderRuntimeError(stage, shardName, model, err, false, attempt+1, maxRetries+1)
 		detail := fmt.Sprintf("analysis provider error: stage=%s shard=%s model=%s attempt=%d/%d error=%v", stage, shardName, model, attempt+1, maxRetries+1, err)
 		a.debug(strings.TrimSpace(detail))
 		delay := providerRetryDelay(baseDelay, attempt)
@@ -10166,6 +10258,35 @@ func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, 
 		}
 	}
 	return ChatResponse{}, lastErr
+}
+
+func (a *projectAnalyzer) logProviderRuntimeError(stage string, shardName string, model string, err error, final bool, attempt int, totalAttempts int) {
+	if a == nil || err == nil {
+		return
+	}
+	normalized := normalizeRuntimeError(err)
+	normalized.Kind = conversationEventKindProviderError
+	if normalized.Model == "" {
+		normalized.Model = strings.TrimSpace(model)
+	}
+	if normalized.Shard == "" {
+		normalized.Shard = strings.TrimSpace(shardName)
+	}
+	if final {
+		normalized.CorrelationID = "analysis-provider-final"
+	} else {
+		normalized.CorrelationID = "analysis-provider-retry"
+	}
+	event := runtimeErrorConversationEvent(normalized, nil)
+	if !final && event.Severity == conversationSeverityError {
+		event.Severity = conversationSeverityWarn
+	}
+	_ = appendRuntimeErrorConversationEvent(a.workspace.BaseRoot, nil, event, map[string]string{
+		"stage":    strings.TrimSpace(stage),
+		"attempt":  strconv.Itoa(attempt),
+		"attempts": strconv.Itoa(totalAttempts),
+		"final":    strconv.FormatBool(final),
+	})
 }
 
 func shouldRetryProviderError(err error) bool {
@@ -10212,6 +10333,8 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	mdPath := filepath.Join(a.analysisCfg.OutputDir, base+".md")
 	run.Summary.OutputPath = mdPath
 	jsonPath := filepath.Join(a.analysisCfg.OutputDir, base+".json")
+	preflightJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_analysis_preflight.json")
+	modeScorecardJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_mode_scorecard.json")
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
 	architectureFactsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_architecture_facts.json")
@@ -10256,6 +10379,20 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		return "", err
 	}
 	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+		return "", err
+	}
+	preflightData, err := json.MarshalIndent(run.Preflight, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(preflightJSONPath, preflightData, 0o644); err != nil {
+		return "", err
+	}
+	scorecardData, err := json.MarshalIndent(run.ModeScorecard, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(modeScorecardJSONPath, scorecardData, 0o644); err != nil {
 		return "", err
 	}
 	snapshotData, err := json.MarshalIndent(run.Snapshot, "", "  ")
@@ -10397,6 +10534,12 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "run.json"), data, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "analysis_preflight.json"), preflightData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "mode_scorecard.json"), scorecardData, 0o644); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
@@ -11359,6 +11502,8 @@ func (a *projectAnalyzer) tryReuseShard(previousRun *ProjectAnalysisRun, shard A
 	}
 	report := previousRun.Reports[index]
 	report.ShardID = shard.ID
+	normalizeWorkerReport(&report, shard)
+	normalizeReviewDecision(&review)
 	return report, review, "cache_hit", true
 }
 
@@ -11457,6 +11602,16 @@ func describeAnalysisInvalidationReasonWithContext(reason string, shardNames []s
 			return "Primary files kept the same content scope, but gameplay framework ownership semantics changed."
 		}
 		return "Primary files kept the same content scope, but their semantic structure changed."
+	case "semantic_network_contract_changed":
+		return "Semantic network contract changed, such as RPC, replication, authority, or network ownership evidence."
+	case "semantic_security_contract_changed":
+		return "Semantic security contract changed, such as validation, trust boundary, privilege, IOCTL, or tamper-sensitive evidence."
+	case "semantic_build_startup_changed":
+		return "Semantic build/startup contract changed, such as target, module, plugin, manifest, bootstrap, or startup handoff evidence."
+	case "semantic_asset_config_changed":
+		return "Semantic asset/config contract changed, such as config-driven defaults, asset bindings, maps, modes, or ini evidence."
+	case "semantic_runtime_flow_changed":
+		return "Semantic runtime flow contract changed, such as symbols, calls, imports, dependencies, or execution/data-flow evidence."
 	case "dependency_changed":
 		switch context {
 		case "unreal_network":
@@ -11521,6 +11676,10 @@ func describeAnalysisInvalidationReasonWithContext(reason string, shardNames []s
 		return "Previous run did not contain a complete reusable worker and reviewer result."
 	case "no_previous_run":
 		return "No previous analysis run was available for reuse."
+	case "coverage_gap":
+		return "A deterministic scorecard coverage gap required a focused follow-up shard."
+	case "root_cause_evidence_request":
+		return "Reviewer-routed root-cause evidence required a focused follow-up shard."
 	default:
 		return reason
 	}
@@ -12276,6 +12435,18 @@ Return strict JSON in this exact shape:
     "responsibilities": ["string"],
     "facts": ["string"],
     "inferences": ["string"],
+    "claims": [
+      {
+        "id": "claim-01",
+        "kind": "fact|inference|risk|unknown|security|performance",
+        "claim": "string",
+        "source_anchors": ["relative source path"],
+        "confidence": "low|medium|high",
+        "depends_on": ["string"],
+        "disproves_when": "string",
+        "verification_hint": "string"
+      }
+    ],
     "key_files": ["string"],
     "entry_points": ["string"],
     "internal_flow": ["string"],
@@ -12339,9 +12510,11 @@ Rules:
 - Keep the JSON compact enough to finish in one response: 3-7 high-value items per list, short strings, and a narrative under 900 characters.
 - Do not include raw source excerpts, project GUIDs, or low-value build metadata unless they change architecture understanding.
 - Every important claim must be grounded in evidence_files.
+- Every important claim must also appear in claims with source_anchors, confidence, and a falsifiable disproves_when condition.
 - responsibilities should answer what this shard owns.
 - facts should contain direct file-grounded observations.
 - inferences should contain higher-level interpretations derived from those facts.
+- claims must restate the important facts, inferences, risks, and unknowns as falsifiable claim objects.
 - key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.
 - If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.
 - internal_flow should describe control flow or data flow inside the shard.
@@ -12369,6 +12542,8 @@ Return strict JSON:
     "status": "approved" | "needs_revision",
     "issues": ["string"],
     "revision_prompt": "string",
+    "claim_coverage_status": "supported|insufficient|unreviewed",
+    "claim_issues": ["string"],
     "symptom_possible": "yes|no|partial|unknown",
     "symptom_causality": ["string"],
     "symptom_reproduction_bridge": ["string"],
@@ -12395,6 +12570,7 @@ Approve only if the report is specific, grounded, and suitable for the requested
 Reject reports that are generic, omit control/data flow, or cite evidence files outside the shard scope.
 Use the deterministic architecture fact pack as authoritative review context; reject reports that contradict exact source anchors, closed top-level directory facts, or flow separation invariants.
 Prefer reports that separate direct facts from higher-level inferences.
+Validate the claims array. Approve only when important claims have source_anchors within the shard scope, confidence, and a falsifiable disproves_when condition. Fill claim_coverage_status and claim_issues.
 For root-cause mode, validate causality against the exact user-reported symptom, not just whether the candidate is a real bug.
 For root-cause mode, known root-cause patterns are priors only; approve pattern-backed claims only when current source evidence independently proves the causal chain.
 For root-cause mode, evaluate the five causal stages: trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.
@@ -12436,6 +12612,7 @@ Requirements:
 - Treat the deterministic architecture fact pack as authoritative. If approved shard reports conflict with it, prefer the fact pack and mention the conflict as an uncertainty instead of synthesizing the conflicting claim.
 - Use responsibilities to explain ownership boundaries.
 - Keep direct facts distinct from higher-level inferences when the reports provide both.
+- Use claim confidence and source anchors to decide which assertions are strong enough for the final document.
 - Use internal_flow to describe actual runtime or data flow.
 - Use collaboration to explain subsystem interaction points.
 - Consolidate duplicates across shards and call out uncertain areas explicitly.
@@ -12471,6 +12648,18 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "Shard: %s (%s)\n", shard.ID, shard.Name)
+	if strings.TrimSpace(shard.Type) != "" {
+		fmt.Fprintf(&b, "Shard type: %s\n", shard.Type)
+	}
+	if strings.TrimSpace(shard.Objective) != "" {
+		fmt.Fprintf(&b, "Shard objective: %s\n", shard.Objective)
+	}
+	if len(shard.RequiredEvidence) > 0 {
+		fmt.Fprintf(&b, "Required evidence:\n%s\n", joinListForPrompt(shard.RequiredEvidence))
+	}
+	if len(shard.SuccessCriteria) > 0 {
+		fmt.Fprintf(&b, "Success criteria:\n%s\n", joinListForPrompt(shard.SuccessCriteria))
+	}
 	fmt.Fprintf(&b, "Scope rule: primary files are your ownership boundary; reference files are for dependency context only.\n\n")
 	if requirements := projectAnalysisModePromptRequirements(snapshot.AnalysisMode); len(requirements) > 0 {
 		b.WriteString("Mode requirements:\n")
@@ -12525,6 +12714,8 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- List concrete responsibilities, not generic statements.\n")
 	b.WriteString("- facts should be direct observations grounded in the provided files.\n")
 	b.WriteString("- inferences should be clearly labeled interpretations derived from those facts.\n")
+	b.WriteString("- claims must contain the important facts, inferences, risks, and unknowns as source-anchored, falsifiable claim objects.\n")
+	b.WriteString("- Each claim must include source_anchors from the assigned files, confidence, disproves_when, and verification_hint.\n")
 	b.WriteString("- key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.\n")
 	b.WriteString("- If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.\n")
 	b.WriteString("- entry_points should name files/functions when visible.\n")
@@ -12852,7 +13043,19 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "Shard: %s (%s)\n", shard.ID, shard.Name)
+	if strings.TrimSpace(shard.Type) != "" {
+		fmt.Fprintf(&b, "Shard type: %s\n", shard.Type)
+	}
+	if strings.TrimSpace(shard.Objective) != "" {
+		fmt.Fprintf(&b, "Shard objective: %s\n", shard.Objective)
+	}
 	fmt.Fprintf(&b, "Shard cache status: %s\n", shard.CacheStatus)
+	if len(shard.RequiredEvidence) > 0 {
+		fmt.Fprintf(&b, "Required evidence:\n%s\n", joinListForPrompt(shard.RequiredEvidence))
+	}
+	if len(shard.SuccessCriteria) > 0 {
+		fmt.Fprintf(&b, "Success criteria:\n%s\n", joinListForPrompt(shard.SuccessCriteria))
+	}
 	if requirements := projectAnalysisModePromptRequirements(snapshot.AnalysisMode); len(requirements) > 0 {
 		b.WriteString("Mode review requirements:\n")
 		for _, item := range requirements {
@@ -12876,6 +13079,11 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 		b.WriteString("- Verify worker probes and confidence_breakdown; reject candidates whose probes cannot observe or disprove the user-visible symptom chain.\n")
 		b.WriteString("- Prefer low confidence over false certainty when the assigned files cannot prove the full chain.\n\n")
 	}
+	b.WriteString("Claim review checklist:\n")
+	b.WriteString("- Every high-value fact, inference, risk, or unknown should be represented in claims.\n")
+	b.WriteString("- claim.source_anchors must stay inside assigned primary or reference files.\n")
+	b.WriteString("- claim.confidence must match the evidence strength; unsupported assertions should be low confidence or unknowns.\n")
+	b.WriteString("- claim.disproves_when must be concrete enough for a later worker or human reviewer to falsify the claim.\n\n")
 	if strings.TrimSpace(shard.InvalidationReason) != "" {
 		fmt.Fprintf(&b, "Invalidation reason: %s\n", describeAnalysisInvalidationReasonWithContext(shard.InvalidationReason, []string{shard.Name}))
 	}
@@ -13401,8 +13609,19 @@ func fallbackWorkerReport(shard AnalysisShard, raw string) WorkerReport {
 		Title:         shard.Name,
 		ScopeSummary:  "Worker returned non-JSON output.",
 		EvidenceFiles: append([]string(nil), shard.PrimaryFiles...),
-		Unknowns:      []string{"Worker output was not valid JSON and was excluded from synthesis; raw output is preserved in the JSON artifact."},
-		Raw:           strings.TrimSpace(raw),
+		Claims: []AnalysisClaim{
+			{
+				ID:               "claim-01",
+				Kind:             "parse_failure",
+				Claim:            "Worker returned non-JSON output, so this shard has no reliable structured claims.",
+				SourceAnchors:    append([]string(nil), shard.PrimaryFiles...),
+				Confidence:       "high",
+				DisprovesWhen:    "A later worker run returns valid structured JSON for this shard.",
+				VerificationHint: "Inspect raw output in the JSON artifact and rerun the shard.",
+			},
+		},
+		Unknowns: []string{"Worker output was not valid JSON and was excluded from synthesis; raw output is preserved in the JSON artifact."},
+		Raw:      strings.TrimSpace(raw),
 	}
 }
 
@@ -13418,6 +13637,9 @@ func parseWorkerReportPayload(raw string, shard AnalysisShard) (WorkerReport, bo
 			if !workerReportPayloadHasContent(envelope.Report) {
 				continue
 			}
+			if workerReportLooksLikeSchemaPlaceholder(envelope.Report) {
+				continue
+			}
 			envelope.Report.ShardID = shard.ID
 			envelope.Report.Raw = strings.TrimSpace(raw)
 			normalizeWorkerReport(&envelope.Report, shard)
@@ -13430,6 +13652,9 @@ func parseWorkerReportPayload(raw string, shard AnalysisShard) (WorkerReport, bo
 		report := WorkerReport{}
 		if err := json.Unmarshal([]byte(candidate), &report); err == nil {
 			if !workerReportPayloadHasContent(report) {
+				continue
+			}
+			if workerReportLooksLikeSchemaPlaceholder(report) {
 				continue
 			}
 			report.ShardID = shard.ID
@@ -13453,6 +13678,7 @@ func workerReportPayloadHasContent(report WorkerReport) bool {
 	return len(report.Responsibilities) > 0 ||
 		len(report.Facts) > 0 ||
 		len(report.Inferences) > 0 ||
+		len(report.Claims) > 0 ||
 		len(report.KeyFiles) > 0 ||
 		len(report.EntryPoints) > 0 ||
 		len(report.InternalFlow) > 0 ||
@@ -13488,6 +13714,16 @@ func workerReportLooksLikeSchemaPlaceholder(report WorkerReport) bool {
 	checkList(report.Responsibilities)
 	checkList(report.Facts)
 	checkList(report.Inferences)
+	for _, claim := range report.Claims {
+		checkString(claim.ID)
+		checkString(claim.Kind)
+		checkString(claim.Claim)
+		checkList(claim.SourceAnchors)
+		checkString(claim.Confidence)
+		checkList(claim.DependsOn)
+		checkString(claim.DisprovesWhen)
+		checkString(claim.VerificationHint)
+	}
 	checkList(report.KeyFiles)
 	checkList(report.EntryPoints)
 	checkList(report.InternalFlow)
@@ -13555,6 +13791,8 @@ func normalizeReviewDecision(decision *ReviewDecision) {
 	if status == "needs_revision" && strings.TrimSpace(decision.FailureKind) == "" {
 		decision.FailureKind = analysisReviewIssueQuality
 	}
+	decision.ClaimCoverageStatus = strings.ToLower(strings.TrimSpace(decision.ClaimCoverageStatus))
+	decision.ClaimIssues = analysisUniqueStrings(decision.ClaimIssues)
 	decision.SymptomPossible = normalizeSymptomPossible(decision.SymptomPossible)
 	decision.SymptomCausality = analysisUniqueStrings(decision.SymptomCausality)
 	decision.SymptomReproductionBridge = analysisUniqueStrings(decision.SymptomReproductionBridge)
@@ -13708,6 +13946,7 @@ func normalizeWorkerReport(report *WorkerReport, shard AnalysisShard) {
 			report.KeyFiles = report.KeyFiles[:8]
 		}
 	}
+	report.Claims = normalizeAnalysisClaims(report.Claims, *report, shard)
 }
 
 func normalizeRootCauseCandidates(candidates []RootCauseCandidate, shard AnalysisShard) []RootCauseCandidate {
@@ -13769,13 +14008,19 @@ func heuristicReviewDecision(report WorkerReport, raw string) ReviewDecision {
 	if len(report.EvidenceFiles) == 0 {
 		issues = append(issues, "Evidence files are missing.")
 	}
+	if !analysisReportHasSupportedClaims(report) {
+		issues = append(issues, "Claim source anchors are missing.")
+	}
 	decision := ReviewDecision{
-		Status: "approved",
-		Raw:    raw,
+		Status:              "approved",
+		ClaimCoverageStatus: "supported",
+		Raw:                 raw,
 	}
 	if len(issues) > 0 {
 		decision.Status = "needs_revision"
 		decision.Issues = issues
+		decision.ClaimCoverageStatus = "insufficient"
+		decision.ClaimIssues = issues
 		decision.RevisionPrompt = "Revise the report with explicit responsibilities, internal flow, evidence files, and a concise scope summary grounded in the assigned files."
 		decision.FailureKind = analysisReviewIssueQuality
 	}
@@ -13792,11 +14037,13 @@ func softFailReviewDecision(shard AnalysisShard, report WorkerReport, err error)
 		issues = append(issues, "The overall analysis continued using the worker report, but this shard should be treated as needing manual verification.")
 	}
 	return ReviewDecision{
-		Status:         "review_failed",
-		Issues:         issues,
-		RevisionPrompt: "",
-		FailureKind:    analysisReviewIssueProvider,
-		Raw:            err.Error(),
+		Status:              "review_failed",
+		Issues:              issues,
+		RevisionPrompt:      "",
+		ClaimCoverageStatus: "unreviewed",
+		ClaimIssues:         issues,
+		FailureKind:         analysisReviewIssueProvider,
+		Raw:                 err.Error(),
 	}
 }
 
@@ -13824,7 +14071,18 @@ func softFailWorkerReport(shard AnalysisShard, err error) WorkerReport {
 		},
 		KeyFiles:      limitStrings(shard.PrimaryFiles, 12),
 		EvidenceFiles: limitStrings(shard.PrimaryFiles, 12),
-		EntryPoints:   []string{},
+		Claims: []AnalysisClaim{
+			{
+				ID:               "claim-01",
+				Kind:             "provider_failure",
+				Claim:            "Worker provider failed before this shard could be analyzed.",
+				SourceAnchors:    limitStrings(shard.PrimaryFiles, 12),
+				Confidence:       "high",
+				DisprovesWhen:    "A later worker run completes successfully for this shard.",
+				VerificationHint: "Rerun the shard after provider pressure recovers.",
+			},
+		},
+		EntryPoints: []string{},
 		InternalFlow: []string{
 			"Not analyzed because the worker provider request failed.",
 		},
@@ -13851,11 +14109,13 @@ func softFailWorkerReviewDecision(shard AnalysisShard, err error) ReviewDecision
 		issues = append(issues, "The failed shard is external-dependency scoped, so the main project map may still be partially useful.")
 	}
 	return ReviewDecision{
-		Status:         "review_failed",
-		Issues:         issues,
-		RevisionPrompt: "",
-		FailureKind:    analysisReviewIssueProvider,
-		Raw:            err.Error(),
+		Status:              "review_failed",
+		Issues:              issues,
+		RevisionPrompt:      "",
+		ClaimCoverageStatus: "unreviewed",
+		ClaimIssues:         issues,
+		FailureKind:         analysisReviewIssueProvider,
+		Raw:                 err.Error(),
 	}
 }
 
@@ -14697,6 +14957,7 @@ func buildShardDocuments(snapshot ProjectSnapshot, shards []AnalysisShard, repor
 		writeSectionList(&b, "Responsibilities", report.Responsibilities)
 		writeSectionList(&b, "Facts", report.Facts)
 		writeSectionList(&b, "Inferences", report.Inferences)
+		writeAnalysisClaims(&b, "Claims", report.Claims)
 		writeSectionList(&b, "Key Files", report.KeyFiles)
 		writeSectionList(&b, "Entry Points", report.EntryPoints)
 		writeSectionList(&b, "Internal Flow", report.InternalFlow)
@@ -14737,6 +14998,7 @@ func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, report
 			Responsibilities:     append([]string(nil), section.Responsibilities...),
 			Facts:                append([]string(nil), section.Facts...),
 			Inferences:           append([]string(nil), section.Inferences...),
+			Claims:               append([]AnalysisClaim(nil), section.Claims...),
 			KeyFiles:             append([]string(nil), section.KeyFiles...),
 			EvidenceFiles:        append([]string(nil), section.EvidenceFiles...),
 			EntryPoints:          append([]string(nil), section.EntryPoints...),
@@ -15171,7 +15433,7 @@ func buildAnalysisExecutionSummary(shards []AnalysisShard) AnalysisExecutionSumm
 		switch strings.ToLower(strings.TrimSpace(shard.InvalidationReason)) {
 		case "new", "new_primary_scope":
 			summary.NewShards++
-		case "recomputed", "primary_changed", "reference_changed", "dependency_changed", "previous_review_not_approved", "previous_run_incomplete":
+		case "recomputed", "primary_changed", "reference_changed", "dependency_changed", "previous_review_not_approved", "previous_run_incomplete", "coverage_gap", "semantic_network_contract_changed", "semantic_security_contract_changed", "semantic_build_startup_changed", "semantic_asset_config_changed", "semantic_runtime_flow_changed":
 			summary.RecomputedShards++
 		}
 		reason := strings.TrimSpace(shard.InvalidationReason)

@@ -236,6 +236,13 @@ func specialistProfileEditable(profile SpecialistSubagentProfile) bool {
 	return *profile.Editable
 }
 
+func specialistProfileHasExplicitRoute(profile SpecialistSubagentProfile) bool {
+	return strings.TrimSpace(profile.Provider) != "" ||
+		strings.TrimSpace(profile.Model) != "" ||
+		strings.TrimSpace(profile.BaseURL) != "" ||
+		strings.TrimSpace(profile.ReasoningEffort) != ""
+}
+
 func configuredSpecialistProfileByName(cfg Config, name string) (SpecialistSubagentProfile, bool) {
 	target := normalizeSpecialistProfileName(name)
 	if target == "" {
@@ -635,6 +642,9 @@ func selectEditableSpecialistForTaskNode(cfg Config, node TaskNode, state *TaskS
 func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderClient, string) {
 	if a == nil {
 		return nil, ""
+	}
+	if !specialistProfileHasExplicitRoute(profile) {
+		return a.ensureInteractiveReviewerClient()
 	}
 	cfg := a.Config
 	mainProvider := normalizeProviderName(cfg.Provider)

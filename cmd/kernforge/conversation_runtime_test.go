@@ -162,6 +162,16 @@ func TestProviderErrorIsRecordedInConversationEvents(t *testing.T) {
 	if events[0].Entities["code"] != "429" || events[0].Entities["category"] != "rate_limit" {
 		t.Fatalf("expected normalized 429 rate limit event, got %#v", events[0].Entities)
 	}
+	data, err := os.ReadFile(runtimeErrorLogPath(root))
+	if err != nil {
+		t.Fatalf("read runtime error log: %v", err)
+	}
+	logText := string(data)
+	for _, want := range []string{"provider_error", "openrouter", "deepseek/deepseek-v4-flash", "DeepInfra", `"final":"true"`} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("expected runtime error log to contain %q, got %q", want, logText)
+		}
+	}
 }
 
 func TestToolSuccessIsRecordedInConversationEvents(t *testing.T) {

@@ -121,6 +121,20 @@ func TestSpecialistBatchRouteLimiterSerializesLocalDuplicateRoute(t *testing.T) 
 	}
 }
 
+func TestSpecialistClientSkipsImplicitMainModelRoute(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-chat"
+	agent := &Agent{Config: cfg}
+
+	client, model := agent.specialistClient(SpecialistSubagentProfile{
+		Name: "reviewer",
+	})
+	if client != nil || model != "" {
+		t.Fatalf("expected unconfigured specialist to skip implicit main route, got %T %q", client, model)
+	}
+}
+
 func TestSpecialistClientInheritsMainBaseURLForSameProviderAfterNormalize(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "lmstudio"

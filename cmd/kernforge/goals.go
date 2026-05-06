@@ -470,7 +470,7 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 	}
 	client, model := rt.agent.ensureInteractiveReviewerClient()
 	if client == nil || strings.TrimSpace(model) == "" {
-		return rt.runGoalAgentReply(ctx, prompt)
+		return skippedGoalReviewerReply(prompt), nil
 	}
 	resp, err := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
 		Model: model,
@@ -493,6 +493,13 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 		return rt.runGoalAgentReply(ctx, prompt+"\n\nReviewer provider failed: "+err.Error()+"\nRun the review/fix pass with the main agent now.")
 	}
 	return strings.TrimSpace(resp.Message.Text), nil
+}
+
+func skippedGoalReviewerReply(prompt string) string {
+	if strings.Contains(prompt, "Final semantic goal review") {
+		return "APPROVED: independent semantic reviewer skipped because no plan-review reviewer is configured; relying on completion audit and verification evidence."
+	}
+	return "APPROVED: independent reviewer skipped because no plan-review reviewer is configured; relying on the main implementation pass and subsequent verification."
 }
 
 func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
