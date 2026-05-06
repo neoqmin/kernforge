@@ -819,8 +819,10 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 			return ChatResponse{}, ctx.Err()
 		}
 		if !shouldRetryProviderError(err) || attempt == totalAttempts-1 {
+			a.noteProviderConversationError(err, req, true)
 			return ChatResponse{}, err
 		}
+		a.noteProviderConversationError(err, req, false)
 		delay := providerRetryDelay(baseDelay, attempt)
 		a.emitProgressEvent(ProgressEvent{
 			Kind:    progressKindProviderRetry,

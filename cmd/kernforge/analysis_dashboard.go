@@ -39,6 +39,7 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 	inlinePortalIndex := analysisDashboardInlinePortalItems(portalIndex)
 	portalRows := analysisDashboardFallbackRows("", 4, "Loading document portal...")
 	portalData := analysisDashboardPortalJSON(inlinePortalIndex)
+	docsData := analysisDashboardDocsJSON(run, docsHref)
 	sourceAnchorRows := analysisDashboardSourceAnchorRows(run, docsHref)
 	evidenceRows := analysisDashboardEvidenceMemoryRows(run, docsHref)
 	staleDiffRows := analysisDashboardStaleDiffRows(run, docsHref)
@@ -68,158 +69,357 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 <title>%s</title>
 <style>
 :root {
-	--bg: #f5f7fb;
-	--panel: #ffffff;
-	--ink: #17202a;
-	--muted: #5f6c7b;
-	--line: #d9e0ea;
-	--accent: #1f7a68;
-	--accent-soft: #e7f4f1;
-	--warn: #9a5b16;
-	--warn-soft: #fff3dc;
-	--code: #101828;
+	color-scheme: dark;
+	--bg: #070b12;
+	--bg-2: #0a1220;
+	--panel: rgba(14, 21, 33, .94);
+	--panel-2: #101826;
+	--panel-3: #0c1421;
+	--panel-head: rgba(17, 28, 44, .96);
+	--ink: #e8eef8;
+	--ink-strong: #f8fbff;
+	--muted: #93a3b9;
+	--muted-2: #64748b;
+	--line: #223047;
+	--line-strong: #334762;
+	--accent: #35d6b7;
+	--accent-2: #74a7ff;
+	--accent-soft: rgba(53, 214, 183, .13);
+	--warn: #f4b760;
+	--warn-soft: rgba(244, 183, 96, .14);
+	--danger: #ff6f91;
+	--link: #8fc7ff;
+	--code: #dbeafe;
+	--code-bg: #08111f;
+	--table-head: rgba(10, 18, 32, .96);
+	--shadow: 0 22px 70px rgba(0, 0, 0, .34);
 }
 * { box-sizing: border-box; }
+html { background: var(--bg); }
 body {
 	margin: 0;
-	background: var(--bg);
+	min-height: 100vh;
+	overflow-x: hidden;
+	background:
+		linear-gradient(120deg, rgba(53, 214, 183, .09), transparent 30%%),
+		linear-gradient(245deg, rgba(116, 167, 255, .10), transparent 34%%),
+		linear-gradient(180deg, var(--bg) 0, var(--bg-2) 45%%, var(--bg) 100%%);
 	color: var(--ink);
 	font-family: Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 	line-height: 1.45;
 }
-a { color: #0b5cad; text-decoration: none; }
-a:hover { text-decoration: underline; }
-.shell { max-width: 1320px; margin: 0 auto; padding: 28px; }
+::selection { background: rgba(53, 214, 183, .28); color: var(--ink-strong); }
+a { color: var(--link); text-decoration: none; transition: color .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+a:hover { color: var(--accent); text-decoration: none; }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.shell { position: relative; width: 100%%; max-width: 1480px; margin: 0 auto; padding: 26px; }
 .topbar {
+	position: sticky;
+	top: 0;
+	z-index: 10;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
 	gap: 20px;
-	align-items: start;
-	margin-bottom: 22px;
+	align-items: center;
+	margin-bottom: 18px;
+	padding: 20px 22px;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	background: linear-gradient(180deg, rgba(18, 30, 47, .94), rgba(11, 18, 30, .94));
+	box-shadow: var(--shadow);
+	backdrop-filter: blur(18px);
 }
-.eyebrow { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-h1 { margin: 4px 0 8px; font-size: 32px; line-height: 1.15; letter-spacing: 0; }
-h2 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0; }
-h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: 0; }
-.goal { max-width: 860px; color: var(--muted); overflow-wrap: anywhere; }
+.topbar > * { min-width: 0; }
+.eyebrow { color: var(--accent); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em; }
+h1 { margin: 5px 0 8px; color: var(--ink-strong); font-size: 34px; line-height: 1.12; letter-spacing: 0; }
+h2 { margin: 0 0 12px; color: var(--ink-strong); font-size: 17px; font-weight: 750; letter-spacing: 0; }
+h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 740; letter-spacing: 0; }
+.goal { min-width: 0; max-width: 940px; color: var(--muted); overflow-wrap: anywhere; word-break: break-word; }
 .status-pill {
 	display: inline-flex;
 	align-items: center;
-	min-height: 32px;
-	padding: 6px 10px;
-	border: 1px solid var(--line);
-	border-radius: 6px;
-	font-size: 13px;
-	font-weight: 700;
-	background: var(--panel);
+	gap: 8px;
+	min-height: 34px;
+	padding: 6px 12px;
+	border: 1px solid var(--line-strong);
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 800;
+	letter-spacing: .02em;
+	background: rgba(8, 17, 31, .78);
 	white-space: nowrap;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
 }
-.status-ok { color: var(--accent); background: var(--accent-soft); }
-.status-warn { color: var(--warn); background: var(--warn-soft); }
+.status-pill::before {
+	content: "";
+	width: 8px;
+	height: 8px;
+	border-radius: 999px;
+	background: currentColor;
+	box-shadow: 0 0 18px currentColor;
+}
+.status-ok { color: var(--accent); border-color: rgba(53, 214, 183, .38); background: var(--accent-soft); }
+.status-warn { color: var(--warn); border-color: rgba(244, 183, 96, .36); background: var(--warn-soft); }
 .meta-grid {
 	display: grid;
 	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 10px;
-	margin-bottom: 18px;
+	gap: 12px;
+	margin-bottom: 14px;
 }
 .meta, .metric, .panel, .table-panel {
 	background: var(--panel);
 	border: 1px solid var(--line);
-	border-radius: 8px;
+	border-radius: 10px;
+	box-shadow: 0 14px 38px rgba(0, 0, 0, .18);
+	backdrop-filter: blur(10px);
 }
-.meta { padding: 12px; min-width: 0; }
-.meta span, .metric span { display: block; color: var(--muted); font-size: 12px; }
-.meta strong, .metric strong { display: block; margin-top: 4px; overflow-wrap: anywhere; }
-.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
-.metric { padding: 14px; min-height: 82px; }
-.metric strong { font-size: 24px; line-height: 1.2; }
-.lens-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
-.lens { padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
-.lens span { display: block; color: var(--muted); font-size: 12px; }
-.lens strong { display: block; margin-top: 4px; overflow-wrap: anywhere; }
-.layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
-.stack { display: grid; gap: 16px; }
+.meta { padding: 13px 14px; min-width: 0; background: linear-gradient(180deg, rgba(18, 29, 45, .95), rgba(12, 20, 33, .94)); }
+.meta span, .metric span { display: block; color: var(--muted-2); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.meta strong, .metric strong { display: block; margin-top: 5px; color: var(--ink-strong); overflow-wrap: anywhere; }
+.metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.metric { position: relative; min-height: 84px; padding: 14px 15px; overflow: hidden; background: linear-gradient(180deg, rgba(16, 26, 41, .98), rgba(11, 18, 30, .98)); }
+.metric::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent 76%%); opacity: .7; }
+.metric strong { font-size: 27px; line-height: 1.12; font-weight: 800; }
+.lens-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.lens { min-width: 0; padding: 13px 14px; background: linear-gradient(180deg, rgba(16, 26, 41, .96), rgba(10, 18, 30, .94)); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, .16); }
+.lens span { display: block; color: var(--muted-2); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.lens strong { display: block; margin-top: 5px; color: var(--ink-strong); overflow-wrap: anywhere; }
+.layout { display: grid; grid-template-columns: minmax(0, 1.78fr) minmax(340px, .72fr); gap: 18px; align-items: start; min-width: 0; }
+.layout > *, .stack > *, .document-workspace > * { min-width: 0; }
+.stack { display: grid; gap: 18px; }
 .panel { padding: 16px; min-width: 0; }
-.doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.table-panel { overflow: auto; }
+.table-panel > .panel { background: var(--panel-head); }
+.document-workspace { display: grid; grid-template-columns: minmax(300px, .72fr) minmax(0, 1.28fr); gap: 18px; align-items: start; }
+.document-list-panel { max-height: 760px; overflow: auto; }
+.document-workspace .doc-grid { grid-template-columns: 1fr; }
+.doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .portal-search {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	gap: 8px;
+	gap: 10px;
 	margin-bottom: 12px;
 }
 .portal-search input {
 	width: 100%%;
-	min-height: 38px;
+	min-height: 40px;
 	border: 1px solid var(--line);
-	border-radius: 6px;
-	padding: 8px 10px;
+	border-radius: 8px;
+	padding: 8px 12px;
+	background: var(--code-bg);
+	color: var(--ink);
 	font: inherit;
+	font-size: 13px;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, .03);
+}
+.portal-search input::placeholder { color: #5f718a; }
+.portal-search input:focus { border-color: rgba(53, 214, 183, .7); }
+.portal-search input::-webkit-search-cancel-button { filter: invert(1); opacity: .75; }
+.portal-search input::-webkit-search-decoration { filter: invert(1); }
+.portal-search input::-ms-clear { display: none; }
+.portal-search input::-ms-reveal { display: none; }
+.portal-search input::-webkit-input-placeholder { color: #5f718a; }
+.portal-search input:-ms-input-placeholder { color: #5f718a; }
+.portal-search input::-ms-input-placeholder { color: #5f718a; }
+.portal-search input::placeholder { color: #5f718a; }
+.portal-search input[type="search"] { appearance: none; }
+.portal-search input[type="search"]::-webkit-search-cancel-button { appearance: none; }
+.portal-search input[type="search"]::-webkit-search-decoration { appearance: none; }
+.portal-search input[type="search"]::-webkit-search-results-button { appearance: none; }
+.portal-search input[type="search"]::-webkit-search-results-decoration { appearance: none; }
+.portal-search input[type="search"]::-webkit-search-cancel-button {
+	width: 12px;
+	height: 12px;
+	background: linear-gradient(45deg, transparent 44%%, var(--muted) 45%%, var(--muted) 55%%, transparent 56%%), linear-gradient(-45deg, transparent 44%%, var(--muted) 45%%, var(--muted) 55%%, transparent 56%%);
+	cursor: pointer;
 }
 .portal-count {
-	min-height: 38px;
+	min-height: 40px;
 	display: inline-flex;
 	align-items: center;
-	padding: 0 10px;
+	padding: 0 12px;
 	border: 1px solid var(--line);
-	border-radius: 6px;
+	border-radius: 8px;
 	color: var(--muted);
-	background: #fbfcfe;
+	background: var(--panel-3);
+	font-size: 12px;
+	font-weight: 700;
 	white-space: nowrap;
 }
 .portal-filters {
 	display: flex;
 	flex-wrap: wrap;
-	gap: 6px;
+	gap: 7px;
 	margin-bottom: 12px;
 }
 .portal-filter {
-	min-height: 30px;
+	min-height: 32px;
 	border: 1px solid var(--line);
-	border-radius: 6px;
-	background: #fbfcfe;
+	border-radius: 999px;
+	background: rgba(10, 18, 30, .78);
 	color: var(--muted);
-	padding: 5px 9px;
+	padding: 5px 11px;
 	font: inherit;
 	font-size: 12px;
+	font-weight: 700;
 	cursor: pointer;
+	transition: background .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
+}
+.portal-filter:hover {
+	color: var(--ink);
+	border-color: var(--line-strong);
+	transform: translateY(-1px);
 }
 .portal-filter.active {
 	background: var(--accent-soft);
 	color: var(--accent);
-	border-color: #9bd0c5;
-	font-weight: 700;
+	border-color: rgba(53, 214, 183, .5);
+	box-shadow: inset 0 0 0 1px rgba(53, 214, 183, .08);
 }
 .doc-link {
 	display: block;
-	padding: 10px;
+	min-height: 108px;
+	padding: 12px;
 	border: 1px solid var(--line);
-	border-radius: 6px;
-	background: #fbfcfe;
+	border-radius: 8px;
+	background: linear-gradient(180deg, rgba(16, 27, 43, .96), rgba(11, 18, 30, .96));
+	color: var(--ink);
 	overflow-wrap: anywhere;
+	transition: transform .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease;
 }
+.doc-link strong {
+	display: block;
+	margin-bottom: 6px;
+	color: var(--ink-strong);
+}
+.doc-link:hover {
+	transform: translateY(-1px);
+	border-color: var(--line-strong);
+	background: linear-gradient(180deg, rgba(20, 35, 55, .96), rgba(12, 22, 36, .96));
+	box-shadow: 0 12px 28px rgba(0, 0, 0, .22);
+}
+.doc-link.active-doc {
+	border-color: rgba(53, 214, 183, .58);
+	background: var(--accent-soft);
+	box-shadow: inset 3px 0 0 var(--accent), 0 16px 34px rgba(0, 0, 0, .22);
+}
+.doc-link.active-doc strong, a.active-doc {
+	color: var(--accent);
+}
+a.active-doc code {
+	border-color: rgba(53, 214, 183, .5);
+	background: rgba(53, 214, 183, .12);
+	color: var(--accent);
+}
+.markdown-viewer-panel { padding: 0; overflow: hidden; }
+.viewer-head {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 12px;
+	align-items: start;
+	padding: 17px 18px;
+	border-bottom: 1px solid var(--line);
+	background: linear-gradient(180deg, rgba(18, 30, 47, .98), rgba(11, 19, 31, .98));
+}
+.markdown-viewer {
+	max-height: 680px;
+	overflow: auto;
+	padding: 24px 26px;
+	background: linear-gradient(180deg, #0b1422, #08111f);
+	color: var(--ink);
+}
+.markdown-viewer.empty { color: var(--muted); }
+.markdown-viewer h1 {
+	margin: 0 0 14px;
+	color: var(--ink-strong);
+	font-size: 29px;
+	line-height: 1.18;
+}
+.markdown-viewer h2 {
+	margin: 26px 0 10px;
+	padding-bottom: 7px;
+	border-bottom: 1px solid var(--line);
+	color: var(--ink-strong);
+	font-size: 21px;
+}
+.markdown-viewer h3 { margin: 20px 0 8px; color: var(--ink-strong); font-size: 17px; }
+.markdown-viewer h4 { margin: 16px 0 8px; color: var(--ink-strong); font-size: 15px; }
+.markdown-viewer p { margin: 10px 0; }
+.markdown-viewer ul, .markdown-viewer ol { margin: 8px 0 14px; padding-left: 24px; }
+.markdown-viewer li { margin: 5px 0; }
+.markdown-viewer blockquote {
+	margin: 12px 0;
+	padding: 10px 13px;
+	border-radius: 0 8px 8px 0;
+	border-left: 4px solid var(--accent);
+	background: var(--accent-soft);
+	color: #c9fff2;
+}
+.markdown-viewer pre {
+	margin: 12px 0;
+	padding: 12px;
+	overflow: auto;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: #050b14;
+	color: #e5edf7;
+}
+.markdown-viewer pre code {
+	padding: 0;
+	background: transparent;
+	color: inherit;
+	font-size: 12px;
+}
+.markdown-viewer table {
+	width: 100%%;
+	margin: 12px 0 16px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	table-layout: auto;
+	overflow: hidden;
+}
+.markdown-viewer th, .markdown-viewer td { padding: 8px 10px; }
+.markdown-viewer tr:nth-child(even) td { background: rgba(255, 255, 255, .025); }
 .list { margin: 0; padding-left: 18px; color: var(--ink); }
 .list li { margin: 5px 0; overflow-wrap: anywhere; }
 .empty { color: var(--muted); }
 table { width: 100%%; border-collapse: collapse; table-layout: fixed; }
-th, td { padding: 10px 8px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
-th { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
-code { color: var(--code); background: #eef2f7; border-radius: 5px; padding: 2px 5px; font-family: Consolas, ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
-.command-chip { display: inline-block; margin: 2px 4px 2px 0; }
-.tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 7px; border-radius: 999px; background: #eef2f7; color: var(--muted); font-size: 12px; }
+th, td { padding: 11px 10px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--muted-2); background: var(--table-head); font-size: 11px; font-weight: 850; text-transform: uppercase; letter-spacing: .07em; }
+td { color: #d8e2f0; font-size: 13px; }
+tbody tr { transition: background .15s ease; }
+tbody tr:hover td { background: rgba(116, 167, 255, .055); }
+code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(116, 167, 255, .14); border-radius: 6px; padding: 2px 6px; font-family: Consolas, ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+.command-chip { display: inline-block; margin: 2px 4px 2px 0; color: #c8fff3; border-color: rgba(53, 214, 183, .24); background: rgba(53, 214, 183, .08); }
+.tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border: 1px solid rgba(116, 167, 255, .14); border-radius: 999px; background: rgba(116, 167, 255, .08); color: #aebed4; font-size: 11px; font-weight: 700; }
 .subsystem { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
 .subsystem:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
 .subtle { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.footer { margin-top: 18px; color: var(--muted); font-size: 12px; }
+.footer { margin-top: 18px; padding: 12px 2px; color: var(--muted-2); font-size: 12px; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: rgba(8, 17, 31, .8); }
+::-webkit-scrollbar-thumb { background: #253650; border: 3px solid rgba(8, 17, 31, .8); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #38506f; }
 @media (max-width: 980px) {
 	.shell { padding: 18px; }
+	.topbar { position: static; }
 	.topbar, .layout { grid-template-columns: 1fr; }
+	.document-workspace { grid-template-columns: 1fr; }
+	.document-list-panel { max-height: none; }
 	.meta-grid, .metric-grid, .lens-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.doc-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
+	.shell { padding: 14px 24px 14px 14px; }
+	.topbar { padding: 17px; }
+	.topbar > div:first-child { max-width: 300px; }
 	.meta-grid, .metric-grid, .lens-grid { grid-template-columns: 1fr; }
-	h1 { font-size: 26px; }
+	h1 { font-size: 23px; overflow-wrap: anywhere; }
+	.goal { font-size: 15px; line-height: 1.5; word-break: normal; }
 	th, td { padding: 8px 6px; font-size: 13px; }
+	.portal-search { grid-template-columns: 1fr; }
+	.status-pill { justify-self: start; max-width: 100%%; }
+	.markdown-viewer { padding: 18px; }
 }
 </style>
 </head>
@@ -254,9 +454,20 @@ code { color: var(--code); background: #eef2f7; border-radius: 5px; padding: 2px
 	%s
 	<section class="layout">
 		<div class="stack">
-			<section class="panel">
-				<h2>%s</h2>
-				<div class="doc-grid">%s</div>
+			<section class="document-workspace">
+				<section class="panel document-list-panel">
+					<h2>%s</h2>
+					<div class="doc-grid">%s</div>
+				</section>
+				<section class="panel markdown-viewer-panel" id="markdown-viewer-panel">
+					<div class="viewer-head">
+						<div>
+							<h2 id="markdown-viewer-title">%s</h2>
+							<div id="markdown-viewer-path" class="subtle">%s</div>
+						</div>
+					</div>
+					<article id="markdown-viewer" class="markdown-viewer empty">%s</article>
+				</section>
 			</section>
 			<section class="table-panel">
 				<div class="panel" style="border:0; border-radius:8px 8px 0 0;">
@@ -335,6 +546,7 @@ code { color: var(--code); background: #eef2f7; border-radius: 5px; padding: 2px
 </main>
 <script>
 const portalItems = %s;
+const markdownDocs = %s;
 const portalTotalItems = %d;
 const portalInlineItems = %d;
 const portalDisplayLimit = 80;
@@ -342,11 +554,199 @@ const portalResults = document.getElementById('portal-results');
 const portalCount = document.getElementById('portal-count');
 const portalSearch = document.getElementById('portal-search');
 const portalFilters = Array.prototype.slice.call(document.querySelectorAll('.portal-filter'));
+const markdownViewerPanel = document.getElementById('markdown-viewer-panel');
+const markdownViewer = document.getElementById('markdown-viewer');
+const markdownViewerTitle = document.getElementById('markdown-viewer-title');
+const markdownViewerPath = document.getElementById('markdown-viewer-path');
 let portalFilterQuery = '';
 function escapeHTML(value) {
 	return String(value || '').replace(/[&<>"']/g, function(ch) {
 		return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
 	});
+}
+function markdownAnchor(value) {
+	return String(value || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function parseDocHref(href) {
+	const raw = String(href || '').replace(/\\/g, '/');
+	const hashAt = raw.indexOf('#');
+	const path = hashAt >= 0 ? raw.slice(0, hashAt) : raw;
+	const cleanPath = path.split('?')[0];
+	const parts = cleanPath.split('/').filter(Boolean);
+	return {
+		name: String(parts.length ? parts[parts.length - 1] : cleanPath).toLowerCase(),
+		anchor: hashAt >= 0 ? raw.slice(hashAt + 1) : ''
+	};
+}
+const markdownByName = {};
+(markdownDocs || []).forEach(function(doc) {
+	const name = String(doc.name || '').toLowerCase();
+	if (name) {
+		markdownByName[name] = doc;
+	}
+});
+function renderInlineMarkdown(text) {
+	let escaped = escapeHTML(text);
+	escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, label, href) {
+		const safeHref = sanitizeMarkdownHref(href);
+		if (!safeHref) {
+			return label;
+		}
+		const docAttr = /\.md(?:#|$)/i.test(safeHref) ? ' data-doc-href="' + safeHref + '"' : '';
+		return '<a href="' + safeHref + '"' + docAttr + '>' + label + '</a>';
+	});
+	const tick = String.fromCharCode(96);
+	escaped = escaped.replace(new RegExp(tick + '([^' + tick + ']+)' + tick, 'g'), '<code>$1</code>');
+	escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+	return escaped;
+}
+function sanitizeMarkdownHref(href) {
+	const value = String(href || '').trim();
+	const lower = value.toLowerCase();
+	if (!value || lower.indexOf('javascript:') === 0 || lower.indexOf('data:') === 0 || lower.indexOf('vbscript:') === 0) {
+		return '';
+	}
+	return value;
+}
+function isMarkdownTableLine(line) {
+	return line.indexOf('|') >= 0 && line.trim().length > 1;
+}
+function isMarkdownTableDivider(line) {
+	return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line);
+}
+function splitMarkdownTableRow(line) {
+	return line.replace(/^\|/, '').replace(/\|$/, '').split('|').map(function(cell) {
+		return cell.trim();
+	});
+}
+function renderMarkdown(markdown) {
+	const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+	const out = [];
+	let inCode = false;
+	let codeLines = [];
+	let listType = '';
+	function closeList() {
+		if (listType) {
+			out.push('</' + listType + '>');
+			listType = '';
+		}
+	}
+	function openList(kind) {
+		if (listType !== kind) {
+			closeList();
+			out.push('<' + kind + '>');
+			listType = kind;
+		}
+	}
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const trimmed = line.trim();
+		if (trimmed.indexOf(String.fromCharCode(96, 96, 96)) === 0) {
+			if (inCode) {
+				out.push('<pre><code>' + escapeHTML(codeLines.join('\n')) + '</code></pre>');
+				codeLines = [];
+				inCode = false;
+			} else {
+				closeList();
+				inCode = true;
+			}
+			continue;
+		}
+		if (inCode) {
+			codeLines.push(line);
+			continue;
+		}
+		if (!trimmed) {
+			closeList();
+			continue;
+		}
+		const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+		if (heading) {
+			closeList();
+			const level = Math.min(6, heading[1].length);
+			const title = heading[2].replace(/\s+#+$/, '').trim();
+			const anchor = markdownAnchor(title);
+			const anchorAttr = anchor ? ' id="' + anchor + '" data-md-anchor="' + anchor + '"' : '';
+			out.push('<h' + level + anchorAttr + '>' + renderInlineMarkdown(title) + '</h' + level + '>');
+			continue;
+		}
+		if (i + 1 < lines.length && isMarkdownTableLine(trimmed) && isMarkdownTableDivider(lines[i + 1].trim())) {
+			closeList();
+			const header = splitMarkdownTableRow(trimmed);
+			i += 2;
+			const rows = [];
+			while (i < lines.length && isMarkdownTableLine(lines[i].trim())) {
+				rows.push(splitMarkdownTableRow(lines[i].trim()));
+				i++;
+			}
+			i--;
+			out.push('<table><thead><tr>' + header.map(function(cell) { return '<th>' + renderInlineMarkdown(cell) + '</th>'; }).join('') + '</tr></thead><tbody>' + rows.map(function(row) {
+				return '<tr>' + row.map(function(cell) { return '<td>' + renderInlineMarkdown(cell) + '</td>'; }).join('') + '</tr>';
+			}).join('') + '</tbody></table>');
+			continue;
+		}
+		if (/^[-*]\s+/.test(trimmed)) {
+			openList('ul');
+			out.push('<li>' + renderInlineMarkdown(trimmed.replace(/^[-*]\s+/, '')) + '</li>');
+			continue;
+		}
+		if (/^\d+\.\s+/.test(trimmed)) {
+			openList('ol');
+			out.push('<li>' + renderInlineMarkdown(trimmed.replace(/^\d+\.\s+/, '')) + '</li>');
+			continue;
+		}
+		if (trimmed.indexOf('>') === 0) {
+			closeList();
+			out.push('<blockquote>' + renderInlineMarkdown(trimmed.replace(/^>\s?/, '')) + '</blockquote>');
+			continue;
+		}
+		closeList();
+		out.push('<p>' + renderInlineMarkdown(trimmed) + '</p>');
+	}
+	closeList();
+	if (inCode) {
+		out.push('<pre><code>' + escapeHTML(codeLines.join('\n')) + '</code></pre>');
+	}
+	return out.join('');
+}
+function markActiveDoc(href) {
+	const current = parseDocHref(href);
+	Array.prototype.slice.call(document.querySelectorAll('a[data-doc-href]')).forEach(function(link) {
+		const target = parseDocHref(link.getAttribute('data-doc-href') || link.getAttribute('href') || '');
+		link.classList.toggle('active-doc', target.name === current.name && (!current.anchor || !target.anchor || target.anchor === current.anchor));
+	});
+}
+function scrollMarkdownAnchor(anchor) {
+	if (!anchor) {
+		markdownViewer.scrollTop = 0;
+		return;
+	}
+	const targets = Array.prototype.slice.call(markdownViewer.querySelectorAll('[data-md-anchor]'));
+	const target = targets.find(function(node) {
+		return node.getAttribute('data-md-anchor') === anchor;
+	});
+	if (target) {
+		target.scrollIntoView({block: 'start'});
+	} else {
+		markdownViewer.scrollTop = 0;
+	}
+}
+function openMarkdownDoc(href, options) {
+	const parsed = parseDocHref(href);
+	const doc = markdownByName[parsed.name];
+	if (!doc || !markdownViewer) {
+		return false;
+	}
+	markdownViewer.classList.remove('empty');
+	markdownViewerTitle.textContent = doc.title || doc.name || 'Markdown';
+	markdownViewerPath.textContent = doc.href || doc.name || '';
+	markdownViewer.innerHTML = renderMarkdown(doc.markdown || '');
+	scrollMarkdownAnchor(parsed.anchor);
+	markActiveDoc(href);
+	if (!options || options.scroll !== false) {
+		markdownViewerPanel.scrollIntoView({behavior: 'smooth', block: 'start'});
+	}
+	return true;
 }
 function renderPortal(items) {
 	const visible = Math.min(items.length, portalDisplayLimit);
@@ -357,7 +757,7 @@ function renderPortal(items) {
 		return;
 	}
 	portalResults.innerHTML = items.slice(0, portalDisplayLimit).map(function(item) {
-		const title = item.href ? '<a href="' + escapeHTML(item.href) + '">' + escapeHTML(item.title) + '</a>' : escapeHTML(item.title);
+		const title = item.href ? '<a href="' + escapeHTML(item.href) + '" data-doc-href="' + escapeHTML(item.href) + '">' + escapeHTML(item.title) + '</a>' : escapeHTML(item.title);
 		const detail = item.detail ? '<div class="subtle">' + escapeHTML(item.detail) + '</div>' : '';
 		const source = item.source ? '<code>' + escapeHTML(item.source) + '</code>' : '<span class="subtle">none</span>';
 		const reuse = (item.reuse || []).map(function(value) { return '<span class="tag">' + escapeHTML(value) + '</span>'; }).join('');
@@ -383,6 +783,19 @@ portalFilters.forEach(function(button) {
 });
 portalSearch.addEventListener('input', filterPortal);
 renderPortal(portalItems);
+document.addEventListener('click', function(event) {
+	const link = event.target.closest ? event.target.closest('a[data-doc-href]') : null;
+	if (!link || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+		return;
+	}
+	const href = link.getAttribute('data-doc-href') || link.getAttribute('href') || '';
+	if (openMarkdownDoc(href)) {
+		event.preventDefault();
+	}
+});
+if (markdownDocs && markdownDocs.length > 0) {
+	openMarkdownDoc(markdownDocs[0].href || markdownDocs[0].name, {scroll: false});
+}
 </script>
 </body>
 </html>`,
@@ -423,6 +836,9 @@ renderPortal(portalItems);
 		runtimeLens,
 		htmlEscape(labels.GeneratedDocuments),
 		docLinks,
+		htmlEscape(labels.MarkdownViewer),
+		htmlEscape(labels.ViewerEmpty),
+		htmlEscape(labels.ViewerEmpty),
 		htmlEscape(labels.DocumentPortal),
 		htmlEscape(labels.PortalPlaceholder),
 		len(inlinePortalIndex),
@@ -452,6 +868,7 @@ renderPortal(portalItems);
 		analysisDashboardFallbackRows(buildRows, 3, "No build contexts or compile commands found."),
 		htmlEscape(run.Summary.OutputPath),
 		portalData,
+		docsData,
 		portalTotal,
 		len(inlinePortalIndex),
 	)
@@ -485,6 +902,8 @@ type analysisDashboardLabels struct {
 	CacheReused        string
 	CacheMiss          string
 	GeneratedDocuments string
+	MarkdownViewer     string
+	ViewerEmpty        string
 	DocumentPortal     string
 	PortalPlaceholder  string
 	Kind               string
@@ -524,6 +943,8 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 			CacheReused:        "캐시 재사용",
 			CacheMiss:          "캐시 미스",
 			GeneratedDocuments: "생성 문서",
+			MarkdownViewer:     "마크다운 뷰어",
+			ViewerEmpty:        "생성 문서를 선택하면 여기에서 열립니다.",
 			DocumentPortal:     "문서 포털",
 			PortalPlaceholder:  "문서, anchor, fuzz target, 검증, evidence 검색",
 			Kind:               "종류",
@@ -561,6 +982,8 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 		CacheReused:        "Cache Reused",
 		CacheMiss:          "Cache Miss",
 		GeneratedDocuments: "Generated Documents",
+		MarkdownViewer:     "Markdown Viewer",
+		ViewerEmpty:        "Select a generated document to preview it here.",
 		DocumentPortal:     "Document Portal",
 		PortalPlaceholder:  "Search docs, anchors, fuzz targets, verification, evidence",
 		Kind:               "Kind",
@@ -674,7 +1097,7 @@ func analysisDashboardPortalRows(items []analysisDashboardPortalItem) string {
 	for _, item := range limitAnalysisDashboardPortalItems(items, 18) {
 		title := htmlEscape(item.Title)
 		if strings.TrimSpace(item.Href) != "" {
-			title = `<a href="` + htmlEscape(item.Href) + `">` + title + `</a>`
+			title = `<a ` + analysisDashboardDocLinkAttrs(item.Href) + `>` + title + `</a>`
 		}
 		detail := ""
 		if strings.TrimSpace(item.Detail) != "" {
@@ -701,6 +1124,41 @@ func analysisDashboardPortalJSON(items []analysisDashboardPortalItem) string {
 		return "[]"
 	}
 	return string(data)
+}
+
+type analysisDashboardDocContent struct {
+	Name     string `json:"name"`
+	Title    string `json:"title"`
+	Href     string `json:"href"`
+	Markdown string `json:"markdown"`
+}
+
+func analysisDashboardDocsJSON(run ProjectAnalysisRun, docsHref string) string {
+	data, err := json.Marshal(analysisDashboardDocsContent(run, docsHref))
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func analysisDashboardDocsContent(run ProjectAnalysisRun, docsHref string) []analysisDashboardDocContent {
+	docs := buildAnalysisDocs(run)
+	docsHref = analysisDashboardNormalizeDocsHref(docsHref)
+	out := []analysisDashboardDocContent{}
+	for _, name := range analysisGeneratedDocNames() {
+		markdown := strings.TrimSpace(docs[name])
+		if markdown == "" {
+			continue
+		}
+		href := docsHref + "/" + name
+		out = append(out, analysisDashboardDocContent{
+			Name:     name,
+			Title:    analysisDocTitle(name),
+			Href:     filepath.ToSlash(href),
+			Markdown: markdown,
+		})
+	}
+	return out
 }
 
 func analysisDashboardJSString(value string) string {
@@ -783,9 +1241,9 @@ func analysisDashboardSourceAnchorsWithDocsHref(run ProjectAnalysisRun, docsHref
 func analysisDashboardSourceAnchorRows(run ProjectAnalysisRun, docsHref string) string {
 	rows := []string{}
 	for _, anchor := range limitAnalysisDashboardSourceAnchors(analysisDashboardSourceAnchorsWithDocsHref(run, docsHref), 24) {
-		rows = append(rows, fmt.Sprintf(`<tr><td><code>%s</code></td><td><a href="%s">%s</a></td><td>%s</td><td>%s</td></tr>`,
+		rows = append(rows, fmt.Sprintf(`<tr><td><code>%s</code></td><td><a %s>%s</a></td><td>%s</td><td>%s</td></tr>`,
 			htmlEscape(anchor.Anchor),
-			htmlEscape(filepath.ToSlash(anchor.Href)),
+			analysisDashboardDocLinkAttrs(anchor.Href),
 			htmlEscape(anchor.Document),
 			htmlEscape(anchor.Confidence),
 			htmlEscape(anchor.State),
@@ -800,6 +1258,30 @@ func analysisDashboardNormalizeDocsHref(docsHref string) string {
 		return "docs"
 	}
 	return docsHref
+}
+
+func analysisDashboardDocLinkAttrs(href string) string {
+	href = strings.TrimSpace(filepath.ToSlash(href))
+	return fmt.Sprintf(`href="%s" data-doc-href="%s"`, htmlEscape(href), htmlEscape(href))
+}
+
+func analysisDashboardIsMarkdownDocHref(href string) bool {
+	href = strings.ToLower(strings.TrimSpace(filepath.ToSlash(href)))
+	if hashAt := strings.Index(href, "#"); hashAt >= 0 {
+		href = href[:hashAt]
+	}
+	if queryAt := strings.Index(href, "?"); queryAt >= 0 {
+		href = href[:queryAt]
+	}
+	return strings.HasSuffix(href, ".md")
+}
+
+func analysisDashboardArtifactHTML(artifact string) string {
+	artifact = filepath.ToSlash(artifact)
+	if analysisDashboardIsMarkdownDocHref(artifact) {
+		return fmt.Sprintf(`<a %s><code>%s</code></a>`, analysisDashboardDocLinkAttrs(artifact), htmlEscape(artifact))
+	}
+	return `<code>` + htmlEscape(artifact) + `</code>`
 }
 
 func analysisDashboardStateLabel(markers []string) string {
@@ -1038,8 +1520,8 @@ func analysisDashboardStaleDiffRow(docsHref string, section string, doc string, 
 		href += "#" + analysisDashboardMarkdownAnchor(anchorTitle)
 		detail += " / " + strings.TrimSpace(anchorTitle)
 	}
-	return fmt.Sprintf(`<tr><td><a href="%s">%s</a><div class="subtle">%s</div></td><td>%s</td><td>%s</td><td><code class="command-chip">%s</code></td></tr>`,
-		htmlEscape(filepath.ToSlash(href)),
+	return fmt.Sprintf(`<tr><td><a %s>%s</a><div class="subtle">%s</div></td><td>%s</td><td>%s</td><td><code class="command-chip">%s</code></td></tr>`,
+		analysisDashboardDocLinkAttrs(href),
 		htmlEscape(firstNonBlankAnalysisString(section, "analysis section")),
 		htmlEscape(detail),
 		htmlEscape(diff),
@@ -1151,9 +1633,9 @@ func analysisDashboardInvalidationChangeImpact(change InvalidationChange) string
 }
 
 func analysisDashboardDrilldownRow(context string, artifact string, command string) string {
-	return fmt.Sprintf(`<tr><td>%s</td><td><code>%s</code></td><td><code class="command-chip">%s</code></td></tr>`,
+	return fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td><code class="command-chip">%s</code></td></tr>`,
 		htmlEscape(context),
-		htmlEscape(filepath.ToSlash(artifact)),
+		analysisDashboardArtifactHTML(artifact),
 		htmlEscape(command),
 	)
 }
@@ -1194,6 +1676,7 @@ func analysisDashboardCacheCounts(shards []AnalysisShard) (int, int) {
 }
 
 func analysisDashboardDocLinks(run ProjectAnalysisRun, docsHref string) string {
+	docsHref = analysisDashboardNormalizeDocsHref(docsHref)
 	names := analysisGeneratedDocNames()
 	items := []string{}
 	for _, name := range names {
@@ -1215,7 +1698,7 @@ func analysisDashboardDocLinks(run ProjectAnalysisRun, docsHref string) string {
 		if analysisDashboardIsDeveloperDoc(name) {
 			badges = append([]string{`<span class="tag">developer_docs</span>`}, badges...)
 		}
-		items = append(items, fmt.Sprintf(`<a class="doc-link" href="%s"><strong>%s</strong><div class="subtle">%s</div><div>%s</div></a>`, htmlEscape(href), htmlEscape(analysisDocTitle(name)), htmlEscape(analysisDocPurpose(name)), strings.Join(badges, "")))
+		items = append(items, fmt.Sprintf(`<a class="doc-link" %s><strong>%s</strong><div class="subtle">%s</div><div>%s</div></a>`, analysisDashboardDocLinkAttrs(href), htmlEscape(analysisDocTitle(name)), htmlEscape(analysisDocPurpose(name)), strings.Join(badges, "")))
 	}
 	return strings.Join(items, "")
 }

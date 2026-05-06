@@ -209,7 +209,9 @@ func (a *Agent) noteToolConversationError(toolName string, err error, displayTex
 	if normalized.Raw == "" {
 		normalized.Raw = raw
 	}
-	a.Session.AppendConversationEvent(runtimeErrorConversationEvent(normalized, a.Session))
+	event := runtimeErrorConversationEvent(normalized, a.Session)
+	a.Session.AppendConversationEvent(event)
+	a.appendRuntimeErrorConversationEvent(event, nil)
 }
 
 func (a *Agent) noteToolConversationStart(call ToolCall) {
@@ -292,6 +294,9 @@ func (a *Agent) noteProviderConversationError(err error, req ChatRequest, final 
 		event.Severity = conversationSeverityWarn
 	}
 	a.Session.AppendConversationEvent(event)
+	a.appendRuntimeErrorConversationEvent(event, map[string]string{
+		"final": strconv.FormatBool(final),
+	})
 }
 
 func runtimeErrorConversationEvent(normalized NormalizedRuntimeError, sess *Session) ConversationEvent {

@@ -385,6 +385,41 @@ func TestProjectAnalyzerRunCreatesArtifacts(t *testing.T) {
 	}
 }
 
+func TestProjectAnalyzerSkipsImplicitReviewerInSingleModelMode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-chat"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &stubAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "map the project", "map")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if client.workerCalls == 0 {
+		t.Fatalf("expected worker calls")
+	}
+	if client.reviewerCalls != 0 {
+		t.Fatalf("expected implicit reviewer to be skipped, got %d calls", client.reviewerCalls)
+	}
+	if len(run.Reviews) == 0 || run.Reviews[0].ClaimCoverageStatus != "review_skipped_single_model" {
+		t.Fatalf("expected skipped review decision, got %#v", run.Reviews)
+	}
+	if !strings.Contains(run.ReviewerProfile, "skipped in single-model mode") {
+		t.Fatalf("expected reviewer profile to disclose skip, got %q", run.ReviewerProfile)
+	}
+}
+
 func TestProjectAnalyzerParsesFencedWorkerAndReviewerJSON(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main()\n{\n}\n"), 0o644); err != nil {
@@ -1104,6 +1139,34 @@ func TestCompleteAnalysisRequestWithRetryUsesRequestTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("expected timeout wrapper to return promptly, elapsed=%s", elapsed)
+	}
+}
+
+func TestCompleteAnalysisRequestWithRetryWritesRuntimeErrorLog(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.ProviderRetryDelayMs = 1
+	ws := Workspace{BaseRoot: root, Root: root}
+	client := &flakyAnalysisClient{failuresRemaining: 1}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	analyzer.analysisCfg.MaxProviderRetries = 1
+	analyzer.analysisCfg.ProviderRetryDelayMs = 1
+
+	_, err := analyzer.completeAnalysisRequestWithRetry(context.Background(), client, "worker", "runtime", "qwen/qwen3.6-27b", ChatRequest{
+		Model: "qwen/qwen3.6-27b",
+	})
+	if err != nil {
+		t.Fatalf("completeAnalysisRequestWithRetry: %v", err)
+	}
+	data, err := os.ReadFile(runtimeErrorLogPath(root))
+	if err != nil {
+		t.Fatalf("read runtime error log: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{"provider_error", "worker", "runtime", "qwen/qwen3.6-27b", `"attempt":"1"`, `"final":"false"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected runtime error log to contain %q, got %q", want, text)
+		}
 	}
 }
 
@@ -3788,6 +3851,145 @@ func TestAnalysisDashboardPortalJSONIsScriptSafe(t *testing.T) {
 	}
 }
 
+func TestAnalysisDashboardUsesInlineMarkdownViewerForDocLinks(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:  "run-dashboard-viewer",
+			Goal:   "map project docs",
+			Mode:   "map",
+			Status: "completed",
+		},
+		Snapshot: ProjectSnapshot{
+			Root:       "C:\\repo",
+			TotalFiles: 2,
+			TotalLines: 80,
+		},
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-dashboard-viewer",
+			Goal:           "map project docs",
+			Root:           "C:\\repo",
+			ProjectSummary: "Runtime dispatch and verification docs are linked from the dashboard.",
+		},
+	}
+
+	html := buildAnalysisDashboardHTML(run, "docs")
+	for _, want := range []string{
+		`id="markdown-viewer"`,
+		`const markdownDocs = `,
+		`data-doc-href="docs/INDEX.md"`,
+		`data-doc-href="docs/VERIFICATION_MATRIX.md"`,
+		`document.addEventListener('click'`,
+		`openMarkdownDoc(href)`,
+		`sanitizeMarkdownHref`,
+		`# Project Documentation Index`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected dashboard markdown viewer HTML to contain %q\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `target="_blank"`) {
+		t.Fatalf("expected dashboard document links to stay in the inline viewer\n%s", html)
+	}
+}
+
+func TestAnalysisDashboardUsesDarkThemeUXTokens(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:  "run-dashboard-dark",
+			Goal:   "map project docs",
+			Mode:   "security",
+			Status: "completed",
+		},
+		Snapshot: ProjectSnapshot{
+			Root:       "C:\\repo",
+			TotalFiles: 3,
+			TotalLines: 300,
+		},
+		KnowledgePack: KnowledgePack{
+			RunID: "run-dashboard-dark",
+			Goal:  "map project docs",
+			Root:  "C:\\repo",
+		},
+	}
+
+	html := buildAnalysisDashboardHTML(run, "docs")
+	for _, want := range []string{
+		`color-scheme: dark;`,
+		`--bg: #070b12;`,
+		`--accent: #35d6b7;`,
+		`position: sticky;`,
+		`backdrop-filter: blur(18px);`,
+		`document-workspace`,
+		`.doc-link.active-doc`,
+		`.portal-filter.active`,
+		`background: linear-gradient(180deg, #0b1422, #08111f);`,
+		`::-webkit-scrollbar-thumb`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected dark dashboard UX token %q\n%s", want, html)
+		}
+	}
+	for _, oldLightTheme := range []string{
+		`--bg: #f5f7fb;`,
+		`--panel: #ffffff;`,
+		`background: #fbfcfe;`,
+	} {
+		if strings.Contains(html, oldLightTheme) {
+			t.Fatalf("expected old light dashboard token %q to be removed\n%s", oldLightTheme, html)
+		}
+	}
+}
+
+func TestAnalysisDashboardMarkdownDocsJSONIsScriptSafe(t *testing.T) {
+	payload := `bad </script><script>alert("x")</script>`
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:  "run-dashboard-script-safe",
+			Goal:   payload,
+			Mode:   "map",
+			Status: "completed",
+		},
+		Snapshot: ProjectSnapshot{
+			Root:       "C:\\repo",
+			TotalFiles: 1,
+			TotalLines: 10,
+		},
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-dashboard-script-safe",
+			Goal:           payload,
+			Root:           "C:\\repo",
+			ProjectSummary: payload,
+		},
+	}
+
+	got := analysisDashboardDocsJSON(run, "docs")
+	if strings.Contains(strings.ToLower(got), "</script>") {
+		t.Fatalf("expected markdown docs JSON to be safe inside a script tag, got %s", got)
+	}
+	if !strings.Contains(got, `\u003c/script\u003e`) {
+		t.Fatalf("expected markdown docs JSON to HTML-escape script delimiters, got %s", got)
+	}
+	var decoded []analysisDashboardDocContent
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("expected valid markdown docs JSON, got %v from %s", err, got)
+	}
+	foundPayload := false
+	for _, doc := range decoded {
+		if strings.Contains(doc.Markdown, payload) {
+			foundPayload = true
+			break
+		}
+	}
+	if !foundPayload {
+		t.Fatalf("expected markdown docs JSON to preserve document content after decode, got %#v", decoded)
+	}
+
+	html := buildAnalysisDashboardHTML(run, "docs")
+	if strings.Contains(strings.ToLower(html), `</script><script>alert`) {
+		t.Fatalf("expected dashboard HTML to keep embedded markdown script-safe\n%s", html)
+	}
+}
+
 func TestAnalysisDashboardStaleDiffLinksGraphSections(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Summary:  ProjectAnalysisSummary{RunID: "run-stale-graph", Goal: "map graph diffs", Mode: "security", Status: "completed"},
@@ -3975,6 +4177,250 @@ func TestDescribeAnalysisInvalidationReasonWithContextMapsUnrealNetworkReason(t 
 	want := "An upstream dependency kept the same file scope, but RPC, replication, or authority semantics changed."
 	if got != want {
 		t.Fatalf("expected contextual invalidation reason %q, got %q", want, got)
+	}
+}
+
+func TestAnnotateAnalysisShardAddsContractAndNormalizesClaims(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		AnalysisMode: "security",
+		FilesByPath: map[string]ScannedFile{
+			"driver.cpp": {Path: "driver.cpp", LineCount: 40, IsEntrypoint: true},
+		},
+	}
+	shards := annotateAnalysisShards(snapshot, []AnalysisShard{
+		{
+			ID:             "shard-01",
+			Name:           "security_driver",
+			PrimaryFiles:   []string{"driver.cpp"},
+			EstimatedFiles: 1,
+			EstimatedLines: 40,
+		},
+	}, "analyze security boundaries")
+	if len(shards) != 1 {
+		t.Fatalf("expected one shard")
+	}
+	if shards[0].Type != "security_surface" {
+		t.Fatalf("expected security_surface type, got %q", shards[0].Type)
+	}
+	if len(shards[0].RequiredEvidence) == 0 || len(shards[0].SuccessCriteria) == 0 {
+		t.Fatalf("expected shard contract evidence and criteria: %+v", shards[0])
+	}
+
+	report := WorkerReport{
+		Facts:         []string{"driver.cpp validates the privileged command path."},
+		Inferences:    []string{"The shard owns a trust-boundary decision."},
+		EvidenceFiles: []string{"driver.cpp"},
+	}
+	normalizeWorkerReport(&report, shards[0])
+	if len(report.Claims) == 0 {
+		t.Fatalf("expected derived claims")
+	}
+	if got := report.Claims[0].SourceAnchors; len(got) == 0 || got[0] != "driver.cpp" {
+		t.Fatalf("expected claim source anchor to stay inside shard scope, got %+v", got)
+	}
+
+	report = WorkerReport{
+		Claims: []AnalysisClaim{
+			{
+				Claim:         "Out-of-scope claim must not be silently re-anchored.",
+				SourceAnchors: []string{"other.cpp"},
+				Confidence:    "high",
+			},
+		},
+		EvidenceFiles: []string{"driver.cpp"},
+	}
+	normalizeWorkerReport(&report, shards[0])
+	if len(report.Claims) != 1 {
+		t.Fatalf("expected one explicit claim")
+	}
+	if len(report.Claims[0].SourceAnchors) != 0 {
+		t.Fatalf("expected out-of-scope explicit claim anchors to stay unsupported, got %+v", report.Claims[0].SourceAnchors)
+	}
+	if analysisReportHasSupportedClaims(report) {
+		t.Fatalf("expected unsupported explicit claim to fail claim coverage")
+	}
+}
+
+func TestBuildAnalysisModeScorecardPlansCoverageGapShard(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := ProjectSnapshot{
+		Root:         root,
+		AnalysisMode: "trace",
+		FilesByPath: map[string]ScannedFile{
+			"main.go": {Path: "main.go", LineCount: 2, IsEntrypoint: true},
+		},
+	}
+	shard := AnalysisShard{
+		ID:             "shard-01",
+		Name:           "runtime",
+		PrimaryFiles:   []string{"main.go"},
+		EstimatedFiles: 1,
+		EstimatedLines: 2,
+	}
+	annotateAnalysisShardContract(snapshot, &shard, "trace runtime")
+	report := WorkerReport{
+		ShardID:          shard.ID,
+		Title:            "runtime",
+		ScopeSummary:     "runtime",
+		Responsibilities: []string{"Owns runtime startup."},
+		EvidenceFiles:    []string{"main.go"},
+		KeyFiles:         []string{"main.go"},
+	}
+	normalizeWorkerReport(&report, shard)
+	review := ReviewDecision{Status: "approved", ClaimCoverageStatus: "supported"}
+	scorecard := buildAnalysisModeScorecard(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, []ReviewDecision{review}, "trace runtime", "trace")
+	if len(scorecard.CoverageGaps) == 0 {
+		t.Fatalf("expected a mode evidence gap")
+	}
+	analyzer := &projectAnalyzer{
+		analysisCfg: defaultProjectAnalysisConfig(root),
+		workspace:   Workspace{Root: root, BaseRoot: root},
+	}
+	gapShards := analyzer.planCoverageGapShards(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, []ReviewDecision{review}, scorecard, 2)
+	if len(gapShards) == 0 {
+		t.Fatalf("expected gap-filling shard")
+	}
+	if gapShards[0].Type != "gap_filling" || gapShards[0].CoverageGapID == "" {
+		t.Fatalf("expected gap shard contract, got %+v", gapShards[0])
+	}
+
+	providerFailedReview := ReviewDecision{Status: "review_failed", FailureKind: analysisReviewIssueProvider}
+	scorecard = buildAnalysisModeScorecard(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, []ReviewDecision{providerFailedReview}, "trace runtime", "trace")
+	gapShards = analyzer.planCoverageGapShards(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, []ReviewDecision{providerFailedReview}, scorecard, 2)
+	if len(gapShards) != 0 {
+		t.Fatalf("expected provider-failed shard to be skipped by gap filler, got %+v", gapShards)
+	}
+}
+
+func TestRuntimeFeedbackAdjustsShardPlanner(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 2; i++ {
+		err := appendRuntimeErrorLogEntry(root, RuntimeErrorLogEntry{
+			Time:     time.Now().UTC(),
+			Kind:     conversationEventKindProviderError,
+			Severity: conversationSeverityError,
+			Summary:  "analysis provider error: timeout while calling model",
+			Raw:      "context deadline exceeded",
+			Entities: map[string]string{
+				"model":   "qwen/qwen3.6-27b",
+				"attempt": fmt.Sprintf("%d", i+1),
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := appendRuntimeErrorLogEntry(root, RuntimeErrorLogEntry{
+		Time:     time.Now().Add(-48 * time.Hour).UTC(),
+		Kind:     conversationEventKindProviderError,
+		Severity: conversationSeverityError,
+		Summary:  "analysis provider error: old timeout should not affect planner",
+		Raw:      "context deadline exceeded",
+		Entities: map[string]string{
+			"model": "qwen/qwen3.6-27b",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendRuntimeErrorLogEntry(root, RuntimeErrorLogEntry{
+		Time:     time.Now().UTC(),
+		Kind:     conversationEventKindProviderError,
+		Severity: conversationSeverityError,
+		Summary:  "analysis provider error: different model timeout should not affect planner",
+		Raw:      "context deadline exceeded",
+		Entities: map[string]string{
+			"model": "other/model",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	feedback := analysisRuntimeFeedbackFromLog(root, "qwen/qwen3.6-27b")
+	if feedback.RecentTimeoutCount != 2 {
+		t.Fatalf("expected timeout feedback, got %+v", feedback)
+	}
+	analyzer := &projectAnalyzer{analysisCfg: defaultProjectAnalysisConfig(root)}
+	beforeLines := analyzer.analysisCfg.MaxLinesPerShard
+	notes := analyzer.applyRuntimeFeedbackToAnalysisConfig(feedback)
+	if len(notes) == 0 {
+		t.Fatalf("expected planner adjustment")
+	}
+	if analyzer.analysisCfg.MaxLinesPerShard >= beforeLines {
+		t.Fatalf("expected smaller shard line limit, before=%d after=%d", beforeLines, analyzer.analysisCfg.MaxLinesPerShard)
+	}
+}
+
+func TestRefineSemanticInvalidationClassifiesSecurityContract(t *testing.T) {
+	shard := AnalysisShard{
+		ID:                 "shard-01",
+		Name:               "security_ioctl",
+		PrimaryFiles:       []string{"driver/ioctl.cpp"},
+		InvalidationReason: "semantic_primary_changed",
+		InvalidationChanges: []InvalidationChange{
+			{Kind: "validation_rule_changed", Subject: "IOCTL command validation", Source: "driver/ioctl.cpp"},
+		},
+	}
+	refineSemanticInvalidation(&shard)
+	if shard.InvalidationReason != "semantic_security_contract_changed" {
+		t.Fatalf("expected refined semantic security reason, got %+v", shard)
+	}
+	if shard.InvalidationClass != "security_contract" {
+		t.Fatalf("expected security contract class, got %q", shard.InvalidationClass)
+	}
+}
+
+func TestPersistRunWritesPreflightAndModeScorecard(t *testing.T) {
+	root := t.TempDir()
+	analyzer := &projectAnalyzer{analysisCfg: defaultProjectAnalysisConfig(root)}
+	analyzer.analysisCfg.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:       "20260506-010203",
+			Goal:        "map project",
+			Mode:        "map",
+			Status:      "completed",
+			StartedAt:   time.Now(),
+			TotalShards: 1,
+		},
+		Preflight: AnalysisPreflight{
+			GeneratedAt:      time.Now(),
+			Intent:           "map project",
+			EffectiveMode:    "map",
+			RecommendedDepth: "standard",
+		},
+		Snapshot: ProjectSnapshot{
+			Root:        root,
+			GeneratedAt: time.Now(),
+			FilesByPath: map[string]ScannedFile{},
+		},
+		Shards: []AnalysisShard{{ID: "shard-01", Name: "core", PrimaryFiles: []string{"main.go"}}},
+		Reports: []WorkerReport{{
+			ShardID:          "shard-01",
+			Title:            "core",
+			ScopeSummary:     "core",
+			Responsibilities: []string{"core"},
+			EvidenceFiles:    []string{"main.go"},
+		}},
+		Reviews:       []ReviewDecision{{Status: "approved"}},
+		ModeScorecard: AnalysisModeScorecard{GeneratedAt: time.Now(), Mode: "map", Status: "pass", Score: 100},
+		FinalDocument: "# Project Analysis\n",
+	}
+	output, err := analyzer.persistRun(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := strings.TrimSuffix(filepath.Base(output), ".md")
+	for _, path := range []string{
+		filepath.Join(analyzer.analysisCfg.OutputDir, base+"_analysis_preflight.json"),
+		filepath.Join(analyzer.analysisCfg.OutputDir, base+"_mode_scorecard.json"),
+		filepath.Join(analyzer.analysisCfg.OutputDir, "latest", "analysis_preflight.json"),
+		filepath.Join(analyzer.analysisCfg.OutputDir, "latest", "mode_scorecard.json"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected artifact %s: %v", path, err)
+		}
 	}
 }
 

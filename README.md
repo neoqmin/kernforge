@@ -141,12 +141,16 @@ Its current differentiators are:
 - Local-model runs adapt shard sizing from provider, model size, max tokens, and request timeout when shard limits are not explicitly configured. If a final provider timeout or 5xx/overload-style error still stops the run, Kernforge tells the user it is retrying and reruns once with smaller `max_lines_per_shard` / `max_files_per_shard` plus a higher shard cap. Rate limits are not retried this way because smaller shards would usually increase request pressure.
 - When worker and reviewer share a provider/model route, shard concurrency follows the model route limit to avoid retry storms and low-confidence placeholder cascades. Local providers default to a route limit of 1, while cloud/API routes keep their configured concurrency instead of being forced to serial execution.
 - During execution, the transcript shows shard waves, completed/failed shard counts, cache/review state, and model progress lines labeled with the active analysis stage and shard, for example `worker runtime: ...` or `reviewer security_rpc: ...`.
+- Each run writes `analysis_preflight.json`, which records the inferred intent, effective mode, scope, required indexes, provider/runtime feedback, shard contracts, and success criteria before worker execution starts.
+- Each shard now carries a contract (`type`, `objective`, `required_evidence`, and `success_criteria`), and worker reports include source-anchored `claims` so reviewer and synthesis steps can distinguish direct facts, inferences, risks, and unknowns.
+- After worker/reviewer passes, `mode_scorecard.json` records mode-specific coverage, claim/evidence support, review approval, and any deterministic coverage gaps. When useful, Kernforge runs a bounded gap-filling shard pass before final synthesis.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
 - Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace; use `--path <dir>` when you want that scope to be explicit and validated before the run
 - Interactive runs can flag hidden or external-looking directories and let you exclude them from the analysis pass
 - Semantic fingerprint invalidation can force recomputation when structure changes even if file scope looks stable
+- Semantic invalidation reasons are refined into contract classes such as network, security, build/startup, asset/config, or runtime-flow changes so incremental reruns explain why a shard was refreshed.
 - Build alignment now lifts `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, and `compile_commands.json` into reusable build-context records
 - `structural_index_v2` now carries symbol anchors, build ownership edges, function-level call edges, and overlay edges instead of staying file-centric
 - `trace`, `impact`, and `security` retrieval now expand graph neighborhoods and emit `build_context_v2` plus `path_v2` evidence
@@ -298,6 +302,7 @@ Its current differentiators are:
 - Thinking elapsed time is rebased at phase boundaries and stale runaway timer displays are clamped at the 2-hour mark
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
 - `progress_display` controls in-flight visibility and can be changed from the REPL with `/progress-display auto|compact|stream`: `auto` preserves important tool/model/route and project-analysis progress as transcript ledger lines, `compact` keeps them in the footer, and `stream` writes every progress update persistently
+- Provider, tool, and command failures are mirrored to `.kernforge/logs/errors.jsonl` as capped JSONL; Kernforge keeps that file at or below 100 MB so retry-only provider failures remain debuggable after the UI has moved on
 - OpenAI-compatible and OpenAI Codex streaming providers surface tool-call construction events, so the REPL can show when the model is preparing a tool and when the arguments are ready
 - Progress-only model streams keep the same incomplete-stream fallback behavior as normal assistant streams; if a streamed OpenAI-compatible response is empty or incomplete, the retry is forced back through the non-stream path instead of re-entering streaming only because progress events are enabled
 - High-frequency shell output and heartbeat updates stay transient in `auto` mode, while durable tool start/result/retry events remain visible in the main transcript

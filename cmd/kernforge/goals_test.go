@@ -221,6 +221,37 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 	}
 }
 
+func TestGoalReviewerSkipsImplicitMainModelFallback(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "deepseek", "deepseek-chat", "", "default")
+	rt := &runtimeState{
+		session: session,
+		agent: &Agent{
+			Session: session,
+			Config: Config{
+				Provider: "deepseek",
+				Model:    "deepseek-chat",
+			},
+		},
+	}
+
+	reply, err := rt.runGoalReviewerReply(context.Background(), "Autonomous goal independent review pass")
+	if err != nil {
+		t.Fatalf("runGoalReviewerReply: %v", err)
+	}
+	if !strings.HasPrefix(reply, "APPROVED: independent reviewer skipped") {
+		t.Fatalf("expected skipped reviewer approval, got %q", reply)
+	}
+
+	reply, err = rt.runGoalReviewerReply(context.Background(), "Final semantic goal review")
+	if err != nil {
+		t.Fatalf("runGoalReviewerReply semantic: %v", err)
+	}
+	if !strings.HasPrefix(reply, "APPROVED: independent semantic reviewer skipped") {
+		t.Fatalf("expected skipped semantic reviewer approval, got %q", reply)
+	}
+}
+
 func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
