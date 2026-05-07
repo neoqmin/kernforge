@@ -353,6 +353,10 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 		"kernforge_analysis_context",
 		"kernforge_artifact_index",
 		"kernforge_fuzz_targets",
+		"kernforge_source_scan",
+		"kernforge_source_candidate_list",
+		"kernforge_source_candidate_show",
+		"kernforge_fuzz_workflow",
 		"kernforge_fuzz_func_preview",
 		"kernforge_fuzz_func_build",
 		"kernforge_fuzz_artifacts",
@@ -1297,6 +1301,69 @@ func TestKernforgeMCPServerFuzzTargetsFromLatestManifest(t *testing.T) {
 	listResult := requireMCPResult(t, listResp)
 	if !mcpListContainsURI(listResult["resources"], "kernforge://fuzz/targets") {
 		t.Fatalf("resources/list did not include fuzz targets resource")
+	}
+}
+
+func TestKernforgeMCPServerSourceCandidateToolsReturnStructuredHandoff(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	root := workspaceSnapshotRoot(server.rt.workspace)
+	candidate := SourceCandidateRecord{
+		ID:           "sc-mcp",
+		Workspace:    root,
+		Status:       "pending",
+		MatcherSlug:  "probe-copy-size-drift",
+		NoiseTier:    "precise",
+		File:         "driver/dispatch.cpp",
+		SymbolName:   "DispatchIoctl",
+		SourceAnchor: "driver/dispatch.cpp:42",
+		Score:        91,
+		ConfidenceBreakdown: map[string]int{
+			"matcher_base":   86,
+			"dataflow_facts": 6,
+		},
+		EvidenceSpans: []SourceCandidateEvidenceSpan{{
+			Kind:      "matcher_focus",
+			File:      "driver/dispatch.cpp",
+			StartLine: 42,
+			EndLine:   42,
+			Text:      "RtlCopyMemory(g_Buffer, UserBuffer, Size);",
+		}},
+		DataflowFacts: []SourceCandidateFact{{
+			Kind:   "probe_to_copy",
+			Line:   42,
+			Detail: "matched window contains both user-buffer probe and memory-copy sink",
+		}},
+	}
+	if _, err := server.rt.sourceScan.UpsertCandidate(candidate); err != nil {
+		t.Fatalf("upsert candidate: %v", err)
+	}
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      21,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_source_candidate_show",
+			"arguments": map[string]any{
+				"id": "sc-mcp",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("source candidate show produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	for _, want := range []string{
+		`"candidate_id": "sc-mcp"`,
+		`"confidence_breakdown"`,
+		`"next_command": "/fuzz-func --from-candidate sc-mcp"`,
+		`"next_tool_call"`,
+		"probe_to_copy",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("source candidate payload missing %q: %s", want, text)
+		}
 	}
 }
 

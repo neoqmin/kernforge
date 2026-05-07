@@ -1280,6 +1280,14 @@ func (rt *runtimeState) captureFuzzCampaignNativeResults(campaign FuzzCampaign, 
 				}
 			}
 		}
+		if rt != nil && rt.sourceScan != nil && strings.TrimSpace(run.SourceCandidateID) != "" {
+			if candidate, ok, loadErr := rt.sourceScan.GetCandidate(run.SourceCandidateID); loadErr == nil && ok {
+				candidate = linkSourceCandidateToNativeOutcome(candidate, campaign, result)
+				if _, err := rt.sourceScan.UpsertCandidate(candidate); err != nil {
+					return campaign, nil, err
+				}
+			}
+		}
 		result.ArtifactIDs = fuzzCampaignRunArtifactIDs(runArtifacts)
 		campaign.RunArtifacts = normalizeFuzzCampaignRunArtifacts(append(campaign.RunArtifacts, runArtifacts...))
 		campaign.Findings = upsertFuzzCampaignFinding(campaign.Findings, buildFuzzCampaignNativeFinding(campaign, run, result))

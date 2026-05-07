@@ -135,6 +135,8 @@ When the user explicitly says fuzz/fuzzing/퍼징/퍼즈/하네스, call `kernfo
 
 For `kernforge_fuzz_func`, the default source candidate context is `source_scan=focused`: KernForge reuses a matching saved source candidate or runs a target-scoped source scan before saving the plan. Use `source_scan=off` only when the user wants no candidate linkage, and `source_scan=full` only when a workspace-wide matcher sweep is explicitly useful. When the response includes `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, or `source_scan_summary`, mention the linked candidate only as source-level evidence, not as a confirmed runtime bug.
 
+For structured source candidate workflows, prefer `kernforge_source_scan`, `kernforge_source_candidate_list`, `kernforge_source_candidate_show`, and `kernforge_fuzz_workflow`. These tools return `candidate_id`, `matcher_slug`, `confidence_breakdown`, evidence spans, dataflow/control-flow facts, stale-source state, `next_command`, and `next_tool_call` so the client can continue with candidate-driven fuzzing without parsing terminal prose. Treat `stale=true` as a request to rerun source-scan before presenting the candidate as current.
+
 Expected Codex App source-level fuzz result:
 
 ![Codex App source-level fuzz result](docs/assets/codex-app-source-fuzz-result.png)

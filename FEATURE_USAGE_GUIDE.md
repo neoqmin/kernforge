@@ -508,7 +508,7 @@ Useful commands:
 - `/fuzz-campaign run`
 - `/source-scan run`
 - `/source-scan run --limit 50`
-- `/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector`
+- `/source-scan run --only-slugs probe-copy-size-drift,double-fetch-user-buffer`
 - `/source-scan run --files driver/nsi.c,api/registry.c`
 - `/source-scan list`
 - `/source-scan show [id|latest]`
@@ -525,15 +525,16 @@ Current behavior:
 4. Higher-risk findings now include concrete sample values, source-derived branch predicates, minimal counterexamples, branch outcomes, and downstream call chains.
 5. Output is organized as `Conclusion`, `Risk score table`, `Top predicted problems`, and `Source-derived attack surface` so the most actionable finding is visible first.
 6. By default, `/fuzz-func` reuses a matching `/source-scan` candidate or runs a focused source scan over the target and reachable files before saving the plan. Use `--source-scan off`, `--source-scan focused`, `--source-scan full`, or `--no-source-scan` to control this.
-7. `/source-scan run` persists ranked source candidates and prints the natural next command, `/fuzz-func --from-candidate <candidate-id>`, for explicit candidate handoff.
-8. Native execution is an optional follow-up. If build context such as `compile_commands.json` is missing, Kernforge explains the gap before asking whether to continue.
-9. Artifacts are written under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`.
-10. `/fuzz-func` automatically prints a campaign handoff when source-only scenarios are ready, so the user can continue with `/fuzz-campaign run` instead of learning campaign internals.
-11. `/fuzz-campaign` shows the next recommended campaign step and `/fuzz-campaign run` performs the safe automatic action, such as creating a campaign, attaching the latest useful run, promoting source-only scenarios into `corpus/<run-id>/`, updating deduplicated finding lifecycle and coverage gap entries, ingesting libFuzzer logs, llvm-cov text, LCOV, and JSON coverage summaries, capturing sanitizer reports, Windows crash dumps, Application Verifier, and Driver Verifier artifacts, and recording native run results into reports and evidence.
-12. Campaign manifests now include a finding list, dedup keys, duplicate counts, merged native/evidence links, parsed coverage reports, run artifacts, coverage gaps, and artifact graph that link targets, seeds, native results, coverage reports, sanitizer/verifier artifacts, evidence ids, source anchors, verification gates, and tracked-feature gates.
-13. Native crash findings merge by crash fingerprint, source anchor, and suspected invariant so repeated runs strengthen one tracked issue.
-14. Coverage gaps feed the next generated `FUZZ_TARGETS.md` refresh so unexercised seed targets receive explicit ranking feedback.
-15. `/fuzz-func ` completion shows function and file usage hints first, then switches to real file candidates after `@`.
+7. `/source-scan run` persists ranked function-window candidates and prints the natural next command, `/fuzz-func --from-candidate <candidate-id>`, for explicit candidate handoff. Each candidate records evidence spans, file/symbol fingerprints, confidence breakdown, dataflow/control-flow facts, stale-source state, and native feedback calibration.
+8. Built-in source matchers include Windows kernel double-fetch, IOCTL output infoleak, WDF request buffer size drift, integer allocation overflow, and pool/refcount lifetime surfaces in addition to the existing probe/copy, dispatch, IRQL, callback, minifilter, Unreal RPC, and telemetry parser signals.
+9. Native execution is an optional follow-up. If build context such as `compile_commands.json` is missing, Kernforge explains the gap before asking whether to continue.
+10. Artifacts are written under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`.
+11. `/fuzz-func` automatically prints a campaign handoff when source-only scenarios are ready, so the user can continue with `/fuzz-campaign run` instead of learning campaign internals.
+12. `/fuzz-campaign` shows the next recommended campaign step and `/fuzz-campaign run` performs the safe automatic action, such as creating a campaign, attaching the latest useful run, promoting source-only scenarios into `corpus/<run-id>/`, updating deduplicated finding lifecycle and coverage gap entries, ingesting libFuzzer logs, llvm-cov text, LCOV, and JSON coverage summaries, capturing sanitizer reports, Windows crash dumps, Application Verifier, and Driver Verifier artifacts, and recording native run results into reports and evidence.
+13. Campaign manifests now include a finding list, dedup keys, duplicate counts, merged native/evidence links, parsed coverage reports, run artifacts, coverage gaps, and artifact graph that link targets, seeds, native results, coverage reports, sanitizer/verifier artifacts, evidence ids, source anchors, verification gates, and tracked-feature gates.
+14. Native crash findings merge by crash fingerprint, source anchor, and suspected invariant so repeated runs strengthen one tracked issue.
+15. Coverage gaps feed the next generated `FUZZ_TARGETS.md` refresh so unexercised seed targets receive explicit ranking feedback.
+16. `/fuzz-func ` completion shows function and file usage hints first, then switches to real file candidates after `@`.
 
 Practical interpretation:
 1. `Most useful branch delta` is usually the first line worth reading.

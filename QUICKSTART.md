@@ -151,7 +151,7 @@ Provider and runtime inspection:
 What this means:
 1. If you know the function, pin it with a file path.
 2. If you only know the suspicious file, let Kernforge pick the representative root and reachable input-facing path.
-3. `/fuzz-func` uses focused source-scan context by default; `/source-scan run` is useful when you want to inspect and choose the candidate before fuzz planning.
+3. `/fuzz-func` uses focused source-scan context by default; `/source-scan run` is useful when you want to inspect and choose the candidate before fuzz planning. Source candidates include function-window evidence, confidence breakdown, file/symbol fingerprints, and stale-source state.
 3. Read the highest-score finding, the branch-delta summary, and the first source location before anything else.
 
 ### Symptom-driven root-cause investigation
