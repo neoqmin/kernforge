@@ -1498,6 +1498,7 @@ func (rt *runtimeState) attachFunctionFuzzSourceScanContext(root string, run Fun
 		run.SourceScanRunID = explicitCandidate.RunID
 		run.SourceScanSummary = fmt.Sprintf("Using source candidate %s matched by %s.", explicitCandidate.ID, valueOrUnset(explicitCandidate.MatcherSlug))
 		run.Notes = uniqueStrings(append(run.Notes, "Started from source candidate "+explicitCandidate.ID+" matched by "+explicitCandidate.MatcherSlug+"."))
+		run = applySourceCandidateEvidenceToFunctionFuzzRun(run, explicitCandidate)
 		return normalizeFunctionFuzzRun(run), explicitCandidate, true, nil
 	}
 	if mode == functionFuzzSourceScanModeOff {
@@ -1518,6 +1519,7 @@ func (rt *runtimeState) attachFunctionFuzzSourceScanContext(root string, run Fun
 		run.SourceScanRunID = existing.RunID
 		run.SourceScanSummary = fmt.Sprintf("Reused source candidate %s matched by %s.", existing.ID, valueOrUnset(existing.MatcherSlug))
 		run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+		run = applySourceCandidateEvidenceToFunctionFuzzRun(run, existing)
 		return normalizeFunctionFuzzRun(run), existing, true, nil
 	}
 	if !hasSemanticIndexV2Data(artifacts.IndexV2) {
@@ -1566,6 +1568,7 @@ func (rt *runtimeState) attachFunctionFuzzSourceScanContext(root string, run Fun
 	run.SourceScanRunID = firstNonBlankString(run.SourceScanRunID, best.RunID)
 	run.SourceScanSummary = fmt.Sprintf("%s source scan captured %d candidate(s); linked %s via %s.", string(mode), len(savedCandidates), best.ID, valueOrUnset(best.MatcherSlug))
 	run.Notes = uniqueStrings(append(run.Notes, run.SourceScanSummary))
+	run = applySourceCandidateEvidenceToFunctionFuzzRun(run, best)
 	return normalizeFunctionFuzzRun(run), best, true, nil
 }
 

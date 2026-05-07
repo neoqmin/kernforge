@@ -17,7 +17,24 @@ const (
 	defaultSourceScanMaxRuns       = 100
 	defaultSourceScanMaxCandidates = 4000
 	sourceCandidateStatusPending   = "pending"
+	sourceCandidateStatusStale     = "stale"
 )
+
+type SourceCandidateEvidenceSpan struct {
+	Kind      string `json:"kind"`
+	File      string `json:"file,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+	EndLine   int    `json:"end_line,omitempty"`
+	Text      string `json:"text,omitempty"`
+}
+
+type SourceCandidateFact struct {
+	Kind   string `json:"kind"`
+	Line   int    `json:"line,omitempty"`
+	From   string `json:"from,omitempty"`
+	To     string `json:"to,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
 
 type SourceCandidateAnalysisEntry struct {
 	RunID        string    `json:"run_id,omitempty"`
@@ -58,6 +75,17 @@ type SourceCandidateRecord struct {
 	SymbolKind          string                         `json:"symbol_kind,omitempty"`
 	SourceAnchor        string                         `json:"source_anchor,omitempty"`
 	Score               int                            `json:"score,omitempty"`
+	ConfidenceBreakdown map[string]int                 `json:"confidence_breakdown,omitempty"`
+	EvidenceSpans       []SourceCandidateEvidenceSpan  `json:"evidence_spans,omitempty"`
+	NegativeEvidence    []string                       `json:"negative_evidence,omitempty"`
+	FileContentHash     string                         `json:"file_content_hash,omitempty"`
+	CurrentFileHash     string                         `json:"current_file_hash,omitempty"`
+	SymbolSignatureHash string                         `json:"symbol_signature_hash,omitempty"`
+	CurrentSymbolHash   string                         `json:"current_symbol_hash,omitempty"`
+	Stale               bool                           `json:"stale,omitempty"`
+	StaleReason         string                         `json:"stale_reason,omitempty"`
+	DataflowFacts       []SourceCandidateFact          `json:"dataflow_facts,omitempty"`
+	ControlflowFacts    []SourceCandidateFact          `json:"controlflow_facts,omitempty"`
 	Reasons             []string                       `json:"reasons,omitempty"`
 	Tags                []string                       `json:"tags,omitempty"`
 	CreatedAt           time.Time                      `json:"created_at,omitempty"`
@@ -120,13 +148,18 @@ type sourceMatcher struct {
 }
 
 type sourceMatchContext struct {
-	Root         string
-	RunID        string
-	ProjectTypes []string
-	File         FileRecord
-	Symbols      []SymbolRecord
-	Content      string
-	Lines        []string
+	Root            string
+	RunID           string
+	ProjectTypes    []string
+	File            FileRecord
+	Symbols         []SymbolRecord
+	Content         string
+	FullContent     string
+	Lines           []string
+	WindowStartLine int
+	WindowEndLine   int
+	WindowSymbol    SymbolRecord
+	HasWindowSymbol bool
 }
 
 type sourceScanMatch struct {
@@ -248,20 +281,28 @@ func (s *SourceScanStore) ListCandidates(workspace string, limit int) ([]SourceC
 }
 
 func (s *SourceScanStore) GetCandidate(id string) (SourceCandidateRecord, bool, error) {
+	return s.GetCandidateForWorkspace(id, "")
+}
+
+func (s *SourceScanStore) GetCandidateForWorkspace(id string, workspace string) (SourceCandidateRecord, bool, error) {
 	state, err := s.load()
 	if err != nil {
 		return SourceCandidateRecord{}, false, err
 	}
 	query := strings.ToLower(strings.TrimSpace(id))
 	if query == "" || query == "latest" {
-		items, err := s.ListCandidates("", 1)
+		items, err := s.ListCandidates(workspace, 1)
 		if err != nil || len(items) == 0 {
 			return SourceCandidateRecord{}, false, err
 		}
 		return items[0], true, nil
 	}
+	workspace = normalizePersistentMemoryWorkspace(workspace)
 	for _, item := range state.Candidates {
 		item = normalizeSourceCandidateRecord(item)
+		if workspace != "" && workspaceAffinityScore(workspace, item.Workspace) == 0 {
+			continue
+		}
 		lowerID := strings.ToLower(item.ID)
 		if lowerID == query || strings.HasPrefix(lowerID, query) {
 			return item, true, nil
@@ -472,7 +513,7 @@ func (rt *runtimeState) listSourceCandidates() error {
 }
 
 func (rt *runtimeState) showSourceCandidate(id string) error {
-	item, ok, err := rt.sourceScan.GetCandidate(id)
+	item, ok, err := rt.sourceScan.GetCandidateForWorkspace(id, workspaceSnapshotRoot(rt.workspace))
 	if err != nil {
 		return err
 	}
@@ -508,7 +549,7 @@ func (rt *runtimeState) revalidateSourceCandidateCommand(args string) error {
 			i++
 		}
 	}
-	item, ok, err := rt.sourceScan.GetCandidate(id)
+	item, ok, err := rt.sourceScan.GetCandidateForWorkspace(id, workspaceSnapshotRoot(rt.workspace))
 	if err != nil {
 		return err
 	}
@@ -636,23 +677,26 @@ func buildSourceScanCandidates(root string, runID string, index SemanticIndexV2,
 			File:         file,
 			Symbols:      symbolsByFile[file.Path],
 			Content:      content,
+			FullContent:  content,
 			Lines:        lines,
 		}
-		for _, matcher := range matchers {
-			if !matcher.matchesFile(file) || !matcher.matchesProject(projectTypes) {
-				continue
-			}
-			matches := matcher.match(ctx)
-			for _, match := range matches {
-				candidate := matcher.toCandidate(ctx, match)
-				if candidate.ID == "" {
+		for _, window := range sourceScanMatchContextsForFile(ctx) {
+			for _, matcher := range matchers {
+				if !matcher.matchesFile(file) || !matcher.matchesProject(projectTypes) {
 					continue
 				}
-				existing, ok := seen[candidate.ID]
-				if ok && existing.Score >= candidate.Score {
-					continue
+				matches := matcher.match(window)
+				for _, match := range matches {
+					candidate := matcher.toCandidate(window, match)
+					if candidate.ID == "" {
+						continue
+					}
+					existing, ok := seen[candidate.ID]
+					if ok && existing.Score >= candidate.Score {
+						continue
+					}
+					seen[candidate.ID] = candidate
 				}
-				seen[candidate.ID] = candidate
 			}
 		}
 	}
@@ -670,6 +714,52 @@ func buildSourceScanCandidates(root string, runID string, index SemanticIndexV2,
 	})
 	if options.Limit > 0 && len(out) > options.Limit {
 		out = append([]SourceCandidateRecord(nil), out[:options.Limit]...)
+	}
+	return out
+}
+
+func sourceScanMatchContextsForFile(ctx sourceMatchContext) []sourceMatchContext {
+	ctx.FullContent = firstNonBlankString(ctx.FullContent, ctx.Content)
+	out := []sourceMatchContext{}
+	symbols := append([]SymbolRecord(nil), ctx.Symbols...)
+	sort.Slice(symbols, func(i int, j int) bool {
+		if symbols[i].StartLine == symbols[j].StartLine {
+			return symbols[i].Name < symbols[j].Name
+		}
+		return symbols[i].StartLine < symbols[j].StartLine
+	})
+	for index, symbol := range symbols {
+		symbol.File = functionFuzzNormalizeOptionalPath(firstNonBlankString(symbol.File, ctx.File.Path))
+		if symbol.StartLine <= 0 || symbol.EndLine < symbol.StartLine {
+			continue
+		}
+		start := symbol.StartLine - 8
+		if start < 1 {
+			start = 1
+		}
+		if index > 0 && symbols[index-1].EndLine > 0 && start <= symbols[index-1].EndLine {
+			start = symbols[index-1].EndLine + 1
+		}
+		end := symbol.EndLine + 8
+		if end > len(ctx.Lines) {
+			end = len(ctx.Lines)
+		}
+		if index+1 < len(symbols) && symbols[index+1].StartLine > 0 && end >= symbols[index+1].StartLine {
+			end = symbols[index+1].StartLine - 1
+		}
+		window := ctx
+		window.WindowStartLine = start
+		window.WindowEndLine = end
+		window.WindowSymbol = symbol
+		window.HasWindowSymbol = true
+		window.Content = sourceScanLinesInRange(ctx.Lines, start, end)
+		out = append(out, window)
+	}
+	if len(out) == 0 {
+		ctx.WindowStartLine = 1
+		ctx.WindowEndLine = len(ctx.Lines)
+		ctx.Content = firstNonBlankString(ctx.Content, ctx.FullContent)
+		out = append(out, ctx)
 	}
 	return out
 }
@@ -848,6 +938,76 @@ func defaultSourceMatchers() []sourceMatcher {
 			Reason:            "minifilter context ownership bugs are usually path-sensitive and fuzzable with operation sequencing",
 		},
 		{
+			Slug:              "double-fetch-user-buffer",
+			Description:       "User-buffer probe followed by later pointer dereference or copy, a classic double-fetch surface.",
+			NoiseTier:         "precise",
+			SeverityHint:      "high",
+			ProjectTypes:      []string{"windows_driver", "cpp"},
+			Tags:              []string{"windows_kernel", "double_fetch", "user_buffer"},
+			FileExtensions:    []string{".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inl"},
+			RequiredAnyGroups: [][]string{{"probeforread", "probeforwrite"}, {"userbuffer", "type3inputbuffer", "irp->userbuffer", "usermode"}, {"->", "*", "rtlcopymemory", "memcpy"}},
+			LineNeedles:       []string{"probeforread", "userbuffer", "type3inputbuffer", "rtlcopymemory", "memcpy"},
+			MatchedPattern:    "probe followed by user-buffer reuse",
+			BaseScore:         88,
+			Reason:            "user memory must be captured once after probing; later dereference can become a double-fetch race",
+		},
+		{
+			Slug:              "ioctl-output-infoleak",
+			Description:       "IOCTL output paths that copy structures or buffers back to the caller and need initialization and length proof.",
+			NoiseTier:         "precise",
+			SeverityHint:      "high",
+			ProjectTypes:      []string{"windows_driver", "cpp"},
+			Tags:              []string{"windows_kernel", "ioctl", "infoleak", "output_buffer"},
+			FileExtensions:    []string{".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inl"},
+			RequiredAnyGroups: [][]string{{"outputbufferlength", "systembuffer", "userbuffer", "wdfrequestretrieveoutputbuffer"}, {"information", "iostatus.information", "bytesreturned"}, {"rtlcopymemory", "memcpy", "copy"}},
+			LineNeedles:       []string{"outputbufferlength", "iostatus.information", "bytesreturned", "wdfrequestretrieveoutputbuffer", "rtlcopymemory"},
+			MatchedPattern:    "IOCTL output buffer copy and Information length",
+			BaseScore:         84,
+			Reason:            "output buffer copies must prove initialized bytes and returned length agree",
+		},
+		{
+			Slug:              "wdf-request-buffer-size-drift",
+			Description:       "WDF request buffer retrieval where the retrieved length, requested size, and later copy size can diverge.",
+			NoiseTier:         "precise",
+			SeverityHint:      "high",
+			ProjectTypes:      []string{"windows_driver", "cpp"},
+			Tags:              []string{"windows_kernel", "wdf", "buffer", "bounds"},
+			FileExtensions:    []string{".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inl"},
+			RequiredAnyGroups: [][]string{{"wdfrequestretrieveinputbuffer", "wdfrequestretrieveoutputbuffer", "wdfrequestretrievememory"}, {"size", "length", "bytes", "buffersize"}, {"rtlcopymemory", "memcpy", "copy", "wdfmemorycopy"}},
+			LineNeedles:       []string{"wdfrequestretrieveinputbuffer", "wdfrequestretrieveoutputbuffer", "wdfmemorycopy", "buffersize", "rtlcopymemory"},
+			MatchedPattern:    "WDF request buffer size drift",
+			BaseScore:         86,
+			Reason:            "WDF buffer retrieval length and later sink length should remain the same trusted contract",
+		},
+		{
+			Slug:              "integer-overflow-allocation",
+			Description:       "Count/size arithmetic feeding allocation and copy paths.",
+			NoiseTier:         "normal",
+			SeverityHint:      "high",
+			ProjectTypes:      []string{"windows_driver", "cpp", "unreal"},
+			Tags:              []string{"integer_overflow", "allocation", "bounds"},
+			FileExtensions:    []string{".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inl"},
+			RequiredAnyGroups: [][]string{{"size", "count", "length", "bytes"}, {"*", "<<", "sizeof"}, {"exallocatepool", "malloc", "new ", "allocate", "realloc"}, {"memcpy", "rtlcopymemory", "copy", "read"}},
+			LineNeedles:       []string{"sizeof", "exallocatepool", "malloc", "new ", "memcpy", "rtlcopymemory"},
+			MatchedPattern:    "allocation size arithmetic feeding memory sink",
+			BaseScore:         78,
+			Reason:            "attacker-sized allocation arithmetic must be overflow-checked before allocation and copy",
+		},
+		{
+			Slug:              "pool-lifetime-refcount",
+			Description:       "Pool allocation, object reference, or shared-state publication with cleanup/refcount obligations.",
+			NoiseTier:         "normal",
+			SeverityHint:      "medium",
+			ProjectTypes:      []string{"windows_driver", "cpp"},
+			Tags:              []string{"windows_kernel", "pool", "lifetime", "refcount"},
+			FileExtensions:    []string{".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".inl"},
+			RequiredAnyGroups: [][]string{{"exallocatepool", "obreferenceobject", "ioreference", "reference"}, {"exfreepool", "obdereferenceobject", "dereference", "cleanup", "goto"}, {"list", "table", "context", "state", "request"}},
+			LineNeedles:       []string{"exallocatepool", "obreferenceobject", "exfreepool", "obdereferenceobject", "cleanup", "goto"},
+			MatchedPattern:    "pool or object lifetime cleanup contract",
+			BaseScore:         74,
+			Reason:            "pool and object lifetime contracts need path-sensitive cleanup and refcount fuzzing",
+		},
+		{
 			Slug:              "unreal-rpc-trust-boundary",
 			Description:       "Unreal network RPC declarations that should prove authority and payload validation.",
 			NoiseTier:         "normal",
@@ -949,11 +1109,24 @@ func (m sourceMatcher) match(ctx sourceMatchContext) []sourceScanMatch {
 			return nil
 		}
 	}
-	line := sourceScanEvidenceLine(ctx.Lines, m.LineNeedles)
+	line := sourceScanEvidenceLineInRange(ctx.Lines, m.LineNeedles, ctx.WindowStartLine, ctx.WindowEndLine)
 	if line <= 0 {
-		line = 1
+		line = ctx.WindowStartLine
+		if line <= 0 {
+			line = sourceScanEvidenceLine(ctx.Lines, m.LineNeedles)
+		}
+		if line <= 0 {
+			line = 1
+		}
 	}
-	symbol, hasSymbol := sourceScanNearestSymbol(ctx.Symbols, line)
+	symbol, hasSymbol := SymbolRecord{}, false
+	if ctx.HasWindowSymbol {
+		symbol = ctx.WindowSymbol
+		hasSymbol = true
+	}
+	if !hasSymbol {
+		symbol, hasSymbol = sourceScanNearestSymbol(ctx.Symbols, line)
+	}
 	return []sourceScanMatch{{
 		Line:           line,
 		Snippet:        sourceScanSnippet(ctx.Lines, line, 2),
@@ -968,29 +1141,38 @@ func (m sourceMatcher) toCandidate(ctx sourceMatchContext, match sourceScanMatch
 	now := time.Now()
 	file := filepath.ToSlash(strings.TrimSpace(ctx.File.Path))
 	candidate := SourceCandidateRecord{
-		Workspace:          ctx.Root,
-		RunID:              ctx.RunID,
-		Status:             sourceCandidateStatusPending,
-		MatcherSlug:        strings.TrimSpace(m.Slug),
-		MatcherDescription: strings.TrimSpace(m.Description),
-		NoiseTier:          strings.ToLower(strings.TrimSpace(m.NoiseTier)),
-		SeverityHint:       strings.ToLower(strings.TrimSpace(m.SeverityHint)),
-		ProjectTypes:       uniqueStrings(m.ProjectTypes),
-		File:               file,
-		LineNumbers:        []int{match.Line},
-		Snippet:            compactPersistentMemoryText(match.Snippet, 900),
-		MatchedPattern:     strings.TrimSpace(match.MatchedPattern),
-		SourceAnchor:       sourceCandidateAnchor(file, match.Line),
-		Score:              sourceScanCandidateScore(m, ctx, match),
-		Reasons:            analysisUniqueStrings(match.Reasons),
-		Tags:               uniqueStrings(m.Tags),
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		Workspace:           ctx.Root,
+		RunID:               ctx.RunID,
+		Status:              sourceCandidateStatusPending,
+		MatcherSlug:         strings.TrimSpace(m.Slug),
+		MatcherDescription:  strings.TrimSpace(m.Description),
+		NoiseTier:           strings.ToLower(strings.TrimSpace(m.NoiseTier)),
+		SeverityHint:        strings.ToLower(strings.TrimSpace(m.SeverityHint)),
+		ProjectTypes:        uniqueStrings(m.ProjectTypes),
+		File:                file,
+		LineNumbers:         []int{match.Line},
+		Snippet:             compactPersistentMemoryText(match.Snippet, 900),
+		MatchedPattern:      strings.TrimSpace(match.MatchedPattern),
+		SourceAnchor:        sourceCandidateAnchor(file, match.Line),
+		Score:               sourceScanCandidateScore(m, ctx, match),
+		ConfidenceBreakdown: sourceScanCandidateConfidenceBreakdown(m, ctx, match),
+		EvidenceSpans:       sourceScanCandidateEvidenceSpans(m, ctx, match),
+		NegativeEvidence:    sourceScanCandidateNegativeEvidence(ctx, match),
+		FileContentHash:     sourceScanTextHash(firstNonBlankString(ctx.FullContent, ctx.Content)),
+		CurrentFileHash:     sourceScanTextHash(firstNonBlankString(ctx.FullContent, ctx.Content)),
+		DataflowFacts:       sourceScanCandidateDataflowFacts(ctx, match),
+		ControlflowFacts:    sourceScanCandidateControlflowFacts(ctx, match),
+		Reasons:             analysisUniqueStrings(match.Reasons),
+		Tags:                uniqueStrings(m.Tags),
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if match.HasSymbol {
 		candidate.SymbolID = strings.TrimSpace(match.Symbol.ID)
 		candidate.SymbolName = firstNonBlankString(functionFuzzDisplayName(match.Symbol), match.Symbol.Name)
 		candidate.SymbolKind = strings.TrimSpace(match.Symbol.Kind)
+		candidate.SymbolSignatureHash = sourceScanSignatureHash(match.Symbol.Signature)
+		candidate.CurrentSymbolHash = candidate.SymbolSignatureHash
 		if candidate.SourceAnchor == "" {
 			candidate.SourceAnchor = analysisFuzzSourceAnchor(match.Symbol)
 		}
@@ -1031,6 +1213,154 @@ func sourceScanCandidateScore(m sourceMatcher, ctx sourceMatchContext, match sou
 		score = 100
 	}
 	return score
+}
+
+func sourceScanCandidateConfidenceBreakdown(m sourceMatcher, ctx sourceMatchContext, match sourceScanMatch) map[string]int {
+	out := map[string]int{
+		"matcher_base": m.BaseScore,
+	}
+	switch strings.ToLower(strings.TrimSpace(m.NoiseTier)) {
+	case "precise":
+		out["noise_tier"] = 10
+	case "normal":
+		out["noise_tier"] = 4
+	case "noisy":
+		out["noise_tier"] = -8
+	}
+	if match.HasSymbol {
+		out["symbol_window"] = 10
+		params := buildFunctionFuzzParameterStrategies(match.Symbol.Signature)
+		if functionFuzzSymbolLooksInputFacing(match.Symbol, params) {
+			out["input_facing_symbol"] = 10
+		}
+		if functionFuzzHasLengthBufferRelation(params) {
+			out["length_buffer_relation"] = 8
+		}
+		if functionFuzzHarnessReady(match.Symbol, params) {
+			out["harness_ready_signature"] = 6
+		}
+	}
+	if containsAny(strings.ToLower(ctx.File.Path), "test", "mock", "sample", "example") {
+		out["test_or_sample_path"] = -12
+	}
+	if len(sourceScanCandidateDataflowFacts(ctx, match)) > 0 {
+		out["dataflow_facts"] = 6
+	}
+	if len(sourceScanCandidateControlflowFacts(ctx, match)) > 0 {
+		out["controlflow_facts"] = 4
+	}
+	return out
+}
+
+func sourceScanCandidateEvidenceSpans(m sourceMatcher, ctx sourceMatchContext, match sourceScanMatch) []SourceCandidateEvidenceSpan {
+	out := []SourceCandidateEvidenceSpan{{
+		Kind:      "matcher_focus",
+		File:      functionFuzzNormalizeOptionalPath(ctx.File.Path),
+		StartLine: match.Line,
+		EndLine:   match.Line,
+		Text:      compactPersistentMemoryText(strings.TrimSpace(match.Snippet), 500),
+	}}
+	for _, needle := range m.LineNeedles {
+		line := sourceScanEvidenceLineInRange(ctx.Lines, []string{needle}, ctx.WindowStartLine, ctx.WindowEndLine)
+		if line <= 0 || line == match.Line {
+			continue
+		}
+		out = append(out, SourceCandidateEvidenceSpan{
+			Kind:      "needle",
+			File:      functionFuzzNormalizeOptionalPath(ctx.File.Path),
+			StartLine: line,
+			EndLine:   line,
+			Text:      compactPersistentMemoryText(strings.TrimSpace(ctx.Lines[line-1]), 220),
+		})
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return normalizeSourceCandidateEvidenceSpans(out)
+}
+
+func sourceScanCandidateNegativeEvidence(ctx sourceMatchContext, match sourceScanMatch) []string {
+	lower := strings.ToLower(ctx.Content)
+	out := []string{}
+	if !containsAny(lower, "try", "__try", "except", "__except") && containsAny(lower, "probeforread", "probeforwrite", "userbuffer", "type3inputbuffer") {
+		out = append(out, "no local SEH guard was visible around user-buffer handling")
+	}
+	if containsAny(lower, "memcpy", "rtlcopymemory", "copy") && !containsAny(lower, "sizeof", "min(", "rtlulong", "safeint", "ntintsafe") {
+		out = append(out, "no obvious safe integer or bounded-copy helper was visible in the matched window")
+	}
+	if match.HasSymbol && strings.TrimSpace(match.Symbol.Signature) == "" {
+		out = append(out, "semantic index did not include the matched symbol signature")
+	}
+	return compactStringSlice(out, 180)
+}
+
+func sourceScanCandidateDataflowFacts(ctx sourceMatchContext, match sourceScanMatch) []SourceCandidateFact {
+	lower := strings.ToLower(ctx.Content)
+	out := []SourceCandidateFact{}
+	if containsAny(lower, "probeforread", "probeforwrite") && containsAny(lower, "rtlcopymemory", "memcpy", "copyfrom", "copy_memory") {
+		out = append(out, SourceCandidateFact{
+			Kind:   "probe_to_copy",
+			Line:   match.Line,
+			From:   "probe",
+			To:     "copy",
+			Detail: "matched window contains both user-buffer probe and memory-copy sink",
+		})
+	}
+	if containsAny(lower, "exallocatepool", "malloc", "new ", "allocate") && containsAny(lower, "memcpy", "rtlcopymemory", "copy") {
+		out = append(out, SourceCandidateFact{
+			Kind:   "allocation_to_copy",
+			Line:   match.Line,
+			From:   "allocation",
+			To:     "copy",
+			Detail: "matched window contains allocation and copy operations that should share size semantics",
+		})
+	}
+	if containsAny(lower, "userbuffer", "type3inputbuffer", "mdl", "wdfrequestretrieve") && containsAny(lower, "length", "size", "bytes", "count") {
+		out = append(out, SourceCandidateFact{
+			Kind:   "attacker_size_contract",
+			Line:   match.Line,
+			From:   "attacker_input",
+			To:     "size_contract",
+			Detail: "matched window ties external input storage to length or size state",
+		})
+	}
+	return normalizeSourceCandidateFacts(out)
+}
+
+func sourceScanCandidateControlflowFacts(ctx sourceMatchContext, match sourceScanMatch) []SourceCandidateFact {
+	lower := strings.ToLower(ctx.Content)
+	out := []SourceCandidateFact{}
+	if containsAny(lower, "switch", "case") && containsAny(lower, "ioctl", "iocode", "controlcode", "ctl_code") {
+		out = append(out, SourceCandidateFact{
+			Kind:   "selector_dispatch",
+			Line:   match.Line,
+			Detail: "matched window contains selector-driven dispatch",
+		})
+	}
+	if containsAny(lower, "if (", "if(") && containsAny(lower, "length", "size", "count", "bytes") {
+		out = append(out, SourceCandidateFact{
+			Kind:   "size_guard",
+			Line:   match.Line,
+			Detail: "matched window contains size or length guard control flow",
+		})
+	}
+	if containsAny(lower, "goto", "cleanup", "fail", "return status_", "return false") {
+		out = append(out, SourceCandidateFact{
+			Kind:   "failure_unwind",
+			Line:   match.Line,
+			Detail: "matched window has explicit failure or cleanup control flow",
+		})
+	}
+	return normalizeSourceCandidateFacts(out)
+}
+
+func sourceScanTextHash(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	sum := sha1.Sum([]byte(text))
+	return hex.EncodeToString(sum[:])
 }
 
 func sourceScanSymbolsByFile(symbols []SymbolRecord) map[string][]SymbolRecord {
@@ -1160,6 +1490,47 @@ func sourceScanEvidenceLine(lines []string, needles []string) int {
 	return 0
 }
 
+func sourceScanEvidenceLineInRange(lines []string, needles []string, startLine int, endLine int) int {
+	if len(lines) == 0 {
+		return 0
+	}
+	if startLine <= 0 {
+		startLine = 1
+	}
+	if endLine <= 0 || endLine > len(lines) {
+		endLine = len(lines)
+	}
+	for i := startLine; i <= endLine; i++ {
+		lower := strings.ToLower(lines[i-1])
+		for _, needle := range needles {
+			if strings.Contains(lower, strings.ToLower(strings.TrimSpace(needle))) {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+func sourceScanLinesInRange(lines []string, startLine int, endLine int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	if startLine <= 0 {
+		startLine = 1
+	}
+	if endLine <= 0 || endLine > len(lines) {
+		endLine = len(lines)
+	}
+	if startLine > endLine {
+		return ""
+	}
+	out := []string{}
+	for i := startLine; i <= endLine; i++ {
+		out = append(out, lines[i-1])
+	}
+	return strings.Join(out, "\n")
+}
+
 func sourceScanSnippet(lines []string, line int, radius int) string {
 	if len(lines) == 0 {
 		return ""
@@ -1242,6 +1613,22 @@ func normalizeSourceCandidateRecord(item SourceCandidateRecord) SourceCandidateR
 	if item.Score > 100 {
 		item.Score = 100
 	}
+	item.ConfidenceBreakdown = normalizeSourceCandidateConfidenceBreakdown(item.ConfidenceBreakdown)
+	item.EvidenceSpans = normalizeSourceCandidateEvidenceSpans(item.EvidenceSpans)
+	item.NegativeEvidence = compactStringSlice(item.NegativeEvidence, 180)
+	item.FileContentHash = strings.ToLower(strings.TrimSpace(item.FileContentHash))
+	item.CurrentFileHash = strings.ToLower(strings.TrimSpace(item.CurrentFileHash))
+	if item.CurrentFileHash == "" {
+		item.CurrentFileHash = item.FileContentHash
+	}
+	item.SymbolSignatureHash = strings.ToLower(strings.TrimSpace(item.SymbolSignatureHash))
+	item.CurrentSymbolHash = strings.ToLower(strings.TrimSpace(item.CurrentSymbolHash))
+	if item.CurrentSymbolHash == "" {
+		item.CurrentSymbolHash = item.SymbolSignatureHash
+	}
+	item.StaleReason = compactPersistentMemoryText(item.StaleReason, 220)
+	item.DataflowFacts = normalizeSourceCandidateFacts(item.DataflowFacts)
+	item.ControlflowFacts = normalizeSourceCandidateFacts(item.ControlflowFacts)
 	item.Reasons = analysisUniqueStrings(compactStringSlice(item.Reasons, 160))
 	item.Tags = uniqueStrings(lowerStringSlice(item.Tags))
 	item.LinkedFuzzRunIDs = uniqueStrings(item.LinkedFuzzRunIDs)
@@ -1271,6 +1658,68 @@ func normalizeSourceCandidateRecord(item SourceCandidateRecord) SourceCandidateR
 		item.ID = sourceCandidateID(item)
 	}
 	return item
+}
+
+func normalizeSourceCandidateConfidenceBreakdown(items map[string]int) map[string]int {
+	if len(items) == 0 {
+		return nil
+	}
+	out := map[string]int{}
+	for key, value := range items {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" || value == 0 {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeSourceCandidateEvidenceSpans(items []SourceCandidateEvidenceSpan) []SourceCandidateEvidenceSpan {
+	out := []SourceCandidateEvidenceSpan{}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		item.Kind = strings.ToLower(strings.TrimSpace(item.Kind))
+		item.File = functionFuzzNormalizeOptionalPath(item.File)
+		item.Text = compactPersistentMemoryText(strings.TrimSpace(item.Text), 500)
+		if item.EndLine > 0 && item.StartLine > item.EndLine {
+			item.StartLine, item.EndLine = item.EndLine, item.StartLine
+		}
+		if item.Kind == "" && item.Text == "" {
+			continue
+		}
+		key := strings.ToLower(strings.Join([]string{item.Kind, item.File, fmt.Sprint(item.StartLine), fmt.Sprint(item.EndLine), item.Text}, "|"))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func normalizeSourceCandidateFacts(items []SourceCandidateFact) []SourceCandidateFact {
+	out := []SourceCandidateFact{}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		item.Kind = strings.ToLower(strings.TrimSpace(item.Kind))
+		item.From = compactPersistentMemoryText(strings.TrimSpace(item.From), 120)
+		item.To = compactPersistentMemoryText(strings.TrimSpace(item.To), 120)
+		item.Detail = compactPersistentMemoryText(strings.TrimSpace(item.Detail), 220)
+		if item.Kind == "" && item.Detail == "" {
+			continue
+		}
+		key := strings.ToLower(strings.Join([]string{item.Kind, fmt.Sprint(item.Line), item.From, item.To, item.Detail}, "|"))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func normalizeSourceCandidateRevalidation(item SourceCandidateRevalidation) SourceCandidateRevalidation {
@@ -1403,10 +1852,25 @@ func mergeSourceCandidate(existing SourceCandidateRecord, incoming SourceCandida
 	incoming.LinkedFuzzRunIDs = uniqueStrings(append(existing.LinkedFuzzRunIDs, incoming.LinkedFuzzRunIDs...))
 	incoming.LinkedCampaignIDs = uniqueStrings(append(existing.LinkedCampaignIDs, incoming.LinkedCampaignIDs...))
 	incoming.FeedbackDraftPaths = uniqueStrings(append(existing.FeedbackDraftPaths, incoming.FeedbackDraftPaths...))
-	if incoming.Status == sourceCandidateStatusPending && existing.Status != "" && existing.Status != sourceCandidateStatusPending {
+	incoming.ConfidenceBreakdown = mergeSourceCandidateConfidenceBreakdown(existing.ConfidenceBreakdown, incoming.ConfidenceBreakdown)
+	if incoming.Status == sourceCandidateStatusPending && existing.Status != "" && existing.Status != sourceCandidateStatusPending && existing.Status != sourceCandidateStatusStale {
 		incoming.Status = existing.Status
 	}
 	return normalizeSourceCandidateRecord(incoming)
+}
+
+func mergeSourceCandidateConfidenceBreakdown(existing map[string]int, incoming map[string]int) map[string]int {
+	out := normalizeSourceCandidateConfidenceBreakdown(existing)
+	if out == nil {
+		out = map[string]int{}
+	}
+	for key, value := range normalizeSourceCandidateConfidenceBreakdown(incoming) {
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func mergeSourceCandidateAnalysisHistory(existing []SourceCandidateAnalysisEntry, incoming []SourceCandidateAnalysisEntry) []SourceCandidateAnalysisEntry {
@@ -1550,6 +2014,37 @@ func renderSourceScanRun(run SourceScanRun, candidates []SourceCandidateRecord) 
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func renderSourceCandidateConfidenceBreakdown(items map[string]int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := []string{}
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%+d", key, items[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func renderSourceCandidateFactSummary(items []SourceCandidateFact) string {
+	parts := []string{}
+	for _, item := range limitSourceCandidateFacts(items, 4) {
+		parts = append(parts, firstNonBlankString(item.Detail, item.Kind))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func limitSourceCandidateFacts(items []SourceCandidateFact, limit int) []SourceCandidateFact {
+	if limit <= 0 || len(items) <= limit {
+		return append([]SourceCandidateFact(nil), items...)
+	}
+	return append([]SourceCandidateFact(nil), items[:limit]...)
+}
+
 func renderSourceCandidate(item SourceCandidateRecord) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "ID: %s\n", item.ID)
@@ -1559,8 +2054,23 @@ func renderSourceCandidate(item SourceCandidateRecord) string {
 	fmt.Fprintf(&b, "Target: %s\n", valueOrUnset(firstNonBlankString(item.SymbolName, item.SymbolID)))
 	fmt.Fprintf(&b, "File: %s\n", valueOrUnset(item.File))
 	fmt.Fprintf(&b, "Anchor: %s\n", valueOrUnset(item.SourceAnchor))
+	if item.Stale {
+		fmt.Fprintf(&b, "Stale: true - %s\n", valueOrUnset(item.StaleReason))
+	}
+	if len(item.ConfidenceBreakdown) > 0 {
+		fmt.Fprintf(&b, "Confidence: %s\n", renderSourceCandidateConfidenceBreakdown(item.ConfidenceBreakdown))
+	}
 	if len(item.Reasons) > 0 {
 		fmt.Fprintf(&b, "Reasons: %s\n", strings.Join(item.Reasons, " | "))
+	}
+	if len(item.DataflowFacts) > 0 {
+		fmt.Fprintf(&b, "Dataflow: %s\n", renderSourceCandidateFactSummary(item.DataflowFacts))
+	}
+	if len(item.ControlflowFacts) > 0 {
+		fmt.Fprintf(&b, "Controlflow: %s\n", renderSourceCandidateFactSummary(item.ControlflowFacts))
+	}
+	if len(item.NegativeEvidence) > 0 {
+		fmt.Fprintf(&b, "Caveats: %s\n", strings.Join(item.NegativeEvidence, " | "))
 	}
 	if len(item.LinkedFuzzRunIDs) > 0 {
 		fmt.Fprintf(&b, "Fuzz runs: %s\n", strings.Join(item.LinkedFuzzRunIDs, ", "))
@@ -1609,6 +2119,12 @@ func renderSourceScanMarkdown(run SourceScanRun, candidates []SourceCandidateRec
 		fmt.Fprintf(&b, "- Score: %d\n", item.Score)
 		fmt.Fprintf(&b, "- Target: `%s`\n", firstNonBlankString(item.SymbolName, item.SymbolID, item.File))
 		fmt.Fprintf(&b, "- Anchor: `%s`\n", item.SourceAnchor)
+		if item.Stale {
+			fmt.Fprintf(&b, "- Stale: `%t` - %s\n", item.Stale, item.StaleReason)
+		}
+		if len(item.ConfidenceBreakdown) > 0 {
+			fmt.Fprintf(&b, "- Confidence: %s\n", renderSourceCandidateConfidenceBreakdown(item.ConfidenceBreakdown))
+		}
 		if len(item.Reasons) > 0 {
 			fmt.Fprintf(&b, "- Reasons: %s\n", strings.Join(item.Reasons, "; "))
 		}
@@ -1626,6 +2142,7 @@ func limitSourceCandidates(items []SourceCandidateRecord, limit int) []SourceCan
 
 func (rt *runtimeState) revalidateSourceCandidate(item SourceCandidateRecord, manualVerdict string, manualReason string) (SourceCandidateRecord, SourceCandidateRevalidation) {
 	item = normalizeSourceCandidateRecord(item)
+	item = rt.refreshSourceCandidateFreshness(item)
 	verdict := SourceCandidateRevalidation{
 		Verdict:   strings.ToLower(strings.TrimSpace(manualVerdict)),
 		Reason:    strings.TrimSpace(manualReason),
@@ -1639,6 +2156,85 @@ func (rt *runtimeState) revalidateSourceCandidate(item SourceCandidateRecord, ma
 	item.RevalidationHistory = append(item.RevalidationHistory, verdict)
 	item.UpdatedAt = time.Now()
 	return normalizeSourceCandidateRecord(item), verdict
+}
+
+func (rt *runtimeState) refreshSourceCandidateFreshness(item SourceCandidateRecord) SourceCandidateRecord {
+	item = normalizeSourceCandidateRecord(item)
+	root := workspaceSnapshotRoot(rt.workspace)
+	if strings.TrimSpace(root) == "" {
+		root = item.Workspace
+	}
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(item.File) == "" {
+		return item
+	}
+	content, ok := readSourceScanFile(root, item.File)
+	if !ok {
+		item.Stale = true
+		item.StaleReason = "candidate file is no longer readable in this workspace"
+		return item
+	}
+	currentFileHash := sourceScanTextHash(content)
+	item.CurrentFileHash = currentFileHash
+	if item.FileContentHash != "" && currentFileHash != "" && item.FileContentHash != currentFileHash {
+		item.Stale = true
+		item.StaleReason = "candidate file content hash changed since the source signal was captured"
+	}
+	if item.SymbolName != "" && item.SymbolSignatureHash != "" {
+		currentSymbolHash := sourceScanCurrentSymbolSignatureHash(content, item.SymbolName)
+		if currentSymbolHash != "" {
+			item.CurrentSymbolHash = currentSymbolHash
+			if currentSymbolHash != item.SymbolSignatureHash {
+				item.Stale = true
+				item.StaleReason = firstNonBlankString(item.StaleReason, "candidate symbol signature hash changed since capture")
+			}
+		}
+	}
+	return normalizeSourceCandidateRecord(item)
+}
+
+func sourceScanCurrentSymbolSignatureHash(content string, symbolName string) string {
+	symbolName = strings.TrimSpace(symbolName)
+	if symbolName == "" {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	lowerName := strings.ToLower(symbolName)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if !strings.Contains(lower, lowerName) || !strings.Contains(trimmed, "(") {
+			continue
+		}
+		if strings.HasPrefix(lower, "if") || strings.HasPrefix(lower, "switch") || strings.HasPrefix(lower, "for") || strings.HasPrefix(lower, "while") {
+			continue
+		}
+		return sourceScanSignatureHash(trimmed)
+	}
+	return ""
+}
+
+func sourceScanSignatureHash(signature string) string {
+	normalized := sourceScanNormalizeSignature(signature)
+	if normalized == "" {
+		return ""
+	}
+	return sourceScanTextHash(normalized)
+}
+
+func sourceScanNormalizeSignature(signature string) string {
+	signature = strings.TrimSpace(signature)
+	if signature == "" {
+		return ""
+	}
+	if idx := strings.Index(signature, "{"); idx >= 0 {
+		signature = strings.TrimSpace(signature[:idx])
+	}
+	if idx := strings.Index(signature, ";"); idx >= 0 {
+		signature = strings.TrimSpace(signature[:idx])
+	}
+	signature = strings.Join(strings.Fields(signature), " ")
+	signature = strings.TrimSuffix(signature, " const")
+	return strings.TrimSpace(signature)
 }
 
 func (rt *runtimeState) inferSourceCandidateVerdict(item SourceCandidateRecord) SourceCandidateRevalidation {
@@ -1686,6 +2282,13 @@ func (rt *runtimeState) inferSourceCandidateVerdict(item SourceCandidateRecord) 
 			}
 		}
 	}
+	if item.Stale {
+		return SourceCandidateRevalidation{
+			Verdict:  sourceCandidateStatusStale,
+			Reason:   firstNonBlankString(item.StaleReason, "candidate source fingerprint changed; rerun /source-scan before trusting this source signal"),
+			Evidence: compactStringSlice([]string{item.File, item.FileContentHash, item.CurrentFileHash, item.SymbolSignatureHash, item.CurrentSymbolHash}, 220),
+		}
+	}
 	if len(item.LinkedFuzzRunIDs) > 0 {
 		return SourceCandidateRevalidation{
 			Verdict:   "needs-native",
@@ -1709,13 +2312,17 @@ func (rt *runtimeState) inferSourceCandidateVerdict(item SourceCandidateRecord) 
 }
 
 func sourceCandidateNativeResultMatches(item SourceCandidateRecord, result FuzzCampaignNativeResult) bool {
+	if strings.TrimSpace(item.ID) != "" && strings.EqualFold(strings.TrimSpace(item.ID), strings.TrimSpace(result.SourceCandidateID)) {
+		return true
+	}
 	if containsString(item.LinkedFuzzRunIDs, result.RunID) {
 		return true
 	}
-	if strings.TrimSpace(item.File) != "" && strings.EqualFold(functionFuzzNormalizeOptionalPath(item.File), functionFuzzNormalizeOptionalPath(result.TargetFile)) {
+	fileCompatible := strings.TrimSpace(item.File) != "" && strings.TrimSpace(result.TargetFile) != "" && strings.EqualFold(functionFuzzNormalizeOptionalPath(item.File), functionFuzzNormalizeOptionalPath(result.TargetFile))
+	if strings.TrimSpace(item.SymbolName) != "" && strings.TrimSpace(result.Target) != "" && fileCompatible && strings.EqualFold(strings.TrimSpace(item.SymbolName), strings.TrimSpace(result.Target)) {
 		return true
 	}
-	if strings.TrimSpace(item.SymbolName) != "" && strings.EqualFold(strings.TrimSpace(item.SymbolName), strings.TrimSpace(result.Target)) {
+	if strings.TrimSpace(item.SymbolID) != "" && strings.TrimSpace(result.Target) != "" && fileCompatible && strings.EqualFold(strings.TrimSpace(item.SymbolID), strings.TrimSpace(result.Target)) {
 		return true
 	}
 	return false
@@ -1765,6 +2372,132 @@ func sourceCandidateHasTerminalVerdict(status string) bool {
 	}
 }
 
+func applySourceCandidateEvidenceToFunctionFuzzRun(run FunctionFuzzRun, candidate SourceCandidateRecord) FunctionFuzzRun {
+	run = normalizeFunctionFuzzRun(run)
+	candidate = normalizeSourceCandidateRecord(candidate)
+	if strings.TrimSpace(candidate.ID) == "" {
+		return run
+	}
+	note := fmt.Sprintf("Source candidate evidence: %s via %s at %s.", candidate.ID, valueOrUnset(candidate.MatcherSlug), valueOrUnset(candidate.SourceAnchor))
+	run.Notes = uniqueStrings(append(run.Notes, note))
+	for _, fact := range candidate.DataflowFacts {
+		observation := FunctionFuzzCodeObservation{
+			Kind:         sourceCandidateFactObservationKind(fact, "source_candidate_dataflow"),
+			SymbolID:     run.TargetSymbolID,
+			Symbol:       firstNonBlankString(run.TargetSymbolName, candidate.SymbolName),
+			File:         firstNonBlankString(candidate.File, run.TargetFile),
+			Line:         fact.Line,
+			Evidence:     firstNonBlankString(fact.Detail, candidate.MatchedPattern),
+			FocusInputs:  sourceCandidateFocusInputs(candidate),
+			WhyItMatters: "source-scan dataflow evidence was attached before fuzz scenario ranking",
+		}
+		run.CodeObservations = append(run.CodeObservations, observation)
+	}
+	for _, fact := range candidate.ControlflowFacts {
+		observation := FunctionFuzzCodeObservation{
+			Kind:         sourceCandidateFactObservationKind(fact, "source_candidate_controlflow"),
+			SymbolID:     run.TargetSymbolID,
+			Symbol:       firstNonBlankString(run.TargetSymbolName, candidate.SymbolName),
+			File:         firstNonBlankString(candidate.File, run.TargetFile),
+			Line:         fact.Line,
+			Evidence:     firstNonBlankString(fact.Detail, candidate.MatchedPattern),
+			FocusInputs:  sourceCandidateFocusInputs(candidate),
+			WhyItMatters: "source-scan control-flow evidence was attached before fuzz scenario ranking",
+		}
+		run.CodeObservations = append(run.CodeObservations, observation)
+	}
+	if len(candidate.EvidenceSpans) > 0 {
+		scenario := sourceCandidateEvidenceScenario(run, candidate)
+		if strings.TrimSpace(scenario.Title) != "" {
+			run.VirtualScenarios = append([]FunctionFuzzVirtualScenario{scenario}, run.VirtualScenarios...)
+		}
+	}
+	run.SuggestedCommands = uniqueStrings(append([]string{"/fuzz-campaign run"}, run.SuggestedCommands...))
+	run = normalizeFunctionFuzzRun(run)
+	return run
+}
+
+func sourceCandidateFactObservationKind(fact SourceCandidateFact, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(fact.Kind)) {
+	case "probe_to_copy":
+		return "copy_sink"
+	case "allocation_to_copy":
+		return "alloc_site"
+	case "attacker_size_contract", "size_guard":
+		return "size_guard"
+	case "selector_dispatch":
+		return "dispatch_guard"
+	case "failure_unwind":
+		return "cleanup_path"
+	default:
+		return fallback
+	}
+}
+
+func sourceCandidateFocusInputs(candidate SourceCandidateRecord) []string {
+	out := []string{}
+	for _, fact := range append(append([]SourceCandidateFact{}, candidate.DataflowFacts...), candidate.ControlflowFacts...) {
+		out = append(out, fact.From, fact.To)
+	}
+	for _, tag := range candidate.Tags {
+		switch tag {
+		case "user_buffer", "output_buffer", "ioctl", "bounds", "double_fetch":
+			out = append(out, tag)
+		}
+	}
+	return compactStringSlice(out, 80)
+}
+
+func sourceCandidateEvidenceScenario(run FunctionFuzzRun, candidate SourceCandidateRecord) FunctionFuzzVirtualScenario {
+	span := candidate.EvidenceSpans[0]
+	inputs := sourceCandidateFocusInputs(candidate)
+	if len(inputs) == 0 {
+		inputs = []string{firstNonBlankString(candidate.MatcherSlug, "source-candidate")}
+	}
+	scenario := FunctionFuzzVirtualScenario{
+		Title:         compactPersistentMemoryText("drive source candidate "+firstNonBlankString(candidate.MatcherSlug, candidate.ID), 120),
+		Confidence:    firstNonBlankString(candidate.NoiseTier, "normal"),
+		FocusSymbolID: firstNonBlankString(run.TargetSymbolID, candidate.SymbolID),
+		FocusSymbol:   firstNonBlankString(run.TargetSymbolName, candidate.SymbolName),
+		FocusFile:     firstNonBlankString(candidate.File, run.TargetFile),
+		ScopeFilePath: uniqueStrings([]string{firstNonBlankString(candidate.File, run.TargetFile)}),
+		Inputs:        inputs,
+		ConcreteInputs: compactStringSlice([]string{
+			"mutate the source candidate focus input until " + firstNonBlankString(candidate.MatchedPattern, candidate.MatcherSlug) + " changes branch behavior",
+		}, 180),
+		BranchFacts:   compactStringSlice(append([]string{candidate.MatchedPattern}, sourceCandidateFactDetails(candidate.ControlflowFacts)...), 180),
+		DriftExamples: compactStringSlice(append(sourceCandidateFactDetails(candidate.DataflowFacts), candidate.NegativeEvidence...), 180),
+		ExpectedFlow:  compactPersistentMemoryText("source-scan candidate evidence should reach "+firstNonBlankString(candidate.MatchedPattern, candidate.MatcherSlug), 180),
+		LikelyIssues:  compactStringSlice(append([]string{candidate.MatcherDescription}, candidate.Reasons...), 180),
+		PathSketch:    compactStringSlice([]string{candidate.SourceAnchor, candidate.MatcherSlug, "fuzz-campaign native revalidation"}, 160),
+		PathHint:      "source-scan candidate handoff",
+		SourceExcerpt: FunctionFuzzSourceExcerpt{
+			Symbol:    firstNonBlankString(candidate.SymbolName, run.TargetSymbolName),
+			File:      firstNonBlankString(span.File, candidate.File, run.TargetFile),
+			StartLine: span.StartLine,
+			FocusLine: firstPositiveInt(span.StartLine, firstSliceInt(candidate.LineNumbers)),
+			EndLine:   span.EndLine,
+			Snippet:   strings.Split(firstNonBlankString(candidate.Snippet, span.Text), "\n"),
+		},
+	}
+	return scenario
+}
+
+func sourceCandidateFactDetails(items []SourceCandidateFact) []string {
+	out := []string{}
+	for _, item := range items {
+		out = append(out, firstNonBlankString(item.Detail, item.Kind))
+	}
+	return compactStringSlice(out, 180)
+}
+
+func firstSliceInt(values []int) int {
+	if len(values) == 0 {
+		return 0
+	}
+	return values[0]
+}
+
 func buildFunctionFuzzQueryFromSourceCandidate(candidate SourceCandidateRecord) string {
 	candidate = normalizeSourceCandidateRecord(candidate)
 	target := strings.TrimSpace(candidate.SymbolName)
@@ -1797,7 +2530,7 @@ func (rt *runtimeState) resolveFunctionFuzzSourceCandidateQuery(query string) (s
 		if rt == nil || rt.sourceScan == nil {
 			return "", SourceCandidateRecord{}, false, fmt.Errorf("source scan store is not configured")
 		}
-		candidate, ok, err := rt.sourceScan.GetCandidate(fields[i+1])
+		candidate, ok, err := rt.sourceScan.GetCandidateForWorkspace(fields[i+1], workspaceSnapshotRoot(rt.workspace))
 		if err != nil {
 			return "", SourceCandidateRecord{}, false, err
 		}
@@ -2073,6 +2806,78 @@ func linkSourceCandidateToNativeFeedback(candidate SourceCandidateRecord, campai
 	})
 	candidate.UpdatedAt = time.Now()
 	return normalizeSourceCandidateRecord(candidate)
+}
+
+func linkSourceCandidateToNativeOutcome(candidate SourceCandidateRecord, campaign FuzzCampaign, result FuzzCampaignNativeResult) SourceCandidateRecord {
+	candidate = normalizeSourceCandidateRecord(candidate)
+	campaign = normalizeFuzzCampaign(campaign)
+	normalized := normalizeFuzzCampaignNativeResults([]FuzzCampaignNativeResult{result})
+	if len(normalized) > 0 {
+		result = normalized[0]
+	}
+	verdict := sourceCandidateVerdictFromNativeOutcome(result)
+	if verdict == "" {
+		return candidate
+	}
+	candidate.LinkedCampaignIDs = uniqueStrings(append(candidate.LinkedCampaignIDs, campaign.ID))
+	if strings.TrimSpace(result.RunID) != "" {
+		candidate.LinkedFuzzRunIDs = uniqueStrings(append(candidate.LinkedFuzzRunIDs, result.RunID))
+	}
+	if !sourceCandidateHasTerminalVerdict(candidate.Status) || verdict == "native-confirmed" {
+		candidate.Status = verdict
+	}
+	delta := 0
+	switch verdict {
+	case "native-confirmed":
+		delta = 18
+	case "source-false-positive":
+		delta = -22
+	}
+	if delta != 0 {
+		candidate.Score += delta
+		if candidate.Score < 0 {
+			candidate.Score = 0
+		}
+		if candidate.Score > 100 {
+			candidate.Score = 100
+		}
+		if candidate.ConfidenceBreakdown == nil {
+			candidate.ConfidenceBreakdown = map[string]int{}
+		}
+		candidate.ConfidenceBreakdown["native_feedback"] = delta
+	}
+	candidate.RevalidationHistory = mergeSourceCandidateRevalidationHistory(candidate.RevalidationHistory, []SourceCandidateRevalidation{{
+		Verdict:         verdict,
+		Reason:          sourceCandidateNativeOutcomeReason(verdict, result),
+		Evidence:        []string{result.ReportPath, result.CrashFingerprint, result.SuspectedInvariant},
+		FuzzRunID:       result.RunID,
+		CampaignID:      campaign.ID,
+		NativeResultKey: fuzzCampaignNativeResultKey(result),
+		CreatedAt:       time.Now(),
+	}})
+	candidate.UpdatedAt = time.Now()
+	return normalizeSourceCandidateRecord(candidate)
+}
+
+func sourceCandidateVerdictFromNativeOutcome(result FuzzCampaignNativeResult) string {
+	if result.CrashCount > 0 || strings.EqualFold(result.Outcome, "failed") {
+		return "native-confirmed"
+	}
+	if strings.EqualFold(result.Outcome, "passed") {
+		return "source-false-positive"
+	}
+	return ""
+}
+
+func sourceCandidateNativeOutcomeReason(verdict string, result FuzzCampaignNativeResult) string {
+	switch verdict {
+	case "native-confirmed":
+		return firstNonBlankString(result.SuspectedInvariant, "native fuzz result failed or produced crash evidence")
+	case "source-false-positive":
+		return "native fuzz result completed without crash evidence for this candidate"
+	default:
+		return "native fuzz result updated candidate confidence"
+	}
 }
 
 func fuzzCampaignFeedbackRunArtifacts(campaign FuzzCampaign, run FunctionFuzzRun, result FuzzCampaignNativeResult, paths []string) []FuzzCampaignRunArtifact {

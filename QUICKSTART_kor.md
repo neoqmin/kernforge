@@ -151,7 +151,7 @@ provider 및 런타임 확인:
 이 시나리오의 의미:
 1. 함수를 바로 알고 있으면 함수명과 파일 경로로 좁힌다.
 2. 함수를 모르면 파일만 지정해도 Kernforge가 대표 루트와 input-facing 경로를 고른다.
-3. `/fuzz-func`는 기본적으로 focused source-scan context를 붙인다. 후보를 먼저 보고 고르고 싶으면 `/source-scan run` 후 `/fuzz-func --from-candidate <candidate-id>`로 이어간다.
+3. `/fuzz-func`는 기본적으로 focused source-scan context를 붙인다. 후보를 먼저 보고 고르고 싶으면 `/source-scan run` 후 `/fuzz-func --from-candidate <candidate-id>`로 이어간다. Source candidate에는 function-window evidence, confidence breakdown, 파일/심볼 fingerprint, stale-source 상태가 포함된다.
 3. 결과에서 가장 높은 점수의 finding, `가장 유용한 분기 차이 요약`, `먼저 볼 관련 소스`를 먼저 읽는다.
 
 ### 증상 기반 root-cause 조사

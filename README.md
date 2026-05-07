@@ -225,8 +225,8 @@ Its current differentiators are:
 - When you pass only `@<path>` or `--file <path>`, Kernforge expands from the starting file through include/import plus real call flow and picks a representative root automatically
 - Planning no longer depends on `analyze-project` or a prebuilt `structural_index_v2`; Kernforge can scan the workspace and rebuild the semantic index on demand
 - The default mode is AI source-only fuzzing rather than native execution, so Kernforge derives attacker input states, concrete sample values, branch predicates, minimal counterexamples, branch deltas, and downstream call chains directly from source
-- By default, `/fuzz-func` reuses a matching `/source-scan` candidate or runs a focused source scan over the target and reachable files before saving the plan; use `--source-scan off`, `--source-scan focused`, `--source-scan full`, or `--no-source-scan` to control that behavior
-- Use `/source-scan run` to persist ranked source candidates first, then continue with `/fuzz-func --from-candidate <candidate-id>` when you want an explicit candidate handoff
+- By default, `/fuzz-func` reuses a matching `/source-scan` candidate or runs a focused source scan over the target and reachable files before saving the plan; candidates now carry function-window evidence spans, file/symbol fingerprints, confidence breakdown, dataflow/control-flow facts, and stale-source state
+- Use `/source-scan run` to persist ranked source candidates first, then continue with `/fuzz-func --from-candidate <candidate-id>` when you want an explicit candidate handoff; built-ins include Windows kernel double-fetch, IOCTL output infoleak, WDF buffer size drift, integer allocation overflow, and pool/refcount lifetime matchers
 - High-risk findings now show a scored risk table, the first source location to inspect, the file-expansion path from the selected starting file, and the representative call path from the chosen root
 - If `compile_commands.json` or other build context exists, Kernforge can prepare a stronger native follow-up; if it does not, Kernforge explains the missing setup before asking whether to continue
 - Artifacts are stored under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`
@@ -1332,7 +1332,7 @@ Source-level fuzzing commands:
 /source-scan status
 /source-scan run
 /source-scan run --limit 50
-/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector
+/source-scan run --only-slugs probe-copy-size-drift,double-fetch-user-buffer
 /source-scan run --files driver/nsi.c,api/registry.c
 /source-scan list
 /source-scan show [id|latest]
@@ -1465,7 +1465,7 @@ Core commands:
 /source-scan status
 /source-scan run
 /source-scan run --limit 50
-/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector
+/source-scan run --only-slugs probe-copy-size-drift,double-fetch-user-buffer
 /source-scan run --files driver/nsi.c,api/registry.c
 /source-scan list
 /source-scan show [id|latest]
@@ -1478,7 +1478,8 @@ What it does:
 - Accepts a function name directly, or a file path and then expands through include/import plus actual call flow to pick a representative root automatically.
 - Rebuilds snapshot and semantic-index context on demand, so `/analyze-project` is optional rather than required.
 - Reuses a matching saved source candidate when one exists, otherwise runs a focused source scan across the target, file scope, and reachable files before saving the `/fuzz-func` plan.
-- Stores source-scan linkage in the function fuzz run as `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, and `source_scan_summary` so campaign and MCP feedback can point back to the original source signal.
+- Stores source-scan linkage in the function fuzz run as `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, and `source_scan_summary`; candidate evidence is injected into source-only scenarios so `/fuzz-campaign run` can promote more targeted seeds.
+- Source candidates preserve function-window evidence spans, confidence breakdown, dataflow/control-flow facts, file and symbol fingerprints, stale-source state, and native feedback calibration.
 - Synthesizes attacker input states, concrete sample values, source-derived branch predicates, minimal counterexamples, pass/fail branch outcomes, and downstream call chains for higher-risk paths.
 - Shows the first source lines to inspect, the path from the selected starting file into the target file, and the representative call path from the chosen root into that implementation.
 - Uses native execution only as an optional follow-up. If build context is incomplete, Kernforge explains the gap first instead of silently failing.

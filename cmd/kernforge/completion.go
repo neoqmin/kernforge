@@ -426,10 +426,10 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 	},
 	"source-scan": {
 		"status":     "Show recent source candidate scan state.",
-		"run":        "Run built-in source matchers and persist candidate records.",
+		"run":        "Run function-window source matchers and persist evidence-rich candidate records.",
 		"list":       "List recent source candidates for this workspace.",
 		"show":       "Show one source candidate by id or latest.",
-		"revalidate": "Attach a source-only or native verifier verdict to one candidate.",
+		"revalidate": "Refresh candidate fingerprints, stale state, and source/native verifier verdict.",
 	},
 	"find-root-cause": {
 		"<problem>": "Describe the runtime symptom or failure; Kernforge selects likely source shards and reports plausible root causes.",
@@ -767,7 +767,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
 		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
 		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
-		"source-scan":           {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
+		"source-scan":           {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
 		"automation":            {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}

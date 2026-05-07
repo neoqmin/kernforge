@@ -67,7 +67,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/fuzz-func language ", wantSuggest: []string{"/fuzz-func language system", "/fuzz-func language english"}},
 		{input: "/fuzz-campaign ", wantSuggest: []string{"/fuzz-campaign status", "/fuzz-campaign run", "/fuzz-campaign new", "/fuzz-campaign list", "/fuzz-campaign show"}},
 		{input: "/fuzz-campaign sh", wantBuffer: "/fuzz-campaign show "},
-		{input: "/source-scan ", wantSuggest: []string{"/source-scan status", "/source-scan run", "/source-scan run --limit 50", "/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector", "/source-scan run --files driver/nsi.c,api/registry.c", "/source-scan list", "/source-scan show", "/source-scan revalidate"}},
+		{input: "/source-scan ", wantSuggest: []string{"/source-scan status", "/source-scan run", "/source-scan run --limit 50", "/source-scan run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "/source-scan run --files driver/nsi.c,api/registry.c", "/source-scan list", "/source-scan show", "/source-scan revalidate"}},
 		{input: "/init ", wantSuggest: []string{"/init config", "/init hooks", "/init memory-policy", "/init skill", "/init verify"}},
 		{input: "/init m", wantBuffer: "/init memory-policy "},
 	}

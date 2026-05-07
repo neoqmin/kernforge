@@ -593,6 +593,36 @@ func (s *kernforgeMCPServer) registerTools() {
 		"include_doc": map[string]any{"type": "boolean", "description": "Append latest FUZZ_TARGETS.md text when true."},
 		"max_chars":   map[string]any{"type": "integer", "description": "Maximum response text characters."},
 	}), s.toolFuzzTargets)
+	s.addTool("kernforge_source_scan", "Run, list, show, or revalidate source-scan candidates with structured candidate metadata and fuzz handoff commands.", mcpObjectSchema(map[string]any{
+		"action":     map[string]any{"type": "string", "enum": []string{"", "status", "run", "list", "show", "revalidate"}, "description": "Source-scan action. Default run."},
+		"id":         map[string]any{"type": "string", "description": "Candidate id or latest for show/revalidate."},
+		"limit":      map[string]any{"type": "integer", "description": "Maximum candidate records to return."},
+		"only_slugs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Matcher slugs to include."},
+		"skip_slugs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Matcher slugs to skip."},
+		"files":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional source file scope."},
+		"filter":     map[string]any{"type": "string", "description": "Optional target/file/symbol filter."},
+		"verdict":    map[string]any{"type": "string", "description": "Optional manual verdict for revalidate."},
+		"reason":     map[string]any{"type": "string", "description": "Optional manual verdict reason."},
+		"max_chars":  map[string]any{"type": "integer", "description": "Maximum response text characters."},
+	}), s.toolSourceScan)
+	s.addTool("kernforge_source_candidate_list", "List recent source candidates as structured JSON for MCP clients.", mcpObjectSchema(map[string]any{
+		"limit":     map[string]any{"type": "integer", "description": "Maximum candidate records to return."},
+		"max_chars": map[string]any{"type": "integer", "description": "Maximum response text characters."},
+	}), s.toolSourceCandidateList)
+	s.addTool("kernforge_source_candidate_show", "Show one source candidate with evidence, staleness, confidence, and next fuzz command.", mcpObjectSchema(map[string]any{
+		"id":        map[string]any{"type": "string", "description": "Candidate id or latest."},
+		"max_chars": map[string]any{"type": "integer", "description": "Maximum response text characters."},
+	}), s.toolSourceCandidateShow)
+	s.addTool("kernforge_fuzz_workflow", "Structured source-scan to fuzz-func workflow. Runs or reuses a source candidate, creates a function fuzz plan, and returns explicit next commands without starting native execution unless execute=true.", mcpObjectSchema(map[string]any{
+		"query":                    map[string]any{"type": "string", "description": "Optional target query. Used when candidate_id is empty."},
+		"candidate_id":             map[string]any{"type": "string", "description": "Optional source candidate id. If omitted, KernForge runs source-scan and picks the strongest candidate."},
+		"source_scan":              map[string]any{"type": "string", "enum": []string{"", "focused", "full", "off"}, "description": "Fuzz-func source-scan mode after candidate selection."},
+		"limit":                    map[string]any{"type": "integer", "description": "Source-scan candidate limit when candidate_id is omitted."},
+		"execute":                  map[string]any{"type": "boolean", "description": "Start native background fuzz execution if the generated plan is eligible."},
+		"approve_recovered_build":  map[string]any{"type": "boolean", "description": "Allow execution with partial or heuristic recovered build settings."},
+		"include_function_details": map[string]any{"type": "boolean", "description": "Append function fuzz textual output."},
+		"max_chars":                map[string]any{"type": "integer", "description": "Maximum response text characters."},
+	}), s.toolFuzzWorkflow)
 	s.addTool("kernforge_fuzz_func", "Create a source-level function fuzz plan and optionally start native background fuzz execution when execute is true.", mcpObjectSchema(map[string]any{
 		"query":                   map[string]any{"type": "string", "description": "Function fuzz target query, e.g. ValidateRequest --file src/guard.cpp or @src/driver.cpp."},
 		"execute":                 map[string]any{"type": "boolean", "description": "Start native background fuzz execution when the generated plan is eligible."},
@@ -1916,6 +1946,320 @@ func mcpFuzzTargetMatchesQuery(target AnalysisFuzzTargetCatalogEntry, query stri
 		}
 	}
 	return true
+}
+
+func (s *kernforgeMCPServer) toolSourceScan(ctx context.Context, args map[string]any) (string, error) {
+	_ = ctx
+	if s.rt == nil || s.rt.sourceScan == nil {
+		return "", fmt.Errorf("source scan store is not configured")
+	}
+	action := strings.ToLower(strings.TrimSpace(stringValue(args, "action")))
+	if action == "" {
+		action = "run"
+	}
+	switch action {
+	case "status":
+		return s.renderMCPSourceScanStatus(args)
+	case "run":
+		return s.runMCPSourceScan(args)
+	case "list":
+		return s.toolSourceCandidateList(ctx, args)
+	case "show":
+		return s.toolSourceCandidateShow(ctx, args)
+	case "revalidate":
+		return s.revalidateMCPSourceCandidate(args)
+	default:
+		return "", fmt.Errorf("unsupported source scan action: %s", action)
+	}
+}
+
+func (s *kernforgeMCPServer) renderMCPSourceScanStatus(args map[string]any) (string, error) {
+	root := workspaceSnapshotRoot(s.rt.workspace)
+	count, last, err := s.rt.sourceScan.Stats(root)
+	if err != nil {
+		return "", err
+	}
+	runs, err := s.rt.sourceScan.ListRuns(root, 3)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"workspace_root":  root,
+		"candidate_count": count,
+		"runs":            runs,
+		"next_command":    "/source-scan run",
+		"next_tool_call": mcpGuideToolCall("kernforge_source_scan", map[string]any{
+			"action": "run",
+			"limit":  50,
+		}),
+	}
+	if !last.IsZero() {
+		payload["last_updated"] = last.Format(time.RFC3339)
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return mcpLimitText("KernForge source scan status\n\n```json\n"+string(data)+"\n```", mcpMaxChars(args, 24000)), nil
+}
+
+func (s *kernforgeMCPServer) runMCPSourceScan(args map[string]any) (string, error) {
+	root := workspaceSnapshotRoot(s.rt.workspace)
+	if strings.TrimSpace(root) == "" {
+		return "", fmt.Errorf("workspace root is not available")
+	}
+	options := SourceScanOptions{
+		Limit:     intValue(args, "limit", 50),
+		OnlySlugs: lowerStringSlice(stringSliceValue(args, "only_slugs")),
+		SkipSlugs: lowerStringSlice(stringSliceValue(args, "skip_slugs")),
+		Filter:    strings.TrimSpace(stringValue(args, "filter")),
+		Files:     splitSourceScanFiles(strings.Join(stringSliceValue(args, "files"), ",")),
+	}
+	runID := "source-scan-" + time.Now().Format("20060102-150405")
+	artifacts, notes, err := prepareFunctionFuzzArtifactsForPlanning(s.rt.cfg, root, "source scan")
+	if err != nil {
+		return "", err
+	}
+	if !hasSemanticIndexV2Data(artifacts.IndexV2) {
+		return "", fmt.Errorf("source scan could not build a semantic index")
+	}
+	candidates := buildSourceScanCandidates(root, runID, artifacts.IndexV2, options)
+	run := SourceScanRun{
+		ID:        runID,
+		Workspace: root,
+		Goal:      "mcp source candidate scan for fuzz target discovery",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Options:   options,
+		Notes:     notes,
+	}
+	if err := writeSourceScanArtifacts(root, &run, candidates); err != nil {
+		return "", err
+	}
+	savedRun, savedCandidates, err := s.rt.sourceScan.UpsertRunWithCandidates(run, candidates)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"workspace_root":  root,
+		"run":             savedRun,
+		"candidates":      mcpSourceCandidatePayloads(savedCandidates, 12),
+		"candidate_count": len(savedCandidates),
+		"artifact_paths": map[string]any{
+			"artifact_dir":  savedRun.ArtifactDir,
+			"manifest_path": savedRun.ManifestPath,
+			"report_path":   savedRun.ReportPath,
+		},
+	}
+	if len(savedCandidates) > 0 {
+		payload["strongest_candidate"] = mcpSourceCandidatePayload(savedCandidates[0])
+		payload["next_command"] = "/fuzz-func --from-candidate " + savedCandidates[0].ID
+		payload["next_tool_call"] = mcpGuideToolCall("kernforge_fuzz_func", map[string]any{
+			"query": "--from-candidate " + savedCandidates[0].ID,
+		})
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return mcpLimitText("KernForge source scan\n\n```json\n"+string(data)+"\n```", mcpMaxChars(args, 40000)), nil
+}
+
+func (s *kernforgeMCPServer) toolSourceCandidateList(ctx context.Context, args map[string]any) (string, error) {
+	_ = ctx
+	if s.rt == nil || s.rt.sourceScan == nil {
+		return "", fmt.Errorf("source scan store is not configured")
+	}
+	limit := intValue(args, "limit", 12)
+	items, err := s.rt.sourceScan.ListCandidates(workspaceSnapshotRoot(s.rt.workspace), limit)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"workspace_root": workspaceSnapshotRoot(s.rt.workspace),
+		"candidates":     mcpSourceCandidatePayloads(items, limit),
+	}
+	if len(items) > 0 {
+		payload["strongest_candidate"] = mcpSourceCandidatePayload(items[0])
+		payload["next_command"] = "/fuzz-func --from-candidate " + items[0].ID
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return mcpLimitText("KernForge source candidates\n\n```json\n"+string(data)+"\n```", mcpMaxChars(args, 30000)), nil
+}
+
+func (s *kernforgeMCPServer) toolSourceCandidateShow(ctx context.Context, args map[string]any) (string, error) {
+	_ = ctx
+	if s.rt == nil || s.rt.sourceScan == nil {
+		return "", fmt.Errorf("source scan store is not configured")
+	}
+	id := firstNonBlankString(stringValue(args, "id"), "latest")
+	item, ok, err := s.getMCPSourceCandidate(id)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("source candidate not found: %s", id)
+	}
+	payload := mcpSourceCandidatePayload(item)
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return mcpLimitText("KernForge source candidate\n\n```json\n"+string(data)+"\n```\n\n"+renderSourceCandidate(item), mcpMaxChars(args, 30000)), nil
+}
+
+func (s *kernforgeMCPServer) revalidateMCPSourceCandidate(args map[string]any) (string, error) {
+	if s.rt == nil || s.rt.sourceScan == nil {
+		return "", fmt.Errorf("source scan store is not configured")
+	}
+	id := firstNonBlankString(stringValue(args, "id"), "latest")
+	item, ok, err := s.getMCPSourceCandidate(id)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("source candidate not found: %s", id)
+	}
+	updated, verdict := s.rt.revalidateSourceCandidate(item, stringValue(args, "verdict"), stringValue(args, "reason"))
+	if _, err := s.rt.sourceScan.UpsertCandidate(updated); err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"candidate":    mcpSourceCandidatePayload(updated),
+		"verdict":      verdict,
+		"next_command": "/fuzz-func --from-candidate " + updated.ID,
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	return mcpLimitText("KernForge source candidate revalidation\n\n```json\n"+string(data)+"\n```", mcpMaxChars(args, 30000)), nil
+}
+
+func (s *kernforgeMCPServer) toolFuzzWorkflow(ctx context.Context, args map[string]any) (string, error) {
+	if s.rt == nil || s.rt.sourceScan == nil {
+		return "", fmt.Errorf("source scan store is not configured")
+	}
+	candidateID := strings.TrimSpace(stringValue(args, "candidate_id"))
+	var candidate SourceCandidateRecord
+	var ok bool
+	var err error
+	scanPayload := map[string]any{}
+	if candidateID != "" {
+		candidate, ok, err = s.getMCPSourceCandidate(candidateID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("source candidate not found: %s", candidateID)
+		}
+	} else {
+		scanText, err := s.runMCPSourceScan(map[string]any{
+			"limit":     intValue(args, "limit", 50),
+			"filter":    stringValue(args, "query"),
+			"max_chars": float64(120000),
+		})
+		if err != nil {
+			return "", err
+		}
+		scanPayload["scan_output"] = scanText
+		runs, err := s.rt.sourceScan.ListRuns(workspaceSnapshotRoot(s.rt.workspace), 1)
+		if err != nil {
+			return "", err
+		}
+		if len(runs) == 0 || len(runs[0].CandidateIDs) == 0 {
+			return "", fmt.Errorf("source scan produced no candidates")
+		}
+		candidate, ok, err = s.rt.sourceScan.GetCandidate(runs[0].CandidateIDs[0])
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("source scan candidate not found after scan: %s", runs[0].CandidateIDs[0])
+		}
+	}
+	query := "--from-candidate " + candidate.ID
+	if rawMode := strings.TrimSpace(stringValue(args, "source_scan")); rawMode != "" {
+		query += " --source-scan " + rawMode
+	}
+	fuzzArgs := map[string]any{
+		"query":                   query,
+		"execute":                 boolValue(args, "execute", false),
+		"approve_recovered_build": boolValue(args, "approve_recovered_build", false),
+		"max_chars":               float64(mcpMaxChars(args, 40000)),
+	}
+	fuzzText, err := s.toolFuzzFunc(ctx, fuzzArgs)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"workspace_root": workspaceSnapshotRoot(s.rt.workspace),
+		"candidate":      mcpSourceCandidatePayload(candidate),
+		"fuzz_query":     query,
+		"next_command":   "/fuzz-campaign run",
+		"campaign_tool_call": mcpGuideToolCall("kernforge_fuzz_campaign_run", map[string]any{
+			"execute": false,
+		}),
+	}
+	for key, value := range scanPayload {
+		payload[key] = value
+	}
+	if boolValue(args, "include_function_details", false) {
+		payload["function_fuzz_output"] = fuzzText
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
+	text := "KernForge fuzz workflow\n\n```json\n" + string(data) + "\n```"
+	if boolValue(args, "include_function_details", false) {
+		text += "\n\nFunction fuzz output\n\n" + fuzzText
+	}
+	return mcpLimitText(text, mcpMaxChars(args, 60000)), nil
+}
+
+func mcpSourceCandidatePayloads(items []SourceCandidateRecord, limit int) []map[string]any {
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := []map[string]any{}
+	for _, item := range items[:limit] {
+		out = append(out, mcpSourceCandidatePayload(item))
+	}
+	return out
+}
+
+func (s *kernforgeMCPServer) getMCPSourceCandidate(id string) (SourceCandidateRecord, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || strings.EqualFold(id, "latest") {
+		items, err := s.rt.sourceScan.ListCandidates(workspaceSnapshotRoot(s.rt.workspace), 1)
+		if err != nil || len(items) == 0 {
+			return SourceCandidateRecord{}, false, err
+		}
+		return items[0], true, nil
+	}
+	return s.rt.sourceScan.GetCandidateForWorkspace(id, workspaceSnapshotRoot(s.rt.workspace))
+}
+
+func mcpSourceCandidatePayload(item SourceCandidateRecord) map[string]any {
+	item = normalizeSourceCandidateRecord(item)
+	payload := map[string]any{
+		"candidate_id":          item.ID,
+		"status":                item.Status,
+		"matcher_slug":          item.MatcherSlug,
+		"matcher_description":   item.MatcherDescription,
+		"score":                 item.Score,
+		"noise_tier":            item.NoiseTier,
+		"severity_hint":         item.SeverityHint,
+		"target":                firstNonBlankString(item.SymbolName, item.SymbolID, item.File),
+		"file":                  item.File,
+		"source_anchor":         item.SourceAnchor,
+		"confidence_breakdown":  item.ConfidenceBreakdown,
+		"evidence_spans":        item.EvidenceSpans,
+		"negative_evidence":     item.NegativeEvidence,
+		"dataflow_facts":        item.DataflowFacts,
+		"controlflow_facts":     item.ControlflowFacts,
+		"stale":                 item.Stale,
+		"stale_reason":          item.StaleReason,
+		"file_content_hash":     item.FileContentHash,
+		"current_file_hash":     item.CurrentFileHash,
+		"symbol_signature_hash": item.SymbolSignatureHash,
+		"current_symbol_hash":   item.CurrentSymbolHash,
+		"revalidation_history":  item.RevalidationHistory,
+		"linked_fuzz_run_ids":   item.LinkedFuzzRunIDs,
+		"linked_campaign_ids":   item.LinkedCampaignIDs,
+		"feedback_draft_paths":  item.FeedbackDraftPaths,
+		"next_command":          "/fuzz-func --from-candidate " + item.ID,
+		"next_tool_call": mcpGuideToolCall("kernforge_fuzz_func", map[string]any{
+			"query": "--from-candidate " + item.ID,
+		}),
+	}
+	return payload
 }
 
 func (s *kernforgeMCPServer) toolFuzzFunc(ctx context.Context, args map[string]any) (string, error) {

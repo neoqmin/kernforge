@@ -760,6 +760,34 @@ CLI와 같은 명시 handoff가 필요하면 query에 `--from-candidate <candida
 
 응답 summary에는 source candidate context가 있으면 `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, `source_scan_summary`가 포함된다. 이 필드는 source-only finding을 campaign/native feedback으로 이어갈 때 원래 source matcher signal을 되찾는 데 사용한다.
 
+### 7.11 Structured source scan workflow
+
+MCP client가 source candidate를 직접 고르고 이어가야 할 때는 `kernforge_source_scan`, `kernforge_source_candidate_list`, `kernforge_source_candidate_show`, `kernforge_fuzz_workflow`를 사용할 수 있다. 이 응답은 텍스트 로그가 아니라 `candidate_id`, `matcher_slug`, `confidence_breakdown`, `evidence_spans`, `dataflow_facts`, `controlflow_facts`, `stale`, `next_command`, `next_tool_call`, `artifact_paths`를 JSON으로 제공한다.
+
+```json
+{
+  "name": "kernforge_source_scan",
+  "arguments": {
+    "action": "run",
+    "limit": 50,
+    "only_slugs": ["probe-copy-size-drift", "double-fetch-user-buffer"]
+  }
+}
+```
+
+```json
+{
+  "name": "kernforge_fuzz_workflow",
+  "arguments": {
+    "candidate_id": "sc-0123456789abcdef",
+    "source_scan": "focused",
+    "execute": false
+  }
+}
+```
+
+`kernforge_fuzz_workflow`는 candidate가 없으면 source scan을 먼저 실행해 가장 강한 후보를 고르고, 있으면 바로 `/fuzz-func --from-candidate <candidate-id>`와 같은 handoff를 수행한다. Native 실행은 `execute=true`와 필요한 경우 `approve_recovered_build=true`가 있을 때만 시도한다.
+
 파일만 주고 대표 fuzz root를 자동 선택하게 할 수도 있다.
 
 ```json
