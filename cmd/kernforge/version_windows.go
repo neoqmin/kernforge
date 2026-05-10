@@ -84,7 +84,7 @@ func queryPEVersionTranslations(data []byte) []string {
 		return nil
 	}
 
-	var value uintptr
+	var value unsafe.Pointer
 	var valueLen uint32
 	ok, _, _ := procVerQueryValueW.Call(
 		uintptr(unsafe.Pointer(&data[0])),
@@ -92,11 +92,11 @@ func queryPEVersionTranslations(data []byte) []string {
 		uintptr(unsafe.Pointer(&value)),
 		uintptr(unsafe.Pointer(&valueLen)),
 	)
-	if ok == 0 || value == 0 || valueLen < 4 {
+	if ok == 0 || value == nil || valueLen < 4 {
 		return nil
 	}
 
-	words := unsafe.Slice((*uint16)(unsafe.Pointer(value)), valueLen/2)
+	words := unsafe.Slice((*uint16)(value), valueLen/2)
 	translations := make([]string, 0, len(words)/2)
 	for i := 0; i+1 < len(words); i += 2 {
 		translations = append(translations, fmt.Sprintf("%04x%04x", words[i], words[i+1]))
@@ -113,7 +113,7 @@ func queryPEVersionString(data []byte, query string) string {
 		return ""
 	}
 
-	var value uintptr
+	var value unsafe.Pointer
 	var valueLen uint32
 	ok, _, _ := procVerQueryValueW.Call(
 		uintptr(unsafe.Pointer(&data[0])),
@@ -121,11 +121,11 @@ func queryPEVersionString(data []byte, query string) string {
 		uintptr(unsafe.Pointer(&value)),
 		uintptr(unsafe.Pointer(&valueLen)),
 	)
-	if ok == 0 || value == 0 || valueLen == 0 {
+	if ok == 0 || value == nil || valueLen == 0 {
 		return ""
 	}
 
-	chars := unsafe.Slice((*uint16)(unsafe.Pointer(value)), valueLen)
+	chars := unsafe.Slice((*uint16)(value), valueLen)
 	if len(chars) > 0 && chars[len(chars)-1] == 0 {
 		chars = chars[:len(chars)-1]
 	}

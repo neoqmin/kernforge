@@ -30,7 +30,7 @@ func TestShouldPrimeInteractivePlanSkipsLatestWebResearchRequests(t *testing.T) 
 
 func TestShouldPrimeInteractivePlanSkipsAnalysisOnlyStructureQuestions(t *testing.T) {
 	state := &TaskState{
-		Goal: "@TavernKernel/TavernKernel/ 드라이버 프로젝트 전체 구조를 자세히 설명해줘",
+		Goal: "@SampleKernel/SampleKernel/ 드라이버 프로젝트 전체 구조를 자세히 설명해줘",
 	}
 
 	if shouldPrimeInteractivePlan(state, true, false, false) {
@@ -50,7 +50,7 @@ func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 
 func TestShouldPrimeInteractivePlanSkipsFocusedBugFixSelection(t *testing.T) {
 	state := &TaskState{
-		Goal: "@Tavern/TavernWorker/TavernUpdManager.cpp:250-322 버그를 찾아서 수정해",
+		Goal: "@SampleApp/SampleWorker/SampleUpdManager.cpp:250-322 버그를 찾아서 수정해",
 	}
 
 	if shouldPrimeInteractivePlan(state, false, true, false) {
@@ -60,7 +60,7 @@ func TestShouldPrimeInteractivePlanSkipsFocusedBugFixSelection(t *testing.T) {
 
 func TestShouldPrimeInteractivePlanSkipsBroadBugFindAndFix(t *testing.T) {
 	state := &TaskState{
-		Goal: "TavernWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
+		Goal: "SampleWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
 	}
 
 	if shouldPrimeInteractivePlan(state, false, true, false) {

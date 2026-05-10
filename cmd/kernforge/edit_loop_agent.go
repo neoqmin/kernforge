@@ -17,7 +17,8 @@ func (a *Agent) recordEditLoopToolResult(call ToolCall, result ToolExecutionResu
 		}
 	}
 	verificationLike := toolMetaBool(meta, "verification_like") || (strings.EqualFold(strings.TrimSpace(call.Name), "run_shell") && runShellOutputLooksLikeVerification(result.DisplayText))
-	editLike := isEditTool(call.Name) || effect == "edit" || toolMetaBool(meta, "changed_workspace") || len(paths) > 0
+	editLike := isEditTool(call.Name) || effect == "edit" || toolMetaBool(meta, "changed_workspace") || len(paths) > 0 ||
+		strings.EqualFold(toolMetaString(meta, "mutation_class"), string(shellMutationWorkspaceWrite))
 	if !editLike && !verificationLike {
 		return
 	}

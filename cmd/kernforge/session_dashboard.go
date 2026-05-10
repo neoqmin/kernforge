@@ -33,6 +33,7 @@ type SessionDashboardSnapshot struct {
 	ArtifactRefs        []string
 	LastVerification    string
 	VerificationFailure string
+	RuntimeGateLedger   RuntimeGateLedger
 	BackgroundJobs      []BackgroundShellJob
 	BackgroundBundles   []BackgroundShellBundle
 }
@@ -98,8 +99,11 @@ func (rt *runtimeState) buildSessionDashboardSnapshot(root string, now time.Time
 		MessageCount:   len(sess.Messages),
 		SummaryChars:   len(sess.Summary),
 		PlanItems:      len(sess.Plan),
-		ChangedFiles:   delegationChangedFiles(root),
+		ChangedFiles:   reviewCurrentChangedPaths(root),
 	}
+	ledger := buildRuntimeGateLedger(root, sess, runtimeGateActionFinalAnswer)
+	snapshot.RuntimeGateLedger = ledger
+	sess.RuntimeGateLedger = &ledger
 	if sess.TaskGraph != nil {
 		sess.TaskGraph.Normalize()
 		snapshot.TaskCounts = sessionDashboardTaskCounts(sess.TaskGraph)
@@ -255,7 +259,8 @@ pre { white-space: pre-wrap; background: #111217; border: 1px solid #3a3d46; bor
 .badge { border-radius: 999px; padding: 3px 8px; font-size: 12px; background: #3a3d46; color: #eceff4; }
 .status-blocked, .status-failed, .severity-error { color: #ffb4a8; }
 .status-in-progress, .severity-warn { color: #ffd27d; }
-.status-ready, .status-active { color: #a7f3d0; }
+.status-ready, .status-active, .status-fresh { color: #a7f3d0; }
+.status-needs-review, .status-stale, .status-missing { color: #ffd27d; }
 .empty { color: #aeb6c2; border: 1px dashed #4b5360; border-radius: 8px; padding: 14px; }
 .mono-list { margin: 0; padding-left: 18px; }
 @media (max-width: 820px) { .wide-grid { grid-template-columns: 1fr; } main { padding: 24px 14px 34px; } }
@@ -326,6 +331,7 @@ func renderSessionDashboardMetricCards(snapshot SessionDashboardSnapshot) string
 		sessionDashboardMetricCard("Plan Items", fmt.Sprintf("%d", snapshot.PlanItems), "open task graph nodes="+fmt.Sprintf("%d", len(snapshot.OpenTasks))),
 		sessionDashboardMetricCard("Changed Files", fmt.Sprintf("%d", len(snapshot.ChangedFiles)), strings.Join(limitStrings(snapshot.ChangedFiles, 3), ", ")),
 		sessionDashboardMetricCard("Automations", fmt.Sprintf("%d", snapshot.AutomationSummary.Total), automationSummaryLine(snapshot.AutomationSummary)),
+		sessionDashboardMetricCard("Runtime Gate", valueOrDefault(snapshot.RuntimeGateLedger.Status, "unknown"), runtimeGateStatusSummary(snapshot.RuntimeGateLedger)),
 		sessionDashboardMetricCard("Verification", valueOrDefault(snapshot.LastVerification, "not recorded"), firstNonBlankString(snapshot.VerificationFailure, "latest verification has no recorded failure")),
 	}
 	return strings.Join(cards, "\n")
@@ -341,6 +347,8 @@ func sessionDashboardMetricCard(title string, value string, detail string) strin
 
 func renderSessionDashboardCommandChips() string {
 	commands := []string{
+		"/status",
+		"/review",
 		"/tasks",
 		"/automation digest",
 		"/automation run-due",
@@ -514,6 +522,7 @@ func renderSessionDashboardWorkspaceSignals(snapshot SessionDashboardSnapshot) s
 		b.WriteString(`<pre>` + htmlEscape(snapshot.VerificationFailure) + `</pre>`)
 	}
 	b.WriteString(`</article>`)
+	b.WriteString(renderSessionDashboardRuntimeGate(snapshot.RuntimeGateLedger))
 	b.WriteString(`<section><h2>Changed Files</h2>`)
 	if len(snapshot.ChangedFiles) == 0 {
 		b.WriteString(`<div class="empty">No changed files detected.</div>`)
@@ -525,6 +534,39 @@ func renderSessionDashboardWorkspaceSignals(snapshot SessionDashboardSnapshot) s
 		b.WriteString(`</ul>`)
 	}
 	b.WriteString(`</section>`)
+	return b.String()
+}
+
+func renderSessionDashboardRuntimeGate(ledger RuntimeGateLedger) string {
+	ledger.Normalize()
+	if strings.TrimSpace(ledger.ID) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<article class="card">`)
+	b.WriteString(`<div class="row"><h3>Runtime Gate</h3><span class="badge status-` + htmlEscape(sessionDashboardCSSClass(ledger.Status)) + `">` + htmlEscape(valueOrDefault(ledger.Status, "unknown")) + `</span></div>`)
+	b.WriteString(`<p class="subtle">` + htmlEscape(runtimeGateStatusSummary(ledger)) + `</p>`)
+	b.WriteString(`<div class="chips">`)
+	b.WriteString(`<span class="chip">review_freshness=` + htmlEscape(runtimeGateReviewFreshnessLabel(ledger)) + `</span>`)
+	b.WriteString(`<span class="chip">blockers=` + fmt.Sprintf("%d", len(ledger.Blockers)) + `</span>`)
+	b.WriteString(`<span class="chip">warnings=` + fmt.Sprintf("%d", len(ledger.Warnings)) + `</span>`)
+	if len(ledger.Waivers) > 0 {
+		b.WriteString(`<span class="chip">waivers=` + fmt.Sprintf("%d", len(ledger.Waivers)) + `</span>`)
+	}
+	b.WriteString(`</div>`)
+	if ledger.ReviewRunID != "" {
+		b.WriteString(`<p><strong>Latest review</strong><br><code>` + htmlEscape(ledger.ReviewRunID) + `</code></p>`)
+	}
+	if len(ledger.StaleReasons) > 0 {
+		b.WriteString(`<pre>` + htmlEscape(strings.Join(limitStrings(ledger.StaleReasons, 3), "\n")) + `</pre>`)
+	}
+	if len(ledger.Blockers) > 0 {
+		b.WriteString(`<pre>` + htmlEscape(strings.Join(limitStrings(ledger.Blockers, 3), "\n")) + `</pre>`)
+	}
+	if next := runtimeGatePrimaryNextCommandLine(ledger); next != "" {
+		b.WriteString(`<p><strong>Next command</strong><br><code>` + htmlEscape(next) + `</code></p>`)
+	}
+	b.WriteString(`</article>`)
 	return b.String()
 }
 

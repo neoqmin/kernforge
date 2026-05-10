@@ -14,13 +14,13 @@ func TestRecentErrorQuestionAnswersFromConversationEventWithoutModelCall(t *test
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindProviderError,
 		Severity: conversationSeverityError,
-		Summary:  "provider error | provider=openrouter | upstream=DeepInfra | model=deepseek/deepseek-v4-flash | shard=TavernKernel/TavernKernel/BuildCab_refined_03 | code=429 | category=rate_limit",
+		Summary:  "provider error | provider=openrouter | upstream=DeepInfra | model=deepseek/deepseek-v4-flash | shard=SampleKernel/SampleKernel/BuildCab_refined_03 | code=429 | category=rate_limit",
 		Raw:      `openai API error (429 Too Many Requests): Provider returned error | raw={"error":{"message":"deepseek/deepseek-v4-flash is temporarily rate-limited upstream","metadata":{"provider_name":"DeepInfra","is_byok":false}}}`,
 		Entities: map[string]string{
 			"provider":  "openrouter",
 			"upstream":  "DeepInfra",
 			"model":     "deepseek/deepseek-v4-flash",
-			"shard":     "TavernKernel/TavernKernel/BuildCab_refined_03",
+			"shard":     "SampleKernel/SampleKernel/BuildCab_refined_03",
 			"code":      "429",
 			"category":  "rate_limit",
 			"retryable": "true",
@@ -44,7 +44,7 @@ func TestRecentErrorQuestionAnswersFromConversationEventWithoutModelCall(t *test
 	if len(provider.requests) != 0 {
 		t.Fatalf("expected no provider call for recent error resolver, got %d", len(provider.requests))
 	}
-	for _, want := range []string{"rate limit", "DeepInfra", "deepseek/deepseek-v4-flash", "TavernKernel/TavernKernel/BuildCab_refined_03", "429"} {
+	for _, want := range []string{"rate limit", "DeepInfra", "deepseek/deepseek-v4-flash", "SampleKernel/SampleKernel/BuildCab_refined_03", "429"} {
 		if !strings.Contains(reply, want) {
 			t.Fatalf("expected reply to contain %q, got %q", want, reply)
 		}

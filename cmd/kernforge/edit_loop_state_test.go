@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,6 +153,44 @@ func TestFinalizeEditLoopKeepsFailedApplyRisk(t *testing.T) {
 	}
 	if len(loop.RemainingRisks) == 0 {
 		t.Fatalf("expected failed apply risk to remain, got %#v", loop)
+	}
+}
+
+func TestEditLoopRecordsBlockedWorkspaceShellWriteAsFailedApply(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "manual shell write blocked",
+		Meta: map[string]any{
+			"command":        "Set-Content main.go 'oops'",
+			"mutation_class": string(shellMutationWorkspaceWrite),
+			"effect":         "execute",
+			"success":        false,
+		},
+	}, errors.New("run_shell cannot perform manual workspace file writes"))
+
+	if session.ActiveEditLoop == nil {
+		t.Fatalf("expected blocked workspace shell write to create an edit loop")
+	}
+	if len(session.ActiveEditLoop.WorkerEvidence) != 1 || session.ActiveEditLoop.WorkerEvidence[0].Status != "error" {
+		t.Fatalf("expected failed shell write to be recorded as worker evidence, got %#v", session.ActiveEditLoop)
+	}
+	agent.finalizeEditLoopOnReturn("All done.", false)
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected finalized edit loop")
+	}
+	loop := session.EditLoops[0]
+	if loop.Status != editLoopStatusRiskAccepted {
+		t.Fatalf("expected blocked shell write to leave risk-accepted status, got %#v", loop)
+	}
+	if len(loop.RemainingRisks) == 0 {
+		t.Fatalf("expected blocked shell write risk to remain, got %#v", loop)
 	}
 }
 

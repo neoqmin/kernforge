@@ -92,7 +92,7 @@ func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 func TestSystemPromptUsesLatestUserQuestionLanguage(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "TavernKernel 문서를 검토하고 개선점을 찾아줘"})
+	session.AddMessage(Message{Role: "user", Text: "SampleKernel 문서를 검토하고 개선점을 찾아줘"})
 	agent := &Agent{
 		Config:  Config{AutoLocale: boolPtr(false)},
 		Session: session,
@@ -109,7 +109,7 @@ func TestSystemPromptUsesKoreanLocaleForEnglishLeadingAmbiguousPrompt(t *testing
 
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "Tavern review"})
+	session.AddMessage(Message{Role: "user", Text: "SampleApp review"})
 	agent := &Agent{
 		Config:  Config{},
 		Session: session,
@@ -127,7 +127,7 @@ func TestSystemPromptUsesKoreanLocaleForEnglishLeadingAmbiguousPrompt(t *testing
 func TestSystemPromptKeepsKoreanForEnglishLeadingMixedRequest(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "Tavern review 시스템을 테스트해보자"})
+	session.AddMessage(Message{Role: "user", Text: "SampleApp review 시스템을 테스트해보자"})
 	agent := &Agent{
 		Config:  Config{AutoLocale: boolPtr(false)},
 		Session: session,
@@ -159,7 +159,7 @@ func TestSystemPromptStillUsesEnglishForNaturalEnglishRequest(t *testing.T) {
 func TestSystemPromptExplicitLanguageOverridesQuestionLanguage(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "TavernKernel 문서를 검토해. Answer in English."})
+	session.AddMessage(Message{Role: "user", Text: "SampleKernel 문서를 검토해. Answer in English."})
 	agent := &Agent{
 		Config:  Config{},
 		Session: session,
@@ -209,6 +209,41 @@ func TestSystemPromptIncludesWebResearchGuidanceAndRelevantMCPCapabilities(t *te
 	}
 }
 
+func TestSystemPromptDoesNotSuggestWebResearchForLocalCodeRepair(t *testing.T) {
+	root := t.TempDir()
+	for _, request := range []string{
+		"@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		"FocusedRuntime 코드를 분석해서 서버 성능이나 히칭에 영향을 줄 수 있는 부분을 검토해줘",
+		"Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nImplementation rules:\n- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate.",
+	} {
+		session := NewSession(root, "provider", "model", "", "default")
+		session.AddMessage(Message{Role: "user", Text: request})
+		agent := &Agent{
+			Config:  Config{},
+			Session: session,
+			MCP: &MCPManager{
+				servers: []*MCPClient{
+					{
+						config: MCPServerConfig{Name: "web"},
+						tools: []MCPToolDescriptor{
+							{Name: "search_web", Description: "Search the web for current articles and references"},
+						},
+					},
+				},
+			},
+		}
+
+		prompt := agent.systemPrompt()
+		if strings.Contains(prompt, "likely needs current external research") ||
+			strings.Contains(prompt, "Relevant MCP web/research capabilities:") {
+			t.Fatalf("local code repair should not be prompted toward web research for %q, got %q", request, prompt)
+		}
+		if !strings.Contains(prompt, "For local code review or repair tasks, do not use MCP web/search/browser tools") {
+			t.Fatalf("expected local-code web restriction in prompt for %q, got %q", request, prompt)
+		}
+	}
+}
+
 func TestSystemPromptWarnsWhenLatestResearchNeedsWebButNoCapabilityConfigured(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
@@ -230,7 +265,7 @@ func TestSystemPromptWarnsWhenLatestResearchNeedsWebButNoCapabilityConfigured(t 
 func TestSystemPromptMarksAnalysisOnlyRequestsAsReadOnly(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/ETWConsumer.cpp ETWConsumer가 제대로 동작할 수 없는 로그를 수집했는데 원인을 분석해"})
+	session.AddMessage(Message{Role: "user", Text: "@SampleApp/Common/ETWConsumer.cpp ETWConsumer가 제대로 동작할 수 없는 로그를 수집했는데 원인을 분석해"})
 	agent := &Agent{
 		Config:  Config{},
 		Session: session,

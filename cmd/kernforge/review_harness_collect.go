@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,21 +15,39 @@ import (
 func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptions) ReviewRequestAnalysis {
 	request := strings.TrimSpace(opts.Request)
 	target := normalizeReviewTarget(opts.Target)
+	scopePaths := append([]string(nil), opts.Paths...)
+	scopePaths = append(scopePaths, reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
+	discovery := discoverReviewScope(root, request, scopePaths)
 	if target == reviewTargetAuto {
-		target = inferReviewTarget(rt, root, request)
+		target = inferReviewTarget(rt, root, request, discovery)
 	}
+	if (strings.TrimSpace(opts.ProvidedDiff) != "" || strings.TrimSpace(opts.ProvidedCode) != "") &&
+		len(discovery.CandidateFiles) == 0 &&
+		(strings.EqualFold(discovery.ScopeWidth, "unknown") || strings.EqualFold(discovery.ScopeWidth, "broad")) {
+		discovery.ScopeWidth = "focused"
+		discovery.Confidence = 0.7
+		discovery.Warnings = nil
+	}
+	domainSignals, riskSignals := reviewScopeSignals(discovery, request)
 	mode := normalizeReviewMode(opts.Mode)
 	if mode == reviewModeGeneralChange {
 		mode = inferReviewMode(request, opts.Paths, target, rt)
+	}
+	if mode == reviewModeGeneralChange {
+		if inferred := inferReviewModeFromScopeDiscovery(discovery, domainSignals, target); inferred != "" {
+			mode = inferred
+		}
 	}
 	flow := strings.TrimSpace(opts.Flow)
 	if flow == "" {
 		flow = reviewFlowForTargetMode(target, mode)
 	}
 	packs := reviewPolicyPacksFor(target, mode, append([]string(nil), opts.Paths...), request)
+	packs = analysisUniqueStrings(append(packs, reviewPolicyPacksForScopeDiscovery(discovery, domainSignals)...))
 	confidence := 0.78
 	reason := "selected from request text and workspace state"
 	var warnings []string
+	warnings = append(warnings, discovery.Warnings...)
 	if strings.TrimSpace(opts.Target) == "" && strings.TrimSpace(request) == "" {
 		confidence = 0.64
 		reason = "selected from workspace state because no explicit review target was provided"
@@ -47,13 +67,22 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		EvidenceNeeds:     reviewEvidenceNeeds(target, mode),
 		PolicyPacks:       packs,
 		CandidateFlows:    reviewCandidateFlows(target, mode),
+		DomainSignals:     domainSignals,
+		RiskSignals:       riskSignals,
+		ScopeDiscovery:    discovery,
 		Reason:            reason,
 		AmbiguityWarnings: warnings,
 	}
 }
 
-func inferReviewTarget(rt *runtimeState, root string, request string) string {
+func inferReviewTarget(rt *runtimeState, root string, request string, discovery ReviewScopeDiscovery) string {
 	lower := strings.ToLower(strings.TrimSpace(request))
+	if reviewRequestPrefersSourceEvidence(request, discovery) {
+		if prefersReadOnlyAnalysisIntent(request) && !looksLikeExplicitEditIntent(request) {
+			return reviewTargetSourceAnalysis
+		}
+		return reviewTargetChange
+	}
 	if containsAny(lower, "plan", "design", "architecture", "설계", "계획") {
 		return reviewTargetPlan
 	}
@@ -80,6 +109,32 @@ func inferReviewTarget(rt *runtimeState, root string, request string) string {
 	return reviewTargetAuto
 }
 
+func reviewRequestPrefersSourceEvidence(request string, discovery ReviewScopeDiscovery) bool {
+	lower := strings.ToLower(strings.TrimSpace(request))
+	if lower == "" {
+		return false
+	}
+	strongSourceIntent := containsAny(lower,
+		"code", "source", "function", "class", "method", "module", "component", "server", "client",
+		"performance", "hitch", "hitching", "latency", "stall",
+		"코드", "소스", "함수", "클래스", "메서드", "모듈", "컴포넌트", "서버", "클라이언트",
+		"성능", "히칭", "렉", "지연")
+	reviewIntent := containsAny(lower, "review", "검토", "리뷰")
+	if len(discovery.CandidateFiles) > 0 {
+		return strongSourceIntent || reviewIntent
+	}
+	if len(discovery.CandidateSymbols) > 0 && strongSourceIntent {
+		return true
+	}
+	for _, token := range strings.Fields(request) {
+		cleaned := strings.Trim(token, " \t\r\n\"'`<>.,;()[]{}")
+		if reviewScopeTokenLooksLikePath(cleaned) && (strongSourceIntent || reviewIntent) {
+			return true
+		}
+	}
+	return false
+}
+
 func inferReviewMode(request string, paths []string, target string, rt *runtimeState) string {
 	text := strings.ToLower(strings.TrimSpace(request + " " + strings.Join(paths, " ")))
 	if containsAny(text, "security", "threat", "bypass", "exploit", "kernel", ".sys", "ioctl", "irql", "anti-cheat", "anticheat", "false positive", "오탐", "보안", "커널", "우회") {
@@ -99,6 +154,11 @@ func inferReviewMode(request string, paths []string, target string, rt *runtimeS
 	}
 	if containsAny(text, "ui", "layout", "visual", "accessibility") {
 		return reviewModeUIPolish
+	}
+	if target == reviewTargetSourceAnalysis && containsAny(text,
+		"performance", "perf", "hitch", "hitching", "latency", "stall", "frame time", "tick", "lock contention",
+		"성능", "히칭", "렉", "지연", "프레임", "틱", "락 경합") {
+		return reviewModePerformanceAnalysis
 	}
 	if target == reviewTargetPlan && containsAny(text, "core", "architecture", "핵심", "설계") {
 		return reviewModeCoreBuild
@@ -130,6 +190,11 @@ func reviewFlowForTargetMode(target string, mode string) string {
 		return "goal_review"
 	case reviewTargetAnalysis:
 		return "analysis_review"
+	case reviewTargetSourceAnalysis:
+		if mode == reviewModePerformanceAnalysis {
+			return "performance_source_review"
+		}
+		return "source_analysis_review"
 	case reviewTargetFinal:
 		return "final_answer_review"
 	default:
@@ -158,6 +223,12 @@ func reviewPolicyPacksFor(target string, mode string, paths []string, request st
 	if target == reviewTargetAnalysis {
 		packs = append(packs, "docs_artifact")
 	}
+	if target == reviewTargetSourceAnalysis {
+		packs = append(packs, "source_analysis")
+	}
+	if mode == reviewModePerformanceAnalysis {
+		packs = append(packs, "performance_hot_path")
+	}
 	return analysisUniqueStrings(packs)
 }
 
@@ -166,10 +237,37 @@ func reviewEvidenceNeeds(target string, mode string) []string {
 	if target == reviewTargetPlan {
 		needs = []string{"plan text", "objective", "non-goals", "required verification"}
 	}
+	if target == reviewTargetSourceAnalysis {
+		needs = []string{"source excerpts", "symbols or focused files", "performance or stability hypothesis"}
+	}
 	if mode == reviewModeSecurityHardening {
 		needs = append(needs, "security-sensitive changed paths", "verification or smoke evidence", "false-positive rationale")
 	}
 	return needs
+}
+
+func reviewMaxContextCharsForAnalysis(current int, analysis ReviewRequestAnalysis) int {
+	if current != reviewDefaultMaxContextChars {
+		return current
+	}
+	if !strings.EqualFold(analysis.InferredTarget, reviewTargetSourceAnalysis) {
+		return current
+	}
+	if strings.EqualFold(analysis.InferredMode, reviewModePerformanceAnalysis) {
+		return reviewSourceAnalysisMaxContextChars
+	}
+	return reviewSourceAnalysisMaxContextChars
+}
+
+func reviewRemainingContextChars(maxChars int, currentText string) int {
+	if maxChars <= 0 {
+		return 0
+	}
+	remaining := maxChars - len(currentText)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func reviewCandidateFlows(target string, mode string) []string {
@@ -186,12 +284,16 @@ func reviewCandidateFlows(target string, mode string) []string {
 func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, run ReviewRun, opts ReviewHarnessOptions) (ReviewChangeSet, ReviewEvidencePack) {
 	var changeSet ReviewChangeSet
 	var evidence ReviewEvidencePack
+	focusPaths := reviewEvidenceFocusPaths(run, opts)
+	collectedSourceFirst := false
 	evidence.Sources = []string{}
 	evidence.Warnings = append(evidence.Warnings, run.RequestAnalysis.AmbiguityWarnings...)
 	if strings.TrimSpace(opts.ProvidedDiff) != "" {
+		providedPaths := append(normalizeTaskStateList(opts.Paths, 128), reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
+		providedPaths = analysisUniqueStrings(providedPaths)
 		changeSet.Source = "provided_diff"
 		changeSet.DiffExcerpt = compactPromptSection(opts.ProvidedDiff, opts.MaxContextChars)
-		changeSet.ChangedPaths = append(changeSet.ChangedPaths, normalizeTaskStateList(opts.Paths, 128)...)
+		changeSet.ChangedPaths = append(changeSet.ChangedPaths, providedPaths...)
 		evidence.ChangedPaths = append(evidence.ChangedPaths, changeSet.ChangedPaths...)
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Provided diff", changeSet.DiffExcerpt)
 		evidence.Sources = append(evidence.Sources, "provided_diff")
@@ -200,35 +302,63 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 		if changeSet.Source == "" {
 			changeSet.Source = "provided_code"
 		}
-		code := compactPromptSection(opts.ProvidedCode, opts.MaxContextChars-len(evidence.Text))
-		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Provided code", code)
-		evidence.Sources = append(evidence.Sources, "provided_code")
+		remaining := reviewRemainingContextChars(opts.MaxContextChars, evidence.Text)
+		if remaining <= 0 {
+			evidence.Warnings = append(evidence.Warnings, "provided code omitted because review context budget is exhausted")
+		} else {
+			code := compactPromptSection(opts.ProvidedCode, remaining)
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Provided code", code)
+			evidence.Sources = append(evidence.Sources, "provided_code")
+		}
+	}
+	if proposalText := renderEditProposalsForEvidence(run.EditProposals); strings.TrimSpace(proposalText) != "" {
+		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Edit proposal", proposalText)
+		evidence.Sources = append(evidence.Sources, "edit_proposal")
+	}
+	if repairText := renderReviewRepairFindingsForEvidence(opts.RepairFindings); strings.TrimSpace(repairText) != "" {
+		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Required repair findings from pre-fix review", repairText)
+		evidence.Sources = append(evidence.Sources, "pre_fix_repair_findings")
+	}
+	if reviewShouldCollectSourceEvidenceFirst(run, opts, focusPaths) {
+		collectFileReviewEvidence(rt, root, focusPaths, run.RequestAnalysis.ScopeDiscovery.CandidateSymbols, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
+		collectedSourceFirst = true
 	}
 	switch run.Target {
 	case reviewTargetPlan:
 		collectPlanReviewEvidence(rt, &evidence, opts)
 	case reviewTargetSelection:
-		collectSelectionReviewEvidence(rt, root, &changeSet, &evidence, opts.MaxContextChars-len(evidence.Text))
+		collectSelectionReviewEvidence(rt, root, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 	case reviewTargetPR:
 		collectGitReviewEvidence(ctx, root, opts.Paths, &changeSet, &evidence, opts)
 	case reviewTargetGoal:
 		collectGoalReviewEvidence(rt, root, &changeSet, &evidence, opts)
 	case reviewTargetAnalysis:
-		collectAnalysisReviewEvidence(rt, root, &changeSet, &evidence, opts)
+		collectAnalysisReviewEvidence(rt, root, focusPaths, &changeSet, &evidence, opts)
 	default:
 		if opts.IncludeGitDiff || (changeSet.Source == "" && strings.TrimSpace(evidence.Text) == "") {
-			collectGitReviewEvidence(ctx, root, opts.Paths, &changeSet, &evidence, opts)
+			collectGitReviewEvidence(ctx, root, focusPaths, &changeSet, &evidence, opts)
 		}
 	}
-	if opts.IncludeFileContents || (strings.TrimSpace(evidence.Text) == "" && len(opts.Paths) > 0) {
-		collectFileReviewEvidence(rt, root, opts.Paths, &changeSet, &evidence, opts.MaxContextChars-len(evidence.Text))
+	if !collectedSourceFirst && (opts.IncludeFileContents || (strings.TrimSpace(evidence.Text) == "" && len(focusPaths) > 0) || reviewShouldAutoIncludeScopeFileEvidence(run, opts, focusPaths)) {
+		collectFileReviewEvidence(rt, root, focusPaths, run.RequestAnalysis.ScopeDiscovery.CandidateSymbols, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 	}
 	if rt != nil && rt.session != nil {
 		collectSessionReviewEvidence(rt.session, &evidence)
 	}
+	if rt != nil && rt.verifyHistory != nil {
+		collectVerificationHistoryReviewEvidence(rt.verifyHistory, root, &evidence)
+	}
 	changeSet.ChangedPaths = analysisUniqueStrings(append(changeSet.ChangedPaths, evidence.ChangedPaths...))
 	sort.Strings(changeSet.ChangedPaths)
 	evidence.ChangedPaths = append([]string(nil), changeSet.ChangedPaths...)
+	if scopeText := renderReviewScopeDiscoveryForEvidence(run.RequestAnalysis); strings.TrimSpace(scopeText) != "" && strings.TrimSpace(evidence.Text) != "" {
+		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Deterministic scope discovery", scopeText)
+		evidence.Sources = append(evidence.Sources, "scope_discovery")
+	}
+	if opts.MaxContextChars > 0 && len(evidence.Text) > opts.MaxContextChars {
+		evidence.Text = compactPromptSection(evidence.Text, opts.MaxContextChars)
+		evidence.Warnings = append(evidence.Warnings, "review evidence text truncated to max context budget")
+	}
 	if changeSet.Source == "" {
 		changeSet.Source = "session"
 	}
@@ -236,6 +366,47 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 	evidence.Sources = analysisUniqueStrings(evidence.Sources)
 	evidence.Warnings = analysisUniqueStrings(evidence.Warnings)
 	return changeSet, evidence
+}
+
+func reviewEvidenceFocusPaths(run ReviewRun, opts ReviewHarnessOptions) []string {
+	if len(opts.Paths) > 0 {
+		return mcpReviewCleanPaths(opts.Paths)
+	}
+	if strings.TrimSpace(opts.ProvidedDiff) != "" || strings.TrimSpace(opts.ProvidedCode) != "" {
+		return nil
+	}
+	return mcpReviewCleanPaths(run.RequestAnalysis.ScopeDiscovery.CandidateFiles)
+}
+
+func reviewShouldCollectSourceEvidenceFirst(run ReviewRun, opts ReviewHarnessOptions, focusPaths []string) bool {
+	if len(focusPaths) == 0 {
+		return false
+	}
+	if opts.IncludeFileContents {
+		return true
+	}
+	if strings.TrimSpace(opts.ProvidedDiff) != "" || strings.TrimSpace(opts.ProvidedCode) != "" {
+		return false
+	}
+	if strings.TrimSpace(run.Objective) == "" {
+		return false
+	}
+	width := strings.ToLower(strings.TrimSpace(run.RequestAnalysis.ScopeDiscovery.ScopeWidth))
+	return width == "focused" || width == "bounded" || reviewRequestPrefersSourceEvidence(run.Objective, run.RequestAnalysis.ScopeDiscovery)
+}
+
+func reviewShouldAutoIncludeScopeFileEvidence(run ReviewRun, opts ReviewHarnessOptions, focusPaths []string) bool {
+	if len(focusPaths) == 0 || len(opts.Paths) > 0 {
+		return false
+	}
+	if strings.TrimSpace(opts.ProvidedDiff) != "" || strings.TrimSpace(opts.ProvidedCode) != "" {
+		return false
+	}
+	if strings.TrimSpace(run.Objective) == "" {
+		return false
+	}
+	width := strings.ToLower(strings.TrimSpace(run.RequestAnalysis.ScopeDiscovery.ScopeWidth))
+	return width == "focused" || width == "bounded"
 }
 
 func collectPlanReviewEvidence(rt *runtimeState, evidence *ReviewEvidencePack, opts ReviewHarnessOptions) {
@@ -312,16 +483,18 @@ func collectGoalReviewEvidence(rt *runtimeState, root string, changeSet *ReviewC
 	collectGitReviewEvidence(context.Background(), root, opts.Paths, changeSet, evidence, opts)
 }
 
-func collectAnalysisReviewEvidence(rt *runtimeState, root string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, opts ReviewHarnessOptions) {
+func collectAnalysisReviewEvidence(rt *runtimeState, root string, paths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, opts ReviewHarnessOptions) {
+	hasAnalysis := false
 	if rt != nil && rt.session != nil && rt.session.LastAnalysis != nil {
 		data, _ := json.MarshalIndent(rt.session.LastAnalysis, "", "  ")
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Latest analysis summary", compactPromptSection(string(data), 8000))
 		evidence.Sources = append(evidence.Sources, "analysis_summary")
+		hasAnalysis = true
 	}
-	if strings.TrimSpace(evidence.Text) == "" {
+	if !hasAnalysis {
 		evidence.Warnings = append(evidence.Warnings, "no latest analysis summary found")
 	}
-	collectGitReviewEvidence(context.Background(), root, opts.Paths, changeSet, evidence, opts)
+	collectGitReviewEvidence(context.Background(), root, paths, changeSet, evidence, opts)
 }
 
 func collectGitReviewEvidence(ctx context.Context, root string, paths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, opts ReviewHarnessOptions) {
@@ -362,29 +535,37 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	staged := runGitText(root, append([]string{"diff", "--staged", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
 	combined := strings.TrimSpace(strings.Join([]string{diff, staged}, "\n\n"))
 	if combined != "" {
-		changeSet.DiffExcerpt = compactPromptSection(combined, opts.MaxContextChars-len(evidence.Text))
-		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Git diff excerpt", changeSet.DiffExcerpt)
-		evidence.Sources = append(evidence.Sources, "git_diff")
+		remaining := reviewRemainingContextChars(opts.MaxContextChars, evidence.Text)
+		if remaining <= 0 {
+			evidence.Warnings = append(evidence.Warnings, "git diff excerpt omitted because review context budget is exhausted")
+		} else {
+			changeSet.DiffExcerpt = compactPromptSection(combined, remaining)
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Git diff excerpt", changeSet.DiffExcerpt)
+			evidence.Sources = append(evidence.Sources, "git_diff")
+		}
 	}
 	if len(untracked) > 0 {
-		collectFileReviewEvidence(nil, root, limitStrings(untracked, 8), changeSet, evidence, opts.MaxContextChars-len(evidence.Text))
+		collectFileReviewEvidence(nil, root, limitStrings(untracked, 8), nil, changeSet, evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 	}
 	_ = ctx
 }
 
-func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) {
+func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, symbols []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) {
 	if maxChars <= 0 {
 		evidence.Warnings = append(evidence.Warnings, "file review context budget exhausted")
 		return
 	}
-	for _, raw := range mcpReviewCleanPaths(paths) {
-		if len(evidence.Text) >= maxChars {
+	cleanPaths := mcpReviewCleanPaths(paths)
+	remaining := maxChars
+	for i, raw := range cleanPaths {
+		if remaining <= 0 {
 			evidence.Warnings = append(evidence.Warnings, "file excerpts truncated by review context budget")
 			return
 		}
 		if shouldSkipMCPReviewFile(raw) {
 			continue
 		}
+		fileBudget := reviewFileEvidenceBudget(remaining, len(cleanPaths)-i)
 		resolved := raw
 		var err error
 		if rt != nil {
@@ -397,24 +578,254 @@ func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, ch
 			continue
 		}
 		info, err := os.Stat(resolved)
-		if err != nil || info.IsDir() || info.Size() > 256*1024 {
+		if err != nil || info.IsDir() {
+			continue
+		}
+		rel := filepath.ToSlash(relOrAbs(root, resolved))
+		fileSymbols := reviewFileEvidenceSymbols(symbols, rel)
+		if info.Size() > 8*1024*1024 {
+			if len(fileSymbols) > 0 {
+				body := reviewFileSymbolExcerptsFromPath(resolved, fileSymbols, fileBudget)
+				if strings.TrimSpace(body) != "" {
+					changeSet.ChangedPaths = append(changeSet.ChangedPaths, rel)
+					evidence.ChangedPaths = append(evidence.ChangedPaths, rel)
+					if changeSet.Source == "" {
+						changeSet.Source = "workspace_files"
+					}
+					beforeLen := len(evidence.Text)
+					evidence.Text = appendReviewEvidenceSection(evidence.Text, "Symbol excerpt: "+rel+" :: "+strings.Join(fileSymbols, ", "), body)
+					remaining -= len(evidence.Text) - beforeLen
+					evidence.Sources = append(evidence.Sources, "file_excerpt")
+					continue
+				}
+				evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: requested symbols not found in large file: %s", raw, strings.Join(fileSymbols, ", ")))
+				continue
+			}
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: file is too large for review excerpt collection", raw))
 			continue
 		}
 		data, err := os.ReadFile(resolved)
 		if err != nil || !isText(data) {
 			continue
 		}
-		rel := filepath.ToSlash(relOrAbs(root, resolved))
 		changeSet.ChangedPaths = append(changeSet.ChangedPaths, rel)
 		evidence.ChangedPaths = append(evidence.ChangedPaths, rel)
-		evidence.Text = appendReviewEvidenceSection(evidence.Text, "File excerpt: "+rel, compactPromptSection(string(data), maxChars-len(evidence.Text)))
+		body, title, symbolMatched := reviewFileEvidenceBody(rel, string(data), fileSymbols, fileBudget)
+		if strings.TrimSpace(body) == "" {
+			if len(fileSymbols) > 0 {
+				evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: requested symbols not found: %s", rel, strings.Join(fileSymbols, ", ")))
+			}
+			continue
+		}
+		if len(fileSymbols) > 0 && !symbolMatched {
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("symbol-focused excerpt unavailable in %s: %s", rel, strings.Join(fileSymbols, ", ")))
+		}
+		if changeSet.Source == "" {
+			changeSet.Source = "workspace_files"
+		}
+		beforeLen := len(evidence.Text)
+		evidence.Text = appendReviewEvidenceSection(evidence.Text, title, body)
+		remaining -= len(evidence.Text) - beforeLen
 		evidence.Sources = append(evidence.Sources, "file_excerpt")
 	}
+}
+
+func reviewFileEvidenceBudget(remaining int, candidatesLeft int) int {
+	if remaining <= 0 {
+		return 0
+	}
+	if candidatesLeft <= 1 {
+		return remaining
+	}
+	budget := remaining / candidatesLeft
+	if budget < 12000 && remaining > 12000 {
+		budget = 12000
+	}
+	if budget > 30000 {
+		budget = 30000
+	}
+	if budget > remaining {
+		return remaining
+	}
+	return budget
+}
+
+func reviewFileEvidenceSymbols(symbols []string, rel string) []string {
+	pathLower := strings.ToLower(filepath.ToSlash(rel))
+	var out []string
+	seen := map[string]bool{}
+	for _, symbol := range symbols {
+		symbol = strings.TrimSpace(strings.TrimSuffix(symbol, "()"))
+		if len(symbol) < 4 {
+			continue
+		}
+		lower := strings.ToLower(symbol)
+		if seen[lower] || strings.Contains(pathLower, lower) || reviewScopeStopWords[lower] {
+			continue
+		}
+		seen[lower] = true
+		out = append(out, symbol)
+		if len(out) >= 8 {
+			break
+		}
+	}
+	return out
+}
+
+func reviewFileEvidenceBody(rel string, content string, symbols []string, maxChars int) (string, string, bool) {
+	if maxChars <= 0 {
+		return "", "", false
+	}
+	if len(symbols) > 0 {
+		if excerpt := reviewFileSymbolExcerpts(content, symbols, maxChars); strings.TrimSpace(excerpt) != "" {
+			return excerpt, "Symbol excerpt: " + rel + " :: " + strings.Join(symbols, ", "), true
+		}
+		if len(content) > 256*1024 {
+			return "", "Symbol excerpt: " + rel + " :: " + strings.Join(symbols, ", "), false
+		}
+	}
+	return compactPromptSection(content, maxChars), "File excerpt: " + rel, false
+}
+
+func reviewFileSymbolExcerpts(content string, symbols []string, maxChars int) string {
+	if maxChars <= 0 || len(symbols) == 0 {
+		return ""
+	}
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	lines := strings.Split(normalized, "\n")
+	type span struct {
+		start int
+		end   int
+	}
+	var spans []span
+	lastEnd := -1
+	for i, line := range lines {
+		if !reviewLineContainsAnySymbol(line, symbols) {
+			continue
+		}
+		start := i - 80
+		if start < 0 {
+			start = 0
+		}
+		end := i + 120
+		if end >= len(lines) {
+			end = len(lines) - 1
+		}
+		if len(spans) > 0 && start <= lastEnd+20 {
+			if end > spans[len(spans)-1].end {
+				spans[len(spans)-1].end = end
+				lastEnd = end
+			}
+		} else {
+			spans = append(spans, span{start: start, end: end})
+			lastEnd = end
+		}
+		if len(spans) >= 4 {
+			break
+		}
+	}
+	if len(spans) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, sp := range spans {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "-- lines %d-%d --\n", sp.start+1, sp.end+1)
+		for i := sp.start; i <= sp.end && i < len(lines); i++ {
+			fmt.Fprintf(&b, "%5d | %s\n", i+1, strings.TrimSuffix(lines[i], "\r"))
+			if b.Len() >= maxChars {
+				break
+			}
+		}
+		if b.Len() >= maxChars {
+			break
+		}
+	}
+	return strings.TrimSpace(compactPromptSection(b.String(), maxChars))
+}
+
+func reviewFileSymbolExcerptsFromPath(path string, symbols []string, maxChars int) string {
+	if maxChars <= 0 || len(symbols) == 0 {
+		return ""
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	type numberedLine struct {
+		number int
+		text   string
+	}
+	var previous []numberedLine
+	var b strings.Builder
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	lineNumber := 0
+	afterLines := 0
+	matches := 0
+	for scanner.Scan() {
+		lineNumber++
+		line := scanner.Text()
+		matched := reviewLineContainsAnySymbol(line, symbols)
+		if matched {
+			matches++
+			if b.Len() > 0 {
+				b.WriteString("\n\n")
+			}
+			startLine := lineNumber
+			if len(previous) > 0 {
+				startLine = previous[0].number
+			}
+			fmt.Fprintf(&b, "-- lines %d-%d --\n", startLine, lineNumber+120)
+			for _, prev := range previous {
+				fmt.Fprintf(&b, "%5d | %s\n", prev.number, strings.TrimSuffix(prev.text, "\r"))
+				if b.Len() >= maxChars {
+					return strings.TrimSpace(compactPromptSection(b.String(), maxChars))
+				}
+			}
+			fmt.Fprintf(&b, "%5d | %s\n", lineNumber, strings.TrimSuffix(line, "\r"))
+			afterLines = 120
+		} else if afterLines > 0 {
+			fmt.Fprintf(&b, "%5d | %s\n", lineNumber, strings.TrimSuffix(line, "\r"))
+			afterLines--
+		}
+		previous = append(previous, numberedLine{number: lineNumber, text: line})
+		if len(previous) > 80 {
+			previous = previous[len(previous)-80:]
+		}
+		if b.Len() >= maxChars || matches >= 4 {
+			break
+		}
+	}
+	return strings.TrimSpace(compactPromptSection(b.String(), maxChars))
+}
+
+func reviewLineContainsAnySymbol(line string, symbols []string) bool {
+	for _, symbol := range symbols {
+		symbol = strings.TrimSpace(symbol)
+		if symbol == "" {
+			continue
+		}
+		if bytes.Contains([]byte(line), []byte(symbol)) || strings.Contains(strings.ToLower(line), strings.ToLower(symbol)) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack) {
 	if session == nil || evidence == nil {
 		return
+	}
+	if changed := sessionPatchTransactionChangedPaths(session); len(changed) > 0 {
+		evidence.ChangedPaths = append(evidence.ChangedPaths, changed...)
+		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Patch transaction changed paths", strings.Join(changed, "\n"))
+		evidence.Sources = append(evidence.Sources, "patch_transaction")
 	}
 	if session.AcceptanceContract != nil {
 		contract := *session.AcceptanceContract
@@ -438,6 +849,20 @@ func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Latest coding harness", compactPromptSection(evidence.CodingHarnessSummary, 4000))
 		evidence.Sources = append(evidence.Sources, "coding_harness")
 	}
+}
+
+func collectVerificationHistoryReviewEvidence(history *VerificationHistoryStore, root string, evidence *ReviewEvidencePack) {
+	if history == nil || evidence == nil || strings.TrimSpace(evidence.VerificationSummary) != "" {
+		return
+	}
+	latest, ok, err := history.Latest(root)
+	if err != nil || !ok {
+		return
+	}
+	evidence.VerificationSummary = latest.Report.SummaryLine()
+	evidence.VerificationFailed = latest.Report.HasFailures()
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, "Latest verification", compactPromptSection(latest.Report.RenderShort(), 4000))
+	evidence.Sources = append(evidence.Sources, "verification_history")
 }
 
 func appendReviewEvidenceSection(text string, title string, body string) string {
@@ -481,7 +906,7 @@ func reviewGitOutputIsUnavailable(text string) bool {
 func filterReviewablePaths(paths []string) []string {
 	var out []string
 	for _, path := range paths {
-		if !shouldSkipMCPReviewFile(path) {
+		if !shouldSkipMCPReviewFile(path) && !reviewScopeCandidatePathLooksSynthetic(path) {
 			out = append(out, path)
 		}
 	}

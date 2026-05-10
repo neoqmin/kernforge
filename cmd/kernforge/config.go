@@ -135,7 +135,7 @@ func DefaultConfig(cwd string) Config {
 		RequestRetryDelayMs:    1500,
 		RequestTimeoutSecs:     1200,
 		ProgressDisplay:        "stream",
-		ShellTimeoutSecs:       300,
+		ShellTimeoutSecs:       currentDefaultShellTimeoutSecs,
 		ReadHintSpans:          defaultReadHintSpans,
 		ReadCacheEntries:       defaultReadCacheEntries,
 		PermissionMode:         "default",
@@ -196,7 +196,7 @@ type LegacyDefaultMigration struct {
 
 // MigrateLegacyConfigDefaults rewrites config values that exactly match the
 // previous hard-coded defaults of KernForge (max_tool_iterations: 16,
-// max_tokens: 4096) to the new defaults. Both the in-memory cfg and any
+// max_tokens: 4096, shell_timeout_seconds: 300) to the new defaults. Both the in-memory cfg and any
 // on-disk config file in the search path are patched so the migration is
 // sticky — the user only sees the notice once.
 //
@@ -227,6 +227,15 @@ func MigrateLegacyConfigDefaults(cwd string, cfg *Config) []LegacyDefaultMigrati
 		})
 		cfg.MaxTokens = currentDefaultMaxTokens
 	}
+	if cfg.ShellTimeoutSecs == legacyDefaultShellTimeoutSecs {
+		notices = append(notices, LegacyDefaultMigration{
+			Field:    "shell_timeout_seconds",
+			OldValue: fmt.Sprintf("%d", cfg.ShellTimeoutSecs),
+			NewValue: fmt.Sprintf("%d", currentDefaultShellTimeoutSecs),
+			Reason:   "matched the previous KernForge default; raised so full workspace verification and slow local providers have room to finish.",
+		})
+		cfg.ShellTimeoutSecs = currentDefaultShellTimeoutSecs
+	}
 
 	if len(notices) == 0 {
 		return nil
@@ -244,9 +253,11 @@ const (
 	// Previous hard-coded defaults that we now treat as migration sentinels.
 	legacyDefaultMaxToolIterations = 16
 	legacyDefaultMaxTokens         = 4096
+	legacyDefaultShellTimeoutSecs  = 300
 
 	// New defaults the migration writes back. Keep in sync with DefaultConfig.
-	currentDefaultMaxTokens = 8192
+	currentDefaultMaxTokens        = 8192
+	currentDefaultShellTimeoutSecs = 900
 )
 
 // patchLegacyDefaultsInFile reads a config file, replaces legacy default
@@ -263,7 +274,7 @@ func patchLegacyDefaultsInFile(path string) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
 	}
-	// Use a generic map so we only touch the two fields and preserve
+	// Use a generic map so we only touch known legacy fields and preserve
 	// everything else exactly (key order, comments are already gone after
 	// any prior write but unknown fields stay intact).
 	var raw map[string]any
@@ -280,6 +291,12 @@ func patchLegacyDefaultsInFile(path string) error {
 	if v, ok := raw["max_tokens"]; ok {
 		if asFloat, isNum := v.(float64); isNum && int(asFloat) == legacyDefaultMaxTokens {
 			raw["max_tokens"] = currentDefaultMaxTokens
+			changed = true
+		}
+	}
+	if v, ok := raw["shell_timeout_seconds"]; ok {
+		if asFloat, isNum := v.(float64); isNum && int(asFloat) == legacyDefaultShellTimeoutSecs {
+			raw["shell_timeout_seconds"] = currentDefaultShellTimeoutSecs
 			changed = true
 		}
 	}
@@ -1562,7 +1579,7 @@ func configShellTimeout(cfg Config) time.Duration {
 	if cfg.ShellTimeoutSecs > 0 {
 		return time.Duration(cfg.ShellTimeoutSecs) * time.Second
 	}
-	return 5 * time.Minute
+	return time.Duration(currentDefaultShellTimeoutSecs) * time.Second
 }
 
 func configReadHintSpans(cfg Config) int {
@@ -1822,7 +1839,7 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 				"vllm":         1,
 			},
 		},
-		ShellTimeoutSecs: 300,
+		ShellTimeoutSecs: currentDefaultShellTimeoutSecs,
 		ReadHintSpans:    defaultReadHintSpans,
 		ReadCacheEntries: defaultReadCacheEntries,
 		MSBuildPath:      "",

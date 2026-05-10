@@ -264,13 +264,13 @@ type viewerState struct {
 	iconSmall       uintptr
 
 	// Find state
-	findText     string
-	findMatches  []int
-	findIndex    int
-	findActive   bool
-	findVisible  bool
-	findStartPos int
-	findEndPos   int
+	findText      string
+	findMatches   []int
+	findIndex     int
+	findActive    bool
+	findVisible   bool
+	findStartPos  int
+	findEndPos    int
 	findStartLine int
 	findEndLine   int
 }

@@ -264,27 +264,31 @@ startup_timeout_sec = 120
 3. `kernforge_guide`
 4. `kernforge_look`
 5. `kernforge_status`
-6. `kernforge_latest_analysis`
-7. `kernforge_read_analysis_doc`
-8. `kernforge_evidence_search`
-9. `kernforge_memory_search`
-10. `kernforge_verification_history`
-11. `kernforge_analysis_context`
-12. `kernforge_artifact_index`
-13. `kernforge_fuzz_targets`
-14. `kernforge_fuzz_func`
-15. `kernforge_fuzz_func_preview`
-16. `kernforge_fuzz_func_build`
-17. `kernforge_fuzz_func_status`
-18. `kernforge_fuzz_artifacts`
-19. `kernforge_fuzz_campaign_status`
-20. `kernforge_fuzz_campaign_run`
-20. `kernforge_verify`의 계획 확인
+6. `kernforge_review`의 deterministic/no_model 리뷰
+7. `kernforge_latest_analysis`
+8. `kernforge_read_analysis_doc`
+9. `kernforge_evidence_search`
+10. `kernforge_memory_search`
+11. `kernforge_verification_history`
+12. `kernforge_analysis_context`
+13. `kernforge_artifact_index`
+14. `kernforge_fuzz_targets`
+15. `kernforge_fuzz_func`
+16. `kernforge_fuzz_func_preview`
+17. `kernforge_fuzz_func_build`
+18. `kernforge_fuzz_func_status`
+19. `kernforge_fuzz_artifacts`
+20. `kernforge_fuzz_campaign_status`
+21. `kernforge_fuzz_campaign_run`
+22. `kernforge_verify`의 계획 확인
 
 다음 도구는 provider/model이 필요하다.
 
 1. `kernforge_analyze_project`
 2. `kernforge_find_root_cause`
+3. model-backed `kernforge_review`
+
+`kernforge_review`는 read-only tool이다. `no_model=true` 또는 provider가 없는 degraded 상태에서는 deterministic reviewer와 gate metadata 중심으로 응답할 수 있지만, 실제 모델 기반 finding 품질을 기대하는 운영 리뷰에는 provider/model을 설정하는 것이 좋다.
 
 설정 방법은 세 가지다.
 
@@ -328,6 +332,7 @@ MCP 호스트에서 먼저 tool list를 확인한다.
 
 ```text
 kernforge_status
+kernforge_review
 kernforge_latest_analysis
 kernforge_read_analysis_doc
 kernforge_evidence_search
@@ -377,7 +382,7 @@ Raw MCP JSON-RPC payload로 보면 다음과 같은 형태다.
 }
 ```
 
-정상 응답에는 workspace, session id, provider/model 상태, git changed files, evidence count, 최신 analysis 정보가 포함된다.
+정상 응답에는 workspace, session id, provider/model 상태, git changed files, evidence count, 최신 analysis 정보가 포함된다. 리뷰/수정 작업 중이면 runtime gate 상태, latest review freshness, blocker/warning count, waiver count, 추천 next command도 같이 확인한다.
 
 MCP host가 discovery를 지원하면 다음도 확인한다.
 
@@ -396,6 +401,7 @@ prompts/list
 
 ```text
 kernforge_status
+kernforge_review
 kernforge_latest_analysis
 kernforge_verification_history
 kernforge_memory_search
@@ -429,6 +435,46 @@ kernforge_analyze_project 또는 kernforge_find_root_cause
 2. provider/model이 준비됐는지 확인
 3. workspace와 git 상태 확인
 4. 최신 analysis artifact 존재 여부 확인
+5. review freshness와 runtime gate blocker 확인
+
+리뷰나 write-side 작업을 앞둔 client는 `kernforge_status`의 runtime gate 요약을 stop sign으로 취급한다. `runtime_gate=blocked`, stale review, waiver 없는 blocker가 보이면 final answer, git write, PR write-side automation을 진행하기 전에 `next_command`를 먼저 사용자에게 제안하거나 `kernforge_review`를 다시 호출한다.
+
+#### 7.1.1 리뷰 하네스 실행
+
+코드/계획/PR/selection/analysis target 리뷰는 `kernforge_review`를 직접 호출한다. 이 tool은 CLI `/review`와 같은 common review harness를 쓰며 read-only다.
+
+```json
+{
+  "name": "kernforge_review",
+  "arguments": {
+    "request": "Review the current change before final answer.",
+    "target": "change",
+    "include_git_diff": true,
+    "response_format": "both"
+  }
+}
+```
+
+MCP 응답에는 structured finding, gate status, `scope_discovery`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `next_commands`, `recommended_command`, `.kernforge/reviews` artifact path가 포함된다. `next_commands`는 reason, when, safety, auto-run 가능 여부, confirmation 필요 여부, expected_result를 포함하는 action contract다. `latest_review_freshness`가 stale이거나 `runtime_gate_ledger`가 blocked이면 client는 완료를 주장하지 말고 표시된 recovery command를 처리한다.
+
+review model 품질 gate는 provider behavior에 따라 token cap, omission retry budget, schema strictness, recovery prompt를 정한다. weak 또는 근거가 부족한 high-severity model finding은 gate blocker로 쓰지 않고 evidence-gap warning으로 낮춘다.
+
+외부 client가 이미 diff나 파일 범위를 알고 있으면 shell `git diff`를 다시 읽지 말고 다음처럼 전달한다.
+
+```json
+{
+  "name": "kernforge_review",
+  "arguments": {
+    "request": "Review the supplied patch for correctness regressions.",
+    "target": "change",
+    "paths": ["cmd/kernforge/review_harness.go"],
+    "diff": "diff --git a/cmd/kernforge/review_harness.go b/cmd/kernforge/review_harness.go\n...",
+    "include_git_diff": false
+  }
+}
+```
+
+단순 exact edit을 실제 write로 이어가야 하는 host는 review 응답의 `edit_proposals`와 runtime gate freshness를 보존한 뒤, 로컬 agent tool surface에서는 `apply_edit_proposal`을 우선 사용하고 복잡한 hunk-level 변경에만 `apply_patch`를 fallback으로 둔다.
 
 ### 7.2 최신 분석 요약
 
@@ -661,7 +707,7 @@ Codex 같은 외부 agent가 실제 산출물 경로를 찾아 열 수 있도록
   "name": "kernforge",
   "arguments": {
     "request": "KernForge로 IsValidCommand 봐줘",
-    "file": "TavernKernel/TavernKernelCore.cpp"
+    "file": "src/driver/IoctlDispatch.cpp"
   }
 }
 ```
@@ -674,7 +720,7 @@ Codex 같은 외부 agent가 실제 산출물 경로를 찾아 열 수 있도록
   "intent": "target_only",
   "stop_after_response": true,
   "requires_user_choice": true,
-  "ask_user": "KernForge로 IsValidCommand --file TavernKernel/TavernKernelCore.cpp에 대해 무엇을 할까요?",
+  "ask_user": "KernForge로 IsValidCommand --file src/driver/IoctlDispatch.cpp에 대해 무엇을 할까요?",
   "codex_instruction": "STOP here. Ask the user the ask_user question and present choices only.",
   "choices": [
     {

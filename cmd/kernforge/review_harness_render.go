@@ -83,11 +83,21 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 			if strings.TrimSpace(cmd.Safety) != "" {
 				fmt.Fprintf(&b, "  - Safety: `%s`\n", cmd.Safety)
 			}
+			fmt.Fprintf(&b, "  - Auto run: `%t`\n", cmd.AutoRun)
+			fmt.Fprintf(&b, "  - Requires confirmation: `%t`\n", cmd.RequiresConfirmation)
 			if strings.TrimSpace(cmd.ClientHint) != "" {
 				fmt.Fprintf(&b, "  - Action: %s\n", cmd.ClientHint)
 			}
+			if strings.TrimSpace(cmd.ExpectedResult) != "" {
+				fmt.Fprintf(&b, "  - Expected result: %s\n", cmd.ExpectedResult)
+			}
 		}
 		b.WriteString("\n")
+	}
+	if rendered := strings.TrimSpace(run.RuntimeGateLedger.RenderPromptSection()); rendered != "" {
+		b.WriteString("## Runtime Gate Ledger\n\n")
+		b.WriteString(rendered)
+		b.WriteString("\n\n")
 	}
 	if len(run.ModelPlan.UserGuidance) > 0 {
 		b.WriteString("## Model Guidance\n\n")
@@ -169,7 +179,12 @@ func renderReviewCLIResult(cfg Config, run ReviewRun) string {
 	fmt.Fprintf(&b, "%s %s: %s\n", reviewRunLocalizedText(cfg, run, "Review", "리뷰"), run.ID, run.Gate.Verdict)
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), run.Target)
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Mode", "모드"), run.Mode)
-	fmt.Fprintf(&b, "- %s: %d blocker=%d warning=%d\n", reviewRunLocalizedText(cfg, run, "Findings", "발견"), len(run.Findings), len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings))
+	noteCount := reviewCLINoteFindingCount(run)
+	fmt.Fprintf(&b, "- %s: %d blocker=%d warning=%d", reviewRunLocalizedText(cfg, run, "Findings", "발견"), len(run.Findings), len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings))
+	if noteCount > 0 {
+		fmt.Fprintf(&b, " note=%d", noteCount)
+	}
+	b.WriteString("\n")
 	if len(run.ArtifactRefs) > 0 {
 		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Report", "보고서"), run.ArtifactRefs[0])
 	}
@@ -189,6 +204,19 @@ func renderReviewCLIResult(cfg Config, run ReviewRun) string {
 			}
 			renderReviewCLIFinding(&b, cfg, run, finding, reviewRunLocalizedText(cfg, run, "Suggested fix", "권장 조치"))
 			rendered[finding.ID] = true
+		}
+	}
+	if len(run.Gate.BlockingFindings) == 0 && len(warnings) == 0 {
+		infoFindings := reviewCLIInfoFindings(run)
+		if len(infoFindings) > 0 {
+			fmt.Fprintf(&b, "\n%s:\n", reviewRunLocalizedText(cfg, run, "Notes", "참고"))
+			for _, finding := range infoFindings {
+				if rendered[finding.ID] {
+					continue
+				}
+				renderReviewCLIFinding(&b, cfg, run, finding, reviewRunLocalizedText(cfg, run, "Note", "참고"))
+				rendered[finding.ID] = true
+			}
 		}
 	}
 	if len(run.Gate.NextCommands) > 0 {
@@ -227,8 +255,13 @@ func renderReviewCLINextCommand(b *strings.Builder, cfg Config, run ReviewRun, c
 	if strings.TrimSpace(cmd.Safety) != "" {
 		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Safety", "안전성"), cmd.Safety)
 	}
+	fmt.Fprintf(b, "  %s: %t\n", reviewRunLocalizedText(cfg, run, "Auto run", "자동 실행"), cmd.AutoRun)
+	fmt.Fprintf(b, "  %s: %t\n", reviewRunLocalizedText(cfg, run, "Requires confirmation", "확인 필요"), cmd.RequiresConfirmation)
 	if hint := reviewNextCommandHintText(cfg, run, cmd); strings.TrimSpace(hint) != "" {
 		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Action", "실행 방법"), hint)
+	}
+	if expected := reviewNextCommandExpectedResultText(cfg, run, cmd); strings.TrimSpace(expected) != "" {
+		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Expected result", "예상 결과"), expected)
 	}
 }
 
@@ -240,11 +273,19 @@ func reviewNextCommandReasonText(cfg Config, run ReviewRun, cmd ReviewNextComman
 	case "verify":
 		return "변경된 파일에 대한 최신 빌드/테스트 근거가 없습니다."
 	case "repair":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "차단 finding이 발견됐지만 현재 요청은 분석/검토이므로, 수정은 사용자가 원할 때만 이어갑니다."
+		}
 		return "차단 finding이 있어서 위 RF 항목을 기준으로 수정 작업을 이어가야 합니다."
 	case "repair-warnings":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "분석 finding이 실제 코드 수정으로 이어질 수 있지만, 수정은 사용자가 원할 때만 이어갑니다."
+		}
 		return "경고 finding이 실제 코드 수정으로 이어질 수 있는 항목입니다."
 	case "completion-audit":
 		return "경고가 남아 있으므로 완료 선언 전에 최종 준비 상태를 점검해야 합니다."
+	case "narrow-review":
+		return "deterministic scope discovery가 리뷰 범위를 넓다고 판단했습니다."
 	case "set-security-model":
 		return "보안 민감 리뷰가 전용 보안 리뷰어 없이 fallback 모델로 실행되었습니다."
 	case "set-false-positive-model":
@@ -262,11 +303,19 @@ func reviewNextCommandWhenText(cfg Config, run ReviewRun, cmd ReviewNextCommand)
 	case "verify":
 		return "완료 선언 또는 git write 전에"
 	case "repair":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "분석 결과를 실제 코드 수정으로 이어가기로 결정한 경우"
+		}
 		return "리뷰 finding을 확인한 직후"
 	case "repair-warnings":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "분석 결과를 실제 코드 수정으로 이어가기로 결정한 경우"
+		}
 		return "경고를 수용하지 않고 바로 수정하려는 경우"
 	case "completion-audit":
 		return "최종 답변 또는 완료 처리 전에"
+	case "narrow-review":
+		return "모델 finding을 완료 근거로 신뢰하기 전에"
 	case "set-security-model", "set-false-positive-model":
 		return "다음 보안/탐지 리뷰 전에"
 	default:
@@ -282,17 +331,55 @@ func reviewNextCommandHintText(cfg Config, run ReviewRun, cmd ReviewNextCommand)
 	case "verify":
 		return "`/verify --full`로 검증을 실행한 뒤 `/review`를 다시 실행해 최신 근거를 붙이세요."
 	case "repair":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "자연어로 `수정해줘`라고 이어가거나 이 명령을 실행하면 최신 리뷰 finding을 기준으로 repair 흐름을 시작합니다."
+		}
 		return "이 명령을 실행하거나 자연어로 `수정해줘`라고 이어가면 최신 리뷰 finding을 기준으로 repair 흐름을 시작합니다."
 	case "repair-warnings":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "자연어로 `수정해줘`라고 이어가거나 이 명령을 실행한 경우에만 최신 분석 finding을 기준으로 repair 흐름을 시작합니다."
+		}
 		return "자연어로 `수정해줘`라고 이어가거나 이 명령을 실행하면 최신 warning finding을 기준으로 repair 흐름을 시작합니다."
 	case "completion-audit":
 		return "남은 경고를 수용 가능한 잔여 리스크로 볼 수 있는지 읽기 전용으로 점검합니다."
+	case "narrow-review":
+		return "path, symbol, selection 또는 검색 결과로 리뷰 범위를 좁힌 뒤 `/review`를 다시 실행하세요."
 	case "set-security-model":
 		return "`/review models security`에서 전용 보안 리뷰어 모델을 번호로 선택하세요."
 	case "set-false-positive-model":
 		return "`/review models false-positive`에서 전용 오탐 리뷰어 모델을 번호로 선택하세요."
 	default:
 		return cmd.ClientHint
+	}
+}
+
+func reviewNextCommandExpectedResultText(cfg Config, run ReviewRun, cmd ReviewNextCommand) string {
+	if !reviewRunPrefersKorean(cfg, run) {
+		return cmd.ExpectedResult
+	}
+	switch strings.TrimSpace(cmd.ID) {
+	case "verify":
+		return "변경된 파일에 대한 최신 verification report가 기록됩니다."
+	case "repair":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "명시적으로 수정 요청을 이어간 경우에만 최신 리뷰 blocker가 repair guidance로 변환됩니다."
+		}
+		return "최신 리뷰 blocker가 다음 repair 턴의 직접 지시사항으로 변환됩니다."
+	case "repair-warnings":
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			return "명시적으로 수정 요청을 이어간 경우에만 최신 분석 finding이 repair guidance로 변환됩니다."
+		}
+		return "수정 가능한 warning finding이 repair guidance로 큐잉됩니다."
+	case "completion-audit":
+		return "남은 경고를 보존한 채 완료 준비 상태가 평가됩니다."
+	case "narrow-review":
+		return "구체적인 candidate file 또는 symbol을 가진 focused review run이 생성됩니다."
+	case "set-security-model":
+		return "다음 보안 리뷰부터 전용 security reviewer route를 사용할 수 있습니다."
+	case "set-false-positive-model":
+		return "다음 탐지 리뷰부터 전용 false-positive reviewer route를 사용할 수 있습니다."
+	default:
+		return cmd.ExpectedResult
 	}
 }
 
@@ -315,6 +402,45 @@ func reviewCLIWarningFindings(run ReviewRun) []ReviewFinding {
 		}
 	}
 	return out
+}
+
+func reviewCLIInfoFindings(run ReviewRun) []ReviewFinding {
+	var out []ReviewFinding
+	for _, finding := range run.Findings {
+		if reviewFindingBlocksGate(run, finding) || reviewFindingCountsAsWarning(finding) {
+			continue
+		}
+		if strings.TrimSpace(finding.Title) == "" {
+			continue
+		}
+		out = append(out, finding)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	return out
+}
+
+func reviewCLINoteFindingCount(run ReviewRun) int {
+	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
+	count := 0
+	for _, finding := range run.Findings {
+		if reviewFindingBlocksGate(run, finding) {
+			continue
+		}
+		if len(warningIDs) > 0 {
+			if warningIDs[finding.ID] {
+				continue
+			}
+		} else if reviewFindingCountsAsWarning(finding) {
+			continue
+		}
+		if strings.TrimSpace(finding.Title) == "" {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func reviewFindingIDSet(ids []string) map[string]bool {

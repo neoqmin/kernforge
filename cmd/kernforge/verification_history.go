@@ -637,6 +637,22 @@ func (s *VerificationHistoryStore) PlannerTuning(workspace string) (Verification
 	return tuning, nil
 }
 
+func (s *VerificationHistoryStore) Latest(workspace string) (VerificationHistoryEntry, bool, error) {
+	items, err := s.load()
+	if err != nil {
+		return VerificationHistoryEntry{}, false, err
+	}
+	workspace = normalizePersistentMemoryWorkspace(workspace)
+	for i := len(items) - 1; i >= 0; i-- {
+		entry := items[i]
+		if workspaceAffinityScore(workspace, entry.Workspace) == 0 {
+			continue
+		}
+		return entry, true, nil
+	}
+	return VerificationHistoryEntry{}, false, nil
+}
+
 func (s *VerificationHistoryStore) load() ([]VerificationHistoryEntry, error) {
 	if s == nil || strings.TrimSpace(s.Path) == "" {
 		return nil, nil

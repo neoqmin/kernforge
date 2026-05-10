@@ -61,7 +61,7 @@ type VerificationPlan struct {
 
 func isEditTool(name string) bool {
 	switch name {
-	case "apply_patch", "write_file", "replace_in_file":
+	case "apply_edit_proposal", "apply_patch", "write_file", "replace_in_file":
 		return true
 	default:
 		return false

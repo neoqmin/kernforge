@@ -1,0 +1,487 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type ApplyEditProposalTool struct{ ws Workspace }
+
+func NewApplyEditProposalTool(ws Workspace) ApplyEditProposalTool {
+	return ApplyEditProposalTool{ws: ws}
+}
+
+func (t ApplyEditProposalTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "apply_edit_proposal",
+		Description: "Apply a structured edit proposal after runtime preview, automatic review, and user approval. Prefer this for exact-search replacements, simple add/write/delete edits, and reviewed edit intent; use apply_patch only for complex hunk-level fallback.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"file":          map[string]any{"type": "string"},
+				"operation":     map[string]any{"type": "string", "description": "replace_in_file, write_file, add_file, delete_file, or modify"},
+				"exact_search":  map[string]any{"type": "string"},
+				"replacement":   map[string]any{"type": "string"},
+				"content":       map[string]any{"type": "string"},
+				"all":           map[string]any{"type": "boolean"},
+				"rationale":     map[string]any{"type": "string"},
+				"risk":          map[string]any{"type": "string"},
+				"owner_node_id": map[string]any{"type": "string"},
+				"anchor_before": map[string]any{"type": "string"},
+				"replace_range": map[string]any{"type": "string"},
+			},
+			"required": []string{"file"},
+		},
+	}
+}
+
+func (t ApplyEditProposalTool) Execute(ctx context.Context, input any) (string, error) {
+	result, err := t.ExecuteDetailed(ctx, input)
+	return result.DisplayText, err
+}
+
+func (t ApplyEditProposalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
+	args := input.(map[string]any)
+	proposal := editProposalFromToolInput(args)
+	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	all := boolValue(args, "all", false)
+	text, meta, err := applyEditProposal(ctx, t.ws, proposal, ownerNodeID, all)
+	return ToolExecutionResult{
+		DisplayText: text,
+		Meta:        meta,
+	}, err
+}
+
+func editProposalsFromPreview(preview EditPreview) []EditProposal {
+	paths := normalizeTaskStateList(preview.Paths, 64)
+	if len(paths) == 0 {
+		paths = []string{""}
+	}
+	operation := strings.TrimSpace(preview.Operation)
+	if operation == "" {
+		operation = inferEditProposalOperation(preview)
+	}
+	expected := compactPromptSection(preview.Preview, 12000)
+	fingerprint := computeReviewFingerprint(operation, strings.Join(paths, ","), preview.Preview)
+	var proposals []EditProposal
+	for i, path := range paths {
+		proposalPreview := expected
+		if i > 0 && len(paths) > 1 {
+			proposalPreview = ""
+		}
+		proposals = append(proposals, EditProposal{
+			File:               filepath.ToSlash(strings.TrimSpace(path)),
+			Operation:          operation,
+			Rationale:          strings.TrimSpace(preview.Title),
+			Risk:               editProposalRiskForOperation(operation, len(paths)),
+			ExpectedPreview:    proposalPreview,
+			PreviewFingerprint: fingerprint,
+		})
+	}
+	return normalizeEditProposals(proposals)
+}
+
+func editProposalsForPreview(preview EditPreview) []EditProposal {
+	if len(preview.Proposals) > 0 {
+		return normalizeEditProposals(preview.Proposals)
+	}
+	return editProposalsFromPreview(preview)
+}
+
+func normalizeEditProposals(proposals []EditProposal) []EditProposal {
+	var out []EditProposal
+	for _, proposal := range proposals {
+		proposal.File = filepath.ToSlash(strings.TrimSpace(proposal.File))
+		proposal.Operation = strings.TrimSpace(proposal.Operation)
+		proposal.AnchorBefore = strings.TrimSpace(proposal.AnchorBefore)
+		proposal.ReplaceRange = strings.TrimSpace(proposal.ReplaceRange)
+		proposal.ExactSearch = strings.TrimSpace(proposal.ExactSearch)
+		proposal.Replacement = strings.TrimSpace(proposal.Replacement)
+		proposal.Rationale = strings.TrimSpace(proposal.Rationale)
+		proposal.Risk = strings.TrimSpace(proposal.Risk)
+		proposal.ExpectedPreview = strings.TrimSpace(proposal.ExpectedPreview)
+		proposal.PreviewFingerprint = strings.TrimSpace(proposal.PreviewFingerprint)
+		if proposal.File == "" && proposal.Operation == "" && proposal.ExpectedPreview == "" {
+			continue
+		}
+		if proposal.Operation == "" {
+			proposal.Operation = "modify"
+		}
+		if proposal.PreviewFingerprint == "" && proposal.ExpectedPreview != "" {
+			proposal.PreviewFingerprint = computeReviewFingerprint(proposal.Operation, proposal.File, proposal.ExpectedPreview)
+		}
+		out = append(out, proposal)
+	}
+	return out
+}
+
+func renderEditProposalsForEvidence(proposals []EditProposal) string {
+	proposals = normalizeEditProposals(proposals)
+	if len(proposals) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, proposal := range limitEditProposalsForEvidence(proposals, 16) {
+		fmt.Fprintf(&b, "proposal_%d:\n", i+1)
+		if proposal.File != "" {
+			fmt.Fprintf(&b, "  file: %s\n", proposal.File)
+		}
+		fmt.Fprintf(&b, "  operation: %s\n", proposal.Operation)
+		if proposal.Rationale != "" {
+			fmt.Fprintf(&b, "  rationale: %s\n", proposal.Rationale)
+		}
+		if proposal.Risk != "" {
+			fmt.Fprintf(&b, "  risk: %s\n", proposal.Risk)
+		}
+		if proposal.ExactSearch != "" {
+			fmt.Fprintf(&b, "  exact_search:\n%s\n", indentBlock(compactPromptSection(proposal.ExactSearch, 1600), "    "))
+		}
+		if proposal.Replacement != "" {
+			fmt.Fprintf(&b, "  replacement:\n%s\n", indentBlock(compactPromptSection(proposal.Replacement, 1600), "    "))
+		}
+		if proposal.PreviewFingerprint != "" {
+			fmt.Fprintf(&b, "  preview_fingerprint: %s\n", proposal.PreviewFingerprint)
+		}
+		if proposal.ExpectedPreview != "" {
+			fmt.Fprintf(&b, "  expected_preview:\n%s\n", indentBlock(compactPromptSection(proposal.ExpectedPreview, 4000), "    "))
+		} else if proposal.PreviewFingerprint != "" {
+			fmt.Fprintf(&b, "  expected_preview: shared by preview_fingerprint\n")
+		}
+	}
+	if len(proposals) > 16 {
+		fmt.Fprintf(&b, "additional_proposals: %d\n", len(proposals)-16)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func limitEditProposalsForEvidence(proposals []EditProposal, limit int) []EditProposal {
+	if limit <= 0 || len(proposals) <= limit {
+		return proposals
+	}
+	return proposals[:limit]
+}
+
+func renderReviewRepairFindingsForEvidence(findings []ReviewFinding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("The proposed edit must address each item below, or the review must report the item as still unresolved.\n")
+	for i, finding := range limitReviewFindings(findings, 12) {
+		finding.Normalize()
+		fmt.Fprintf(&b, "repair_%d:\n", i+1)
+		fmt.Fprintf(&b, "  id: %s\n", valueOrDefault(finding.ID, fmt.Sprintf("RF-%03d", i+1)))
+		fmt.Fprintf(&b, "  severity: %s\n", valueOrDefault(finding.Severity, reviewSeverityMedium))
+		fmt.Fprintf(&b, "  category: %s\n", valueOrDefault(finding.Category, "correctness"))
+		if strings.TrimSpace(finding.Path) != "" {
+			fmt.Fprintf(&b, "  path: %s\n", finding.Path)
+		}
+		if strings.TrimSpace(finding.Symbol) != "" {
+			fmt.Fprintf(&b, "  symbol: %s\n", finding.Symbol)
+		}
+		if strings.TrimSpace(finding.Title) != "" {
+			fmt.Fprintf(&b, "  title: %s\n", compactPromptSection(finding.Title, 220))
+		}
+		if strings.TrimSpace(finding.Evidence) != "" {
+			fmt.Fprintf(&b, "  evidence: %s\n", compactPromptSection(finding.Evidence, 320))
+		}
+		if strings.TrimSpace(finding.RequiredFix) != "" {
+			fmt.Fprintf(&b, "  required_fix: %s\n", compactPromptSection(finding.RequiredFix, 320))
+		}
+	}
+	if len(findings) > 12 {
+		fmt.Fprintf(&b, "additional_repair_findings: %d\n", len(findings)-12)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func inferEditProposalOperation(preview EditPreview) string {
+	text := strings.ToLower(strings.TrimSpace(preview.Operation + " " + preview.Title + " " + preview.Preview))
+	switch {
+	case strings.Contains(text, "delete file") || strings.Contains(text, "deleted file"):
+		return "delete"
+	case strings.Contains(text, "add file") || strings.Contains(text, "new file"):
+		return "add"
+	case strings.Contains(text, "rename") || strings.Contains(text, "move"):
+		return "move"
+	case strings.Contains(text, "apply patch"):
+		return "patch"
+	case strings.Contains(text, "write file"):
+		return "write"
+	default:
+		return "modify"
+	}
+}
+
+func editProposalRiskForOperation(operation string, pathCount int) string {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	switch {
+	case pathCount > 8:
+		return "multi_file"
+	case operation == "delete" || operation == "move":
+		return "destructive"
+	case operation == "patch" || operation == "modify" || operation == "write" || operation == "write_file" || operation == "replace_in_file":
+		return "previewed_change"
+	default:
+		return "unknown"
+	}
+}
+
+func editProposalFromToolInput(args map[string]any) EditProposal {
+	content := stringValue(args, "content")
+	replacement := stringValue(args, "replacement")
+	if replacement == "" {
+		replacement = content
+	}
+	return EditProposal{
+		File:         stringValue(args, "file"),
+		Operation:    stringValue(args, "operation"),
+		AnchorBefore: stringValue(args, "anchor_before"),
+		ReplaceRange: stringValue(args, "replace_range"),
+		ExactSearch:  stringValue(args, "exact_search"),
+		Replacement:  replacement,
+		Rationale:    stringValue(args, "rationale"),
+		Risk:         stringValue(args, "risk"),
+	}
+}
+
+type plannedEditProposal struct {
+	Proposal     EditProposal
+	Operation    string
+	AbsolutePath string
+	DisplayPath  string
+	DisplayRoot  string
+	Before       string
+	After        string
+	Count        int
+}
+
+func applyEditProposal(ctx context.Context, ws Workspace, proposal EditProposal, ownerNodeID string, all bool) (string, map[string]any, error) {
+	planned, err := planEditProposal(ws, proposal, ownerNodeID, all)
+	meta := editProposalToolMeta(proposal, planned, false)
+	if err != nil {
+		return "", meta, err
+	}
+	select {
+	case <-ctx.Done():
+		return "", meta, ctx.Err()
+	default:
+	}
+	if _, err := ws.Hook(ctx, HookPreEdit, HookPayload{
+		"path":               planned.DisplayPath,
+		"absolute_path":      planned.AbsolutePath,
+		"operation":          "apply_edit_proposal",
+		"proposal_operation": planned.Operation,
+		"reason":             editProposalReason(planned),
+		"file_tags":          hookFileTags(planned.AbsolutePath),
+		"owner_node_id":      ownerNodeID,
+		"worktree_root":      planned.DisplayRoot,
+	}); err != nil {
+		return "", meta, err
+	}
+	preview := editProposalPreview(ws, planned)
+	if err := ws.ReviewProposedEdit(ctx, preview); err != nil {
+		return "", meta, err
+	}
+	if err := ws.ConfirmEdit(preview); err != nil {
+		return "", meta, err
+	}
+	if err := ws.EnsureWrite(planned.AbsolutePath); err != nil {
+		return "", meta, err
+	}
+	if err := ws.BeforeEditForRoot(editProposalReason(planned), planned.DisplayRoot); err != nil {
+		return "", meta, err
+	}
+	switch planned.Operation {
+	case "delete_file":
+		ws.Progress("Deleting " + planned.DisplayPath + "...")
+		if err := os.Remove(planned.AbsolutePath); err != nil {
+			return "", meta, err
+		}
+		ws.Progress("Deleted " + planned.DisplayPath + ".")
+	default:
+		ws.Progress("Writing " + planned.DisplayPath + "...")
+		if err := ensureParentDir(planned.AbsolutePath); err != nil {
+			return "", meta, err
+		}
+		if err := os.WriteFile(planned.AbsolutePath, []byte(planned.After), 0o644); err != nil {
+			return "", meta, err
+		}
+		ws.Progress("Saved " + planned.DisplayPath + ".")
+	}
+	if _, err := ws.Hook(ctx, HookPostEdit, HookPayload{
+		"path":               planned.DisplayPath,
+		"absolute_path":      planned.AbsolutePath,
+		"operation":          "apply_edit_proposal",
+		"proposal_operation": planned.Operation,
+		"reason":             editProposalReason(planned),
+		"file_tags":          hookFileTags(planned.AbsolutePath),
+		"owner_node_id":      ownerNodeID,
+		"worktree_root":      planned.DisplayRoot,
+	}); err != nil {
+		return "", meta, err
+	}
+	meta = editProposalToolMeta(proposal, planned, true)
+	return joinNonEmpty(
+		editProposalResultLine(planned),
+		buildEditPreview(planned.DisplayPath, planned.Before, planned.After),
+	), meta, nil
+}
+
+func planEditProposal(ws Workspace, proposal EditProposal, ownerNodeID string, all bool) (plannedEditProposal, error) {
+	proposals := normalizeEditProposals([]EditProposal{proposal})
+	if len(proposals) == 0 || strings.TrimSpace(proposals[0].File) == "" {
+		return plannedEditProposal{}, fmt.Errorf("edit proposal file is required")
+	}
+	proposal = proposals[0]
+	operation := normalizeEditProposalOperation(proposal.Operation, proposal)
+	forLookup := operation != "add_file" && operation != "write_file"
+	route, err := ws.ResolveEditPath(proposal.File, ownerNodeID, forLookup)
+	if err != nil {
+		return plannedEditProposal{}, err
+	}
+	path := route.AbsolutePath
+	displayRoot := firstNonBlankString(route.DisplayRoot, route.WorktreeRoot, ws.Root)
+	displayPath := route.DisplayPath()
+	beforeBytes, readErr := os.ReadFile(path)
+	before := string(beforeBytes)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return plannedEditProposal{}, readErr
+	}
+	planned := plannedEditProposal{
+		Proposal:     proposal,
+		Operation:    operation,
+		AbsolutePath: path,
+		DisplayPath:  displayPath,
+		DisplayRoot:  displayRoot,
+		Before:       before,
+	}
+	switch operation {
+	case "replace_in_file":
+		if readErr != nil {
+			return plannedEditProposal{}, readErr
+		}
+		if proposal.ExactSearch == "" {
+			return plannedEditProposal{}, fmt.Errorf("edit proposal exact_search is required for replace_in_file")
+		}
+		count := strings.Count(before, proposal.ExactSearch)
+		if count == 0 {
+			return plannedEditProposal{}, fmt.Errorf("%w: exact_search text not found in %s", ErrEditTargetMismatch, displayPath)
+		}
+		if !all && count > 1 {
+			return plannedEditProposal{}, fmt.Errorf("exact_search appears %d times; set all=true or provide a narrower exact_search", count)
+		}
+		if all {
+			planned.After = strings.ReplaceAll(before, proposal.ExactSearch, proposal.Replacement)
+		} else {
+			planned.After = strings.Replace(before, proposal.ExactSearch, proposal.Replacement, 1)
+		}
+		planned.Count = count
+		if suspiciousReplacePayload(path, proposal.ExactSearch, proposal.Replacement, before, planned.After) {
+			return plannedEditProposal{}, fmt.Errorf("%w: edit proposal replacement looks like a malformed serialized payload; provide real replacement text", ErrInvalidEditPayload)
+		}
+	case "add_file":
+		if readErr == nil {
+			return plannedEditProposal{}, fmt.Errorf("cannot add file that already exists: %s", displayPath)
+		}
+		if proposal.Replacement == "" {
+			return plannedEditProposal{}, fmt.Errorf("edit proposal content is required for add_file")
+		}
+		planned.After = proposal.Replacement
+	case "write_file":
+		if proposal.Replacement == "" {
+			return plannedEditProposal{}, fmt.Errorf("edit proposal content is required for write_file")
+		}
+		planned.After = proposal.Replacement
+		if suspiciousRewritePayload(path, before, planned.After) {
+			return plannedEditProposal{}, fmt.Errorf("%w: edit proposal content looks like a malformed serialized payload; provide real file text", ErrInvalidEditPayload)
+		}
+	case "delete_file":
+		if readErr != nil {
+			return plannedEditProposal{}, readErr
+		}
+		planned.After = ""
+	default:
+		return plannedEditProposal{}, fmt.Errorf("unsupported edit proposal operation %q; use apply_patch for complex hunk-level fallback", proposal.Operation)
+	}
+	return planned, nil
+}
+
+func normalizeEditProposalOperation(raw string, proposal EditProposal) string {
+	operation := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(raw, "-", "_")))
+	switch operation {
+	case "", "modify", "replace", "replace_in_file", "exact_replace", "search_replace":
+		if strings.TrimSpace(proposal.ExactSearch) != "" {
+			return "replace_in_file"
+		}
+		if strings.TrimSpace(proposal.Replacement) != "" && strings.TrimSpace(raw) != "" {
+			return "write_file"
+		}
+		return "unsupported"
+	case "write", "write_file", "overwrite":
+		return "write_file"
+	case "add", "add_file", "create", "create_file":
+		return "add_file"
+	case "delete", "delete_file", "remove":
+		return "delete_file"
+	default:
+		return operation
+	}
+}
+
+func editProposalPreview(ws Workspace, planned plannedEditProposal) EditPreview {
+	proposal := planned.Proposal
+	proposal.Operation = planned.Operation
+	proposal.File = planned.DisplayPath
+	proposal.ExpectedPreview = buildSelectionAwareEditPreview(ws, planned.DisplayPath, planned.Before, planned.After)
+	proposal.PreviewFingerprint = computeReviewFingerprint(planned.Operation, planned.DisplayPath, proposal.ExpectedPreview)
+	return EditPreview{
+		Title:     "Apply edit proposal to " + planned.DisplayPath,
+		Preview:   proposal.ExpectedPreview,
+		Paths:     []string{planned.DisplayPath},
+		Operation: "apply_edit_proposal",
+		Proposals: []EditProposal{proposal},
+	}
+}
+
+func editProposalToolMeta(proposal EditProposal, planned plannedEditProposal, changed bool) map[string]any {
+	path := strings.TrimSpace(proposal.File)
+	if planned.DisplayPath != "" {
+		path = planned.DisplayPath
+	}
+	paths := []string{}
+	if path != "" {
+		paths = []string{path}
+	}
+	return map[string]any{
+		"path":                  path,
+		"changed_paths":         normalizeTaskStateList(paths, 8),
+		"changed_count":         len(paths),
+		"proposal_operation":    firstNonBlankString(planned.Operation, normalizeEditProposalOperation(proposal.Operation, proposal)),
+		"changed_workspace":     changed,
+		"requires_verification": changed,
+		"effect":                "edit",
+	}
+}
+
+func editProposalReason(planned plannedEditProposal) string {
+	return strings.TrimSpace("apply edit proposal " + planned.Operation + " " + planned.DisplayPath)
+}
+
+func editProposalResultLine(planned plannedEditProposal) string {
+	switch planned.Operation {
+	case "replace_in_file":
+		return fmt.Sprintf("applied edit proposal to %s (%d replacement(s))", planned.DisplayPath, planned.Count)
+	case "add_file":
+		return "applied edit proposal to add " + planned.DisplayPath
+	case "write_file":
+		return "applied edit proposal to write " + planned.DisplayPath
+	case "delete_file":
+		return "applied edit proposal to delete " + planned.DisplayPath
+	default:
+		return "applied edit proposal to " + planned.DisplayPath
+	}
+}

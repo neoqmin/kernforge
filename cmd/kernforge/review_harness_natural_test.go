@@ -175,7 +175,7 @@ func TestReviewBeforeFixRoutesBugFindAndFixWithoutReviewWord(t *testing.T) {
 		workspace: Workspace{BaseRoot: root, Root: root},
 		session:   NewSession(root, "", "", "", "default"),
 	}
-	opts, selection, ok := rt.reviewBeforeFixOptions("@Tavern/TavernWorker/TavernUpdManager.cpp:250-322 버그를 찾아서 수정해", nil)
+	opts, selection, ok := rt.reviewBeforeFixOptions("@SampleApp/SampleWorker/SampleUpdManager.cpp:250-322 버그를 찾아서 수정해", nil)
 	if !ok {
 		t.Fatalf("expected focused bug-fix request to run pre-fix review")
 	}
@@ -256,11 +256,14 @@ func TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation(t *testing.T) {
 	if !strings.Contains(provider.requests[0].System, "structured review model") {
 		t.Fatalf("expected first model call to be the review harness, got system=%q", provider.requests[0].System)
 	}
-	if provider.requests[0].ReasoningEffort != "low" {
-		t.Fatalf("expected pre-fix fallback review effort to be low, got %q", provider.requests[0].ReasoningEffort)
+	if provider.requests[0].ReasoningEffort != "high" {
+		t.Fatalf("expected focused pre-fix bug hunt review effort to be high, got %q", provider.requests[0].ReasoningEffort)
 	}
-	if provider.requests[0].MaxTokens != 2048 {
-		t.Fatalf("expected pre-fix review token budget to be capped, got %d", provider.requests[0].MaxTokens)
+	if provider.requests[0].MaxTokens != 6000 {
+		t.Fatalf("expected focused pre-fix bug hunt review token budget to expand, got %d", provider.requests[0].MaxTokens)
+	}
+	if !strings.Contains(provider.requests[0].Messages[0].Text, "Review the supplied source line by line") {
+		t.Fatalf("expected focused pre-fix bug hunt prompt, got %q", provider.requests[0].Messages[0].Text)
 	}
 	latest := latestUserMessageText(session.Messages)
 	if !strings.Contains(latest, "수정 전에 리뷰를 완료") && !strings.Contains(latest, "Review-first pass completed") {
@@ -370,6 +373,7 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 			}, "\n")}},
 		},
 	}
+	var progress []string
 	agent := &Agent{
 		Config:         DefaultConfig(root),
 		Client:         mainProvider,
@@ -379,6 +383,9 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 		Workspace:      Workspace{BaseRoot: root, Root: root},
 		Session:        session,
 		Store:          store,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
 	}
 
 	reply, err := agent.Reply(context.Background(), "@main.cpp 버그를 찾고 수정해")
@@ -402,8 +409,83 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 	if len(mainProvider.requests) != 0 {
 		t.Fatalf("implementation model should not run after non-blocking pre-fix review, got %d requests", len(mainProvider.requests))
 	}
+	progressText := strings.Join(progress, "\n")
+	for _, want := range []string{
+		"수정 전 리뷰가 경고와 함께 완료되었습니다.",
+		"경고 1개",
+		"value returns a literal",
+	} {
+		if !strings.Contains(progressText, want) {
+			t.Fatalf("expected pre-fix warning progress to contain %q, got %#v", want, progress)
+		}
+	}
 	if session.LastReviewRun == nil || session.LastReviewRun.Gate.Verdict != reviewVerdictApprovedWithWarnings {
 		t.Fatalf("expected latest review to be recorded, got %#v", session.LastReviewRun)
+	}
+}
+
+func TestReviewBeforeFixApprovedBugHuntAddsNonConclusiveWarning(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int value()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddSelection(ViewerSelection{
+		FilePath:  filepath.Join(root, "main.cpp"),
+		StartLine: 1,
+		EndLine:   4,
+	})
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: 차단 수준 버그를 찾지 못했습니다.",
+				"findings:",
+			}, "\n")}},
+		},
+	}
+	var progress []string
+	agent := &Agent{
+		Config:         DefaultConfig(root),
+		Client:         reviewer,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(),
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	ran, err := agent.maybeRunReviewBeforeFix(context.Background(), "이 코드 검토하고 버그 수정해줘", nil, false, true)
+	if err != nil {
+		t.Fatalf("review before fix: %v", err)
+	}
+	if !ran {
+		t.Fatalf("expected review before fix to run")
+	}
+	if session.LastReviewRun == nil {
+		t.Fatalf("expected latest review run")
+	}
+	run := *session.LastReviewRun
+	if run.Gate.Verdict != reviewVerdictApprovedWithWarnings {
+		t.Fatalf("empty approved pre-fix bug hunt should become warning, got %#v", run.Gate)
+	}
+	if !reviewFindingsContainTitle(run.Findings, "Pre-fix review returned no actionable bug findings") {
+		t.Fatalf("expected non-conclusive pre-fix warning, got %#v", run.Findings)
+	}
+	progressText := strings.Join(progress, "\n")
+	if !strings.Contains(progressText, "경고") ||
+		!strings.Contains(progressText, "Pre-fix review returned no actionable bug findings") {
+		t.Fatalf("expected warning progress for non-conclusive bug hunt, got %#v", progress)
+	}
+	latest := latestUserMessageText(session.Messages)
+	if !strings.Contains(latest, "Inspect the requested code") &&
+		!strings.Contains(latest, "Review only reported verification or evidence gaps") {
+		t.Fatalf("expected implementation guidance to require independent inspection, got %q", latest)
 	}
 }
 
@@ -474,7 +556,7 @@ func TestReviewRepairFollowUpUsesLatestBlockingReview(t *testing.T) {
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
 		ID:        "review-1",
-		Objective: "@Tavern/TavernWorker/Txr.cpp:20-57 리뷰해줘",
+		Objective: "@SampleApp/SampleWorker/Txr.cpp:20-57 리뷰해줘",
 		Target:    reviewTargetSelection,
 		Gate: GateDecision{
 			Verdict:          reviewVerdictNeedsRevision,
@@ -513,14 +595,14 @@ func TestReviewBeforeFixUsesFileMentionAsFileEvidence(t *testing.T) {
 		workspace: Workspace{BaseRoot: root, Root: root},
 		session:   NewSession(root, "", "", "", "default"),
 	}
-	opts, selection, ok := rt.reviewBeforeFixOptions("@Tavern/TavernWorker/UnmountedProcessScanner.cpp 코드를 검토하고 버그를 수정해", nil)
+	opts, selection, ok := rt.reviewBeforeFixOptions("@SampleApp/SampleWorker/UnmountedProcessScanner.cpp 코드를 검토하고 버그를 수정해", nil)
 	if !ok {
 		t.Fatalf("expected review-before-fix route for file mention")
 	}
 	if selection != nil {
 		t.Fatalf("did not expect line selection for file mention: %#v", selection)
 	}
-	wantPath := filepath.Join(root, "Tavern", "TavernWorker", "UnmountedProcessScanner.cpp")
+	wantPath := filepath.Join(root, "SampleApp", "SampleWorker", "UnmountedProcessScanner.cpp")
 	if opts.Target != reviewTargetChange || !opts.IncludeFileContents || opts.IncludeGitDiff {
 		t.Fatalf("unexpected pre-fix opts: %#v", opts)
 	}
@@ -535,14 +617,14 @@ func TestReviewBeforeFixSelectionMentionDoesNotIncludeGitDiff(t *testing.T) {
 		workspace: Workspace{BaseRoot: root, Root: root},
 		session:   NewSession(root, "", "", "", "default"),
 	}
-	opts, selection, ok := rt.reviewBeforeFixOptions("@Tavern/TavernWorker/SpoofChecker.cpp:332-351 코드를 검토하고 버그를 수정해", nil)
+	opts, selection, ok := rt.reviewBeforeFixOptions("@SampleApp/SampleWorker/SpoofChecker.cpp:332-351 코드를 검토하고 버그를 수정해", nil)
 	if !ok {
 		t.Fatalf("expected review-before-fix route for selection mention")
 	}
 	if selection == nil {
 		t.Fatalf("expected line selection for mention")
 	}
-	wantPath := filepath.Join(root, "Tavern", "TavernWorker", "SpoofChecker.cpp")
+	wantPath := filepath.Join(root, "SampleApp", "SampleWorker", "SpoofChecker.cpp")
 	if opts.Target != reviewTargetSelection || opts.IncludeGitDiff || opts.IncludeFileContents {
 		t.Fatalf("unexpected selection-scoped pre-fix opts: %#v", opts)
 	}

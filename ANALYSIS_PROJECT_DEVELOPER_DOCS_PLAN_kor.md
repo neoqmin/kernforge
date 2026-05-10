@@ -573,11 +573,11 @@ stale marker 정책:
 
 이 순서가 가장 안전하다. 1차만으로도 개발자 온보딩 문서의 실효성이 생기고, 2차에서 그래프와 심볼 참조의 정확도를 더 끌어올릴 수 있다.
 
-## 12. TavernKernel map 문서 리뷰 후 개선 작업
+## 12. SampleKernelDriver map 문서 리뷰 후 개선 작업
 
 검토 대상:
 
-1. `C:/git/im-tavern-client/.kernforge/analysis/20260427-221504_map_프로젝트_구조를_분석해서_문서로_작성해.md`
+1. `C:/git/sample-client/.kernforge/analysis/20260427-221504_map_프로젝트_구조를_분석해서_문서로_작성해.md`
 2. 해당 run의 `docs` 디렉터리 산출물
 
 발견한 문제:
@@ -629,7 +629,7 @@ go test ./...
 
 남은 항목:
 
-1. 남음: 실제 TavernKernel 대상으로 `/analyze-project --mode map`을 다시 실행해 새 한국어 문서가 기대 형태로 생성되는지 end-to-end 확인
+1. 남음: 실제 SampleKernelDriver 대상으로 `/analyze-project --mode map`을 다시 실행해 새 한국어 문서가 기대 형태로 생성되는지 end-to-end 확인
 2. 남음: `FOLDER_MAP.md`의 `Tests` 열이 harness 프로젝트와 단위 테스트를 더 명확히 구분하도록 별도 `Harness/Tools` 열을 추가할지 검토
 3. 남음: IOCTL code/struct 추출을 단순 symbol 기반에서 `CTL_CODE`, shared struct layout 파싱 기반으로 확장
 4. 남음: 단일 최종 markdown 본문도 완전 deterministic 문서 세트처럼 source anchor를 line-level로 붙이는 개선 검토
@@ -669,11 +669,11 @@ go test ./...
 1. 남음: `/analyze-performance`, `/simulate`, `/investigate`처럼 agent prompt를 경유하는 커맨드는 공통 system prompt로 커버되지만, 자체 renderer가 추가될 때마다 `configWithResponseLanguageForUserText` 적용 여부를 점검
 2. 남음: 일본어/중국어 등 한영 외 언어 감지는 현재 fallback 수준이므로 다국어 요구가 생기면 확장
 
-## 14. TavernKernel map 대시보드 리뷰 후 개선 작업
+## 14. SampleKernelDriver map 대시보드 리뷰 후 개선 작업
 
 검토 대상:
 
-1. `C:/git/im-tavern-client/.kernforge/analysis/20260427-221504_map_프로젝트_구조를_분석해서_문서로_작성해_dashboard.html`
+1. `C:/git/sample-client/.kernforge/analysis/20260427-221504_map_프로젝트_구조를_분석해서_문서로_작성해_dashboard.html`
 
 발견한 문제:
 
@@ -721,6 +721,6 @@ go test ./...
 
 남은 항목:
 
-1. 남음: 실제 TavernKernel 대상으로 `/analyze-project --mode map`을 다시 실행해 신규 dashboard HTML을 브라우저에서 시각 검증
+1. 남음: 실제 SampleKernelDriver 대상으로 `/analyze-project --mode map`을 다시 실행해 신규 dashboard HTML을 브라우저에서 시각 검증
 2. 남음: 대시보드의 나머지 심화 섹션(`Evidence And Memory Drilldown`, `Stale Section Diff`, `Trust Boundary Graph` 등)까지 완전 한국어 label set으로 확장할지 검토
 3. 남음: portal item이 1200개를 초과하는 초대형 프로젝트에서 별도 JSON sidecar lazy-load를 붙일지 검토

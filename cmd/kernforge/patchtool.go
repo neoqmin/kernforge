@@ -14,7 +14,7 @@ func NewApplyPatchTool(ws Workspace) ApplyPatchTool { return ApplyPatchTool{ws: 
 func (t ApplyPatchTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. This is the default edit tool for most code changes after reading the current file contents. Every update file section must contain at least one @@ hunk.",
+		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. Use this as an expert fallback for complex hunk-level edits after reading current file contents; prefer apply_edit_proposal for simple reviewed edit intent. Every update file section must contain at least one @@ hunk.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -118,9 +118,7 @@ type patchLine struct {
 }
 
 func parsePatchDocument(text string) (patchDocument, error) {
-	text = strings.TrimPrefix(text, "\uFEFF")
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\r", "\n")
+	text = normalizePatchDocumentText(text)
 	lines := strings.Split(text, "\n")
 	index := 0
 
@@ -140,7 +138,7 @@ func parsePatchDocument(text string) (patchDocument, error) {
 		advance()
 	}
 	if advance() != "*** Begin Patch" {
-		return patchDocument{}, fmt.Errorf("patch must start with *** Begin Patch")
+		return patchDocument{}, fmt.Errorf("patch_format_missing_begin: patch must start with *** Begin Patch")
 	}
 
 	var ops []patchOperation
@@ -164,7 +162,7 @@ func parsePatchDocument(text string) (patchDocument, error) {
 		case strings.HasPrefix(line, "*** Delete File: "):
 			op := patchOperation{
 				kind: "delete",
-				path: strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: ")),
+				path: normalizePatchDocumentPath(strings.TrimPrefix(line, "*** Delete File: ")),
 			}
 			index++
 			ops = append(ops, op)
@@ -175,15 +173,36 @@ func parsePatchDocument(text string) (patchDocument, error) {
 			}
 			ops = append(ops, op)
 		default:
-			return patchDocument{}, fmt.Errorf("unexpected patch line: %s", line)
+			return patchDocument{}, fmt.Errorf("patch_format_unexpected_line: unexpected patch line: %s", line)
 		}
 	}
-	return patchDocument{}, fmt.Errorf("patch is missing *** End Patch")
+	return patchDocument{}, fmt.Errorf("patch_format_missing_end: patch is missing *** End Patch")
+}
+
+func normalizePatchDocumentText(text string) string {
+	text = strings.TrimPrefix(text, "\uFEFF")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.TrimSpace(text)
+	if begin := strings.Index(text, "*** Begin Patch"); begin >= 0 {
+		text = text[begin:]
+	}
+	if end := strings.Index(text, "*** End Patch"); end >= 0 {
+		text = text[:end+len("*** End Patch")]
+	}
+	return strings.TrimSpace(text)
+}
+
+func normalizePatchDocumentPath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, "`\"'")
+	path = strings.ReplaceAll(path, "\\", "/")
+	return path
 }
 
 func parseAddFileOp(lines []string, index *int) (patchOperation, error) {
 	line := lines[*index]
-	path := strings.TrimSpace(strings.TrimPrefix(line, "*** Add File: "))
+	path := normalizePatchDocumentPath(strings.TrimPrefix(line, "*** Add File: "))
 	*index++
 	var addLines []string
 	for *index < len(lines) {
@@ -192,7 +211,7 @@ func parseAddFileOp(lines []string, index *int) (patchOperation, error) {
 			break
 		}
 		if !strings.HasPrefix(current, "+") {
-			return patchOperation{}, fmt.Errorf("add file patch lines must start with +: %s", current)
+			return patchOperation{}, fmt.Errorf("patch_format_invalid_add_line: add file patch lines must start with +: %s", current)
 		}
 		addLines = append(addLines, strings.TrimPrefix(current, "+"))
 		*index++
@@ -204,11 +223,11 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 	line := lines[*index]
 	op := patchOperation{
 		kind: "update",
-		path: strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: ")),
+		path: normalizePatchDocumentPath(strings.TrimPrefix(line, "*** Update File: ")),
 	}
 	*index++
 	if *index < len(lines) && strings.HasPrefix(lines[*index], "*** Move to: ") {
-		op.moveTo = strings.TrimSpace(strings.TrimPrefix(lines[*index], "*** Move to: "))
+		op.moveTo = normalizePatchDocumentPath(strings.TrimPrefix(lines[*index], "*** Move to: "))
 		*index++
 	}
 	for *index < len(lines) {
@@ -221,7 +240,7 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 			break
 		}
 		if !strings.HasPrefix(current, "@@") {
-			return patchOperation{}, fmt.Errorf("update patch hunk must start with @@: %s", current)
+			return patchOperation{}, fmt.Errorf("patch_format_missing_hunk: update patch hunk must start with @@: %s", current)
 		}
 		hunk := patchHunk{header: current}
 		*index++
@@ -241,7 +260,7 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 			}
 			prefix := current[0]
 			if prefix != ' ' && prefix != '+' && prefix != '-' {
-				return patchOperation{}, fmt.Errorf("invalid patch line in hunk: %s", current)
+				return patchOperation{}, fmt.Errorf("patch_format_invalid_hunk_line: invalid patch line in hunk: %s", current)
 			}
 			hunk.lines = append(hunk.lines, patchLine{kind: prefix, text: current[1:]})
 			*index++
@@ -249,7 +268,7 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 		op.hunks = append(op.hunks, hunk)
 	}
 	if len(op.hunks) == 0 && op.moveTo == "" {
-		return patchOperation{}, fmt.Errorf("update patch for %s has no hunks", op.path)
+		return patchOperation{}, fmt.Errorf("patch_format_empty_update: update patch for %s has no hunks", op.path)
 	}
 	return op, nil
 }

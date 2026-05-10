@@ -84,7 +84,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/provider status`
 
 현재 동작:
-1. `/status`는 현재 세션과 런타임 상태를 보여준다. 예를 들어 세션 id, approval 상태, selection, verification, MCP 카운트가 여기에 들어간다.
+1. `/status`는 현재 세션과 런타임 상태를 보여준다. 예를 들어 세션 id, approval 상태, selection, verification, MCP 카운트, runtime gate ledger가 여기에 들어간다. final answer나 write-side action 전에 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command`를 보면 review/verification/completion audit 수리가 필요한지 판단할 수 있다.
 2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값이 여기에 들어간다.
 3. `/provider status`는 active provider, 정규화된 endpoint, API key 존재 여부, provider별 budget visibility를 보여준다.
 4. OpenRouter에서는 `/provider status`가 live lookup으로 key-level `limit_remaining`, `usage`를 조회하고 management key면 account credits도 함께 보여준다.
@@ -95,6 +95,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 9. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
 10. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
 11. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
+12. `/hooks`는 `/status`와 같은 compact runtime gate summary를 출력하므로 hook/policy 확인 화면도 review freshness를 별도로 해석하지 않는다.
 
 ### 프롬프트 의도 라우팅
 
@@ -764,8 +765,8 @@ diff workflow 메모:
 
 review artifact:
 1. `/review selection`은 `.kernforge/reviews/latest.json`과 `.kernforge/reviews/latest.md`를 쓴다.
-2. 결과에는 typed finding, freshness/redaction 상태, gate verdict, repair step, 추천 next command가 포함된다.
-3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다.
+2. 결과에는 typed finding, freshness/redaction 상태, gate verdict, scope discovery, repair step, runtime gate ledger, 추천 next command가 포함된다.
+3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다. 응답에는 `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, `next_commands` action contract가 포함된다.
 
 ### 2.8 Plan Review Workflow
 
@@ -795,6 +796,12 @@ review artifact:
 6. 자동 쓰기 전 리뷰는 문법적으로 유효한 edit preview가 나온 뒤 실제 파일 쓰기 전에 실행하고, 자동 변경 후 리뷰는 changed path가 생긴 뒤 실행한다.
 7. service, SCM, driver, 민감 경로 신호는 `security` reviewer role을 선택한다. `false-positive` role은 detection, telemetry, scan, spoofing, evasion-quality surface에만 붙인다.
 8. review 진행 출력은 main model과 다른 reviewer가 쓰일 때 role과 provider route를 명시하고, 완료 후 gate 결과와 finding 수를 별도로 보여준다.
+9. 단순 exact edit은 `apply_edit_proposal`을 사용할 수 있다. 이 경로는 file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, review evidence를 기록한 뒤 write한다. `apply_patch`는 복잡한 hunk-level fallback으로 남긴다.
+10. runtime gate freshness는 review, patch transaction, verification, completion audit, final-answer review를 연결한다. stale review coverage나 waiver 없는 blocker는 `/review`, verification, 표시된 `next_command`가 장부를 회복할 때까지 final answer, 명시적 git write, MCP write-side response, completion audit readiness를 막거나 경고한다.
+11. invalid patch recovery는 흔한 wrapper 문제를 정규화하고 반복 patch signature를 기록해, 같은 malformed patch를 재제출하는 대신 target-file context를 다시 읽게 한다.
+12. provider behavior는 review token cap, omission retry budget, schema strictness, recovery prompt를 결정한다. weak 또는 불완전한 high-severity model finding은 구체적인 path 또는 symbol, evidence, impact, required fix를 모두 갖추지 못하면 evidence-gap warning으로 낮춘다.
+13. 수정 전 리뷰 finding은 edit tool 실행 전에 사용자에게 먼저 노출된다. repair turn에 구조화된 RF 항목이 있으면 assistant는 해당 ID와 조치 방향을 담은 짧은 `검토 결과:` 요약을 보여줘야 한다.
+14. 로컬 코드 리뷰/수리 턴은 로컬 소스 근거에 머문다. 사용자가 외부 리서치를 명시적으로 요청하지 않는 한 web/search/browser MCP tool은 차단된다.
 
 ### 2.9 Tracked Feature Workflow
 

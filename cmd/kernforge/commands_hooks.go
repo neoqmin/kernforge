@@ -25,6 +25,12 @@ func (rt *runtimeState) handleHooksCommand() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_overrides", fmt.Sprintf("%d", len(overrides))))
 		}
 	}
+	ledger := rt.runtimeGateLedgerForStatus(runtimeGateActionFinalAnswer)
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("review_freshness", runtimeGateReviewFreshnessLabel(ledger)))
+	if next := runtimeGatePrimaryNextCommandLine(ledger); next != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("next_command", next))
+	}
 	if len(rt.hookWarns) > 0 {
 		for _, warn := range rt.hookWarns {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(warn))

@@ -158,21 +158,21 @@ func TestStructureDiagramsAndCodeReferenceRenderGraphAndSymbols(t *testing.T) {
 
 func TestDeveloperDocsSeparateStartupHarnessDriverEntryAndIOCTLContract(t *testing.T) {
 	run := ProjectAnalysisRun{
-		Summary: ProjectAnalysisSummary{RunID: "run-driver-docs", Goal: "TavernKernel 구조를 분석해", Mode: "map", Status: "completed"},
+		Summary: ProjectAnalysisSummary{RunID: "run-driver-docs", Goal: "SampleKernel 구조를 분석해", Mode: "map", Status: "completed"},
 		Snapshot: ProjectSnapshot{
-			Root:           "C:/repo/TavernKernel",
-			PrimaryStartup: "TavernKernelTestConsole",
+			Root:           "C:/repo/SampleKernel",
+			PrimaryStartup: "SampleKernelTestConsole",
 			SolutionProjects: []SolutionProject{
-				{Name: "TavernKernel", Path: "TavernKernel/TavernKernel.vcxproj", Directory: "TavernKernel", OutputType: "driver", EntryFiles: []string{"TavernKernel/TavernKernel.cpp"}},
-				{Name: "TavernKernelTestConsole", Path: "TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", Directory: "TavernKernelTestConsole", OutputType: "application", EntryFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.cpp"}, StartupCandidate: true},
+				{Name: "SampleKernel", Path: "SampleKernel/SampleKernel.vcxproj", Directory: "SampleKernel", OutputType: "driver", EntryFiles: []string{"SampleKernel/SampleKernel.cpp"}},
+				{Name: "SampleKernelTestConsole", Path: "SampleKernelTestConsole/SampleKernelTestConsole.vcxproj", Directory: "SampleKernelTestConsole", OutputType: "application", EntryFiles: []string{"SampleKernelTestConsole/SampleKernelTestConsole.cpp"}, StartupCandidate: true},
 			},
-			EntrypointFiles: []string{"TavernKernel/TavernKernel.cpp", "TavernKernelTestConsole/TavernKernelTestConsole.cpp"},
+			EntrypointFiles: []string{"SampleKernel/SampleKernel.cpp", "SampleKernelTestConsole/SampleKernelTestConsole.cpp"},
 		},
 		SemanticIndexV2: SemanticIndexV2{
 			Symbols: []SymbolRecord{
-				{ID: "func:DriverEntry", Name: "DriverEntry", Kind: "function", File: "TavernKernel/TavernKernel.cpp", StartLine: 10, Tags: []string{"driver"}},
-				{ID: "ioctl:DeviceIoControlIrpHandleRoutine", Name: "DeviceIoControlIrpHandleRoutine", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", StartLine: 120, Tags: []string{"ioctl", "dispatch"}},
-				{ID: "ioctl:TavernKernelManager::ControlOperation", Name: "TavernKernelManager::ControlOperation", Kind: "method", File: "TavernKernelTestConsole/TavernKernelManager.cpp", StartLine: 88, Tags: []string{"DeviceIoControl"}},
+				{ID: "func:DriverEntry", Name: "DriverEntry", Kind: "function", File: "SampleKernel/SampleKernel.cpp", StartLine: 10, Tags: []string{"driver"}},
+				{ID: "ioctl:DeviceIoControlIrpHandleRoutine", Name: "DeviceIoControlIrpHandleRoutine", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", StartLine: 120, Tags: []string{"ioctl", "dispatch"}},
+				{ID: "ioctl:SampleKernelManager::ControlOperation", Name: "SampleKernelManager::ControlOperation", Kind: "method", File: "SampleKernelTestConsole/SampleKernelManager.cpp", StartLine: 88, Tags: []string{"DeviceIoControl"}},
 			},
 		},
 	}
@@ -183,8 +183,8 @@ func TestDeveloperDocsSeparateStartupHarnessDriverEntryAndIOCTLContract(t *testi
 	if !strings.Contains(overview, "Solution startup candidate") || !strings.Contains(overview, "Kernel/runtime driver entry files") {
 		t.Fatalf("expected separated startup and driver entry lens\n%s", overview)
 	}
-	if strings.Contains(overview, "Kernel/runtime driver entry files: `TavernKernelTestConsole/TavernKernelTestConsole.cpp`") ||
-		strings.Contains(overview, "Kernel/runtime driver entry files: `TavernKernelTestConsole/TavernKernelTestConsole.cpp`,") {
+	if strings.Contains(overview, "Kernel/runtime driver entry files: `SampleKernelTestConsole/SampleKernelTestConsole.cpp`") ||
+		strings.Contains(overview, "Kernel/runtime driver entry files: `SampleKernelTestConsole/SampleKernelTestConsole.cpp`,") {
 		t.Fatalf("expected user-mode startup file not to appear as a kernel/runtime driver entry\n%s", overview)
 	}
 	if strings.Contains(overview, "sole entrypoint") || strings.Contains(overview, "sole entry point") {
@@ -202,36 +202,36 @@ func TestDeveloperFolderResponsibilityPrefersDriverAndHarnessRoles(t *testing.T)
 	run := ProjectAnalysisRun{
 		Snapshot: ProjectSnapshot{
 			Files: []ScannedFile{
-				{Path: "TavernKernel.sln", Directory: ".", IsManifest: true},
-				{Path: "TavernKernel.vmp", Directory: ".", IsManifest: true},
+				{Path: "SampleKernel.sln", Directory: ".", IsManifest: true},
+				{Path: "SampleKernel.vmp", Directory: ".", IsManifest: true},
 				{Path: "Common/UserCommon.h", Directory: "Common", ImportanceScore: 80},
 				{Path: "Common/KernelCommon.h", Directory: "Common", ImportanceScore: 80},
 				{Path: "Common/pehelper.h", Directory: "Common", ImportanceScore: 60},
-				{Path: "TavernKernel/TavernKernel.cpp", Directory: "TavernKernel", IsEntrypoint: true},
-				{Path: "TavernKernel/TavernKernelCore.cpp", Directory: "TavernKernel", ImportanceScore: 90},
-				{Path: "TavernKernelTestConsole/TavernKernelManager.cpp", Directory: "TavernKernelTestConsole", IsEntrypoint: true},
-				{Path: "TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", Directory: "TavernKernelTestConsole", IsManifest: true},
+				{Path: "SampleKernel/SampleKernel.cpp", Directory: "SampleKernel", IsEntrypoint: true},
+				{Path: "SampleKernel/SampleKernelCore.cpp", Directory: "SampleKernel", ImportanceScore: 90},
+				{Path: "SampleKernelTestConsole/SampleKernelManager.cpp", Directory: "SampleKernelTestConsole", IsEntrypoint: true},
+				{Path: "SampleKernelTestConsole/SampleKernelTestConsole.vcxproj", Directory: "SampleKernelTestConsole", IsManifest: true},
 			},
 			BuildContexts: []BuildContextRecord{
-				{ID: "buildctx:project:TavernKernel", Name: "TavernKernel", Kind: "wdm_driver", Directory: "TavernKernel", Project: "TavernKernel", Target: "tvk.sys", Files: []string{"TavernKernel/TavernKernel.cpp", "TavernKernel/TavernKernelCore.cpp"}},
-				{ID: "buildctx:project:TavernKernelTestConsole", Name: "TavernKernelTestConsole", Kind: "application", Directory: "TavernKernelTestConsole", Project: "TavernKernelTestConsole", Target: "TavernKernelTestConsole.exe", Files: []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", "TavernKernelTestConsole/TavernKernelManager.cpp"}},
+				{ID: "buildctx:project:SampleKernel", Name: "SampleKernel", Kind: "wdm_driver", Directory: "SampleKernel", Project: "SampleKernel", Target: "tvk.sys", Files: []string{"SampleKernel/SampleKernel.cpp", "SampleKernel/SampleKernelCore.cpp"}},
+				{ID: "buildctx:project:SampleKernelTestConsole", Name: "SampleKernelTestConsole", Kind: "application", Directory: "SampleKernelTestConsole", Project: "SampleKernelTestConsole", Target: "SampleKernelTestConsole.exe", Files: []string{"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj", "SampleKernelTestConsole/SampleKernelManager.cpp"}},
 			},
 		},
 		KnowledgePack: KnowledgePack{
 			ProjectSummary: "Primary architecture group: Shared Infrastructure | Lead subsystem: Common PE Helper Header",
 			Subsystems: []KnowledgeSubsystem{
-				{Title: "Kernel Driver", Responsibilities: []string{"Provide a templated string class (KnString) supporting WCHAR assignments."}, KeyFiles: []string{"TavernKernel/TavernKernel.cpp"}},
-				{Title: "Shared Infrastructure Common", Responsibilities: []string{"Provide common helper headers."}, KeyFiles: []string{"TavernKernel/TavernKernelCore.cpp"}},
-				{Title: "Build And Release: TavernKernelTestConsole", Responsibilities: []string{"Build and release the console application."}, KeyFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", "TavernKernelTestConsole/TavernKernelManager.cpp"}},
-				{Title: "Worker Root Noise", Responsibilities: []string{"Driver initialization sets up driver object, device object, registry info, and high-level state."}, KeyFiles: []string{"TavernKernelCore.cpp", "TavernKernelProcessMonitor.cpp"}},
+				{Title: "Kernel Driver", Responsibilities: []string{"Provide a templated string class (KnString) supporting WCHAR assignments."}, KeyFiles: []string{"SampleKernel/SampleKernel.cpp"}},
+				{Title: "Shared Infrastructure Common", Responsibilities: []string{"Provide common helper headers."}, KeyFiles: []string{"SampleKernel/SampleKernelCore.cpp"}},
+				{Title: "Build And Release: SampleKernelTestConsole", Responsibilities: []string{"Build and release the console application."}, KeyFiles: []string{"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj", "SampleKernelTestConsole/SampleKernelManager.cpp"}},
+				{Title: "Worker Root Noise", Responsibilities: []string{"Driver initialization sets up driver object, device object, registry info, and high-level state."}, KeyFiles: []string{"SampleKernelCore.cpp", "SampleKernelProcessMonitor.cpp"}},
 				{Title: "TestConsole Shared Contract Noise", Responsibilities: []string{"The test console depends on Common/UserCommon.h for service lifecycle enums."}, KeyFiles: []string{"Common/UserCommon.h"}},
 			},
 		},
 		SemanticIndexV2: SemanticIndexV2{
 			Symbols: []SymbolRecord{
-				{Name: "DriverEntry", Kind: "function", File: "TavernKernel/TavernKernel.cpp", Tags: []string{"driver"}},
-				{Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "TavernKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", File: "TavernKernel/TavernKernelCore.cpp", Tags: []string{"ioctl_surface"}},
-				{Name: "CreateDriverService", Kind: "method", File: "TavernKernelTestConsole/TavernKernelManager.cpp", Tags: []string{"service"}},
+				{Name: "DriverEntry", Kind: "function", File: "SampleKernel/SampleKernel.cpp", Tags: []string{"driver"}},
+				{Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "SampleKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", File: "SampleKernel/SampleKernelCore.cpp", Tags: []string{"ioctl_surface"}},
+				{Name: "CreateDriverService", Kind: "method", File: "SampleKernelTestConsole/SampleKernelManager.cpp", Tags: []string{"service"}},
 			},
 		},
 	}
@@ -241,17 +241,17 @@ func TestDeveloperFolderResponsibilityPrefersDriverAndHarnessRoles(t *testing.T)
 	for _, folder := range folders {
 		byPath[folder.Path] = folder
 	}
-	if !strings.Contains(strings.ToLower(byPath["TavernKernel"].Responsibility), "driver") {
-		t.Fatalf("expected driver responsibility, got %+v", byPath["TavernKernel"])
+	if !strings.Contains(strings.ToLower(byPath["SampleKernel"].Responsibility), "driver") {
+		t.Fatalf("expected driver responsibility, got %+v", byPath["SampleKernel"])
 	}
-	if !strings.Contains(strings.ToLower(byPath["TavernKernelTestConsole"].Responsibility), "bootstrap") {
-		t.Fatalf("expected harness responsibility, got %+v", byPath["TavernKernelTestConsole"])
+	if !strings.Contains(strings.ToLower(byPath["SampleKernelTestConsole"].Responsibility), "bootstrap") {
+		t.Fatalf("expected harness responsibility, got %+v", byPath["SampleKernelTestConsole"])
 	}
 	if !strings.Contains(strings.ToLower(byPath["Common"].Responsibility), "shared") {
 		t.Fatalf("expected Common to stay shared despite test-console wording, got %+v", byPath["Common"])
 	}
-	if strings.Contains(strings.ToLower(byPath["TavernKernelTestConsole"].Responsibility), "packaging") {
-		t.Fatalf("expected harness responsibility to beat build/release wording, got %+v", byPath["TavernKernelTestConsole"])
+	if strings.Contains(strings.ToLower(byPath["SampleKernelTestConsole"].Responsibility), "packaging") {
+		t.Fatalf("expected harness responsibility to beat build/release wording, got %+v", byPath["SampleKernelTestConsole"])
 	}
 	if !strings.Contains(strings.ToLower(byPath["."].Responsibility), "solution root") {
 		t.Fatalf("expected solution root responsibility for root manifests, got %+v", byPath["."])
@@ -263,10 +263,10 @@ func TestDeveloperFolderResponsibilityPrefersDriverAndHarnessRoles(t *testing.T)
 	if strings.Contains(overview, "Lead subsystem: Common PE Helper") {
 		t.Fatalf("expected driver-oriented project shape to override stale/common lead summary\n%s", overview)
 	}
-	if !strings.Contains(overview, "Windows kernel/WDM `.sys` driver solution") || !strings.Contains(overview, "Kernel driver root: `TavernKernel/`") {
+	if !strings.Contains(overview, "Windows kernel/WDM `.sys` driver solution") || !strings.Contains(overview, "Kernel driver root: `SampleKernel/`") {
 		t.Fatalf("expected driver-oriented overview shape\n%s", overview)
 	}
-	if !strings.Contains(overview, "User-mode harness/control root: `TavernKernelTestConsole/`") {
+	if !strings.Contains(overview, "User-mode harness/control root: `SampleKernelTestConsole/`") {
 		t.Fatalf("expected non-root user-mode harness in project shape\n%s", overview)
 	}
 	if !strings.Contains(overview, "Shared contract root: `Common/`") {

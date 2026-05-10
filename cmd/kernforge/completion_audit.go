@@ -43,6 +43,7 @@ type CompletionAuditArtifact struct {
 	ArtifactRefs      []string              `json:"artifact_refs,omitempty"`
 	NextCommands      []string              `json:"next_commands,omitempty"`
 	SuggestedPrompt   string                `json:"suggested_prompt,omitempty"`
+	RuntimeGateLedger *RuntimeGateLedger    `json:"runtime_gate_ledger,omitempty"`
 }
 
 type CompletionAuditItem struct {
@@ -230,6 +231,7 @@ func completionAuditPopulateChecklist(root string, session *Session, artifact *C
 	completionAuditBackground(session, artifact)
 	completionAuditChangedFiles(session, artifact)
 	completionAuditReviewGate(root, session, artifact)
+	completionAuditRuntimeGate(root, session, artifact)
 	completionAuditRecentErrors(artifact)
 }
 
@@ -815,6 +817,29 @@ func completionAuditReviewFreshnessIssue(root string, review ReviewRun, artifact
 	return ""
 }
 
+func completionAuditRuntimeGate(root string, session *Session, artifact *CompletionAuditArtifact) {
+	if artifact == nil {
+		return
+	}
+	ledger := buildRuntimeGateLedgerWithCompletionAudit(root, session, runtimeGateActionCompletionAudit, artifact.ID)
+	artifact.RuntimeGateLedger = &ledger
+	status := completionAuditStatusPassed
+	evidence := fmt.Sprintf("%s status=%s", ledger.ID, ledger.Status)
+	if len(ledger.Blockers) > 0 {
+		status = completionAuditStatusBlocked
+		evidence = "Runtime gate blockers: " + strings.Join(limitStrings(ledger.Blockers, 4), " | ")
+	} else if len(ledger.Warnings) > 0 {
+		status = completionAuditStatusWarning
+		evidence = "Runtime gate warnings: " + strings.Join(limitStrings(ledger.Warnings, 4), " | ")
+	}
+	completionAuditAddItem(artifact, CompletionAuditItem{
+		Requirement: "Runtime gate ledger is blocker-free",
+		Evidence:    evidence,
+		Status:      status,
+		Source:      "runtime_gate",
+	})
+}
+
 func normalizeCompletionAuditReviewPaths(paths []string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -1152,6 +1177,11 @@ func renderCompletionAuditMarkdown(artifact CompletionAuditArtifact) string {
 	writeDelegationList(&b, "Worktrees", artifact.Worktrees, "No isolated or specialist worktrees recorded.")
 	writeDelegationList(&b, "Artifact Refs", artifact.ArtifactRefs, "No artifact refs recorded.")
 	writeDelegationList(&b, "Next Commands", artifact.NextCommands, "No next commands suggested.")
+	if artifact.RuntimeGateLedger != nil {
+		if rendered := strings.TrimSpace(artifact.RuntimeGateLedger.RenderPromptSection()); rendered != "" {
+			fmt.Fprintf(&b, "\n## Runtime Gate Ledger\n\n%s\n", rendered)
+		}
+	}
 	fmt.Fprintf(&b, "\n## Suggested Prompt\n\n%s\n", artifact.SuggestedPrompt)
 	return strings.TrimSpace(b.String())
 }

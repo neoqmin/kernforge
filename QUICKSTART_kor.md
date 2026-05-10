@@ -12,7 +12,7 @@
 7. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
 
 실행 전에 `kernforge --help`를 입력하면 실행 파일 version과 standalone, one-shot, MCP server, daemon proxy 예시를 볼 수 있습니다. version만 확인할 때는 `kernforge --version`을 쓰고, MCP client에 연결할 때는 `kernforge help mcp`를 먼저 보면 됩니다.
-Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review_code`로 처리합니다. Codex가 넘긴 diff/code 또는 workspace git diff를 Kernforge의 main model로 리뷰합니다.
+Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review`로 처리합니다. 이 tool은 structured finding, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, action-oriented `next_commands`를 반환하며, 예전 review-code-only surface를 대체합니다.
 같은 MCP entry를 여러 repository에서 재사용한다면 현재 repo를 tool의 `workspace` argument로 넘기거나 repo별로 `-cwd`를 지정하세요. 그렇지 않으면 Kernforge는 server launch directory를 fallback workspace로 사용합니다.
 
 ## 1. 5분 안에 익히는 핵심 루프
@@ -201,7 +201,7 @@ provider 및 런타임 확인:
 6. `/hooks`
 
 빠른 해석:
-1. `/status`는 현재 세션과 런타임 상태를 빠르게 보는 용도다. approval 상태도 여기서 본다.
+1. `/status`는 현재 세션과 런타임 상태를 빠르게 보는 용도다. approval뿐 아니라 runtime gate ledger도 여기서 본다. final answer나 git/MCP write-side action 전에 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command`를 확인한다.
 2. `/config`는 provider 기본값, hooks, locale, verification toggle 같은 현재 적용 설정을 빠르게 보는 용도다.
 3. `/provider status`는 현재 provider 연결 상태를 빠르게 보는 용도다. 정규화된 endpoint, API key 설정 여부, provider별로 실제 확인 가능한 budget visibility 범위를 보여준다.
 
@@ -214,6 +214,13 @@ Windows build tool이 없어 automatic verification이 실패하면:
 1. Kernforge는 git 변경 작업을 파일 수정과 다른 승인 축으로 본다.
 2. `Allow git?`는 현재 세션의 git mutation tool 승인이다.
 3. 일반 review/edit 프롬프트에서는 사용자가 명시적으로 요청하지 않는 한 git mutation이 실행되지 않는 것이 기본이다.
+
+수정이 단순하고 정확한 search/replace로 표현된다면:
+1. `apply_edit_proposal` 경로를 우선 사용한다. file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, review evidence를 남긴 뒤 write한다.
+2. `apply_patch`는 현재 파일 내용을 읽은 뒤 복잡한 hunk-level 변경이 필요할 때 쓰는 fallback으로 남긴다.
+3. `apply_patch`가 malformed wrapper나 반복 invalid signature로 실패하면 같은 patch를 다시 보내지 말고 target file을 다시 읽은 뒤 새 patch를 만든다.
+4. review 또는 runtime gate가 stale coverage를 보고하면 완료를 주장하기 전에 `/review`를 다시 실행하거나 표시된 `next_command`를 따른다.
+5. `/review`가 `narrow-review`를 반환하면 model finding을 완료 근거로 보기 전에 focused path, diff, selection, target symbol을 제공한다.
 
 모델이 큰 파일을 계속 다시 읽으려 할 때:
 1. 최근 `read_file` cache hit는 같은 범위를 조용히 다시 읽는 대신 `NOTE:` 접두사로 이미 본 구간임을 드러낸다.

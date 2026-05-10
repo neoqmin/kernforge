@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -858,8 +859,21 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	route := modelRouteForRequest(cfg, client, req)
 	limit := policy.LimitFor(route)
 	progress := req.OnProgressEvent
+	var modelOutputStarted atomic.Bool
+	if req.OnTextDelta != nil {
+		originalTextDelta := req.OnTextDelta
+		req.OnTextDelta = func(text string) {
+			if strings.TrimSpace(text) != "" {
+				modelOutputStarted.Store(true)
+			}
+			originalTextDelta(text)
+		}
+	}
 	emit := func(event ProgressEvent) {
 		if ctx.Err() != nil {
+			return
+		}
+		if event.Kind == progressKindModelRequestWait && modelOutputStarted.Load() {
 			return
 		}
 		emitProgressEvent(progress, event)
@@ -869,6 +883,9 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 		req.OnProgressEvent = func(event ProgressEvent) {
 			if ctx.Err() != nil {
 				return
+			}
+			if progressEventIndicatesModelOutput(event) {
+				modelOutputStarted.Store(true)
 			}
 			emitProgressEvent(originalProgress, event)
 		}
@@ -979,5 +996,16 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 		return ChatResponse{}, ctx.Err()
 	case out := <-done:
 		return out.resp, out.err
+	}
+}
+
+func progressEventIndicatesModelOutput(event ProgressEvent) bool {
+	switch strings.TrimSpace(event.Kind) {
+	case progressKindModelStreamToolCall,
+		progressKindModelStreamToolArgs,
+		progressKindModelStreamToolReady:
+		return true
+	default:
+		return false
 	}
 }

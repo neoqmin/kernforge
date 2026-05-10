@@ -296,14 +296,14 @@ func TestFormatCompletionSuggestionsShowsReviewSubcommandDescriptions(t *testing
 func TestFormatCompletionSuggestionsShowsAnalyzeProjectModeDescriptionsAfterPath(t *testing.T) {
 	ui := UI{color: false}
 	rendered := ui.formatCompletionSuggestions([]string{
-		"/analyze-project --path TavernKernel/TavernKernel/ --mode map",
-		"/analyze-project --path TavernKernel/TavernKernel/ --mode trace",
-	}, "/analyze-project --path TavernKernel/TavernKernel/ --mode ")
+		"/analyze-project --path SampleKernel/SampleKernel/ --mode map",
+		"/analyze-project --path SampleKernel/SampleKernel/ --mode trace",
+	}, "/analyze-project --path SampleKernel/SampleKernel/ --mode ")
 
 	for _, needle := range []string{
-		"/analyze-project --path TavernKernel/TavernKernel/ --mode map",
+		"/analyze-project --path SampleKernel/SampleKernel/ --mode map",
 		"Build the default architecture map:",
-		"/analyze-project --path TavernKernel/TavernKernel/ --mode trace",
+		"/analyze-project --path SampleKernel/SampleKernel/ --mode trace",
 		"Follow one runtime or request flow through",
 	} {
 		if !strings.Contains(rendered, needle) {

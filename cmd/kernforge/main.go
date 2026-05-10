@@ -462,6 +462,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewListFilesTool(ws),
 		NewReadFileTool(ws),
 		NewGrepTool(ws),
+		NewApplyEditProposalTool(ws),
 		NewApplyPatchTool(ws),
 		NewWriteFileTool(ws),
 		NewReplaceInFileTool(ws),
@@ -2457,6 +2458,9 @@ func providerChoiceCompletionTokens() []string {
 
 func providerUserLabel(provider string) string {
 	normalized := normalizeProviderName(provider)
+	if label := reviewProviderDisplayLabel(normalized); label != "" {
+		return label
+	}
 	for _, option := range providerChoiceOptions() {
 		if option.ID == normalized {
 			return option.Label
@@ -5860,6 +5864,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if rt.session.LastSelection != nil && rt.session.LastSelection.HasSelection() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("selection", rt.session.LastSelection.Summary(rt.workspace.Root)))
 		}
+		rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Data",
 			kv("memory_files", fmt.Sprintf("%d", len(rt.memory.Files))),

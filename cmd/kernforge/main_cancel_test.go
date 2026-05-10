@@ -332,10 +332,10 @@ func TestShouldAnimateThinkingStatusKeepsGenericThinkingAnimated(t *testing.T) {
 }
 
 func TestShouldAnimateThinkingStatusFreezesSpecificToolProgress(t *testing.T) {
-	if shouldAnimateThinkingStatus("Using read_file on TavernWorkerCore.cpp:1-200...") {
+	if shouldAnimateThinkingStatus("Using read_file on SampleWorkerCore.cpp:1-200...") {
 		t.Fatalf("expected specific tool progress to stop spinner animation")
 	}
-	if shouldAnimateThinkingStatus("read_file 확인 중 ... TavernWorkerCore.cpp") {
+	if shouldAnimateThinkingStatus("read_file 확인 중 ... SampleWorkerCore.cpp") {
 		t.Fatalf("expected localized tool progress to stop spinner animation")
 	}
 }
@@ -470,7 +470,7 @@ func TestPersistPerformanceReportWritesMarkdownAndJSON(t *testing.T) {
 	rt := &runtimeState{}
 	result := PerformanceAnalysisResult{
 		Focus:          "startup",
-		PrimaryStartup: "Tavern",
+		PrimaryStartup: "SampleApp",
 		TopHotspots: []PerformanceHotspot{
 			{Title: "Core Runtime", Score: 12},
 		},

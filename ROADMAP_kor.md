@@ -750,7 +750,7 @@ MVP 범위:
 - `/resume` 이후 첫 답변은 이 working state를 우선 로드한다.
 
 방금 오류 사례에서 기대 답변:
-1. "직전 로그 기준으로 원인은 Kernforge 분석 worker가 `TavernKernel/TavernKernel/BuildCab_refined_03` shard를 `deepseek/deepseek-v4-flash` 모델로 요청했는데, OpenRouter 뒤의 DeepInfra upstream이 429 rate limit을 반환했기 때문입니다."
+1. "직전 로그 기준으로 원인은 Kernforge 분석 worker가 `SampleKernelDriver/SampleKernelDriver/BuildCab_refined_03` shard를 `deepseek/deepseek-v4-flash` 모델로 요청했는데, OpenRouter 뒤의 DeepInfra upstream이 429 rate limit을 반환했기 때문입니다."
 2. "코드/프로젝트 분석 내용 문제가 아니라 provider quota/temporary upstream throttling 문제입니다."
 3. "재시도하면 풀릴 수 있고, 자주 반복되면 해당 role model을 다른 모델로 바꾸거나 OpenRouter BYOK/provider key를 설정해 rate limit pool을 분리하는 것이 좋습니다."
 4. "analysis run은 shard-level degrade가 구현되어 있다면 해당 shard를 low-confidence failure로 기록하고 계속 진행해야 합니다."

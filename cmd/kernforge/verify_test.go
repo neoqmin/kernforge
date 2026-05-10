@@ -164,11 +164,11 @@ func TestAutomaticVerificationPrefersSessionEditPathsOverDirtyGitWorktree(t *tes
 		Messages: []Message{{
 			Role:     "tool",
 			ToolName: "apply_patch",
-			Text:     "updated Tavern/TavernWorker/UnmountedProcessScanner.cpp",
+			Text:     "updated SampleApp/SampleWorker/UnmountedProcessScanner.cpp",
 		}},
 	}
 	changed := collectAutomaticVerificationChangedPaths(DefaultConfig(root), root, sess)
-	if !containsString(changed, "Tavern/TavernWorker/UnmountedProcessScanner.cpp") {
+	if !containsString(changed, "SampleApp/SampleWorker/UnmountedProcessScanner.cpp") {
 		t.Fatalf("expected session edit path, got %#v", changed)
 	}
 	if containsString(changed, "drivers/KernelDriver.cpp") {
@@ -177,7 +177,7 @@ func TestAutomaticVerificationPrefersSessionEditPathsOverDirtyGitWorktree(t *tes
 }
 
 func TestSecurityVerificationDoesNotTreatUserModeProcessScannerAsDriverOrMemoryScan(t *testing.T) {
-	changed := []string{"Tavern/TavernWorker/UnmountedProcessScanner.cpp"}
+	changed := []string{"SampleApp/SampleWorker/UnmountedProcessScanner.cpp"}
 	categories := classifySecurityVerificationCategories(changed)
 	if len(categories) != 0 {
 		t.Fatalf("expected no security verification categories for user-mode process scanner, got %#v", categories)
@@ -190,8 +190,8 @@ func TestSecurityVerificationDoesNotTreatUserModeProcessScannerAsDriverOrMemoryS
 
 func TestSecurityVerificationStillRecognizesMemoryScanSurfaces(t *testing.T) {
 	changed := []string{
-		"Tavern/MemoryInspection/VadScanner.cpp",
-		"Tavern/Detection/patternscan.cpp",
+		"SampleApp/MemoryInspection/VadScanner.cpp",
+		"SampleApp/Detection/patternscan.cpp",
 	}
 	categories := classifySecurityVerificationCategories(changed)
 	if !containsSecurityVerificationCategory(categories, SecurityCategoryMemoryScan) {

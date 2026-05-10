@@ -562,7 +562,7 @@ func TestAgentAnalysisOnlyRequestHidesEditTools(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "@Tavern/Common/ETWConsumer.cpp ETWConsumer가 제대로 동작할 수 없는 로그를 수집했는데 원인을 분석해")
+	reply, err := agent.Reply(context.Background(), "@SampleApp/Common/ETWConsumer.cpp ETWConsumer가 제대로 동작할 수 없는 로그를 수집했는데 원인을 분석해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -673,11 +673,11 @@ func TestAgentEmptyResponseErrorIncludesProviderModelAndAfterTool(t *testing.T) 
 func TestSummarizeToolInvocationReadFileIncludesPathAndRange(t *testing.T) {
 	call := ToolCall{
 		Name:      "read_file",
-		Arguments: `{"path":"Tavern/Common/ETWConsumer.cpp","start_line":10,"end_line":42}`,
+		Arguments: `{"path":"SampleApp/Common/ETWConsumer.cpp","start_line":10,"end_line":42}`,
 	}
 
 	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
-	want := "Using read_file on Tavern/Common/ETWConsumer.cpp:10-42..."
+	want := "Using read_file on SampleApp/Common/ETWConsumer.cpp:10-42..."
 	if got != want {
 		t.Fatalf("unexpected summary: got %q want %q", got, want)
 	}
@@ -710,18 +710,18 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 	}
 	pack := KnowledgePack{
 		RunID:          "run-1",
-		Goal:           "map TavernWorker architecture",
+		Goal:           "map SampleWorker architecture",
 		Root:           root,
-		ProjectSummary: "TavernWorker owns telemetry collection and event triage.",
+		ProjectSummary: "SampleWorker owns telemetry collection and event triage.",
 		Subsystems: []KnowledgeSubsystem{
 			{
-				Title:            "TavernWorker Runtime",
+				Title:            "SampleWorker Runtime",
 				Group:            "Forensic Analysis",
 				Responsibilities: []string{"Collect telemetry", "Normalize suspicious events"},
-				EntryPoints:      []string{"TavernWorker/main.cpp"},
-				KeyFiles:         []string{"TavernWorker/main.cpp", "TavernWorker/collector.cpp"},
+				EntryPoints:      []string{"SampleWorker/main.cpp"},
+				KeyFiles:         []string{"SampleWorker/main.cpp", "SampleWorker/collector.cpp"},
 				Dependencies:     []string{"Common/ipc.hpp"},
-				EvidenceFiles:    []string{"TavernWorker/main.cpp"},
+				EvidenceFiles:    []string{"SampleWorker/main.cpp"},
 			},
 		},
 	}
@@ -736,11 +736,11 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 		RunID: "run-1",
 		Documents: []VectorCorpusDocument{
 			{
-				ID:       "subsystem:tavernworker-runtime",
+				ID:       "subsystem:sampleworker-runtime",
 				Kind:     "subsystem",
-				Title:    "Forensic Analysis: TavernWorker Runtime",
+				Title:    "Forensic Analysis: SampleWorker Runtime",
 				Text:     "Startup path initializes telemetry collectors and triage workers.",
-				PathHint: "TavernWorker/main.cpp",
+				PathHint: "SampleWorker/main.cpp",
 			},
 		},
 	}
@@ -754,10 +754,10 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 	index := SemanticIndex{
 		RunID: "run-1",
 		Files: []SemanticIndexedFile{
-			{Path: "TavernWorker/main.cpp", ImportanceScore: 95, Tags: []string{"entrypoint", "startup"}},
+			{Path: "SampleWorker/main.cpp", ImportanceScore: 95, Tags: []string{"entrypoint", "startup"}},
 		},
 		Symbols: []SemanticSymbol{
-			{Name: "WorkerBootstrap", Kind: "function", File: "TavernWorker/main.cpp", Module: "TavernWorker"},
+			{Name: "WorkerBootstrap", Kind: "function", File: "SampleWorker/main.cpp", Module: "SampleWorker"},
 		},
 	}
 	indexData, err := json.Marshal(index)
@@ -780,7 +780,7 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow.")
+	reply, err := agent.Reply(context.Background(), "Explain SampleWorker startup flow.")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -800,7 +800,7 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 	if !strings.Contains(userText, "Relevant project analysis from past analyze-project runs") {
 		t.Fatalf("expected cached analysis context in user text, got %q", userText)
 	}
-	if !strings.Contains(userText, "Forensic Analysis: TavernWorker Runtime") {
+	if !strings.Contains(userText, "Forensic Analysis: SampleWorker Runtime") {
 		t.Fatalf("expected matching subsystem in injected analysis context, got %q", userText)
 	}
 	if !strings.Contains(userText, "Relevant vector documents") {
@@ -834,8 +834,8 @@ func TestAgentDoesNotRepeatLatestProjectAnalysisContextAfterFirstTurn(t *testing
 			{
 				Title:         "Worker Runtime",
 				Group:         "Forensic Analysis",
-				KeyFiles:      []string{"TavernWorker/main.cpp"},
-				EvidenceFiles: []string{"TavernWorker/main.cpp"},
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/main.cpp"},
 			},
 		},
 	}
@@ -859,7 +859,7 @@ func TestAgentDoesNotRepeatLatestProjectAnalysisContextAfterFirstTurn(t *testing
 		Store:     store,
 	}
 
-	if _, err := agent.Reply(context.Background(), "Explain TavernWorker."); err != nil {
+	if _, err := agent.Reply(context.Background(), "Explain SampleWorker."); err != nil {
 		t.Fatalf("first Reply: %v", err)
 	}
 	if _, err := agent.Reply(context.Background(), "Now summarize risks only."); err != nil {
@@ -907,8 +907,8 @@ func TestAgentReinjectsLatestProjectAnalysisContextWhenQueryChangesMaterially(t 
 			{
 				Title:         "Worker Runtime",
 				Group:         "Forensic Analysis",
-				KeyFiles:      []string{"TavernWorker/main.cpp"},
-				EvidenceFiles: []string{"TavernWorker/main.cpp"},
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/main.cpp"},
 			},
 			{
 				Title:            "IPC Layer",
@@ -955,7 +955,7 @@ func TestAgentReinjectsLatestProjectAnalysisContextWhenQueryChangesMaterially(t 
 		Store:     store,
 	}
 
-	if _, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow."); err != nil {
+	if _, err := agent.Reply(context.Background(), "Explain SampleWorker startup flow."); err != nil {
 		t.Fatalf("first Reply: %v", err)
 	}
 	if _, err := agent.Reply(context.Background(), "Explain Common IPC module architecture in detail."); err != nil {
@@ -984,7 +984,7 @@ func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
 	cfg := DefaultConfig(root)
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			{Message: Message{Role: "assistant", Text: "TavernWorker startup begins in main.cpp and then initializes telemetry collectors."}},
+			{Message: Message{Role: "assistant", Text: "SampleWorker startup begins in main.cpp and then initializes telemetry collectors."}},
 		},
 	}
 	analysisCfg := configProjectAnalysis(cfg, root)
@@ -996,13 +996,13 @@ func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
 		RunID:          "run-fastpath",
 		Goal:           "map worker architecture",
 		Root:           root,
-		ProjectSummary: "TavernWorker owns startup and telemetry collection.",
+		ProjectSummary: "SampleWorker owns startup and telemetry collection.",
 		Subsystems: []KnowledgeSubsystem{
 			{
 				Title:         "Worker Runtime",
 				Group:         "Forensic Analysis",
-				KeyFiles:      []string{"TavernWorker/main.cpp"},
-				EvidenceFiles: []string{"TavernWorker/main.cpp"},
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/main.cpp"},
 			},
 		},
 	}
@@ -1026,11 +1026,11 @@ func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow.")
+	reply, err := agent.Reply(context.Background(), "Explain SampleWorker startup flow.")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "TavernWorker startup begins") {
+	if !strings.Contains(reply, "SampleWorker startup begins") {
 		t.Fatalf("unexpected fast-path reply: %q", reply)
 	}
 	if strings.Contains(reply, "Cached analysis fast-path") || strings.Contains(reply, "NEEDS_TOOLS") {
@@ -1137,7 +1137,7 @@ func TestAgentFallsBackToNormalToolLoopWhenCachedProjectAnalysisFastPathNeedsToo
 		RunID:          "run-fastpath-2",
 		Goal:           "map worker architecture",
 		Root:           root,
-		ProjectSummary: "TavernWorker summary.",
+		ProjectSummary: "SampleWorker summary.",
 		Subsystems: []KnowledgeSubsystem{
 			{
 				Title:         "Worker Runtime",
@@ -1170,7 +1170,7 @@ func TestAgentFallsBackToNormalToolLoopWhenCachedProjectAnalysisFastPathNeedsToo
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow in verified detail.")
+	reply, err := agent.Reply(context.Background(), "Explain SampleWorker startup flow in verified detail.")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -1835,6 +1835,135 @@ func TestAgentStoresSanitizedToolPreambleInsteadOfNarration(t *testing.T) {
 	}
 	if strings.TrimSpace(assistantTurn.Text) != "" {
 		t.Fatalf("expected tool-turn narration to be stripped from stored message, got %q", assistantTurn.Text)
+	}
+}
+
+func TestAgentRetriesEditToolWithoutPreFixReviewSummary(t *testing.T) {
+	root := t.TempDir()
+	patchTool := &staticTool{name: "apply_patch", output: "ok"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "이제 전체 파일을 확인했으니 세 가지 리뷰 발견사항을 모두 수정하겠습니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "apply_patch",
+						Arguments: `{"patch":"*** Begin Patch\n*** Update File: Source/Sample.cpp\n@@\n-old\n+new\n*** End Patch"}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "검토 결과:\n- RF-001: 단일 처리 실패가 전체 열거를 중단합니다. 현재 항목만 건너뛰도록 수정합니다.\n- RF-002: 고정 버퍼로 결과를 놓칠 수 있습니다. 필요한 크기로 재시도합니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-2",
+						Name:      "apply_patch",
+						Arguments: `{"patch":"*** Begin Patch\n*** Update File: Source/Sample.cpp\n@@\n-old\n+new\n*** End Patch"}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "수정했습니다.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Source/Sample.cpp:10-40 검토하고 버그를 수정해"})
+	session.LastReviewRun = &ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Source/Sample.cpp:10-40 검토하고 버그를 수정해",
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001", "RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "단일 처리 실패가 전체 열거를 중단합니다",
+				RequiredFix: "현재 항목만 건너뛰고 다음 항목을 계속 처리하세요.",
+			},
+			{
+				ID:          "RF-002",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "고정 버퍼가 정상 결과를 누락할 수 있습니다",
+				RequiredFix: "필요한 버퍼 크기를 확인한 뒤 재시도하세요.",
+			},
+		},
+	}
+	firstMessage := provider.replies[0].Message
+	firstMessage.Text = sanitizeAssistantMessageText(firstMessage.Text, len(firstMessage.ToolCalls) > 0)
+	if !shouldRetryPreFixEditWithoutVisibleReviewSummary(firstMessage, session) {
+		t.Fatalf("expected missing visible RF summary to block the first edit call")
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "수정했습니다." && reply != "done" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if patchTool.calls != 1 {
+		t.Fatalf("expected only the summarized edit attempt to execute, got %d calls", patchTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected retry request after missing review summary")
+	}
+	lastBeforeRetry := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastBeforeRetry.Role != "user" || !strings.Contains(lastBeforeRetry.Text, "검토 결과") || !strings.Contains(lastBeforeRetry.Text, "RF-001") {
+		t.Fatalf("expected Korean review-summary retry guidance with RF IDs, got %#v", lastBeforeRetry)
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && strings.Contains(msg.Text, "세 가지 리뷰 발견사항") {
+			t.Fatalf("unsummarized edit preamble should not be stored: %#v", msg)
+		}
+	}
+}
+
+func TestPreFixVisibleReviewSummaryRequiresStructuredFindingID(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "샘플 코드를 검토하고 버그를 수정해",
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "경계 조건 누락",
+			RequiredFix: "경계 조건을 검사하세요.",
+		}},
+	}
+
+	if assistantTextIncludesPreFixReviewSummary("검토 결과를 바탕으로 수정하겠습니다.", run) {
+		t.Fatalf("generic review wording should not satisfy visible RF summary")
+	}
+	if !assistantTextIncludesPreFixReviewSummary("검토 결과:\n- RF-001: 경계 조건을 보강합니다.", run) {
+		t.Fatalf("expected explicit RF item to satisfy visible review summary")
 	}
 }
 
@@ -2728,6 +2857,105 @@ func TestAgentRetriesWhenEditRequestHandsPatchBackWithoutUsingTools(t *testing.T
 	}
 }
 
+func TestAgentRetriesFinalReplyThatBlamesInternalTranscriptRecovery(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "VAllocAnalyzer.cpp")
+	if err := os.WriteFile(path, []byte("int Check()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "not a patch"}),
+			{Message: Message{Role: "assistant", Text: "### 현재 차단 사항\n\n**도구 실행 파이프라인 오류**: 모든 도구가 동일한 \"ERROR: tool result was missing from the saved transcript\" 오류를 반환합니다. 세션을 다시 시작하거나 수동 패치를 직접 적용하세요."}},
+			{Message: Message{Role: "assistant", Text: "내부 transcript recovery 문구를 실제 도구 장애로 보지 않고, 최신 apply_patch 오류 기준으로 다시 정리했습니다."}},
+		},
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewApplyPatchTool(ws), NewReadFileTool(ws), NewListFilesTool(ws), NewGrepTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "missing from the saved transcript") || strings.Contains(reply, "수동 패치") {
+		t.Fatalf("internal transcript failure leaked to final reply: %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected transcript-recovery blame retry to consume three requests, got %d", len(provider.requests))
+	}
+	lastMessage := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "not evidence that all tools are broken") {
+		t.Fatalf("expected internal transcript recovery guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentBlocksToolCallsThatBlameInternalTranscriptRecovery(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "VAllocAnalyzer.cpp")
+	before := "int Check()\n{\n    return 0;\n}\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "모든 도구 호출에서 \"ERROR: tool result was missing from the saved transcript\" 오류가 반복적으로 발생하고 있습니다. 하지만 write_file로 전체 파일을 다시 작성하는 방법을 시도해보겠습니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "write_file",
+						Arguments: `{"path":"VAllocAnalyzer.cpp","content":"bad"}`,
+					}},
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "내부 transcript recovery 문구를 실제 도구 장애로 단정하지 않고 최신 로컬 증거 기준으로 계속하겠습니다."}},
+		},
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "missing from the saved transcript") || strings.Contains(reply, "write_file") {
+		t.Fatalf("internal transcript failure leaked to final reply: %q", reply)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(contents) != before {
+		t.Fatalf("write_file should have been blocked before execution, got %q", string(contents))
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected transcript-recovery tool-call block to consume two requests, got %d", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "not evidence that all tools are broken") {
+		t.Fatalf("expected internal transcript recovery guidance, got %#v", lastMessage)
+	}
+}
+
 func TestAgentBlocksGitCommitWithoutExplicitUserRequest(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
@@ -2887,6 +3115,241 @@ func TestAgentBlocksLocalInspectionBeforeWebResearchWhenCapabilityAvailable(t *t
 	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Before using local inspection or edit tools") {
 		t.Fatalf("expected web research guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentBlocksWebResearchForLocalCodeRepair(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web__search_web",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web__search_web", map[string]any{"query": "std::mismatch path separator"}),
+			toolCallResponse("mcp__web__search_web", map[string]any{"query": "FindFirstVolume buffer bug"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/PathConverter.cpp"}),
+			{Message: Message{Role: "assistant", Text: "로컬 소스 기준으로 검토를 계속했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		MCP: &MCPManager{
+			servers: []*MCPClient{
+				{
+					config: MCPServerConfig{Name: "web"},
+					tools: []MCPToolDescriptor{
+						{Name: "search_web", Description: "Search the web for current articles and references"},
+					},
+				},
+			},
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 소스") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("local code repair should block web research tool execution, got %d calls", webTool.calls)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected web tool call to be blocked and retried, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "로컬 코드 리뷰/수정 작업") {
+		t.Fatalf("expected local-code web block guidance, got %#v", lastMessage)
+	}
+	repeatedGuidance := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if repeatedGuidance.Role != "user" || !strings.Contains(repeatedGuidance.Text, "로컬 코드 리뷰/수정 작업") {
+		t.Fatalf("expected repeated web call to be blocked again, got %#v", repeatedGuidance)
+	}
+}
+
+func TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "Win32 volume API bug"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/PathConverter.cpp"}),
+			{Message: Message{Role: "assistant", Text: "로컬 소스 근거로만 계속했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 소스") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("namespaced web research should be blocked even without MCP catalog, got %d calls", webTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected blocked web call to be retried, got %d requests", len(provider.requests))
+	}
+	guidance := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if guidance.Role != "user" || !strings.Contains(guidance.Text, "로컬 코드 리뷰/수정 작업") {
+		t.Fatalf("expected Korean local-code web block guidance, got %#v", guidance)
+	}
+}
+
+func TestAgentBlocksWebResearchAfterPreWriteReviewFeedback(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "C++ loop bug fix"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/PathConverter.cpp"}),
+			{Message: Message{Role: "assistant", Text: "pre-write review 경고를 로컬 소스 기준으로 다시 수정했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		MCP: &MCPManager{
+			servers: []*MCPClient{
+				{
+					config: MCPServerConfig{Name: "web_research"},
+					tools: []MCPToolDescriptor{
+						{Name: "search_web", Description: "Search the web for current articles and references"},
+					},
+				},
+			},
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nImplementation rules:\n- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate.")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 소스") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("pre-write review repair should block web research tool execution, got %d calls", webTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected web tool call to be blocked and retried, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" ||
+		(!strings.Contains(lastMessage.Text, "local code review or repair request") &&
+			!strings.Contains(lastMessage.Text, "로컬 코드 리뷰/수정 작업")) {
+		t.Fatalf("expected local-code web block guidance after pre-write feedback, got %#v", lastMessage)
+	}
+}
+
+func TestAgentRetriesEnglishToolNarrationForKoreanLocalCodeRepair(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "I see the previous patches were blocked. Let me inspect the file again.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "read_file",
+						Arguments: `{"path":"SampleApp/SampleWorker/PathConverter.cpp"}`,
+					}},
+				},
+			},
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/PathConverter.cpp"}),
+			{Message: Message{Role: "assistant", Text: "한국어 진행 설명으로 전환했고 로컬 파일을 확인했습니다."}},
+		},
+	}
+	readFile := NewReadFileTool(ws)
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(readFile),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "한국어") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected English narration to be retried before tool execution, got %d requests", len(provider.requests))
+	}
+	guidance := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if guidance.Role != "user" || !strings.Contains(guidance.Text, "응답 언어 정책 위반") {
+		t.Fatalf("expected Korean language retry guidance, got %#v", guidance)
 	}
 }
 
@@ -3069,19 +3532,19 @@ func TestAgentReturnsFinalReplyEvenWhenAlreadyStreamed(t *testing.T) {
 
 func TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
 	root := t.TempDir()
-	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
+	targetDir := filepath.Join(root, "SampleApp", "SampleWorker")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "TavernWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(targetDir, "SampleWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 1}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 3}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 3, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 1}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 2, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 3, "end_line": 4}),
 			{Message: Message{Role: "assistant", Text: "I have enough context now and can explain the issue."}},
 		},
 	}
@@ -3128,23 +3591,23 @@ func TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
 
 func TestAgentStopsAfterRepeatedReadFilePathAcrossRangesAfterRecoveryTurn(t *testing.T) {
 	root := t.TempDir()
-	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
+	targetDir := filepath.Join(root, "SampleApp", "SampleWorker")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "TavernWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(targetDir, "SampleWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 1}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 3}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 3, "end_line": 4}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 3}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 4}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 4}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 1}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 2, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 3, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 2, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 2, "end_line": 4}),
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -3193,7 +3656,7 @@ func TestSummarizeToolTurnIncludesReadFileRangeDetails(t *testing.T) {
 				{
 					ID:        "call-1",
 					Name:      "read_file",
-					Arguments: `{"path":"Tavern/TavernWorker/TavernWorkerCore.cpp","start_line":29,"end_line":58}`,
+					Arguments: `{"path":"SampleApp/SampleWorker/SampleWorkerCore.cpp","start_line":29,"end_line":58}`,
 				},
 			},
 		},
@@ -3206,7 +3669,7 @@ func TestSummarizeToolTurnIncludesReadFileRangeDetails(t *testing.T) {
 	}
 
 	got := summarizeToolTurn(messages, 0)
-	if !strings.Contains(got, "read_file[Tavern/TavernWorker/TavernWorkerCore.cpp:29-58]:ok") {
+	if !strings.Contains(got, "read_file[SampleApp/SampleWorker/SampleWorkerCore.cpp:29-58]:ok") {
 		t.Fatalf("expected read_file range details in diagnostic, got %q", got)
 	}
 }
@@ -3219,7 +3682,7 @@ func TestSummarizeToolTurnMarksCachedReadFileResults(t *testing.T) {
 				{
 					ID:        "call-1",
 					Name:      "read_file",
-					Arguments: `{"path":"Tavern/TavernWorker/TavernWorkerCore.cpp","start_line":29,"end_line":58}`,
+					Arguments: `{"path":"SampleApp/SampleWorker/SampleWorkerCore.cpp","start_line":29,"end_line":58}`,
 				},
 			},
 		},
@@ -3232,24 +3695,24 @@ func TestSummarizeToolTurnMarksCachedReadFileResults(t *testing.T) {
 	}
 
 	got := summarizeToolTurn(messages, 0)
-	if !strings.Contains(got, "read_file[Tavern/TavernWorker/TavernWorkerCore.cpp:29-58]:cached") {
+	if !strings.Contains(got, "read_file[SampleApp/SampleWorker/SampleWorkerCore.cpp:29-58]:cached") {
 		t.Fatalf("expected cached read_file diagnostic, got %q", got)
 	}
 }
 
 func TestAgentNudgesSoonerAfterCachedReadFileResult(t *testing.T) {
 	root := t.TempDir()
-	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
+	targetDir := filepath.Join(root, "SampleApp", "SampleWorker")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(targetDir, "TavernWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(targetDir, "SampleWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/SampleWorkerCore.cpp", "start_line": 1, "end_line": 2}),
 			{Message: Message{Role: "assistant", Text: "I already have enough context."}},
 		},
 	}

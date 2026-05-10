@@ -26,6 +26,9 @@ func (rt *runtimeState) handleReviewCommand(args string) error {
 		if _, err := rt.runReviewCommand(opts); err != nil {
 			return err
 		}
+		if blocked, feedback := rt.runtimeGateFeedbackForAction(runtimeGateActionMCPWrite); blocked {
+			return fmt.Errorf("%s", feedback)
+		}
 		return rt.handlePRReviewAutomationCommand(reviewPRArgsFromReviewArgs(args))
 	}
 	run, err := rt.runReviewCommand(opts)
@@ -125,7 +128,7 @@ func parseReviewCommandOptions(args string) ReviewHarnessOptions {
 		if opts.Target == reviewTargetAuto {
 			normalized := normalizeReviewTarget(field)
 			switch normalized {
-			case reviewTargetChange, reviewTargetPlan, reviewTargetSelection, reviewTargetPR, reviewTargetFinal, reviewTargetGoal, reviewTargetAnalysis:
+			case reviewTargetChange, reviewTargetPlan, reviewTargetSelection, reviewTargetPR, reviewTargetFinal, reviewTargetGoal, reviewTargetAnalysis, reviewTargetSourceAnalysis:
 				opts.Target = normalized
 				continue
 			}
@@ -763,36 +766,47 @@ func reviewPRArgsFromReviewArgs(args string) string {
 }
 
 func renderReviewMCPResponse(run ReviewRun, maxChars int) string {
+	return renderReviewMCPResponseWithLatestFreshness(run, run.Freshness, maxChars)
+}
+
+func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness ReviewFreshness, maxChars int) string {
 	recommended := map[string]any(nil)
 	if len(run.Gate.NextCommands) > 0 {
 		recommended = map[string]any{
 			"command":               run.Gate.NextCommands[0].Command,
 			"reason":                run.Gate.NextCommands[0].Reason,
+			"when":                  run.Gate.NextCommands[0].When,
 			"safety":                run.Gate.NextCommands[0].Safety,
+			"auto_run":              run.Gate.NextCommands[0].AutoRun,
 			"requires_confirmation": run.Gate.NextCommands[0].RequiresConfirmation,
+			"client_hint":           run.Gate.NextCommands[0].ClientHint,
+			"expected_result":       run.Gate.NextCommands[0].ExpectedResult,
 		}
 	}
 	payload := map[string]any{
-		"summary":             run.Result.Summary,
-		"review_id":           run.ID,
-		"machine_status":      run.MachineStatus,
-		"status_code":         run.ExitCode,
-		"retryable":           run.ExitCode >= 2 && run.ExitCode <= 5,
-		"request_analysis":    run.RequestAnalysis,
-		"artifact_refs":       run.ArtifactRefs,
-		"result":              run.Result,
-		"model_plan":          run.ModelPlan,
-		"freshness":           run.Freshness,
-		"redaction":           run.Redaction,
-		"gate":                run.Gate,
-		"waivers":             run.Waivers,
-		"findings":            run.Findings,
-		"changed_paths":       run.ChangeSet.ChangedPaths,
-		"evidence_sources":    run.Evidence.Sources,
-		"warnings":            run.Evidence.Warnings,
-		"next_commands":       run.Gate.NextCommands,
-		"recommended_command": recommended,
-		"follow_up_results":   run.NextCommandResults,
+		"summary":                 run.Result.Summary,
+		"review_id":               run.ID,
+		"machine_status":          run.MachineStatus,
+		"status_code":             run.ExitCode,
+		"retryable":               run.ExitCode >= 2 && run.ExitCode <= 5,
+		"request_analysis":        run.RequestAnalysis,
+		"artifact_refs":           run.ArtifactRefs,
+		"result":                  run.Result,
+		"model_plan":              run.ModelPlan,
+		"freshness":               run.Freshness,
+		"latest_review_freshness": latestFreshness,
+		"redaction":               run.Redaction,
+		"edit_proposals":          run.EditProposals,
+		"runtime_gate_ledger":     run.RuntimeGateLedger,
+		"gate":                    run.Gate,
+		"waivers":                 run.Waivers,
+		"findings":                run.Findings,
+		"changed_paths":           run.ChangeSet.ChangedPaths,
+		"evidence_sources":        run.Evidence.Sources,
+		"warnings":                run.Evidence.Warnings,
+		"next_commands":           run.Gate.NextCommands,
+		"recommended_command":     recommended,
+		"follow_up_results":       run.NextCommandResults,
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
 	return mcpLimitText("KernForge review\n\n```json\n"+string(data)+"\n```", maxChars)

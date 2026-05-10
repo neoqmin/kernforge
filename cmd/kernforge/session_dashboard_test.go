@@ -73,6 +73,21 @@ func TestRenderSessionDashboardHTMLEscapesAndSummarizesState(t *testing.T) {
 		ArtifactRefs:        []string{"artifact<1>.log"},
 		LastVerification:    "Verification: passed=0 failed=1 skipped=0",
 		VerificationFailure: "- go test [test_failure]: bad <assertion>",
+		RuntimeGateLedger: RuntimeGateLedger{
+			ID:          "runtime-gate-test",
+			Status:      runtimeGateStatusBlocked,
+			ReviewRunID: "review-stale",
+			ReviewTransaction: ReviewTransaction{
+				Status: "stale",
+				Stale:  true,
+			},
+			Blockers:     []string{"latest review is stale: unreviewed changed files: unsafe.go"},
+			StaleReasons: []string{"unreviewed changed files: unsafe.go"},
+			NextCommands: []ReviewNextCommand{{
+				Command: "/review",
+				Reason:  "latest review freshness is stale",
+			}},
+		},
 	}
 
 	html := renderSessionDashboardHTML(snapshot)
@@ -82,6 +97,9 @@ func TestRenderSessionDashboardHTMLEscapesAndSummarizesState(t *testing.T) {
 		"Open Task Graph",
 		"Automation Runtime",
 		"Recent Thread Events",
+		"Runtime Gate",
+		"review_freshness=stale",
+		"/review - latest review freshness is stale",
 		"/automation run-due",
 		"Verification: passed=0 failed=1 skipped=0",
 		"&lt;script&gt;alert(1)&lt;/script&gt;",
@@ -158,7 +176,7 @@ func TestSessionDashboardHTMLCommandWritesArtifactAndEvent(t *testing.T) {
 		t.Fatalf("read dashboard: %v", err)
 	}
 	text := string(data)
-	for _, want := range []string{"Kernforge Session Dashboard", "plan-01", "auto-test", "agent.go", "handoff"} {
+	for _, want := range []string{"Kernforge Session Dashboard", "Runtime Gate", "plan-01", "auto-test", "agent.go", "handoff"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected dashboard to contain %q, got %q", want, text)
 		}

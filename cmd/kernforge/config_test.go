@@ -1615,10 +1615,49 @@ func TestMigrateLegacyConfigDefaultsRewritesWorkspaceConfigFile(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyConfigDefaultsRewritesShellTimeout(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	userPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(userPath, []byte(`{"shell_timeout_seconds": 300}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	notices := MigrateLegacyConfigDefaults(t.TempDir(), &cfg)
+	if len(notices) != 1 || notices[0].Field != "shell_timeout_seconds" {
+		t.Fatalf("expected shell_timeout_seconds notice, got %#v", notices)
+	}
+	if cfg.ShellTimeoutSecs != currentDefaultShellTimeoutSecs {
+		t.Fatalf("post-migration ShellTimeoutSecs: want %d, got %d", currentDefaultShellTimeoutSecs, cfg.ShellTimeoutSecs)
+	}
+
+	rewritten, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rewritten, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if v, ok := raw["shell_timeout_seconds"].(float64); !ok || int(v) != currentDefaultShellTimeoutSecs {
+		t.Fatalf("expected shell_timeout_seconds=%d on disk, got %v", currentDefaultShellTimeoutSecs, raw["shell_timeout_seconds"])
+	}
+}
+
 func TestMigrateLegacyConfigDefaultsLeavesExplicitNonLegacyValuesAlone(t *testing.T) {
 	cfg := Config{
 		MaxToolIterations: 50,    // user-chosen, not legacy
 		MaxTokens:         12000, // user-chosen, not legacy
+		ShellTimeoutSecs:  1200,  // user-chosen, not legacy
 	}
 	notices := MigrateLegacyConfigDefaults(t.TempDir(), &cfg)
 	if len(notices) != 0 {
@@ -1629,6 +1668,9 @@ func TestMigrateLegacyConfigDefaultsLeavesExplicitNonLegacyValuesAlone(t *testin
 	}
 	if cfg.MaxTokens != 12000 {
 		t.Fatalf("MaxTokens was clobbered: %d", cfg.MaxTokens)
+	}
+	if cfg.ShellTimeoutSecs != 1200 {
+		t.Fatalf("ShellTimeoutSecs was clobbered: %d", cfg.ShellTimeoutSecs)
 	}
 }
 

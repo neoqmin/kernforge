@@ -16,25 +16,30 @@ import (
 const (
 	reviewSchemaVersion = "review_run.v1"
 
-	reviewTargetAuto          = "auto"
-	reviewTargetPlan          = "plan"
-	reviewTargetChange        = "change"
-	reviewTargetSelection     = "selection"
-	reviewTargetPR            = "pr"
-	reviewTargetFinal         = "final_answer"
-	reviewTargetGoal          = "goal_iteration"
-	reviewTargetAnalysis      = "analysis_report"
-	reviewTargetFinalAlias    = "final"
-	reviewTargetGoalAlias     = "goal"
-	reviewTargetAnalysisAlias = "analysis"
+	reviewDefaultMaxContextChars        = 60000
+	reviewSourceAnalysisMaxContextChars = 180000
 
-	reviewModeCoreBuild         = "core_build"
-	reviewModeLiveFix           = "live_fix"
-	reviewModeResearch          = "research"
-	reviewModeRefactor          = "refactor"
-	reviewModeSecurityHardening = "security_hardening"
-	reviewModeUIPolish          = "ui_polish"
-	reviewModeGeneralChange     = "general_change"
+	reviewTargetAuto           = "auto"
+	reviewTargetPlan           = "plan"
+	reviewTargetChange         = "change"
+	reviewTargetSelection      = "selection"
+	reviewTargetPR             = "pr"
+	reviewTargetFinal          = "final_answer"
+	reviewTargetGoal           = "goal_iteration"
+	reviewTargetAnalysis       = "analysis_report"
+	reviewTargetSourceAnalysis = "source_analysis"
+	reviewTargetFinalAlias     = "final"
+	reviewTargetGoalAlias      = "goal"
+	reviewTargetAnalysisAlias  = "analysis"
+
+	reviewModeCoreBuild           = "core_build"
+	reviewModeLiveFix             = "live_fix"
+	reviewModeResearch            = "research"
+	reviewModeRefactor            = "refactor"
+	reviewModeSecurityHardening   = "security_hardening"
+	reviewModeUIPolish            = "ui_polish"
+	reviewModePerformanceAnalysis = "performance_analysis"
+	reviewModeGeneralChange       = "general_change"
 
 	reviewVerdictApproved             = "approved"
 	reviewVerdictApprovedWithWarnings = "approved_with_warnings"
@@ -104,6 +109,7 @@ type ReviewRun struct {
 	Evidence           ReviewEvidencePack     `json:"evidence,omitempty"`
 	Freshness          ReviewFreshness        `json:"freshness,omitempty"`
 	Redaction          ReviewRedactionReport  `json:"redaction,omitempty"`
+	EditProposals      []EditProposal         `json:"edit_proposals,omitempty"`
 	PolicyPacks        []string               `json:"policy_packs,omitempty"`
 	ReviewerRuns       []ReviewReviewerRun    `json:"reviewer_runs,omitempty"`
 	MergeResult        ReviewMergeResult      `json:"merge_result,omitempty"`
@@ -112,22 +118,51 @@ type ReviewRun struct {
 	Gate               GateDecision           `json:"gate,omitempty"`
 	Waivers            []ReviewWaiver         `json:"waivers,omitempty"`
 	RepairPlan         ReviewRepairPlan       `json:"repair_plan,omitempty"`
+	RuntimeGateLedger  RuntimeGateLedger      `json:"runtime_gate_ledger,omitempty"`
 	NextCommandResults []ReviewNextCommandRun `json:"next_command_results,omitempty"`
 	ArtifactRefs       []string               `json:"artifact_refs,omitempty"`
 	AuditTrail         []string               `json:"audit_trail,omitempty"`
 }
 
 type ReviewRequestAnalysis struct {
-	OriginalRequest   string   `json:"original_request,omitempty"`
-	InferredTarget    string   `json:"inferred_target,omitempty"`
-	InferredMode      string   `json:"inferred_mode,omitempty"`
-	SelectedFlow      string   `json:"selected_flow,omitempty"`
+	OriginalRequest   string               `json:"original_request,omitempty"`
+	InferredTarget    string               `json:"inferred_target,omitempty"`
+	InferredMode      string               `json:"inferred_mode,omitempty"`
+	SelectedFlow      string               `json:"selected_flow,omitempty"`
+	Confidence        float64              `json:"confidence,omitempty"`
+	EvidenceNeeds     []string             `json:"evidence_needs,omitempty"`
+	PolicyPacks       []string             `json:"policy_packs,omitempty"`
+	CandidateFlows    []string             `json:"candidate_flows,omitempty"`
+	DomainSignals     []ReviewDomainSignal `json:"domain_signals,omitempty"`
+	RiskSignals       []ReviewRiskSignal   `json:"risk_signals,omitempty"`
+	ScopeDiscovery    ReviewScopeDiscovery `json:"scope_discovery,omitempty"`
+	Reason            string               `json:"reason,omitempty"`
+	AmbiguityWarnings []string             `json:"ambiguity_warnings,omitempty"`
+}
+
+type ReviewScopeDiscovery struct {
+	CandidateFiles    []string `json:"candidate_files,omitempty"`
+	CandidateSymbols  []string `json:"candidate_symbols,omitempty"`
+	SearchTerms       []string `json:"search_terms,omitempty"`
+	ScopeWidth        string   `json:"scope_width,omitempty"`
 	Confidence        float64  `json:"confidence,omitempty"`
-	EvidenceNeeds     []string `json:"evidence_needs,omitempty"`
-	PolicyPacks       []string `json:"policy_packs,omitempty"`
-	CandidateFlows    []string `json:"candidate_flows,omitempty"`
-	Reason            string   `json:"reason,omitempty"`
-	AmbiguityWarnings []string `json:"ambiguity_warnings,omitempty"`
+	NarrowingCommands []string `json:"narrowing_commands,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
+}
+
+type ReviewDomainSignal struct {
+	Domain     string `json:"domain,omitempty"`
+	Signal     string `json:"signal,omitempty"`
+	Evidence   string `json:"evidence,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
+}
+
+type ReviewRiskSignal struct {
+	Risk       string `json:"risk,omitempty"`
+	Signal     string `json:"signal,omitempty"`
+	Evidence   string `json:"evidence,omitempty"`
+	Severity   string `json:"severity,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
 }
 
 type ReviewChangeSet struct {
@@ -203,6 +238,7 @@ type ReviewResult struct {
 	FindingCount     int      `json:"finding_count,omitempty"`
 	BlockingCount    int      `json:"blocking_count,omitempty"`
 	WarningCount     int      `json:"warning_count,omitempty"`
+	NoteCount        int      `json:"note_count,omitempty"`
 	ModelQuality     string   `json:"model_quality,omitempty"`
 	Degraded         bool     `json:"degraded,omitempty"`
 	DegradedReason   string   `json:"degraded_reason,omitempty"`
@@ -249,9 +285,10 @@ type ReviewNextCommand struct {
 	Reason               string `json:"reason,omitempty"`
 	Safety               string `json:"safety,omitempty"`
 	When                 string `json:"when,omitempty"`
-	AutoRun              bool   `json:"auto_run,omitempty"`
-	RequiresConfirmation bool   `json:"requires_confirmation,omitempty"`
+	AutoRun              bool   `json:"auto_run"`
+	RequiresConfirmation bool   `json:"requires_confirmation"`
 	ClientHint           string `json:"client_hint,omitempty"`
+	ExpectedResult       string `json:"expected_result,omitempty"`
 }
 
 type ReviewNextCommandRun struct {
@@ -276,6 +313,19 @@ type ReviewRedactionReport struct {
 	Patterns      []string `json:"patterns,omitempty"`
 	SensitiveRefs []string `json:"sensitive_refs,omitempty"`
 	Warnings      []string `json:"warnings,omitempty"`
+}
+
+type EditProposal struct {
+	File               string `json:"file,omitempty"`
+	Operation          string `json:"operation,omitempty"`
+	AnchorBefore       string `json:"anchor_before,omitempty"`
+	ReplaceRange       string `json:"replace_range,omitempty"`
+	ExactSearch        string `json:"exact_search,omitempty"`
+	Replacement        string `json:"replacement,omitempty"`
+	Rationale          string `json:"rationale,omitempty"`
+	Risk               string `json:"risk,omitempty"`
+	ExpectedPreview    string `json:"expected_preview,omitempty"`
+	PreviewFingerprint string `json:"preview_fingerprint,omitempty"`
 }
 
 type ReviewWaiver struct {
@@ -311,6 +361,8 @@ type ReviewHarnessOptions struct {
 	NoModel             bool
 	AutoTriggered       bool
 	AutoFollowUp        string
+	EditProposals       []EditProposal
+	RepairFindings      []ReviewFinding
 	MaxContextChars     int
 	RawArgs             string
 }
@@ -370,6 +422,8 @@ func normalizeReviewTarget(target string) string {
 		return reviewTargetAuto
 	case "change", "changes", "diff", "code":
 		return reviewTargetChange
+	case "source_analysis", "source", "code_analysis":
+		return reviewTargetSourceAnalysis
 	case "plan":
 		return reviewTargetPlan
 	case "selection", "selected":
@@ -404,6 +458,8 @@ func normalizeReviewMode(mode string) string {
 		return reviewModeSecurityHardening
 	case "ui", "ui_polish":
 		return reviewModeUIPolish
+	case "performance", "performance_analysis", "perf", "hitch", "hitching":
+		return reviewModePerformanceAnalysis
 	default:
 		return mode
 	}
@@ -560,6 +616,7 @@ func (r *ReviewRun) finalizeStatus(strictWarnings bool) {
 	r.Result.FindingCount = len(r.Findings)
 	r.Result.BlockingCount = 0
 	r.Result.WarningCount = 0
+	r.Result.NoteCount = 0
 	for _, finding := range r.Findings {
 		if reviewFindingBlocksGate(*r, finding) {
 			r.Result.BlockingCount++
@@ -567,7 +624,9 @@ func (r *ReviewRun) finalizeStatus(strictWarnings bool) {
 		}
 		if reviewFindingCountsAsWarning(finding) {
 			r.Result.WarningCount++
+			continue
 		}
+		r.Result.NoteCount++
 	}
 }
 
@@ -612,19 +671,23 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		return ReviewRun{}, fmt.Errorf("workspace root is not configured")
 	}
 	if opts.MaxContextChars <= 0 {
-		opts.MaxContextChars = 60000
+		opts.MaxContextChars = reviewDefaultMaxContextChars
 	}
 	run := newReviewRunSkeleton(rt, root, opts)
 	analysis := analyzeReviewRequest(rt, root, opts)
+	opts.MaxContextChars = reviewMaxContextCharsForAnalysis(opts.MaxContextChars, analysis)
 	run.Target = analysis.InferredTarget
 	run.Mode = analysis.InferredMode
 	run.Flow = analysis.SelectedFlow
 	run.RequestAnalysis = analysis
+	run.EditProposals = normalizeEditProposals(opts.EditProposals)
 	run.PolicyPacks = analysis.PolicyPacks
 	run.PolicyPackVersions = reviewPolicyPackVersions(run.PolicyPacks)
+	emitReviewScopeDiscoveryProgress(rt, run)
 	changeSet, evidence := collectReviewEvidence(ctx, rt, root, run, opts)
 	run.ChangeSet = changeSet
 	run.Evidence = evidence
+	emitReviewEvidenceProgress(rt, run, opts)
 	run.Redaction = redactReviewRunEvidence(&run)
 	run.ModelPlan = planReviewModels(rt.cfg, run)
 	run.Findings = append(run.Findings, deterministicReviewFindings(rt, run)...)
@@ -637,6 +700,8 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		run.Result.DegradedReason = "model review disabled by --no-model"
 		run.Result.ModelQuality = reviewModelQualityUsable
 	}
+	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	run.Findings = append(run.Findings, preFixNonConclusiveBugHuntFindings(run)...)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Gate = evaluateReviewGate(run)
 	run.RepairPlan = buildReviewRepairPlan(run)
@@ -657,11 +722,14 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		CheckedAt:         time.Now(),
 	}
 	run.finalizeStatus(false)
+	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
 	emitDistinctReviewGateResultProgress(rt, run)
 	if err := writeReviewRunArtifacts(root, &run); err != nil {
 		return run, err
 	}
 	rt.session.recordReviewRun(run)
+	ledger := buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
+	rt.session.RuntimeGateLedger = &ledger
 	if rt.store != nil {
 		if err := rt.store.Save(rt.session); err != nil {
 			return run, err
