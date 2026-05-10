@@ -151,14 +151,14 @@ func TestParseAnalyzeProjectArgsDefaultsGoalFromMode(t *testing.T) {
 }
 
 func TestParseAnalyzeProjectCommandArgsDefaultsGoalFromModeAndPath(t *testing.T) {
-	parsed, err := parseAnalyzeProjectCommandArgs("--path TavernKernel/TavernKernel --mode trace")
+	parsed, err := parseAnalyzeProjectCommandArgs("--path SampleKernel/SampleKernel --mode trace")
 	if err != nil {
 		t.Fatalf("parseAnalyzeProjectCommandArgs returned error: %v", err)
 	}
 	if parsed.Mode != "trace" {
 		t.Fatalf("expected trace mode, got %q", parsed.Mode)
 	}
-	for _, needle := range []string{"runtime flows", "dispatch paths", "TavernKernel/TavernKernel"} {
+	for _, needle := range []string{"runtime flows", "dispatch paths", "SampleKernel/SampleKernel"} {
 		if !strings.Contains(parsed.Goal, needle) {
 			t.Fatalf("expected default trace goal to include %q, got %q", needle, parsed.Goal)
 		}

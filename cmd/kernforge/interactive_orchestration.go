@@ -716,10 +716,12 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 	if strings.HasPrefix(strings.ToUpper(text), "APPROVED") {
 		a.Session.TaskState.NoteFinalReview("approved", text)
 		a.recordEditLoopFinalReview("approved", text)
+		a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 		return true, text
 	}
 	a.Session.TaskState.NoteFinalReview("needs_revision", text)
 	a.recordEditLoopFinalReview("needs_revision", text)
+	a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 	return false, text
 }
 
@@ -821,6 +823,13 @@ func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, u
 		if session.LastJobSupervisorReport != nil {
 			if rendered := strings.TrimSpace(session.LastJobSupervisorReport.RenderPromptSection()); rendered != "" {
 				b.WriteString("\nJob supervisor report:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.RuntimeGateLedger != nil {
+			if rendered := strings.TrimSpace(session.RuntimeGateLedger.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nRuntime gate ledger:\n")
 				b.WriteString(rendered)
 				b.WriteString("\n")
 			}

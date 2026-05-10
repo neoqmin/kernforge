@@ -42,7 +42,11 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 	if err != nil {
 		return "", err
 	}
-	return renderReviewMCPResponse(run, mcpMaxChars(args, 60000)), nil
+	root := ""
+	if s != nil && s.rt != nil {
+		root = workspaceSnapshotRoot(s.rt.workspace)
+	}
+	return renderReviewMCPResponseWithLatestFreshness(run, reviewLatestFreshnessForRoot(root, run), mcpMaxChars(args, 60000)), nil
 }
 
 func mcpReviewMaxContextChars(args map[string]any, fallback int) int {

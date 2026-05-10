@@ -2,31 +2,32 @@
 
 ![Kernforge banner](./branding/kernforge-release-banner-1280x640.png)
 
-| Axis | Kernforge | Codex | Claude Code |
+## Flagship Capability
+
+`Kernforge` is a project intelligence and fuzzing workbench for Windows security, anti-cheat engineering, and evidence-backed verification. It is written in Go, runs as a terminal-first local agent, and is tuned for telemetry, driver-oriented workflows, memory inspection, Unreal security, and large-project analysis.
+
+The first five capabilities to understand are:
+
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
+- `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, freshness, next commands, and repair guidance.
+- Fuzzing starts with `/fuzz-func` source-level triage and continues through `/fuzz-campaign` for campaign manifests, corpus/crash/coverage artifacts, sanitizer or verifier evidence, and verification gate lifecycle management.
+- `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
+- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
+
+Kernforge is centered on `project analysis -> review -> fuzzing/root-cause investigation -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
+
+## Claude Code And Codex Comparison
+
+| Axis | Kernforge | Claude Code | Codex |
 |---|---|---|---|
-| Best fit | Windows security, anti-cheat, telemetry, driver workflows, large-project analysis, evidence-backed verification | General coding agent work, local editing loops, task delegation, automation, PR-oriented workflows | General agentic coding, configurable hooks, subagents, external integrations, team policy workflows |
-| Main strength | Turns a large workspace into reusable project intelligence, security docs, fuzz targets, verification history, evidence, and persistent memory | Feels natural when asked to finish a task end to end: inspect, edit, test, recover, summarize | Strong customization surface: hooks, subagents, MCP-style integrations, organization-specific workflows |
-| Conversation memory | Stores conversation events, active state, recent errors, recovery briefs, suggestion memory, task graph, session dashboard, continuity packet, and persistent memory | Very strong thread/workspace awareness and task continuity | Strong conversational context with configurable project instructions and agent setup |
-| Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong at deciding the next practical step during implementation | Strong when workflows are encoded through hooks, subagents, and project conventions |
-| Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong test/command loop, but domain evidence modeling is generic | Strong tool loop, but evidence modeling depends on user/project setup |
+| Best fit | Windows security, anti-cheat, telemetry, driver workflows, large-project analysis, evidence-backed verification | General agentic coding, configurable hooks, subagents, external integrations, team policy workflows | General coding agent work, local editing loops, task delegation, automation, PR-oriented workflows |
+| Main strength | Turns a large workspace into reusable project intelligence, security docs, fuzz targets, verification history, evidence, and persistent memory | Strong customization surface: hooks, subagents, MCP-style integrations, organization-specific workflows | Feels natural when asked to finish a task end to end: inspect, edit, test, recover, summarize |
+| Conversation memory | Stores conversation events, active state, recent errors, recovery briefs, suggestion memory, task graph, session dashboard, continuity packet, and persistent memory | Strong conversational context with configurable project instructions and agent setup | Very strong thread/workspace awareness and task continuity |
+| Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong when workflows are encoded through hooks, subagents, and project conventions | Strong at deciding the next practical step during implementation |
+| Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong tool loop, but evidence modeling depends on user/project setup | Strong test/command loop, but domain evidence modeling is generic |
 | Windows/security specialization | Deeply tuned for IOCTL, ETW, drivers, memory scanning, Unreal, telemetry, signing, fuzzing, and anti-cheat surfaces | Broad coding agent, not domain-specific by default | Broad coding agent, not domain-specific by default |
-| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session-dashboard-html`, suggestion-to-task graph; cloud jobs still pending | Mature automation and PR/task workflow direction | Automation often comes through hooks and external workflow integration |
-| Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More polished general agent experience, less specialized security/fuzzing knowledge out of the box | More configurable ecosystem, less built-in Windows security/fuzz workbench depth |
-
-`Kernforge` is a project intelligence and fuzzing workbench for Windows security, anti-cheat engineering, and evidence-backed verification. It is written in Go, runs as a terminal-first local agent, and is tuned for telemetry, driver-oriented workflows, memory inspection, Unreal security, and large project analysis.
-
-Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into reusable project intelligence, then carries that context into editing, verification, evidence, fuzzing, and policy.  
-Kernforge is now centered on `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
-
-The current product direction has three main pillars. The first is whole-project analysis and documentation. The second is a specialized fuzzing toolchain that runs from source-based triage into native fuzzing execution. The third is a symptom-driven `/find-root-cause` diagnostic loop that narrows user-reported failures into reviewed causal candidates. The Korean and English README files should contain the same content, with each document maintained as a translation of the same feature scope and roadmap direction.
-
-## Source-Level Fuzzing
-
-Kernforge source-level fuzzing can summarize a function input model, the problematic code location, trigger values, and generated harness/report artifact paths before any native build is required. When called through MCP in the Codex App, the result is designed to lead with `Result`, `Top candidate`, `Problem location`, `Trigger conditions KernForge generated`, and `Artifacts`.
-
-![Codex App source-level fuzz result](./docs/assets/codex-app-source-fuzz-result.png)
-
-This stage is not a confirmed native crash or sanitizer finding. It is a source-level finding meant to accelerate security review and harness design. From there, the natural path is `native_preview -> build_only -> runtime fuzzing` to validate compileability, execution, and crash/sanitizer reproduction.
+| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session-dashboard-html`, suggestion-to-task graph; cloud jobs still pending | Automation often comes through hooks and external workflow integration | Mature automation and PR/task workflow direction |
+| Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More configurable ecosystem, less built-in Windows security/fuzz workbench depth | More polished general agent experience, less specialized security/fuzzing knowledge out of the box |
 
 ## Repository Layout
 
@@ -38,18 +39,13 @@ To keep the GitHub landing page readable, the repository root is reserved for do
 - `docs/assets`: screenshots and documentation assets used by README and MCP guides
 - `branding`, `buildtools`, `release`: product imagery, Windows resource build tooling, and release artifacts
 
-## Flagship Capability
+## Source-Level Fuzzing
 
-If Kernforge has one feature to understand first, it is `multi-agent project analysis`.
+Kernforge source-level fuzzing can summarize a function input model, the problematic code location, trigger values, and generated harness/report artifact paths before any native build is required. When called through MCP in the Codex App, the result is designed to lead with `Result`, `Top candidate`, `Problem location`, `Trigger conditions KernForge generated`, and `Artifacts`.
 
-- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds a reusable architecture map instead of a disposable summary, and infers a mode-specific goal when you omit one
-- The output becomes a durable knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard
-- Long analysis runs show their work as they proceed: shard count, worker slots, wave progress, per-shard completion, worker/reviewer model wait or failure events, and final artifact persistence steps are surfaced through the normal progress display controls
-- That analysis is then reused in review, editing, verification, and policy workflows
-- `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
-- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
-- `/root-cause-patterns` provides built-in symptom/root-cause priors for project types such as Windows services, kernel drivers, Unreal, and web backends, and can collect GitHub issue corpora into local pattern packs
-- The next roadmap focus is expanding the new `/fuzz-campaign` planner from one-command campaign automation into native crash, coverage, evidence, and verification-gate lifecycle management
+![Codex App source-level fuzz result](./docs/assets/codex-app-source-fuzz-result.png)
+
+This stage is not a confirmed native crash or sanitizer finding. It is a source-level finding meant to accelerate security review and harness design. From there, the natural path is `native_preview -> build_only -> runtime fuzzing` to validate compileability, execution, and crash/sanitizer reproduction.
 
 ## Documentation
 
@@ -106,6 +102,7 @@ Its current differentiators are:
 - Symptom-driven `/find-root-cause` plus built-in `/root-cause-patterns` knowledge packs
 - Pre-final coding harnesses for acceptance, artifact quality, scenario replay, subagent evidence, test impact, and background job state
 - Evidence-backed apply/verify/retry edit-loop ledger that carries worker edits, patch evidence, background verification bundles, retry decisions, final review, and remaining risk into the final answer
+- Runtime gate ledger that ties the latest review transaction, patch transaction, verification report, completion audit, and final-answer review together, then surfaces review freshness, blockers, waivers, and next commands in `/status`, `/hooks`, session dashboards, review artifacts, MCP responses, and final-answer prompts
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
@@ -113,7 +110,7 @@ Its current differentiators are:
 - Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
 - Providers: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `opencode`, `opencode-go`, `ollama`, `lmstudio`, `vllm`, `llama.cpp`, plus explicit OpenAI-compatible routes
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
-- File, patch, shell, and git-oriented tool use
+- File, structured edit proposal, patch fallback, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
 - Session persistence, resume, rename, clear, compact, and Markdown export
@@ -245,6 +242,13 @@ Its current differentiators are:
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
 - Each edit request keeps an apply/verify/retry ledger so main edits, worker edits, patch transaction ids, background verification bundles, verification reports, retry decisions, final-review verdicts, and remaining risk stay tied together through compaction and final handoff
+- Simple edits can go through `apply_edit_proposal`, a structured proposal tool that records file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, and review evidence before writing. `apply_patch` remains the expert fallback for complex hunk-level edits after current file contents have been read.
+- Malformed patches are normalized for common wrapper problems such as BOMs, CRLF/CR line endings, surrounding prose, code fences, and quoted paths. If the same invalid patch signature repeats, the agent is steered to reread the target file and generate a new patch instead of retrying the same text.
+- Pre-write review stores `edit_proposals` in the review artifact and MCP response, so approved proposal intent, raw preview, changed paths, and freshness checks stay connected.
+- Runtime gate freshness blocks or warns on stale reviews, unwaived review blockers, failed verification, or missing review coverage before final answers, git writes, MCP write-side actions, and completion audit handoff.
+- Review quality gates retry provider-specific omission patterns, downgrade weak or incomplete high-severity model findings to evidence-gap warnings, and require path or symbol plus evidence, impact, and required fix before a model finding can block the gate.
+- Pre-fix review findings are summarized visibly before patch/write tools run, so the transcript shows which RF items drove the repair.
+- Local code repair blocks web/search/browser MCP tools unless the user explicitly asks for external research.
 - Before a final answer, the coding harness and `/completion-audit` check the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, open tasks, verification, and background job state
 - The final-answer reviewer receives the edit-loop ledger plus a typed outcome contract and expects one coherent summary of what changed, what verified, what was retried, and what risk remains
 - If a requested document or report artifact is placeholder/TODO content or does not cover the requested topic, the artifact-quality gate blocks the final answer
@@ -263,7 +267,7 @@ Its current differentiators are:
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
 - In ordinary product development, `implementation-owner` is the default editable specialist, while narrower domain specialists such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-analyst`, and `memory-inspection-analyst` take ownership only when the task or paths match strongly.
-- `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned specialist worktree.
+- `apply_edit_proposal`, `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned specialist worktree.
 - `/specialists assign <node-id> <specialist> [glob,glob2]` lets you pin an editable specialist and override ownership globs when auto-routing picked a broader default.
 - `/set-specialist-model <specialist> <provider> [model]` pins the LLM used by one specialist in this workspace, and `/set-specialist-model clear <specialist|all>` removes that override.
 - Secondary edit nodes with disjoint leases can run through automatic editable workers, while overlapping leases are deferred instead of racing on the same files.
@@ -688,6 +692,7 @@ Later sources override earlier ones:
   "permission_mode": "default",
   "shell": "powershell",
   "request_timeout_seconds": 1200,
+  "shell_timeout_seconds": 900,
   "progress_display": "stream",
   "max_tokens": 8192,
   "model_routes": {
@@ -746,7 +751,7 @@ Later sources override earlier ones:
 | `max_tool_iterations` | Max tool loop count per request. `0` or any non-positive value means unlimited, and the default is `0` |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
-| `shell_timeout_seconds` | Default timeout in seconds used by `run_shell` |
+| `shell_timeout_seconds` | Default timeout in seconds used by `run_shell`. Default is `900` |
 | `read_hint_spans` | Shared `read_file` and `grep` cached-nearby hint history size |
 | `read_cache_entries` | `read_file` in-memory cached range entry count |
 | `session_dir` | Directory for saved session JSON files |
@@ -1042,7 +1047,7 @@ Mention syntax:
 @mcp:docs:getting-started summarize this resource
 ```
 
-When Kernforge is running as the MCP server and Codex is the MCP client, review requests should use `kernforge_review`. That tool runs the same common review harness as `/review`, collects supplied diff/code, file paths, plans, PR context, or the current workspace `git diff`, then returns structured findings, gate status, model-role status, and action-oriented `next_commands` with reason, timing, safety, and artifact paths under `.kernforge/reviews`. This keeps "review this with KernForge" on the typed review path instead of accidentally turning it into project analysis, verification, or a worker/reviewer route.
+When Kernforge is running as the MCP server and Codex is the MCP client, review requests should use `kernforge_review`. That tool runs the same common review harness as `/review`, collects supplied diff/code, file paths, plans, PR context, or the current workspace `git diff`, then returns structured findings, gate status, model-role status, `scope_discovery`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, and action-oriented `next_commands` with reason, timing, safety, expected-result metadata, and artifact paths under `.kernforge/reviews`. This keeps "review this with KernForge" on the typed review path instead of accidentally turning it into project analysis, verification, or a worker/reviewer route.
 
 For MCP clients that reuse one Kernforge server entry across multiple repositories, `-cwd` is only the fallback workspace. Kernforge also honors client workspace hints from `initialize.rootUri`, `initialize.workspaceFolders`, `tools/call.params._meta.cwd`, and the per-tool `workspace` or `cwd` argument. In Codex CLI, if the MCP server reports the wrong workspace in `kernforge_status`, pass the current repo as `workspace` on the Kernforge tool call or configure the MCP entry so its `-cwd` matches that repo.
 
@@ -1096,7 +1101,7 @@ Explain the structure of this repository
 /worktree status
 ```
 
-- `/status` shows current session and runtime state such as approvals, active session, memory, verification, and MCP counts.
+- `/status` shows current session and runtime state such as approvals, active session, memory, verification, MCP counts, and the runtime gate ledger. That gate line tells you whether the latest review is fresh, how many blockers/warnings remain, and which recovery command to run next.
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
 - `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter and DeepSeek perform live lookups, while OpenAI and Anthropic expose officially documented limits and billing guidance.
 - `/model` is the model-routing hub for the main model, the analysis worker/reviewer, and specialist-subagent overrides. Common review harness reviewers are configured through `/review models`.
@@ -1163,6 +1168,7 @@ Explain the structure of this repository
 - `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and specialist subagent model set. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
 - `/review models` is the single supported path for common review harness reviewer roles such as `primary`, `design`, `security`, `false-positive`, `regression`, `test`, and `final`.
+- `/hooks` also prints the compact runtime gate summary, so hook/policy inspection and `/status` use the same freshness and next-command vocabulary.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.

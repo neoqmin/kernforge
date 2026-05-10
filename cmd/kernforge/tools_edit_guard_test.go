@@ -70,17 +70,89 @@ func TestReplaceInFileReturnsEditTargetMismatchWhenSearchTextMissing(t *testing.
 	}
 }
 
-func TestEditToolDescriptionsBiasTowardApplyPatch(t *testing.T) {
+func TestEditToolDescriptionsBiasTowardEditProposal(t *testing.T) {
 	ws := Workspace{}
 
+	proposalDesc := NewApplyEditProposalTool(ws).Definition().Description
+	if !strings.Contains(proposalDesc, "structured edit proposal") || !strings.Contains(proposalDesc, "Prefer this") {
+		t.Fatalf("expected apply_edit_proposal description to emphasize first-class proposal usage, got %q", proposalDesc)
+	}
+	if !isEditTool("apply_edit_proposal") || inferToolExecutionEffect("apply_edit_proposal") != "edit" {
+		t.Fatalf("expected apply_edit_proposal to be classified as an edit tool")
+	}
+
 	patchDesc := NewApplyPatchTool(ws).Definition().Description
-	if !strings.Contains(patchDesc, "default edit tool") {
-		t.Fatalf("expected apply_patch description to emphasize default usage, got %q", patchDesc)
+	if !strings.Contains(patchDesc, "expert fallback") {
+		t.Fatalf("expected apply_patch description to emphasize fallback usage, got %q", patchDesc)
 	}
 
 	replaceDesc := NewReplaceInFileTool(ws).Definition().Description
 	if !strings.Contains(replaceDesc, "only for very small single-location substitutions") {
 		t.Fatalf("expected replace_in_file description to emphasize narrow usage, got %q", replaceDesc)
+	}
+}
+
+func TestApplyEditProposalRequiresReviewBeforePreviewAndWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	before := "package main\n\nfunc main() {}\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	events := []string{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		ReviewEdit: func(ctx context.Context, preview EditPreview) error {
+			events = append(events, "review")
+			if len(preview.Proposals) != 1 {
+				t.Fatalf("expected structured proposal in preview, got %#v", preview.Proposals)
+			}
+			proposal := preview.Proposals[0]
+			if proposal.File != "main.go" || proposal.Operation != "replace_in_file" || proposal.ExactSearch == "" || proposal.PreviewFingerprint == "" {
+				t.Fatalf("unexpected proposal: %#v", proposal)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read before approval: %v", err)
+			}
+			if string(data) != before {
+				t.Fatalf("proposal review must run before write, got %q", string(data))
+			}
+			return nil
+		},
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			events = append(events, "preview")
+			if !strings.Contains(preview.Preview, "Preview for main.go") {
+				t.Fatalf("expected edit preview, got %q", preview.Preview)
+			}
+			return true, nil
+		},
+	}
+	tool := NewApplyEditProposalTool(ws)
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"file":         "main.go",
+		"operation":    "replace_in_file",
+		"exact_search": "func main() {}",
+		"replacement":  "func main() { println(\"ok\") }",
+		"rationale":    "exercise proposal flow",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Join(events, ",") != "review,preview" {
+		t.Fatalf("expected review before preview/write, got %#v", events)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after proposal: %v", err)
+	}
+	if !strings.Contains(string(data), "println(\"ok\")") {
+		t.Fatalf("expected proposal write, got %q", string(data))
+	}
+	if !strings.Contains(out, "applied edit proposal") {
+		t.Fatalf("expected proposal output, got %q", out)
 	}
 }
 
@@ -152,10 +224,89 @@ func TestApplyPatchAcceptsBareBlankContextLinesInHunk(t *testing.T) {
 	}
 }
 
+func TestApplyPatchRecoversFencedPatchWithProse(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"patch": "Here is the patch:\n```patch\n*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n```\nDone.",
+	})
+	if err != nil {
+		t.Fatalf("expected fenced patch with prose to be recovered, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "func main() {}") {
+		t.Fatalf("expected recovered patch to update file, got %q", string(data))
+	}
+}
+
+func TestApplyPatchNormalizesBackslashPaths(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: src\\main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("expected backslash patch path to be normalized, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "func main() {}") {
+		t.Fatalf("expected normalized path patch to update file, got %q", string(data))
+	}
+}
+
+func TestApplyPatchInvalidFormatUsesReasonCode(t *testing.T) {
+	_, err := NewApplyPatchTool(Workspace{BaseRoot: t.TempDir(), Root: t.TempDir()}).Execute(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: main.go\n*** End Patch\n",
+	})
+	if !errors.Is(err, ErrInvalidPatchFormat) {
+		t.Fatalf("expected invalid patch format, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "patch_format_empty_update") {
+		t.Fatalf("expected reason-coded patch error, got %v", err)
+	}
+}
+
+func TestInvalidPatchFormatGuidanceChangesOnRepeatedSignature(t *testing.T) {
+	first := invalidPatchFormatGuidance(false, ErrInvalidPatchFormat)
+	repeated := invalidPatchFormatGuidance(true, ErrInvalidPatchFormat)
+	if !strings.Contains(first, "Retry using the tool again") {
+		t.Fatalf("expected first guidance to allow a format retry, got %q", first)
+	}
+	if !strings.Contains(repeated, "Do not retry the same patch text again") ||
+		!strings.Contains(repeated, "First read the exact target file again") {
+		t.Fatalf("expected repeated guidance to force fresh read, got %q", repeated)
+	}
+
+	argsA := "{\"patch\":\"prefix\\n*** Begin Patch\\n*** End Patch\\n```\"}"
+	argsB := `{"patch":"*** Begin Patch\n*** End Patch"}`
+	if applyPatchFormatFailureSignature(argsA) != applyPatchFormatFailureSignature(argsB) {
+		t.Fatalf("expected equivalent failed patch signatures after normalization")
+	}
+}
+
 func TestServiceInstallReviewInfersSecurityMode(t *testing.T) {
 	mode := inferReviewMode(
-		"TavernWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
-		[]string{"Tavern/Tavern/TavernWorkerManager.cpp", "Tavern/TavernWorker/TavernUpdManager.cpp"},
+		"SampleWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
+		[]string{"SampleApp/SampleApp/SampleWorkerManager.cpp", "SampleApp/SampleWorker/SampleUpdManager.cpp"},
 		reviewTargetChange,
 		nil,
 	)
@@ -234,8 +385,56 @@ func TestRunShellRejectsWorkspaceMutatingCommands(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected mutating shell command to be rejected")
 	}
-	if !strings.Contains(err.Error(), "run_shell cannot modify workspace files") {
+	if !strings.Contains(err.Error(), "manual workspace file writes") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunShellRejectsInlinePowerShellFileWrites(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"semicolon_set_content": "Get-Content input.txt; Set-Content output.txt 'changed'",
+		"dotnet_write_all_text": "$content = 'changed'; [System.IO.File]::WriteAllText('output.txt', $content)",
+		"invoke_web_out_file":   "Invoke-WebRequest https://example.test/file.txt -OutFile output.txt",
+		"pipeline_out_file":     "Get-Content input.txt | Out-File output.txt",
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected inline mutating shell command to be rejected")
+			}
+			if !strings.Contains(err.Error(), "manual workspace file writes") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "output.txt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected output.txt to remain absent, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
+func TestRunShellRejectsManualFileWriteEvenWithScopedWritePaths(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command":                "Set-Content allowed.txt 'hello'",
+		"allow_workspace_writes": true,
+		"write_paths":            []string{"allowed.txt"},
+	})
+	if err == nil {
+		t.Fatalf("expected manual shell file write to be rejected even with scoped write paths")
+	}
+	if !strings.Contains(err.Error(), "manual workspace file writes") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "allowed.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected allowed.txt to remain absent, stat err=%v", statErr)
 	}
 }
 
@@ -247,6 +446,51 @@ func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 		"command": "echo hello",
 	}); err != nil {
 		t.Fatalf("expected read-only shell command to succeed, got %v", err)
+	}
+}
+
+func TestRunShellGuidesGitStatusToDedicatedTool(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"command": "git status --short SampleApp/SampleWorker/PathConverter.cpp",
+	})
+	if err == nil {
+		t.Fatalf("expected run_shell git status to be rejected")
+	}
+	if !strings.Contains(out, "git_status") || !strings.Contains(err.Error(), "dedicated workspace tool") {
+		t.Fatalf("expected dedicated tool guidance, out=%q err=%v", out, err)
+	}
+}
+
+func TestRunShellGuidesGitDiffToDedicatedTool(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"command": "git diff -- SampleApp/SampleWorker/PathConverter.cpp",
+	})
+	if err == nil {
+		t.Fatalf("expected run_shell git diff to be rejected")
+	}
+	if !strings.Contains(out, "git_diff") || !strings.Contains(err.Error(), "dedicated workspace tool") {
+		t.Fatalf("expected dedicated tool guidance, out=%q err=%v", out, err)
+	}
+}
+
+func TestRunShellGuidesGetContentToReadFile(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"command": `Get-Content -Path "SampleApp/SampleWorker/PathConverter.cpp" -TotalCount 10`,
+	})
+	if err == nil {
+		t.Fatalf("expected run_shell Get-Content to be rejected")
+	}
+	if !strings.Contains(out, "read_file") || !strings.Contains(err.Error(), "dedicated workspace tool") {
+		t.Fatalf("expected read_file guidance, out=%q err=%v", out, err)
 	}
 }
 
@@ -316,6 +560,9 @@ func TestRunShellRejectsWorkspaceMutatingDependencyCommands(t *testing.T) {
 
 func TestRunShellAllowsScopedWorkspaceWriteWithinDeclaredPaths(t *testing.T) {
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "allowed.go"), []byte("package main\nfunc main(){println(\"hello\")}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile allowed.go: %v", err)
+	}
 	prepareCalls := 0
 	tool := NewRunShellTool(Workspace{
 		BaseRoot: root,
@@ -329,14 +576,11 @@ func TestRunShellAllowsScopedWorkspaceWriteWithinDeclaredPaths(t *testing.T) {
 		},
 	})
 
-	command := "printf 'hello\\n' > allowed.txt"
-	if runtime.GOOS == "windows" {
-		command = "Set-Content allowed.txt 'hello'"
-	}
+	command := "gofmt -w allowed.go"
 	out, err := tool.Execute(context.Background(), map[string]any{
 		"command":                command,
 		"allow_workspace_writes": true,
-		"write_paths":            []string{"allowed.txt"},
+		"write_paths":            []string{"allowed.go"},
 	})
 	if err != nil {
 		t.Fatalf("expected scoped mutating shell command to succeed, got %v", err)
@@ -344,30 +588,30 @@ func TestRunShellAllowsScopedWorkspaceWriteWithinDeclaredPaths(t *testing.T) {
 	if prepareCalls != 1 {
 		t.Fatalf("expected prepare edit to run once, got %d", prepareCalls)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "allowed.txt"))
+	data, err := os.ReadFile(filepath.Join(root, "allowed.go"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(data), "hello") {
+	if !strings.Contains(string(data), "println(\"hello\")") {
 		t.Fatalf("expected allowed file to be written, got %q", string(data))
 	}
-	if !strings.Contains(out, "allowed.txt") {
+	if !strings.Contains(out, "allowed.go") {
 		t.Fatalf("expected scoped write summary in output, got %q", out)
 	}
 }
 
 func TestRunShellRejectsScopedWorkspaceWriteOutsideDeclaredPaths(t *testing.T) {
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "blocked.go"), []byte("package main\nfunc main(){println(\"oops\")}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile blocked.go: %v", err)
+	}
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
 
-	command := "printf 'oops\\n' > blocked.txt"
-	if runtime.GOOS == "windows" {
-		command = "Set-Content blocked.txt 'oops'"
-	}
+	command := "gofmt -w blocked.go"
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"command":                command,
 		"allow_workspace_writes": true,
-		"write_paths":            []string{"allowed.txt"},
+		"write_paths":            []string{"allowed.go"},
 	})
 	if err == nil {
 		t.Fatalf("expected scoped mutating shell command to be rejected when it writes outside the declared paths")
@@ -397,7 +641,7 @@ func TestRunShellRejectsScopedWorkspaceWriteOutsideEditableOwnership(t *testing.
 	if err := os.MkdirAll(filepath.Join(repoRoot, "telemetry"), 0o755); err != nil {
 		t.Fatalf("MkdirAll telemetry: %v", err)
 	}
-	original := "package main\n"
+	original := "package main\nfunc main(){println(\"oops\")}\n"
 	if err := os.WriteFile(filepath.Join(repoRoot, "main.go"), []byte(original), 0o644); err != nil {
 		t.Fatalf("WriteFile main.go: %v", err)
 	}
@@ -450,10 +694,7 @@ func TestRunShellRejectsScopedWorkspaceWriteOutsideEditableOwnership(t *testing.
 	})
 
 	tool := NewRunShellTool(rt.workspace)
-	command := "printf 'oops\\n' > main.go"
-	if runtime.GOOS == "windows" {
-		command = "Set-Content main.go 'oops'"
-	}
+	command := "gofmt -w main.go"
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"command":                command,
 		"allow_workspace_writes": true,
@@ -544,6 +785,15 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		"git commit -m test":        shellMutationGitMutation,
 		`cd repo ; git init`:        shellMutationGitMutation,
 		"npm install react":         shellMutationWorkspaceWrite,
+		`$content = Get-Content file.txt; [System.IO.File]::WriteAllText("file.txt", $content)`: shellMutationWorkspaceWrite,
+		`Get-Content file.txt | Set-Content other.txt`:                                          shellMutationWorkspaceWrite,
+		`Invoke-WebRequest https://example.test/file.txt -OutFile file.txt`:                     shellMutationWorkspaceWrite,
+		`gofmt -w main.go`:                         shellMutationWorkspaceWrite,
+		`rg "Set-Content" docs`:                    shellMutationReadOnly,
+		`rg Set-Content docs`:                      shellMutationReadOnly,
+		`rg "[System.IO.File]::WriteAllText" docs`: shellMutationReadOnly,
+		`Get-Command tee`:                          shellMutationReadOnly,
+		`Get-Command copy`:                         shellMutationReadOnly,
 	}
 
 	for command, want := range cases {

@@ -1195,7 +1195,7 @@ func (s *kernforgeMCPServer) toolGuide(ctx context.Context, args map[string]any)
 			payload["ask_user"] = "어떤 함수나 파일을 fuzz 대상으로 볼까요?"
 			payload["codex_instruction"] = "Ask the user for the target function or file, then call kernforge_guide again with target/file."
 			questions = append(questions,
-				mcpGuideQuestion("target", "Which function or file should KernForge fuzz?", "Examples: IsValidCommand, ParseASN --file TavernKernel/KnCert.cpp, or @TavernKernel/TavernKernelCore.cpp"),
+				mcpGuideQuestion("target", "Which function or file should KernForge fuzz?", "Examples: IsValidCommand, ParseASN --file src/crypto/CertParser.cpp, or @src/driver/IoctlDispatch.cpp"),
 				mcpGuideQuestion("execution_mode", "How far should KernForge go?", "Use preview for build/run command review, build_only for compile-only, or execute only after approval."),
 			)
 			recommended = mcpGuideToolCall("kernforge_fuzz_targets", map[string]any{"limit": 5, "include_doc": false})
@@ -1308,7 +1308,7 @@ func (s *kernforgeMCPServer) toolGuide(ctx context.Context, args map[string]any)
 		payload["state"] = "needs_input"
 		questions = append(questions,
 			mcpGuideQuestion("request", "What do you want KernForge to do?", "Choose one: status, analyze, verify, fuzz, build-only fuzz harness, or root-cause investigation."),
-			mcpGuideQuestion("target", "What target, file, subsystem, or symptom should KernForge use?", "Examples: IsValidCommand, TavernKernel/TavernKernelCore.cpp, IOCTL dispatch, or a crash symptom."),
+			mcpGuideQuestion("target", "What target, file, subsystem, or symptom should KernForge use?", "Examples: IsValidCommand, src/driver/IoctlDispatch.cpp, IOCTL dispatch, or a crash symptom."),
 			mcpGuideQuestion("execution_mode", "May KernForge execute native commands?", "Default is preview/plan only. Use build_only for compile-only or execute for native runs."),
 		)
 		recommended = mcpGuideToolCall("kernforge_status", map[string]any{})
@@ -1454,7 +1454,7 @@ func (s *kernforgeMCPServer) toolFuzz(ctx context.Context, args map[string]any) 
 			"next_assistant_action": "Ask the user for the fuzz target and stop.",
 			"examples": []string{
 				"KernForge로 IsValidCommand 퍼징해줘",
-				"KernForge로 ParseASN --file TavernKernel/KnCert.cpp 퍼징해줘",
+				"KernForge로 ParseASN --file src/crypto/CertParser.cpp 퍼징해줘",
 			},
 			"workspace": workspaceSnapshotRoot(s.rt.workspace),
 		}
@@ -3240,15 +3240,15 @@ func mcpFunctionFuzzFieldTriggerExamples(item FunctionFuzzVirtualScenario) []str
 		hasCommand := strings.Contains(text, "command")
 		if hasTotalSize && hasCommand {
 			out = append(out,
-				"commandData.totalSize = sizeof(TAVERN_IOCTL_COMMANDDATA_BASE), commandData.command = first valid command requiring a larger command-specific payload",
-				"commandData.totalSize = sizeof(TAVERN_IOCTL_COMMANDDATA_BASE) + 1, commandData.command = valid command with payload shorter than its concrete struct",
-				"commandData.totalSize = oversized value, commandData.command = valid/reserved command below TavernKernelCommand::Max",
-				"commandData.command = reserved command below TavernKernelCommand::Max",
+				"commandData.totalSize = sizeof(IOCTL_COMMAND_HEADER), commandData.command = first valid command requiring a larger command-specific payload",
+				"commandData.totalSize = sizeof(IOCTL_COMMAND_HEADER) + 1, commandData.command = valid command with payload shorter than its concrete struct",
+				"commandData.totalSize = oversized value, commandData.command = valid/reserved command below CommandId::Max",
+				"commandData.command = reserved command below CommandId::Max",
 			)
 		} else if hasTotalSize {
 			out = append(out,
-				"commandData.totalSize = sizeof(TAVERN_IOCTL_COMMANDDATA_BASE) - 1",
-				"commandData.totalSize = sizeof(TAVERN_IOCTL_COMMANDDATA_BASE)",
+				"commandData.totalSize = sizeof(IOCTL_COMMAND_HEADER) - 1",
+				"commandData.totalSize = sizeof(IOCTL_COMMAND_HEADER)",
 				"commandData.totalSize = oversized value",
 			)
 		} else if hasCommand {

@@ -233,6 +233,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	unresolvedVerification := false
 	finalAnswerNudges := 0
 	patchFormatRetries := 0
+	lastPatchFormatFailureSignature := ""
 	invalidToolArgsRetries := 0
 	editTargetMismatchRetries := 0
 	lastToolError := ""
@@ -255,9 +256,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	autoVerifyInfraFailureCount := 0
 	autoVerifyDisablePrompted := false
 	manualEditHandoffRetries := 0
+	internalToolTranscriptFailureReplyRetries := 0
 	abruptReplyRetries := 0
 	finalAnswerReviewRevisions := 0
 	finalHarnessRevisions := 0
+	runtimeGateFinalAnswerRevisions := 0
+	runtimeGateGitWriteNudges := 0
 	postChangeReviewRevisions := 0
 	postChangeReviewExhaustedNudge := false
 	lastPostChangeReviewFingerprint := ""
@@ -369,6 +373,26 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
+		if shouldRetryKoreanLocalCodeToolNarration(resp.Message, a.Session, a.Config) {
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: koreanLocalCodeToolNarrationGuidance(),
+			})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if shouldRetryPreFixEditWithoutVisibleReviewSummary(resp.Message, a.Session) {
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: preFixVisibleReviewSummaryGuidance(*a.Session.LastReviewRun),
+			})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			continue
+		}
 		if a.EmitAssistantDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
 			a.lastEmittedText = strings.TrimSpace(resp.Message.Text)
 		}
@@ -382,6 +406,43 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.Session.AddMessage(Message{
 					Role: "user",
 					Text: "Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first. Continue with inspection, edits, verification, and a summary instead.",
+				})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
+				blocked, feedback := a.runtimeGateFeedbackForAction(runtimeGateActionGitWrite)
+				if blocked {
+					runtimeGateGitWriteNudges++
+					if runtimeGateGitWriteNudges > 3 {
+						return "", fmt.Errorf("runtime gate still blocks git write after repeated attempts")
+					}
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: feedback,
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+			}
+			if replyBlamesInternalToolTranscriptRecovery(resp.Message.Text) {
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: internalToolTranscriptFailureGuidance(explicitEditRequest),
+				})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if shouldBlockWebResearchForLocalCodeWork(resp.Message.ToolCalls, a.Session, a.MCP) {
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: localCodeWebResearchBlockGuidance(a.Config, a.Session),
 				})
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -577,6 +638,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return "", err
 					}
 				}
+				if replyBlamesInternalToolTranscriptRecovery(reply) && internalToolTranscriptFailureReplyRetries < 1 {
+					internalToolTranscriptFailureReplyRetries++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: internalToolTranscriptFailureGuidance(explicitEditRequest),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
 				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && manualEditHandoffRetries < 1 {
 					manualEditHandoffRetries++
 					a.Session.AddMessage(Message{
@@ -635,6 +707,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
+				if runtimeGateFinalAnswerRevisions < 2 {
+					ledger := a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					if runtimeGateBlocksFinalAnswer(ledger, reply) {
+						runtimeGateFinalAnswerRevisions++
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: renderRuntimeGateBlockedFeedback(ledger, runtimeGateActionFinalAnswer),
+						})
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+				} else {
+					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+				}
 				if a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
 					finalAnswerReviewRevisions < 2 &&
 					!strings.EqualFold(strings.TrimSpace(reply), strings.TrimSpace(lastReviewedFinalAnswer)) {
@@ -666,6 +754,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				a.finalizePatchTransactionOnReturn()
 				a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+				a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
 				}
@@ -871,12 +960,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						Status:           firstNonEmptyLine(err.Error()),
 					})
 				}
-				if call.Name == "apply_patch" && errors.Is(err, ErrInvalidPatchFormat) && patchFormatRetries < 1 {
+				if call.Name == "apply_patch" && errors.Is(err, ErrInvalidPatchFormat) && patchFormatRetries < 2 {
+					signature := applyPatchFormatFailureSignature(call.Arguments)
+					repeatedSignature := signature != "" && signature == lastPatchFormatFailureSignature
+					lastPatchFormatFailureSignature = signature
 					patchFormatRetries++
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					a.Session.AddMessage(Message{
 						Role: "user",
-						Text: "Your last apply_patch call used the wrong patch format. Retry using the tool again and make the patch string start exactly with:\n*** Begin Patch\nThen use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\nFor every *** Update File: section, include at least one @@ hunk with context and +/- lines. Do not send an update section with no hunks, and do not send prose, JSON, or code fences inside the patch string.",
+						Text: invalidPatchFormatGuidance(repeatedSignature, err),
 					})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
@@ -1146,6 +1238,51 @@ func (a *Agent) shouldCompleteSharedPlanOnReturn(unresolvedVerification bool) bo
 	return !a.hasRunningBackgroundJobs()
 }
 
+func replyBlamesInternalToolTranscriptRecovery(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hasInternalMarker := containsAny(lower,
+		"tool result was missing from the saved transcript",
+		"missing from saved transcript",
+		"saved transcript",
+		"도구 실행 파이프라인 오류",
+		"도구 파이프라인 오류",
+		"툴 실행 파이프라인 오류",
+		"툴 파이프라인 오류",
+	)
+	if !hasInternalMarker {
+		return false
+	}
+	return containsAny(lower,
+		"manual patch",
+		"apply the patch manually",
+		"restart the session",
+		"restart",
+		"all tools",
+		"tool pipeline",
+		"tool execution pipeline",
+		"cannot read",
+		"cannot apply",
+		"수동 패치",
+		"직접 적용",
+		"세션을 다시 시작",
+		"모든 도구",
+		"파일의 현재 내용을 새로 읽을 수 없음",
+		"편집을 적용할 수 없음",
+	)
+}
+
+func internalToolTranscriptFailureGuidance(explicitEditRequest bool) string {
+	guidance := "Your previous answer treated internal transcript-recovery context as a real tool pipeline failure. The phrase `tool result was missing from the saved transcript` is not evidence that all tools are broken. Do not tell the user to restart the session, wait for a pipeline fix, or apply a patch manually based on that phrase."
+	guidance += "\n\nInspect the actual latest tool results and continue from concrete evidence. If a tool really failed, cite that specific tool name and exact latest error. If you need file context, call read_file/list_files/grep normally."
+	if explicitEditRequest {
+		guidance += " This is an edit/fix request, so keep using the available edit tools. If an edit was blocked by review or stale anchors, re-read the file and produce a fresh edit that addresses the blocker."
+	}
+	return guidance
+}
+
 func replySuggestsManualEditHandoff(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
@@ -1160,6 +1297,8 @@ func replySuggestsManualEditHandoff(text string) bool {
 		"직접 고쳐주시면",
 		"직접 고쳐 주시면",
 		"수동으로 적용",
+		"수동 패치",
+		"직접 적용하세요",
 		"please apply the patch manually",
 		"please edit the file manually",
 		"please update the code manually",
@@ -1569,6 +1708,37 @@ func invalidToolArgumentsGuidance(toolName string) string {
 	default:
 		return "Your last tool call used malformed or truncated JSON arguments. Retry with one complete valid JSON object only. Do not repeat the same broken payload."
 	}
+}
+
+func invalidPatchFormatGuidance(repeatedSignature bool, err error) string {
+	reason := ""
+	if err != nil {
+		reason = firstNonEmptyLine(err.Error())
+	}
+	if repeatedSignature {
+		return strings.TrimSpace("Your last apply_patch call repeated the same invalid patch signature. Do not retry the same patch text again.\n" +
+			"First read the exact target file again, confirm the current contents and path, then create a fresh patch from that current text.\n" +
+			"The patch must start exactly with:\n*** Begin Patch\n" +
+			"Then use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\n" +
+			"For every *** Update File: section, include at least one @@ hunk with context and +/- lines.\n" +
+			"Last parser error: " + reason)
+	}
+	return strings.TrimSpace("Your last apply_patch call used the wrong patch format. Retry using the tool again and make the patch string start exactly with:\n*** Begin Patch\n" +
+		"Then use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\n" +
+		"For every *** Update File: section, include at least one @@ hunk with context and +/- lines. Do not send an update section with no hunks, and do not send prose, JSON, or code fences inside the patch string.\n" +
+		"Last parser error: " + reason)
+}
+
+func applyPatchFormatFailureSignature(arguments string) string {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &decoded); err != nil {
+		return computeReviewFingerprint("apply_patch", normalizeToolArguments(arguments))
+	}
+	patch := stringValue(decoded, "patch")
+	if strings.TrimSpace(patch) == "" {
+		return computeReviewFingerprint("apply_patch", normalizeToolArguments(arguments))
+	}
+	return computeReviewFingerprint("apply_patch", normalizePatchDocumentText(patch))
 }
 
 func repeatedToolCallRecoveryGuidance(summary string, recent string) string {
@@ -2284,6 +2454,17 @@ func shouldBlockLocalToolCallsBeforeWebResearch(calls []ToolCall, session *Sessi
 	return false
 }
 
+func shouldBlockWebResearchForLocalCodeWork(calls []ToolCall, session *Session, mcp *MCPManager) bool {
+	if session == nil {
+		return false
+	}
+	latestUser := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages))))
+	if !requestLooksLikeLocalCodeWork(latestUser) || requestExplicitlyAsksForWebResearch(latestUser) {
+		return false
+	}
+	return toolCallsIncludeWebResearch(calls, mcp)
+}
+
 func sessionHasWebResearchToolResult(session *Session, mcp *MCPManager) bool {
 	if session == nil || mcp == nil {
 		return false
@@ -2300,15 +2481,201 @@ func sessionHasWebResearchToolResult(session *Session, mcp *MCPManager) bool {
 }
 
 func toolCallsIncludeWebResearch(calls []ToolCall, mcp *MCPManager) bool {
-	if mcp == nil {
-		return false
-	}
 	for _, call := range calls {
-		if mcp.IsWebResearchToolCall(call) {
+		if mcp != nil && mcp.IsWebResearchToolCall(call) {
+			return true
+		}
+		if toolCallNameLooksLikeWebResearch(call.Name) {
 			return true
 		}
 	}
 	return false
+}
+
+func toolCallNameLooksLikeWebResearch(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "mcp__") &&
+		containsAny(lower,
+			"web_research",
+			"web_search",
+			"search_web",
+			"browse_web",
+			"browser",
+			"fetch_url",
+			"tavily",
+			"serpapi",
+			"brave_search",
+		) {
+		return true
+	}
+	return containsAny(lower,
+		"search_web",
+		"web_search",
+		"web_research",
+		"browse_web",
+		"fetch_url",
+	)
+}
+
+func localCodeWebResearchBlockGuidance(cfg Config, session *Session) string {
+	latestUser := ""
+	if session != nil {
+		latestUser = baseUserQueryText(latestUserMessageText(session.Messages))
+	}
+	language, _ := inferResponseLanguageForUserText(latestUser, cfg)
+	if language == "ko" {
+		return "이 요청은 로컬 코드 리뷰/수정 작업입니다. 사용자가 외부 웹 리서치를 명시적으로 요청하지 않는 한 MCP web/search/browser 도구를 사용하지 마세요. 한국어로 계속 답변하고, 로컬 소스 근거(read_file, grep, git diff/status)와 이번 턴에 첨부된 리뷰 finding만 사용하세요."
+	}
+	return "This is a local code review or repair request. Do not use MCP web/search/browser tools unless the user explicitly asks for external web research. Continue in the user's requested language with local source evidence: read_file, grep, git diff/status, and the review findings already attached to this turn."
+}
+
+func shouldRetryKoreanLocalCodeToolNarration(message Message, session *Session, cfg Config) bool {
+	text := strings.TrimSpace(message.Text)
+	if text == "" || len(message.ToolCalls) == 0 || session == nil {
+		return false
+	}
+	latestUser := baseUserQueryText(latestUserMessageText(session.Messages))
+	language, _ := inferResponseLanguageForUserText(latestUser, cfg)
+	if language != "ko" {
+		return false
+	}
+	if !requestLooksLikeLocalCodeWork(strings.ToLower(strings.TrimSpace(latestUser))) {
+		return false
+	}
+	if textContainsHangul(text) {
+		return false
+	}
+	if !textLooksMostlyEnglish(text) {
+		return false
+	}
+	return containsAny(strings.ToLower(text),
+		"i see",
+		"let me",
+		"now",
+		"apply",
+		"patch",
+		"fix",
+		"review",
+		"file",
+		"tool",
+	)
+}
+
+func koreanLocalCodeToolNarrationGuidance() string {
+	return "응답 언어 정책 위반입니다. 최신 사용자 요청은 한국어 로컬 코드 리뷰/수정 작업입니다. 도구 호출 전 진행 설명도 한국어로 작성하세요. 코드 식별자, 경로, API 이름, 명령어는 원문을 유지해도 됩니다."
+}
+
+func shouldRetryPreFixEditWithoutVisibleReviewSummary(message Message, session *Session) bool {
+	if session == nil || session.LastReviewRun == nil || len(message.ToolCalls) == 0 {
+		return false
+	}
+	run := *session.LastReviewRun
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		return false
+	}
+	if !toolCallsIncludeEditTool(message.ToolCalls) {
+		return false
+	}
+	if len(preFixVisibleReviewSummaryObligations(run, 3)) == 0 {
+		return false
+	}
+	return !assistantTextIncludesPreFixReviewSummary(message.Text, run)
+}
+
+func toolCallsIncludeEditTool(calls []ToolCall) bool {
+	for _, call := range calls {
+		if isEditTool(call.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantTextIncludesPreFixReviewSummary(text string, run ReviewRun) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	hasStructuredID := false
+	for _, finding := range preFixVisibleReviewSummaryObligations(run, 5) {
+		id := strings.TrimSpace(finding.ID)
+		if id == "" {
+			continue
+		}
+		hasStructuredID = true
+		if strings.Contains(trimmed, id) {
+			return true
+		}
+	}
+	if hasStructuredID {
+		return false
+	}
+	if strings.Contains(lower, "rf-") {
+		return true
+	}
+	if containsAny(trimmed, "검토 결과", "리뷰 결과") {
+		return true
+	}
+	if containsAny(lower, "review finding", "review findings") {
+		return true
+	}
+	return false
+}
+
+func preFixVisibleReviewSummaryObligations(run ReviewRun, limit int) []ReviewFinding {
+	findings := preFixRepairObligationFindings(run)
+	if limit > 0 && len(findings) > limit {
+		return findings[:limit]
+	}
+	return findings
+}
+
+func preFixVisibleReviewSummaryFindings(run ReviewRun, limit int) []ReviewFinding {
+	findings := preFixRepairObligationFindings(run)
+	if len(findings) == 0 {
+		findings = preFixReplyWarningFindings(run, limit)
+	}
+	if limit > 0 && len(findings) > limit {
+		return findings[:limit]
+	}
+	return findings
+}
+
+func preFixVisibleReviewSummaryGuidance(run ReviewRun) string {
+	korean := textContainsHangul(run.Objective)
+	findings := preFixVisibleReviewSummaryFindings(run, 8)
+	var b strings.Builder
+	if korean {
+		b.WriteString("수정 전 리뷰 finding을 사용자에게 먼저 보여줘야 합니다. 파일 쓰기/패치 도구를 호출하기 전에 한국어로 `검토 결과:` 섹션을 만들고, 아래 RF 항목과 조치 방향을 짧게 요약하세요. 그 다음 필요한 로컬 수정 도구를 호출하세요.")
+		if len(findings) > 0 {
+			b.WriteString("\n\n반드시 언급할 리뷰 항목:")
+		}
+	} else {
+		b.WriteString("Show the pre-fix review findings to the user before editing. Before calling a file write or patch tool, add a short `Review findings:` section with the RF items and repair direction, then call the needed local edit tool.")
+		if len(findings) > 0 {
+			b.WriteString("\n\nReview items to mention:")
+		}
+	}
+	for _, finding := range findings {
+		finding.Normalize()
+		title := valueOrDefault(finding.Title, "Review finding")
+		if korean {
+			fmt.Fprintf(&b, "\n- %s [%s/%s] %s", valueOrDefault(finding.ID, "RF"), finding.Severity, finding.Category, title)
+			if strings.TrimSpace(finding.RequiredFix) != "" {
+				fmt.Fprintf(&b, " / 조치: %s", compactPromptSection(finding.RequiredFix, 180))
+			}
+		} else {
+			fmt.Fprintf(&b, "\n- %s [%s/%s] %s", valueOrDefault(finding.ID, "RF"), finding.Severity, finding.Category, title)
+			if strings.TrimSpace(finding.RequiredFix) != "" {
+				fmt.Fprintf(&b, " / Fix: %s", compactPromptSection(finding.RequiredFix, 180))
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func toolCallAllowedBeforeWebResearch(call ToolCall, mcp *MCPManager) bool {
@@ -2634,6 +3001,13 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
+	if a.Session.RuntimeGateLedger != nil {
+		if ledgerText := strings.TrimSpace(a.Session.RuntimeGateLedger.RenderPromptSection()); ledgerText != "" {
+			b.WriteString("\nRuntime gate ledger:\n")
+			b.WriteString(ledgerText)
+			b.WriteString("\n")
+		}
+	}
 	if len(a.Session.Plan) > 0 {
 		b.WriteString("\nCurrent shared plan:\n")
 		for _, item := range a.Session.Plan {
@@ -2731,7 +3105,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.\n")
 	b.WriteString("- Use update_plan for multi-step tasks.\n")
 	b.WriteString("- Use run_shell for build, test, or local inspection commands.\n")
-	b.WriteString("- Do not use run_shell with Set-Content, Out-File, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.\n")
+	b.WriteString("- Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.\n")
 	b.WriteString("- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.\n")
 	b.WriteString("- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.\n")
 	b.WriteString("- Use check_shell_job to poll a background shell job instead of rerunning the same long command.\n")
@@ -2745,6 +3119,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- When the user asks to create or update ordinary source files or documents, prefer edit tools. Do not use run_shell for repo bootstrap, ACL changes, or git init unless the user explicitly asked for setup work.\n")
 	b.WriteString("- For document or report authoring tasks, do not assume generated files already exist. Use list_files on the parent directory before read_file. If the directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools.\n")
 	b.WriteString("- For latest/current external research tasks, prefer relevant MCP web/search/browser tools before answering from memory. Gather multiple sources, compare recency and authority, then synthesize.\n")
+	b.WriteString("- For local code review or repair tasks, do not use MCP web/search/browser tools unless the user explicitly asks for external web research. Rely on local source evidence and review artifacts first.\n")
 	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
 	b.WriteString("- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.\n")
 	b.WriteString("- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.\n")
@@ -2828,15 +3203,63 @@ func shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser string) bool {
 	if strings.TrimSpace(lowerLatestUser) == "" {
 		return false
 	}
+	if requestLooksLikeLocalCodeWork(lowerLatestUser) && !requestExplicitlyAsksForWebResearch(lowerLatestUser) {
+		return false
+	}
 	if containsAny(lowerLatestUser,
 		"latest", "recent", "current", "today", "now", "news", "trend", "trends",
-		"web", "search", "browse", "browser", "source", "sources", "citation", "citations",
+		"web", "search", "browse", "browser", "citation", "citations",
 		"research", "survey", "state of the art", "look up", "find sources",
 		"최신", "최근", "현재", "뉴스", "동향", "웹", "검색", "출처", "자료", "리서치", "조사", "논문",
 	) {
 		return true
 	}
 	return false
+}
+
+func requestLooksLikeLocalCodeWork(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
+		return false
+	}
+	if containsAny(lowerLatestUser,
+		"automatic pre-write review", "pre-write review", "edit proposal", "proposed edit",
+		"review finding", "review findings", "repair guidance", "review gate",
+		"자동 쓰기 전 리뷰", "쓰기 전 리뷰", "수정 전 리뷰", "리뷰 finding", "리뷰 경고",
+		"수정 지침", "리뷰 게이트",
+	) {
+		return true
+	}
+	hasPathOrCodeToken := strings.Contains(lowerLatestUser, "@") ||
+		containsAny(lowerLatestUser,
+			".go", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx",
+			".cs", ".rs", ".py", ".js", ".ts", ".tsx", ".jsx", ".java",
+			".kt", ".swift", ".sln", ".vcxproj", "read_file", "apply_patch",
+			"git_diff", "source/", "src/", "cmd/", "internal/", "plugins/",
+		)
+	hasCodeIntent := containsAny(lowerLatestUser,
+		"code", "source", "file", "path", "review", "inspect", "audit", "fix", "bug", "patch",
+		"코드", "소스", "파일", "경로", "검토", "리뷰", "수정", "버그", "패치",
+	)
+	hasCodeAnalysisIntent := containsAny(lowerLatestUser, "code", "source code", "코드", "소스") &&
+		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "fix", "bug", "분석", "검토", "리뷰", "수정", "버그")
+	return (hasPathOrCodeToken && hasCodeIntent) || hasCodeAnalysisIntent
+}
+
+func requestExplicitlyAsksForWebResearch(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
+		return false
+	}
+	if strings.Contains(lowerLatestUser, "this is a local code review or repair request") ||
+		strings.Contains(lowerLatestUser, "continue with local source evidence") {
+		return false
+	}
+	return containsAny(lowerLatestUser,
+		"web search", "search web", "search the web", "browse web", "web browser", "internet", "online",
+		"look up online", "find online sources", "external source", "external sources",
+		"웹 검색", "웹에서", "웹 브라우저", "인터넷", "온라인", "외부 자료", "외부 출처",
+	)
 }
 
 func summarizeMessages(messages []Message, instructions string) string {

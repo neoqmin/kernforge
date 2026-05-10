@@ -177,7 +177,7 @@ func inferToolExecutionEffect(name string) string {
 	switch strings.TrimSpace(name) {
 	case "list_files", "read_file", "grep", "git_status", "git_diff":
 		return "inspect"
-	case "write_file", "replace_in_file", "apply_patch":
+	case "apply_edit_proposal", "write_file", "replace_in_file", "apply_patch":
 		return "edit"
 	case "update_plan":
 		return "plan"
@@ -241,6 +241,7 @@ type EditPreview struct {
 	Preview   string
 	Paths     []string
 	Operation string
+	Proposals []EditProposal
 }
 
 type ToolHints struct {
@@ -652,7 +653,7 @@ func (w Workspace) defaultShellTimeout() time.Duration {
 	if w.ShellTimeout > 0 {
 		return w.ShellTimeout
 	}
-	return 5 * time.Minute
+	return time.Duration(currentDefaultShellTimeoutSecs) * time.Second
 }
 
 func (w Workspace) ConfirmEdit(preview EditPreview) error {
@@ -1985,6 +1986,8 @@ const (
 
 var shellFileWriteRedirectionTargetPattern = regexp.MustCompile(`(?i)(^|[\s;(|&])(?:\*|\d+)?>>?\s*([^\s;|&)]+)`)
 var shellGitMutationPattern = regexp.MustCompile(`(?i)(^|[;&|()])\s*git\s+(add|am|apply|branch|checkout|cherry-pick|clean|clone|commit|config|init|merge|mv|pull|push|rebase|reset|restore|revert|rm|stash|switch|tag)\b`)
+var shellManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[;|&(){}])\s*(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
+var shellNestedManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[\s;|&(){}"'` + "`" + `])(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
 
 type shellCommandAssessment struct {
 	Class  shellMutationClass
@@ -2041,6 +2044,11 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		return guidance, fmt.Errorf("shell command is incompatible with the active shell")
 	}
 	assessment := assessShellCommandMutation(command)
+	if assessment.Class == shellMutationReadOnly || assessment.Class == shellMutationCacheOnly {
+		if guidance := runShellDedicatedToolGuidance(command); guidance != "" {
+			return guidance, fmt.Errorf("run_shell command should use a dedicated workspace tool")
+		}
+	}
 	allowWorkspaceWrites := boolValue(args, "allow_workspace_writes", false)
 	writePaths := stringSliceValue(args, "write_paths")
 	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
@@ -2053,6 +2061,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		resolvedWrites []string
 	)
 	if assessment.Class == shellMutationWorkspaceWrite {
+		if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
+			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use apply_patch or apply_edit_proposal so edits stay reviewable (%s)", reason)
+		}
 		if !allowWorkspaceWrites {
 			return "", fmt.Errorf("run_shell cannot modify workspace files unless allow_workspace_writes=true with write_paths; use apply_patch or scoped shell mutation instead (%s)", assessment.Reason)
 		}
@@ -2154,6 +2165,60 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		"effect":                 "execute",
 	}
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
+}
+
+func runShellDedicatedToolGuidance(command string) string {
+	if runShellLooksLikeFileReadInspection(command) {
+		return "Use the read_file tool instead of run_shell for source file inspection. This avoids shell approval prompts and keeps file evidence structured for review."
+	}
+	args := shellLikeFields(command)
+	if len(args) < 2 {
+		return ""
+	}
+	program := strings.ToLower(strings.TrimSuffix(filepath.Base(args[0]), ".exe"))
+	if program != "git" {
+		return ""
+	}
+	switch strings.ToLower(args[1]) {
+	case "status":
+		return "Use the git_status tool instead of run_shell for git status inspection. This avoids interactive shell approval and keeps the review/repair loop deterministic."
+	case "diff":
+		return "Use the git_diff tool instead of run_shell for git diff inspection. Pass a path to git_diff when you need a focused diff."
+	default:
+	}
+	return ""
+}
+
+func shellLikeFields(command string) []string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return nil
+	}
+	for i, field := range fields {
+		fields[i] = strings.Trim(field, "\"'")
+	}
+	return fields
+}
+
+func runShellLooksLikeFileReadInspection(command string) bool {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "get-content") {
+		return true
+	}
+	fields := shellLikeFields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	first := strings.ToLower(strings.TrimSuffix(filepath.Base(fields[0]), ".exe"))
+	switch first {
+	case "cat", "type", "gc":
+		return len(fields) >= 2
+	default:
+		return false
+	}
 }
 
 func (t RunShellTool) runShellCommand(ctx context.Context, workDir string, command string, timeout time.Duration) (string, error) {
@@ -2529,12 +2594,13 @@ func formatShellByteCount(size int) string {
 }
 
 func assessShellCommandMutation(command string) shellCommandAssessment {
-	lower := strings.ToLower(strings.TrimSpace(command))
+	unquoted := shellCommandWithoutQuotedLiterals(command)
+	lower := strings.ToLower(strings.TrimSpace(unquoted))
 	if lower == "" {
 		return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "empty command"}
 	}
-	if shellCommandHasWorkspaceWriteRedirection(lower) || strings.Contains(lower, "| tee ") || strings.HasPrefix(lower, "tee ") {
-		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: "output redirection or tee can create workspace files"}
+	if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
+		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: reason}
 	}
 
 	tokens := splitShellCommandWords(lower)
@@ -2566,6 +2632,7 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 		[]string{"mv"},
 		[]string{"cp"},
 		[]string{"touch"},
+		[]string{"black"},
 		[]string{"go", "generate"},
 		[]string{"go", "mod", "tidy"},
 		[]string{"go", "mod", "vendor"},
@@ -2588,6 +2655,23 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	}
 	if tokens[0] == "perl" && shellCommandContainsTokenPrefix(tokens, "-pi") {
 		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: "perl -pi edits files in place"}
+	}
+	if shellCommandHasPrefixTokens(tokens,
+		[]string{"gofmt"},
+		[]string{"goimports"},
+		[]string{"clang-format"},
+	) && (shellCommandContainsToken(tokens, "-w") || shellCommandContainsTokenPrefix(tokens, "-w=") || shellCommandContainsToken(tokens, "-i")) {
+		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: "formatter command edits workspace files in place"}
+	}
+	if shellCommandHasPrefixTokens(tokens,
+		[]string{"prettier"},
+	) && shellCommandContainsToken(tokens, "--write") {
+		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: "formatter command edits workspace files in place"}
+	}
+	if shellCommandHasPrefixTokens(tokens,
+		[]string{"ruff", "format"},
+	) {
+		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: "formatter command edits workspace files in place"}
 	}
 
 	if shellCommandHasPrefixTokens(tokens,
@@ -2636,6 +2720,124 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	}
 
 	return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "no workspace write markers detected"}
+}
+
+func shellCommandManualWorkspaceWriteReason(command string) string {
+	unquotedLower := strings.ToLower(shellCommandWithoutQuotedLiterals(command))
+	if shellCommandHasWorkspaceWriteRedirection(unquotedLower) || strings.Contains(unquotedLower, "| tee ") || strings.HasPrefix(unquotedLower, "tee ") {
+		return "output redirection or tee can create workspace files"
+	}
+	if shellManualWorkspaceWriteCommandPattern.MatchString(unquotedLower) {
+		return "manual shell file-write primitive can modify workspace files"
+	}
+	if shellCommandContainsOutFileArgument(unquotedLower) {
+		return "PowerShell -OutFile argument can create workspace files"
+	}
+	compactUnquoted := compactShellMutationText(unquotedLower)
+	compactRaw := compactShellMutationText(command)
+	dotNetMutators := []string{
+		"[system.io.file]::writealltext",
+		"[system.io.file]::writealllines",
+		"[system.io.file]::writeallbytes",
+		"[system.io.file]::appendalltext",
+		"[system.io.file]::appendalllines",
+		"[system.io.file]::create",
+		"[system.io.file]::delete",
+		"[system.io.file]::move",
+		"[system.io.file]::copy",
+		"[system.io.file]::replace",
+		"[io.file]::writealltext",
+		"[io.file]::writealllines",
+		"[io.file]::writeallbytes",
+		"[io.file]::appendalltext",
+		"[io.file]::appendalllines",
+		"[io.file]::create",
+		"[io.file]::delete",
+		"[io.file]::move",
+		"[io.file]::copy",
+		"[io.file]::replace",
+	}
+	for _, marker := range dotNetMutators {
+		if strings.Contains(compactUnquoted, marker) {
+			return ".NET file mutation API can modify workspace files"
+		}
+	}
+	if shellCommandInvokesNestedShell(unquotedLower) {
+		rawLower := strings.ToLower(command)
+		if shellNestedManualWorkspaceWriteCommandPattern.MatchString(rawLower) {
+			return "nested shell command contains a file-write primitive"
+		}
+		for _, marker := range dotNetMutators {
+			if strings.Contains(compactRaw, marker) {
+				return "nested shell command contains a .NET file mutation API"
+			}
+		}
+	}
+	return ""
+}
+
+func shellCommandContainsOutFileArgument(command string) bool {
+	tokens := splitShellCommandWords(command)
+	for _, token := range tokens {
+		if token == "-outfile" || strings.HasPrefix(token, "-outfile:") {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandInvokesNestedShell(command string) bool {
+	tokens := splitShellCommandWords(command)
+	for _, token := range tokens {
+		switch strings.TrimSuffix(token, ".exe") {
+		case "powershell", "pwsh", "cmd":
+			return true
+		}
+	}
+	return false
+}
+
+func compactShellMutationText(command string) string {
+	lower := strings.ToLower(command)
+	var b strings.Builder
+	b.Grow(len(lower))
+	for _, ch := range lower {
+		switch ch {
+		case ' ', '\t', '\r', '\n', '`':
+			continue
+		default:
+			b.WriteRune(ch)
+		}
+	}
+	return b.String()
+}
+
+func shellCommandWithoutQuotedLiterals(command string) string {
+	var b strings.Builder
+	b.Grow(len(command))
+	quote := rune(0)
+	for _, ch := range command {
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			switch ch {
+			case '\r', '\n', ';', '|', '&', '(', ')', '{', '}':
+				b.WriteRune(ch)
+			default:
+				b.WriteRune(' ')
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(ch)
+		}
+	}
+	return b.String()
 }
 
 func shellCommandMutatesGitState(command string) bool {

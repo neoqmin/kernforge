@@ -2677,7 +2677,7 @@ func TestRenderFunctionFuzzRunExplainsSignalsWithoutTruncation(t *testing.T) {
 				Kind:   "overlay",
 				Name:   "handle_surface",
 				File:   "src/driver.cpp",
-				Reason: "handle:TavernKernelAPI::Initialize@src/driver.cpp -> entity:handle_surface [opens_handle]",
+				Reason: "handle:SampleKernelAPI::Initialize@src/driver.cpp -> entity:handle_surface [opens_handle]",
 			},
 			{
 				Kind:   "compare_like",
@@ -2701,7 +2701,7 @@ func TestRenderFunctionFuzzRunExplainsSignalsWithoutTruncation(t *testing.T) {
 	if !strings.Contains(rendered, "Representative evidence from the mapped closure:") {
 		t.Fatalf("expected representative evidence block, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "observed at: handle:TavernKernelAPI::Initialize@src/driver.cpp -> entity:handle_surface [opens_handle]") {
+	if !strings.Contains(rendered, "observed at: handle:SampleKernelAPI::Initialize@src/driver.cpp -> entity:handle_surface [opens_handle]") {
 		t.Fatalf("expected full overlay evidence without truncation, got %q", rendered)
 	}
 	if strings.Contains(rendered, "exposed_surfaces:") {

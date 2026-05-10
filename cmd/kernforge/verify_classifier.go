@@ -344,12 +344,13 @@ func collectTelemetryManifestFiles(changed []string) []string {
 			continue
 		}
 		lower := strings.ToLower(filepath.ToSlash(trimmed))
+		base := filepath.Base(lower)
 		ext := filepath.Ext(lower)
-		if ext == ".man" || ext == ".xml" || ext == ".mc" {
+		if ext == ".man" || ext == ".mc" {
 			out = append(out, trimmed)
 			continue
 		}
-		if strings.Contains(lower, "manifest") || strings.Contains(lower, "provider") {
+		if ext == ".xml" && containsAnyKeyword(lower, base, []string{"telemetry", "etw", "trace", "eventlog", "manifest", "provider"}) {
 			out = append(out, trimmed)
 		}
 	}
@@ -419,7 +420,13 @@ func isDriverRelatedPath(path, base string) bool {
 }
 
 func isTelemetryRelatedPath(path, base string) bool {
-	keywords := []string{"telemetry", "etw", "trace", "eventlog", "provider", "manifest", "wpr", "xperf"}
+	switch filepath.Ext(path) {
+	case ".man", ".mc":
+		return true
+	case ".xml":
+		return containsAnyKeyword(path, base, []string{"telemetry", "etw", "trace", "eventlog", "manifest", "provider"})
+	}
+	keywords := []string{"telemetry", "etw", "trace", "eventlog", "wpr", "xperf"}
 	return containsAnyKeyword(path, base, keywords)
 }
 

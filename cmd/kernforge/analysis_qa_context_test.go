@@ -357,7 +357,7 @@ func TestDriverStructureAnswerPackHighlightsKernelCriticalAnchors(t *testing.T) 
 		DocsManifest: normalizeAnalysisDocsManifest(manifest),
 	}
 
-	pack := buildProjectStructureAnswerPack(artifacts, "TavernKernel 프로젝트 전체 구조를 자세히 설명해줘")
+	pack := buildProjectStructureAnswerPack(artifacts, "SampleKernel 프로젝트 전체 구조를 자세히 설명해줘")
 	rendered := renderProjectStructureAnswerPack(pack, 12000)
 	if !analysisContainsStringCI(pack.DomainHints, "windows_driver") {
 		t.Fatalf("expected windows_driver domain hint, got %+v", pack.DomainHints)
@@ -380,13 +380,13 @@ func TestDriverStructureAnswerPackHighlightsKernelCriticalAnchors(t *testing.T) 
 		"CLOSED SET: for a top-level directory table",
 		"Copy this exact top-level directory table if needed",
 		"Never list these paths as top-level directory rows",
-		"TavernKernel/BuildCab",
-		"TavernKernel/TavernKernelObjectFilter.cpp",
+		"SampleKernel/BuildCab",
+		"SampleKernel/SampleKernelObjectFilter.cpp",
 		"Do not add *.h/*.cpp/*.vcxproj/*.sln entries as root directories",
 		"mention files only in file/source sections",
 		"Copy this exact IOCTL command spine with symbol names",
 		"Runtime filter start/registration anchor",
-		"TavernKernelObjectFilter::StartObjectFilter (TavernKernel/TavernKernelObjectFilter.cpp:106)",
+		"SampleKernelObjectFilter::StartObjectFilter (SampleKernel/SampleKernelObjectFilter.cpp:106)",
 		"do not replace it with ellipsis",
 		"Root folder map (exact sibling paths)",
 		"Common/",
@@ -398,24 +398,24 @@ func TestDriverStructureAnswerPackHighlightsKernelCriticalAnchors(t *testing.T) 
 		"control-open validation spine",
 		"device-control branch spine",
 		"REQUIRED device-control command spine",
-		"TavernKernelCore::DecryptIoctlData (TavernKernel/TavernKernelCore.cpp:1208)",
-		"TavernKernelCore::IsValidCommand (TavernKernel/TavernKernelCore.cpp:1183)",
+		"SampleKernelCore::DecryptIoctlData (SampleKernel/SampleKernelCore.cpp:1208)",
+		"SampleKernelCore::IsValidCommand (SampleKernel/SampleKernelCore.cpp:1183)",
 		"requestor/control-process checks use accessor or request identity state",
 		"object filter state initialization, not callback registration",
 		"Finalize/Unload stops and unregisters filters",
 		"Control PID/accessor symbols are not Finalize/Unload lifecycle functions",
 		"teardown spine",
-		"TavernKernelCore::Initialize (TavernKernel/TavernKernelCore.cpp:44)",
-		"TavernKernelCore::DeviceIoControlIrpHandleRoutine (TavernKernel/TavernKernelCore.cpp:523)",
-		"TavernKernelCore::ValidateRequestorIsTavern (TavernKernel/TavernKernelCore.cpp:1144)",
-		"TavernKernelCore::GetControlPid (TavernKernel/TavernKernelCore.cpp:1285)",
-		"TavernKernelCore::Finalize (TavernKernel/TavernKernelCore.cpp:194)",
-		"TavernKernelCore::UnloadRoutine (TavernKernel/TavernKernelCore.cpp:256)",
-		"TavernKernelObjectFilter::Initialize (TavernKernel/TavernKernelObjectFilter.cpp:27)",
-		"TavernKernelProcessMonitor::StartProcessMonitor (TavernKernel/TavernKernelProcessMonitor.cpp:122)",
-		"TavernKernelProcessMonitor::Initialize (TavernKernel/TavernKernelProcessMonitor.cpp:27)",
-		"TavernKernelAPI::TavernPsSetCreateProcessNotifyRoutineEx (TavernKernel/TavernKernelAPI.cpp:711)",
-		"TavernKernelAPI::Initialize (TavernKernel/TavernKernelAPI.cpp:27)",
+		"SampleKernelCore::Initialize (SampleKernel/SampleKernelCore.cpp:44)",
+		"SampleKernelCore::DeviceIoControlIrpHandleRoutine (SampleKernel/SampleKernelCore.cpp:523)",
+		"SampleKernelCore::ValidateRequestorIsSampleApp (SampleKernel/SampleKernelCore.cpp:1144)",
+		"SampleKernelCore::GetControlPid (SampleKernel/SampleKernelCore.cpp:1285)",
+		"SampleKernelCore::Finalize (SampleKernel/SampleKernelCore.cpp:194)",
+		"SampleKernelCore::UnloadRoutine (SampleKernel/SampleKernelCore.cpp:256)",
+		"SampleKernelObjectFilter::Initialize (SampleKernel/SampleKernelObjectFilter.cpp:27)",
+		"SampleKernelProcessMonitor::StartProcessMonitor (SampleKernel/SampleKernelProcessMonitor.cpp:122)",
+		"SampleKernelProcessMonitor::Initialize (SampleKernel/SampleKernelProcessMonitor.cpp:27)",
+		"SampleKernelAPI::SampleAppPsSetCreateProcessNotifyRoutineEx (SampleKernel/SampleKernelAPI.cpp:711)",
+		"SampleKernelAPI::Initialize (SampleKernel/SampleKernelAPI.cpp:27)",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected rendered driver pack to contain %q, got %q", needle, rendered)
@@ -425,11 +425,11 @@ func TestDriverStructureAnswerPackHighlightsKernelCriticalAnchors(t *testing.T) 
 		if strings.Contains(line, "load/init spine:") && strings.Contains(line, "StartObjectFilter") {
 			t.Fatalf("did not expect StartObjectFilter in load/init spine, got %q", line)
 		}
-		if strings.Contains(line, "device-control command spine:") && strings.Contains(line, "-> TavernKernelCore::ValidateRequestorIsTavern") {
-			t.Fatalf("did not expect ValidateRequestorIsTavern as a DeviceIoControl command step, got %q", line)
+		if strings.Contains(line, "device-control command spine:") && strings.Contains(line, "-> SampleKernelCore::ValidateRequestorIsSampleApp") {
+			t.Fatalf("did not expect ValidateRequestorIsSampleApp as a DeviceIoControl command step, got %q", line)
 		}
-		if strings.Contains(line, "Root folder map") && strings.Contains(line, "TavernKernel/Common") {
-			t.Fatalf("did not expect Common to be nested under TavernKernel, got %q", line)
+		if strings.Contains(line, "Root folder map") && strings.Contains(line, "SampleKernel/Common") {
+			t.Fatalf("did not expect Common to be nested under SampleKernel, got %q", line)
 		}
 		if strings.Contains(line, "Root folder map") && strings.Contains(line, ".h/") {
 			t.Fatalf("did not expect header files to be rendered as root folders, got %q", line)
@@ -442,8 +442,8 @@ func TestDriverStructureAnswerPackHighlightsKernelCriticalAnchors(t *testing.T) 
 		t.Fatalf("did not expect cache scope markers to render as stale, got %q", rendered)
 	}
 	rootFolders := projectStructureRootFolders(append(pack.Folders,
-		DeveloperFolderRecord{Path: "TavernKernelAPI.h", Responsibility: "header file"},
-		DeveloperFolderRecord{Path: "TavernKernel/TavernKernelCore.cpp", Responsibility: "source file"},
+		DeveloperFolderRecord{Path: "SampleKernelAPI.h", Responsibility: "header file"},
+		DeveloperFolderRecord{Path: "SampleKernel/SampleKernelCore.cpp", Responsibility: "source file"},
 	))
 	for _, folder := range rootFolders {
 		if strings.Contains(folder.Path, ".h") || strings.Contains(folder.Path, ".cpp") {
@@ -451,23 +451,23 @@ func TestDriverStructureAnswerPackHighlightsKernelCriticalAnchors(t *testing.T) 
 		}
 	}
 	exclusions := projectStructureTopLevelTableExclusions(pack)
-	for _, want := range []string{"TavernKernel/BuildCab", "TavernKernel/TavernKernelCore.cpp"} {
+	for _, want := range []string{"SampleKernel/BuildCab", "SampleKernel/SampleKernelCore.cpp"} {
 		if !containsString(exclusions, want) {
 			t.Fatalf("expected top-level table exclusions to include %q, got %+v", want, exclusions)
 		}
 	}
-	assertCriticalAnchorSymbol(t, pack, "kernel_ioctl_dispatch", "TavernKernelCore::DeviceIoControlIrpHandleRoutine")
-	assertCriticalAnchorSymbol(t, pack, "kernel_irp_router", "TavernKernelCore::DefaultIrpHandleRoutine")
-	assertCriticalAnchorSymbol(t, pack, "dynamic_kernel_api_resolver", "TavernKernelAPI::Initialize")
-	assertCriticalAnchorSymbol(t, pack, "request_validation", "TavernKernelCore::GetControlPid")
-	assertCriticalAnchorSymbol(t, pack, "object_filter_initialization", "TavernKernelObjectFilter::Initialize")
-	assertCriticalAnchorSymbol(t, pack, "object_callback_registration", "TavernKernelObjectFilter::StartObjectFilter")
-	assertCriticalAnchorSymbol(t, pack, "process_monitor_initialization", "TavernKernelProcessMonitor::Initialize")
-	assertCriticalAnchorSymbol(t, pack, "process_monitor", "TavernKernelProcessMonitor::StartProcessMonitor")
-	assertCriticalAnchorSymbol(t, pack, "process_notify_api_wrapper", "TavernKernelAPI::TavernPsSetCreateProcessNotifyRoutineEx")
-	assertCriticalAnchorSymbol(t, pack, "file_minifilter", "TavernKernelFileFilter::Initialize")
-	assertCriticalAnchorSymbol(t, pack, "teardown_cleanup", "TavernKernelCore::Finalize")
-	assertCriticalAnchorSymbol(t, pack, "driver_unload_entry", "TavernKernelCore::UnloadRoutine")
+	assertCriticalAnchorSymbol(t, pack, "kernel_ioctl_dispatch", "SampleKernelCore::DeviceIoControlIrpHandleRoutine")
+	assertCriticalAnchorSymbol(t, pack, "kernel_irp_router", "SampleKernelCore::DefaultIrpHandleRoutine")
+	assertCriticalAnchorSymbol(t, pack, "dynamic_kernel_api_resolver", "SampleKernelAPI::Initialize")
+	assertCriticalAnchorSymbol(t, pack, "request_validation", "SampleKernelCore::GetControlPid")
+	assertCriticalAnchorSymbol(t, pack, "object_filter_initialization", "SampleKernelObjectFilter::Initialize")
+	assertCriticalAnchorSymbol(t, pack, "object_callback_registration", "SampleKernelObjectFilter::StartObjectFilter")
+	assertCriticalAnchorSymbol(t, pack, "process_monitor_initialization", "SampleKernelProcessMonitor::Initialize")
+	assertCriticalAnchorSymbol(t, pack, "process_monitor", "SampleKernelProcessMonitor::StartProcessMonitor")
+	assertCriticalAnchorSymbol(t, pack, "process_notify_api_wrapper", "SampleKernelAPI::SampleAppPsSetCreateProcessNotifyRoutineEx")
+	assertCriticalAnchorSymbol(t, pack, "file_minifilter", "SampleKernelFileFilter::Initialize")
+	assertCriticalAnchorSymbol(t, pack, "teardown_cleanup", "SampleKernelCore::Finalize")
+	assertCriticalAnchorSymbol(t, pack, "driver_unload_entry", "SampleKernelCore::UnloadRoutine")
 }
 
 func TestDriverDeveloperDocsPreferConcreteResponsibilities(t *testing.T) {
@@ -477,16 +477,16 @@ func TestDriverDeveloperDocsPreferConcreteResponsibilities(t *testing.T) {
 	for _, folder := range folders {
 		folderResponsibilities[folder.Path] = folder.Responsibility
 	}
-	if got := folderResponsibilities["TavernKernel"]; !strings.Contains(got, "kernel driver runtime") {
-		t.Fatalf("expected TavernKernel folder to be classified as kernel driver runtime, got %q", got)
+	if got := folderResponsibilities["SampleKernel"]; !strings.Contains(got, "kernel driver runtime") {
+		t.Fatalf("expected SampleKernel folder to be classified as kernel driver runtime, got %q", got)
 	}
 	if got := folderResponsibilities["Common"]; !strings.Contains(got, "shared kernel/user-mode") {
 		t.Fatalf("expected Common folder to be classified as shared contracts, got %q", got)
 	}
-	if got := developerIOCTLRole(SymbolRecord{Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "TavernKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", Tags: []string{"ioctl_surface"}}); got != "kernel dispatch or handler" {
+	if got := developerIOCTLRole(SymbolRecord{Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "SampleKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", Tags: []string{"ioctl_surface"}}); got != "kernel dispatch or handler" {
 		t.Fatalf("expected DeviceIoControlIrpHandleRoutine to be kernel dispatch, got %q", got)
 	}
-	if got := developerIOCTLRole(SymbolRecord{Name: "IOCTL_TAVERN_CONTROL", Kind: "constant"}); got != "IOCTL code or constant" {
+	if got := developerIOCTLRole(SymbolRecord{Name: "IOCTL_SAMPLE_CONTROL", Kind: "constant"}); got != "IOCTL code or constant" {
 		t.Fatalf("expected explicit IOCTL constant role, got %q", got)
 	}
 }
@@ -677,159 +677,159 @@ func sampleProjectStructureQARun() ProjectAnalysisRun {
 func sampleDriverProjectStructureQARun() ProjectAnalysisRun {
 	generatedAt := time.Date(2026, 4, 28, 1, 52, 10, 0, time.UTC)
 	buildContext := BuildContextRecord{
-		ID:        "buildctx:project:TavernKernel",
-		Name:      "TavernKernel WDM driver",
+		ID:        "buildctx:project:SampleKernel",
+		Name:      "SampleKernel WDM driver",
 		Kind:      "wdm_driver",
-		Directory: "TavernKernel",
-		Project:   "TavernKernel",
+		Directory: "SampleKernel",
+		Project:   "SampleKernel",
 		Target:    "tvk.sys",
 		Files: []string{
-			"TavernKernel/TavernKernel.cpp",
-			"TavernKernel/TavernKernelCore.cpp",
-			"TavernKernel/TavernKernelAPI.cpp",
-			"TavernKernel/TavernKernelObjectFilter.cpp",
-			"TavernKernel/TavernKernelProcessMonitor.cpp",
-			"TavernKernel/TavernKernelPolicy.cpp",
+			"SampleKernel/SampleKernel.cpp",
+			"SampleKernel/SampleKernelCore.cpp",
+			"SampleKernel/SampleKernelAPI.cpp",
+			"SampleKernel/SampleKernelObjectFilter.cpp",
+			"SampleKernel/SampleKernelProcessMonitor.cpp",
+			"SampleKernel/SampleKernelPolicy.cpp",
 		},
-		Source: "TavernKernel/TavernKernel.vcxproj",
+		Source: "SampleKernel/SampleKernel.vcxproj",
 	}
 	files := []ScannedFile{
-		{Path: "TavernKernel/TavernKernel.cpp", Directory: "TavernKernel", Extension: ".cpp", LineCount: 80, IsEntrypoint: true, ImportanceScore: 92},
-		{Path: "TavernKernel/TavernKernelCore.cpp", Directory: "TavernKernel", Extension: ".cpp", LineCount: 1600, ImportanceScore: 100},
-		{Path: "TavernKernel/TavernKernelAPI.cpp", Directory: "TavernKernel", Extension: ".cpp", LineCount: 980, ImportanceScore: 90},
-		{Path: "TavernKernel/TavernKernelObjectFilter.cpp", Directory: "TavernKernel", Extension: ".cpp", LineCount: 430, ImportanceScore: 88},
-		{Path: "TavernKernel/TavernKernelProcessMonitor.cpp", Directory: "TavernKernel", Extension: ".cpp", LineCount: 520, ImportanceScore: 86},
-		{Path: "TavernKernel/TavernKernelPolicy.cpp", Directory: "TavernKernel", Extension: ".cpp", LineCount: 680, ImportanceScore: 84},
-		{Path: "TavernKernel/BuildCab/TavernKernel.inf", Directory: "TavernKernel/BuildCab", Extension: ".inf", LineCount: 70, IsManifest: true, ImportanceScore: 72},
-		{Path: "TavernKernel/TavernKernel.vcxproj", Directory: "TavernKernel", Extension: ".vcxproj", LineCount: 210, IsManifest: true, ImportanceScore: 80},
-		{Path: "TavernKernelTestConsole/TavernKernelManager.cpp", Directory: "TavernKernelTestConsole", Extension: ".cpp", LineCount: 650, ImportanceScore: 78},
+		{Path: "SampleKernel/SampleKernel.cpp", Directory: "SampleKernel", Extension: ".cpp", LineCount: 80, IsEntrypoint: true, ImportanceScore: 92},
+		{Path: "SampleKernel/SampleKernelCore.cpp", Directory: "SampleKernel", Extension: ".cpp", LineCount: 1600, ImportanceScore: 100},
+		{Path: "SampleKernel/SampleKernelAPI.cpp", Directory: "SampleKernel", Extension: ".cpp", LineCount: 980, ImportanceScore: 90},
+		{Path: "SampleKernel/SampleKernelObjectFilter.cpp", Directory: "SampleKernel", Extension: ".cpp", LineCount: 430, ImportanceScore: 88},
+		{Path: "SampleKernel/SampleKernelProcessMonitor.cpp", Directory: "SampleKernel", Extension: ".cpp", LineCount: 520, ImportanceScore: 86},
+		{Path: "SampleKernel/SampleKernelPolicy.cpp", Directory: "SampleKernel", Extension: ".cpp", LineCount: 680, ImportanceScore: 84},
+		{Path: "SampleKernel/BuildCab/SampleKernel.inf", Directory: "SampleKernel/BuildCab", Extension: ".inf", LineCount: 70, IsManifest: true, ImportanceScore: 72},
+		{Path: "SampleKernel/SampleKernel.vcxproj", Directory: "SampleKernel", Extension: ".vcxproj", LineCount: 210, IsManifest: true, ImportanceScore: 80},
+		{Path: "SampleKernelTestConsole/SampleKernelManager.cpp", Directory: "SampleKernelTestConsole", Extension: ".cpp", LineCount: 650, ImportanceScore: 78},
 		{Path: "Common/UserCommon.h", Directory: "Common", Extension: ".h", LineCount: 160, ImportanceScore: 76},
 	}
 	symbols := []SymbolRecord{
-		{ID: "func:DriverEntry", Name: "DriverEntry", CanonicalName: "DriverEntry", Kind: "function", File: "TavernKernel/TavernKernel.cpp", BuildContextID: buildContext.ID, StartLine: 1, Tags: []string{"entrypoint"}},
-		{ID: "func:TavernKernelCore::Initialize", Name: "Initialize", CanonicalName: "TavernKernelCore::Initialize", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 44, Tags: []string{"security_boundary"}},
-		{ID: "func:TavernKernelCore::Finalize", Name: "Finalize", CanonicalName: "TavernKernelCore::Finalize", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 194, Tags: []string{"member_function"}},
-		{ID: "func:TavernKernelCore::UnloadRoutine", Name: "UnloadRoutine", CanonicalName: "TavernKernelCore::UnloadRoutine", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 256, Tags: []string{"member_function"}},
-		{ID: "func:TavernKernelCore::CreateControlDevice", Name: "CreateControlDevice", CanonicalName: "TavernKernelCore::CreateControlDevice", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 389, Tags: []string{"control_surface"}},
-		{ID: "ioctl:TavernKernelCore::DefaultIrpHandleRoutine", Name: "DefaultIrpHandleRoutine", CanonicalName: "TavernKernelCore::DefaultIrpHandleRoutine", Kind: "ioctl_handler", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 468, Tags: []string{"ioctl_surface", "security_surface"}},
-		{ID: "ioctl:TavernKernelCore::DeviceIoControlIrpHandleRoutine", Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "TavernKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 523, Tags: []string{"ioctl_surface", "security_surface"}},
-		{ID: "func:TavernKernelCore::ValidateRequestorIsTavern", Name: "ValidateRequestorIsTavern", CanonicalName: "TavernKernelCore::ValidateRequestorIsTavern", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1144, Tags: []string{"control_surface"}},
-		{ID: "ioctl:TavernKernelCore::IsValidCommand", Name: "IsValidCommand", CanonicalName: "TavernKernelCore::IsValidCommand", Kind: "ioctl_handler", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1183, Tags: []string{"ioctl_surface", "security_surface", "tamper_surface", "security_boundary"}},
-		{ID: "func:TavernKernelCore::DecryptIoctlData", Name: "DecryptIoctlData", CanonicalName: "TavernKernelCore::DecryptIoctlData", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1208, Tags: []string{"ioctl_surface"}},
-		{ID: "func:TavernKernelCore::GetControlPid", Name: "GetControlPid", CanonicalName: "TavernKernelCore::GetControlPid", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1285, Tags: []string{"control_surface"}},
-		{ID: "func:TavernKernelObjectFilter::Initialize", Name: "Initialize", CanonicalName: "TavernKernelObjectFilter::Initialize", Kind: "function", File: "TavernKernel/TavernKernelObjectFilter.cpp", BuildContextID: buildContext.ID, StartLine: 27, Tags: []string{"handle_surface", "security_surface"}},
-		{ID: "handle:TavernKernelObjectFilter::StartObjectFilter", Name: "StartObjectFilter", CanonicalName: "TavernKernelObjectFilter::StartObjectFilter", Kind: "handle_path", File: "TavernKernel/TavernKernelObjectFilter.cpp", BuildContextID: buildContext.ID, StartLine: 106, Tags: []string{"handle_surface", "security_surface"}},
-		{ID: "entity:TavernKernel/TavernKernelObjectFilter.cpp", Name: "entity:TavernKernel/TavernKernelObjectFilter.cpp", CanonicalName: "entity:TavernKernel/TavernKernelObjectFilter.cpp", Kind: "entity", Tags: []string{"handle_surface", "security_surface"}},
-		{ID: "handle:TavernKernelObjectFilter::TavernKernelProcessObjectPreCallback", Name: "TavernKernelProcessObjectPreCallback", CanonicalName: "TavernKernelObjectFilter::TavernKernelProcessObjectPreCallback", Kind: "handle_path", File: "TavernKernel/TavernKernelObjectFilter.cpp", BuildContextID: buildContext.ID, StartLine: 277, Tags: []string{"handle_surface", "security_surface"}},
-		{ID: "func:TavernKernelProcessMonitor::Initialize", Name: "Initialize", CanonicalName: "TavernKernelProcessMonitor::Initialize", Kind: "function", File: "TavernKernel/TavernKernelProcessMonitor.cpp", BuildContextID: buildContext.ID, StartLine: 27, Tags: []string{"control_surface"}},
-		{ID: "func:TavernKernelProcessMonitor::StartProcessMonitor", Name: "StartProcessMonitor", CanonicalName: "TavernKernelProcessMonitor::StartProcessMonitor", Kind: "function", File: "TavernKernel/TavernKernelProcessMonitor.cpp", BuildContextID: buildContext.ID, StartLine: 122, Tags: []string{"control_surface"}},
-		{ID: "func:TavernKernelProcessMonitor::TavernKernelProcessNotifyRoutineEx", Name: "TavernKernelProcessNotifyRoutineEx", CanonicalName: "TavernKernelProcessMonitor::TavernKernelProcessNotifyRoutineEx", Kind: "function", File: "TavernKernel/TavernKernelProcessMonitor.cpp", BuildContextID: buildContext.ID, StartLine: 411, Tags: []string{"control_surface"}},
-		{ID: "func:TavernKernelFileFilter::Initialize", Name: "Initialize", CanonicalName: "TavernKernelFileFilter::Initialize", Kind: "function", File: "TavernKernel/TavernKernelFileFilter.cpp", BuildContextID: buildContext.ID, StartLine: 28, Tags: []string{"tamper_surface", "security_boundary"}},
-		{ID: "handle:TavernKernelAPI::Initialize", Name: "Initialize", CanonicalName: "TavernKernelAPI::Initialize", Kind: "handle_path", File: "TavernKernel/TavernKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 27, Tags: []string{"handle_surface", "security_surface"}},
-		{ID: "func:TavernKernelAPI::GetExportFunctionAddress", Name: "GetExportFunctionAddress", CanonicalName: "TavernKernelAPI::GetExportFunctionAddress", Kind: "function", File: "TavernKernel/TavernKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 358, Tags: []string{"tamper_surface", "security_boundary"}},
-		{ID: "func:TavernKernelAPI::TavernPsSetCreateProcessNotifyRoutineEx", Name: "TavernPsSetCreateProcessNotifyRoutineEx", CanonicalName: "TavernKernelAPI::TavernPsSetCreateProcessNotifyRoutineEx", Kind: "function", File: "TavernKernel/TavernKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 711, Tags: []string{"member_function"}},
-		{ID: "handle:TavernKernelAPI::TavernObRegisterCallbacks", Name: "TavernObRegisterCallbacks", CanonicalName: "TavernKernelAPI::TavernObRegisterCallbacks", Kind: "handle_path", File: "TavernKernel/TavernKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 504, Tags: []string{"handle_surface", "security_surface"}},
-		{ID: "entity:TavernKernel/TavernKernelAPI.cpp", Name: "entity:TavernKernel/TavernKernelAPI.cpp", CanonicalName: "entity:TavernKernel/TavernKernelAPI.cpp", Kind: "entity", Tags: []string{"memory_surface", "security_surface"}},
-		{ID: "memory:TavernKernelAPI::TavernMmCopyVirtualMemory", Name: "TavernMmCopyVirtualMemory", CanonicalName: "TavernKernelAPI::TavernMmCopyVirtualMemory", Kind: "memory_path", File: "TavernKernel/TavernKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 945, Tags: []string{"memory_surface", "security_surface"}},
-		{ID: "ioctl:TavernKernelManager::AddProtectionTargetProcessPath", Name: "AddProtectionTargetProcessPath", CanonicalName: "TavernKernelManager::AddProtectionTargetProcessPath", Kind: "ioctl_handler", File: "TavernKernelTestConsole/TavernKernelManager.cpp", BuildContextID: "buildctx:project:TavernKernelTestConsole", StartLine: 504, Tags: []string{"ioctl_surface", "security_surface"}},
-		{ID: "ioctl:TavernKernelManager::ControlOperation", Name: "ControlOperation", CanonicalName: "TavernKernelManager::ControlOperation", Kind: "ioctl_handler", File: "TavernKernelTestConsole/TavernKernelManager.cpp", BuildContextID: "buildctx:project:TavernKernelTestConsole", StartLine: 581, Tags: []string{"ioctl_surface", "security_surface"}},
+		{ID: "func:DriverEntry", Name: "DriverEntry", CanonicalName: "DriverEntry", Kind: "function", File: "SampleKernel/SampleKernel.cpp", BuildContextID: buildContext.ID, StartLine: 1, Tags: []string{"entrypoint"}},
+		{ID: "func:SampleKernelCore::Initialize", Name: "Initialize", CanonicalName: "SampleKernelCore::Initialize", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 44, Tags: []string{"security_boundary"}},
+		{ID: "func:SampleKernelCore::Finalize", Name: "Finalize", CanonicalName: "SampleKernelCore::Finalize", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 194, Tags: []string{"member_function"}},
+		{ID: "func:SampleKernelCore::UnloadRoutine", Name: "UnloadRoutine", CanonicalName: "SampleKernelCore::UnloadRoutine", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 256, Tags: []string{"member_function"}},
+		{ID: "func:SampleKernelCore::CreateControlDevice", Name: "CreateControlDevice", CanonicalName: "SampleKernelCore::CreateControlDevice", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 389, Tags: []string{"control_surface"}},
+		{ID: "ioctl:SampleKernelCore::DefaultIrpHandleRoutine", Name: "DefaultIrpHandleRoutine", CanonicalName: "SampleKernelCore::DefaultIrpHandleRoutine", Kind: "ioctl_handler", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 468, Tags: []string{"ioctl_surface", "security_surface"}},
+		{ID: "ioctl:SampleKernelCore::DeviceIoControlIrpHandleRoutine", Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "SampleKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 523, Tags: []string{"ioctl_surface", "security_surface"}},
+		{ID: "func:SampleKernelCore::ValidateRequestorIsSampleApp", Name: "ValidateRequestorIsSampleApp", CanonicalName: "SampleKernelCore::ValidateRequestorIsSampleApp", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1144, Tags: []string{"control_surface"}},
+		{ID: "ioctl:SampleKernelCore::IsValidCommand", Name: "IsValidCommand", CanonicalName: "SampleKernelCore::IsValidCommand", Kind: "ioctl_handler", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1183, Tags: []string{"ioctl_surface", "security_surface", "tamper_surface", "security_boundary"}},
+		{ID: "func:SampleKernelCore::DecryptIoctlData", Name: "DecryptIoctlData", CanonicalName: "SampleKernelCore::DecryptIoctlData", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1208, Tags: []string{"ioctl_surface"}},
+		{ID: "func:SampleKernelCore::GetControlPid", Name: "GetControlPid", CanonicalName: "SampleKernelCore::GetControlPid", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", BuildContextID: buildContext.ID, StartLine: 1285, Tags: []string{"control_surface"}},
+		{ID: "func:SampleKernelObjectFilter::Initialize", Name: "Initialize", CanonicalName: "SampleKernelObjectFilter::Initialize", Kind: "function", File: "SampleKernel/SampleKernelObjectFilter.cpp", BuildContextID: buildContext.ID, StartLine: 27, Tags: []string{"handle_surface", "security_surface"}},
+		{ID: "handle:SampleKernelObjectFilter::StartObjectFilter", Name: "StartObjectFilter", CanonicalName: "SampleKernelObjectFilter::StartObjectFilter", Kind: "handle_path", File: "SampleKernel/SampleKernelObjectFilter.cpp", BuildContextID: buildContext.ID, StartLine: 106, Tags: []string{"handle_surface", "security_surface"}},
+		{ID: "entity:SampleKernel/SampleKernelObjectFilter.cpp", Name: "entity:SampleKernel/SampleKernelObjectFilter.cpp", CanonicalName: "entity:SampleKernel/SampleKernelObjectFilter.cpp", Kind: "entity", Tags: []string{"handle_surface", "security_surface"}},
+		{ID: "handle:SampleKernelObjectFilter::SampleKernelProcessObjectPreCallback", Name: "SampleKernelProcessObjectPreCallback", CanonicalName: "SampleKernelObjectFilter::SampleKernelProcessObjectPreCallback", Kind: "handle_path", File: "SampleKernel/SampleKernelObjectFilter.cpp", BuildContextID: buildContext.ID, StartLine: 277, Tags: []string{"handle_surface", "security_surface"}},
+		{ID: "func:SampleKernelProcessMonitor::Initialize", Name: "Initialize", CanonicalName: "SampleKernelProcessMonitor::Initialize", Kind: "function", File: "SampleKernel/SampleKernelProcessMonitor.cpp", BuildContextID: buildContext.ID, StartLine: 27, Tags: []string{"control_surface"}},
+		{ID: "func:SampleKernelProcessMonitor::StartProcessMonitor", Name: "StartProcessMonitor", CanonicalName: "SampleKernelProcessMonitor::StartProcessMonitor", Kind: "function", File: "SampleKernel/SampleKernelProcessMonitor.cpp", BuildContextID: buildContext.ID, StartLine: 122, Tags: []string{"control_surface"}},
+		{ID: "func:SampleKernelProcessMonitor::SampleKernelProcessNotifyRoutineEx", Name: "SampleKernelProcessNotifyRoutineEx", CanonicalName: "SampleKernelProcessMonitor::SampleKernelProcessNotifyRoutineEx", Kind: "function", File: "SampleKernel/SampleKernelProcessMonitor.cpp", BuildContextID: buildContext.ID, StartLine: 411, Tags: []string{"control_surface"}},
+		{ID: "func:SampleKernelFileFilter::Initialize", Name: "Initialize", CanonicalName: "SampleKernelFileFilter::Initialize", Kind: "function", File: "SampleKernel/SampleKernelFileFilter.cpp", BuildContextID: buildContext.ID, StartLine: 28, Tags: []string{"tamper_surface", "security_boundary"}},
+		{ID: "handle:SampleKernelAPI::Initialize", Name: "Initialize", CanonicalName: "SampleKernelAPI::Initialize", Kind: "handle_path", File: "SampleKernel/SampleKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 27, Tags: []string{"handle_surface", "security_surface"}},
+		{ID: "func:SampleKernelAPI::GetExportFunctionAddress", Name: "GetExportFunctionAddress", CanonicalName: "SampleKernelAPI::GetExportFunctionAddress", Kind: "function", File: "SampleKernel/SampleKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 358, Tags: []string{"tamper_surface", "security_boundary"}},
+		{ID: "func:SampleKernelAPI::SampleAppPsSetCreateProcessNotifyRoutineEx", Name: "SampleAppPsSetCreateProcessNotifyRoutineEx", CanonicalName: "SampleKernelAPI::SampleAppPsSetCreateProcessNotifyRoutineEx", Kind: "function", File: "SampleKernel/SampleKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 711, Tags: []string{"member_function"}},
+		{ID: "handle:SampleKernelAPI::SampleAppObRegisterCallbacks", Name: "SampleAppObRegisterCallbacks", CanonicalName: "SampleKernelAPI::SampleAppObRegisterCallbacks", Kind: "handle_path", File: "SampleKernel/SampleKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 504, Tags: []string{"handle_surface", "security_surface"}},
+		{ID: "entity:SampleKernel/SampleKernelAPI.cpp", Name: "entity:SampleKernel/SampleKernelAPI.cpp", CanonicalName: "entity:SampleKernel/SampleKernelAPI.cpp", Kind: "entity", Tags: []string{"memory_surface", "security_surface"}},
+		{ID: "memory:SampleKernelAPI::SampleAppMmCopyVirtualMemory", Name: "SampleAppMmCopyVirtualMemory", CanonicalName: "SampleKernelAPI::SampleAppMmCopyVirtualMemory", Kind: "memory_path", File: "SampleKernel/SampleKernelAPI.cpp", BuildContextID: buildContext.ID, StartLine: 945, Tags: []string{"memory_surface", "security_surface"}},
+		{ID: "ioctl:SampleKernelManager::AddProtectionTargetProcessPath", Name: "AddProtectionTargetProcessPath", CanonicalName: "SampleKernelManager::AddProtectionTargetProcessPath", Kind: "ioctl_handler", File: "SampleKernelTestConsole/SampleKernelManager.cpp", BuildContextID: "buildctx:project:SampleKernelTestConsole", StartLine: 504, Tags: []string{"ioctl_surface", "security_surface"}},
+		{ID: "ioctl:SampleKernelManager::ControlOperation", Name: "ControlOperation", CanonicalName: "SampleKernelManager::ControlOperation", Kind: "ioctl_handler", File: "SampleKernelTestConsole/SampleKernelManager.cpp", BuildContextID: "buildctx:project:SampleKernelTestConsole", StartLine: 581, Tags: []string{"ioctl_surface", "security_surface"}},
 	}
 	indexV2 := SemanticIndexV2{
 		RunID:          "run-driver-fixture",
-		Goal:           "map TavernKernel driver architecture",
-		Root:           "C:/repo/TavernKernel",
+		Goal:           "map SampleKernel driver architecture",
+		Root:           "C:/repo/SampleKernel",
 		GeneratedAt:    generatedAt,
-		PrimaryStartup: "TavernKernelTestConsole",
+		PrimaryStartup: "SampleKernelTestConsole",
 		Files: []FileRecord{
-			{Path: "TavernKernel/TavernKernel.cpp", Directory: "TavernKernel", Language: "cpp", IsEntrypoint: true, ImportanceScore: 92, Tags: []string{"driver", "entrypoint"}, ModuleHints: []string{"TavernKernel"}, BuildContextIDs: []string{buildContext.ID}},
-			{Path: "TavernKernel/TavernKernelCore.cpp", Directory: "TavernKernel", Language: "cpp", ImportanceScore: 100, Tags: []string{"ioctl", "security", "kernel_driver"}, ModuleHints: []string{"TavernKernel"}, BuildContextIDs: []string{buildContext.ID}},
-			{Path: "TavernKernel/TavernKernelAPI.cpp", Directory: "TavernKernel", Language: "cpp", ImportanceScore: 90, Tags: []string{"dynamic_api", "kernel_driver"}, ModuleHints: []string{"TavernKernel"}, BuildContextIDs: []string{buildContext.ID}},
-			{Path: "TavernKernel/TavernKernelObjectFilter.cpp", Directory: "TavernKernel", Language: "cpp", ImportanceScore: 88, Tags: []string{"handle_surface", "security"}, ModuleHints: []string{"TavernKernel"}, BuildContextIDs: []string{buildContext.ID}},
-			{Path: "TavernKernel/BuildCab/TavernKernel.inf", Directory: "TavernKernel/BuildCab", Language: "config", IsManifest: true, ImportanceScore: 72, Tags: []string{"driver_inf"}, ModuleHints: []string{"TavernKernel"}, BuildContextIDs: []string{buildContext.ID}},
-			{Path: "TavernKernel/TavernKernel.vcxproj", Directory: "TavernKernel", Language: "xml", IsManifest: true, ImportanceScore: 80, Tags: []string{"wdm", "driver_project"}, ModuleHints: []string{"TavernKernel"}, BuildContextIDs: []string{buildContext.ID}},
+			{Path: "SampleKernel/SampleKernel.cpp", Directory: "SampleKernel", Language: "cpp", IsEntrypoint: true, ImportanceScore: 92, Tags: []string{"driver", "entrypoint"}, ModuleHints: []string{"SampleKernel"}, BuildContextIDs: []string{buildContext.ID}},
+			{Path: "SampleKernel/SampleKernelCore.cpp", Directory: "SampleKernel", Language: "cpp", ImportanceScore: 100, Tags: []string{"ioctl", "security", "kernel_driver"}, ModuleHints: []string{"SampleKernel"}, BuildContextIDs: []string{buildContext.ID}},
+			{Path: "SampleKernel/SampleKernelAPI.cpp", Directory: "SampleKernel", Language: "cpp", ImportanceScore: 90, Tags: []string{"dynamic_api", "kernel_driver"}, ModuleHints: []string{"SampleKernel"}, BuildContextIDs: []string{buildContext.ID}},
+			{Path: "SampleKernel/SampleKernelObjectFilter.cpp", Directory: "SampleKernel", Language: "cpp", ImportanceScore: 88, Tags: []string{"handle_surface", "security"}, ModuleHints: []string{"SampleKernel"}, BuildContextIDs: []string{buildContext.ID}},
+			{Path: "SampleKernel/BuildCab/SampleKernel.inf", Directory: "SampleKernel/BuildCab", Language: "config", IsManifest: true, ImportanceScore: 72, Tags: []string{"driver_inf"}, ModuleHints: []string{"SampleKernel"}, BuildContextIDs: []string{buildContext.ID}},
+			{Path: "SampleKernel/SampleKernel.vcxproj", Directory: "SampleKernel", Language: "xml", IsManifest: true, ImportanceScore: 80, Tags: []string{"wdm", "driver_project"}, ModuleHints: []string{"SampleKernel"}, BuildContextIDs: []string{buildContext.ID}},
 		},
 		BuildContexts: []BuildContextRecord{buildContext},
 		Symbols:       symbols,
 		CallEdges: []CallEdge{
-			{SourceID: "func:DriverEntry", TargetID: "func:TavernKernelCore::Initialize", Type: "calls", Evidence: []string{"TavernKernel/TavernKernel.cpp"}},
-			{SourceID: "func:TavernKernelCore::Initialize", TargetID: "handle:TavernKernelAPI::Initialize", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp", "TavernKernel/TavernKernelAPI.cpp"}},
-			{SourceID: "func:TavernKernelCore::Initialize", TargetID: "func:TavernKernelCore::CreateControlDevice", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "func:TavernKernelCore::Initialize", TargetID: "func:TavernKernelObjectFilter::Initialize", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp", "TavernKernel/TavernKernelObjectFilter.cpp"}},
-			{SourceID: "func:TavernKernelCore::Initialize", TargetID: "func:TavernKernelProcessMonitor::Initialize", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp", "TavernKernel/TavernKernelProcessMonitor.cpp"}},
-			{SourceID: "func:TavernKernelCore::Initialize", TargetID: "func:TavernKernelProcessMonitor::StartProcessMonitor", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp", "TavernKernel/TavernKernelProcessMonitor.cpp"}},
-			{SourceID: "func:TavernKernelCore::UnloadRoutine", TargetID: "func:TavernKernelCore::Finalize", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "ioctl:TavernKernelCore::DefaultIrpHandleRoutine", TargetID: "func:TavernKernelCore::ValidateRequestorIsTavern", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "ioctl:TavernKernelCore::DefaultIrpHandleRoutine", TargetID: "ioctl:TavernKernelCore::DeviceIoControlIrpHandleRoutine", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "ioctl:TavernKernelCore::DeviceIoControlIrpHandleRoutine", TargetID: "ioctl:TavernKernelCore::IsValidCommand", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "ioctl:TavernKernelCore::DeviceIoControlIrpHandleRoutine", TargetID: "func:TavernKernelCore::DecryptIoctlData", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "handle:TavernKernelObjectFilter::StartObjectFilter", TargetID: "handle:TavernKernelAPI::TavernObRegisterCallbacks", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelObjectFilter.cpp", "TavernKernel/TavernKernelAPI.cpp"}},
-			{SourceID: "func:TavernKernelProcessMonitor::StartProcessMonitor", TargetID: "func:TavernKernelAPI::TavernPsSetCreateProcessNotifyRoutineEx", Type: "calls", Evidence: []string{"TavernKernel/TavernKernelProcessMonitor.cpp", "TavernKernel/TavernKernelAPI.cpp"}},
+			{SourceID: "func:DriverEntry", TargetID: "func:SampleKernelCore::Initialize", Type: "calls", Evidence: []string{"SampleKernel/SampleKernel.cpp"}},
+			{SourceID: "func:SampleKernelCore::Initialize", TargetID: "handle:SampleKernelAPI::Initialize", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp", "SampleKernel/SampleKernelAPI.cpp"}},
+			{SourceID: "func:SampleKernelCore::Initialize", TargetID: "func:SampleKernelCore::CreateControlDevice", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "func:SampleKernelCore::Initialize", TargetID: "func:SampleKernelObjectFilter::Initialize", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp", "SampleKernel/SampleKernelObjectFilter.cpp"}},
+			{SourceID: "func:SampleKernelCore::Initialize", TargetID: "func:SampleKernelProcessMonitor::Initialize", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp", "SampleKernel/SampleKernelProcessMonitor.cpp"}},
+			{SourceID: "func:SampleKernelCore::Initialize", TargetID: "func:SampleKernelProcessMonitor::StartProcessMonitor", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp", "SampleKernel/SampleKernelProcessMonitor.cpp"}},
+			{SourceID: "func:SampleKernelCore::UnloadRoutine", TargetID: "func:SampleKernelCore::Finalize", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "ioctl:SampleKernelCore::DefaultIrpHandleRoutine", TargetID: "func:SampleKernelCore::ValidateRequestorIsSampleApp", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "ioctl:SampleKernelCore::DefaultIrpHandleRoutine", TargetID: "ioctl:SampleKernelCore::DeviceIoControlIrpHandleRoutine", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "ioctl:SampleKernelCore::DeviceIoControlIrpHandleRoutine", TargetID: "ioctl:SampleKernelCore::IsValidCommand", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "ioctl:SampleKernelCore::DeviceIoControlIrpHandleRoutine", TargetID: "func:SampleKernelCore::DecryptIoctlData", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "handle:SampleKernelObjectFilter::StartObjectFilter", TargetID: "handle:SampleKernelAPI::SampleAppObRegisterCallbacks", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelObjectFilter.cpp", "SampleKernel/SampleKernelAPI.cpp"}},
+			{SourceID: "func:SampleKernelProcessMonitor::StartProcessMonitor", TargetID: "func:SampleKernelAPI::SampleAppPsSetCreateProcessNotifyRoutineEx", Type: "calls", Evidence: []string{"SampleKernel/SampleKernelProcessMonitor.cpp", "SampleKernel/SampleKernelAPI.cpp"}},
 		},
 		BuildOwnershipEdges: []BuildOwnershipEdge{
-			{SourceID: buildContext.ID, TargetID: "func:DriverEntry", Type: "compiles_symbol", Evidence: []string{"TavernKernel/TavernKernel.vcxproj", "TavernKernel/TavernKernel.cpp"}},
-			{SourceID: buildContext.ID, TargetID: "ioctl:TavernKernelCore::DeviceIoControlIrpHandleRoutine", Type: "compiles_symbol", Evidence: []string{"TavernKernel/TavernKernel.vcxproj", "TavernKernel/TavernKernelCore.cpp"}},
+			{SourceID: buildContext.ID, TargetID: "func:DriverEntry", Type: "compiles_symbol", Evidence: []string{"SampleKernel/SampleKernel.vcxproj", "SampleKernel/SampleKernel.cpp"}},
+			{SourceID: buildContext.ID, TargetID: "ioctl:SampleKernelCore::DeviceIoControlIrpHandleRoutine", Type: "compiles_symbol", Evidence: []string{"SampleKernel/SampleKernel.vcxproj", "SampleKernel/SampleKernelCore.cpp"}},
 		},
 		OverlayEdges: []OverlayEdge{
-			{SourceID: "ioctl:TavernKernelCore::DeviceIoControlIrpHandleRoutine", TargetID: "entity:ioctl_surface", Type: "receives_ioctl", Domain: "ioctl_surface", Evidence: []string{"TavernKernel/TavernKernelCore.cpp"}},
-			{SourceID: "handle:TavernKernelObjectFilter::TavernKernelProcessObjectPreCallback", TargetID: "entity:handle_surface", Type: "filters_handle", Domain: "handle_surface", Evidence: []string{"TavernKernel/TavernKernelObjectFilter.cpp"}},
-			{SourceID: "memory:TavernKernelAPI::TavernMmCopyVirtualMemory", TargetID: "entity:memory_surface", Type: "copies_memory", Domain: "memory_surface", Evidence: []string{"TavernKernel/TavernKernelAPI.cpp"}},
+			{SourceID: "ioctl:SampleKernelCore::DeviceIoControlIrpHandleRoutine", TargetID: "entity:ioctl_surface", Type: "receives_ioctl", Domain: "ioctl_surface", Evidence: []string{"SampleKernel/SampleKernelCore.cpp"}},
+			{SourceID: "handle:SampleKernelObjectFilter::SampleKernelProcessObjectPreCallback", TargetID: "entity:handle_surface", Type: "filters_handle", Domain: "handle_surface", Evidence: []string{"SampleKernel/SampleKernelObjectFilter.cpp"}},
+			{SourceID: "memory:SampleKernelAPI::SampleAppMmCopyVirtualMemory", TargetID: "entity:memory_surface", Type: "copies_memory", Domain: "memory_surface", Evidence: []string{"SampleKernel/SampleKernelAPI.cpp"}},
 		},
 	}
 	return ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{
 			RunID:       "run-driver-fixture",
-			Goal:        "map TavernKernel driver architecture",
+			Goal:        "map SampleKernel driver architecture",
 			Mode:        "map",
 			Status:      "completed",
 			StartedAt:   generatedAt,
 			CompletedAt: generatedAt,
 		},
 		Snapshot: ProjectSnapshot{
-			Root:            "C:/repo/TavernKernel",
-			ModulePath:      "TavernKernel/TavernKernel",
+			Root:            "C:/repo/SampleKernel",
+			ModulePath:      "SampleKernel/SampleKernel",
 			AnalysisMode:    "map",
 			GeneratedAt:     generatedAt,
 			Files:           files,
-			Directories:     []string{"TavernKernel", "TavernKernel/BuildCab", "TavernKernelTestConsole", "Common"},
-			ManifestFiles:   []string{"TavernKernel/TavernKernel.vcxproj", "TavernKernel/BuildCab/TavernKernel.inf"},
-			EntrypointFiles: []string{"TavernKernel/TavernKernel.cpp", "TavernKernelTestConsole/TavernKernelTestConsole.cpp"},
-			PrimaryStartup:  "TavernKernelTestConsole",
+			Directories:     []string{"SampleKernel", "SampleKernel/BuildCab", "SampleKernelTestConsole", "Common"},
+			ManifestFiles:   []string{"SampleKernel/SampleKernel.vcxproj", "SampleKernel/BuildCab/SampleKernel.inf"},
+			EntrypointFiles: []string{"SampleKernel/SampleKernel.cpp", "SampleKernelTestConsole/SampleKernelTestConsole.cpp"},
+			PrimaryStartup:  "SampleKernelTestConsole",
 			BuildContexts:   []BuildContextRecord{buildContext},
 			RuntimeEdges: []RuntimeEdge{
-				{Source: "TavernKernel/TavernKernel.cpp", Target: "TavernKernel/TavernKernelCore.cpp", Kind: "driver_entry_initializes_core", Confidence: "high", Evidence: []string{"TavernKernel/TavernKernel.cpp", "TavernKernel/TavernKernelCore.cpp"}},
-				{Source: "TavernKernel/TavernKernelCore.cpp", Target: "TavernKernel/TavernKernelObjectFilter.cpp", Kind: "core_enables_object_filter", Confidence: "medium", Evidence: []string{"TavernKernel/TavernKernelCore.cpp", "TavernKernel/TavernKernelObjectFilter.cpp"}},
+				{Source: "SampleKernel/SampleKernel.cpp", Target: "SampleKernel/SampleKernelCore.cpp", Kind: "driver_entry_initializes_core", Confidence: "high", Evidence: []string{"SampleKernel/SampleKernel.cpp", "SampleKernel/SampleKernelCore.cpp"}},
+				{Source: "SampleKernel/SampleKernelCore.cpp", Target: "SampleKernel/SampleKernelObjectFilter.cpp", Kind: "core_enables_object_filter", Confidence: "medium", Evidence: []string{"SampleKernel/SampleKernelCore.cpp", "SampleKernel/SampleKernelObjectFilter.cpp"}},
 			},
 			ProjectEdges: []ProjectEdge{
-				{Source: "TavernKernelTestConsole", Target: "TavernKernelCore::DeviceIoControlIrpHandleRoutine", Type: "user_to_kernel_ioctl", Confidence: "high", Evidence: []string{"TavernKernelTestConsole/TavernKernelManager.cpp", "TavernKernel/TavernKernelCore.cpp"}},
+				{Source: "SampleKernelTestConsole", Target: "SampleKernelCore::DeviceIoControlIrpHandleRoutine", Type: "user_to_kernel_ioctl", Confidence: "high", Evidence: []string{"SampleKernelTestConsole/SampleKernelManager.cpp", "SampleKernel/SampleKernelCore.cpp"}},
 			},
 			TotalFiles: len(files),
 			TotalLines: 5200,
 		},
 		KnowledgePack: KnowledgePack{
 			RunID:          "run-driver-fixture",
-			Goal:           "map TavernKernel driver architecture",
+			Goal:           "map SampleKernel driver architecture",
 			AnalysisMode:   "map",
-			Root:           "C:/repo/TavernKernel",
+			Root:           "C:/repo/SampleKernel",
 			GeneratedAt:    generatedAt,
-			ProjectSummary: "TavernKernel is a Windows kernel/WDM .sys driver with a user-mode test console, IOCTL control device, process monitor, object filter, dynamic kernel API resolver, and policy enforcement layer.",
-			PrimaryStartup: "TavernKernelTestConsole",
+			ProjectSummary: "SampleKernel is a Windows kernel/WDM .sys driver with a user-mode test console, IOCTL control device, process monitor, object filter, dynamic kernel API resolver, and policy enforcement layer.",
+			PrimaryStartup: "SampleKernelTestConsole",
 			TopImportantFiles: []string{
-				"TavernKernel/TavernKernel.cpp",
-				"TavernKernel/TavernKernelCore.cpp",
-				"TavernKernel/TavernKernelAPI.cpp",
-				"TavernKernel/TavernKernelObjectFilter.cpp",
-				"TavernKernel/TavernKernelProcessMonitor.cpp",
-				"TavernKernel/TavernKernel.vcxproj",
+				"SampleKernel/SampleKernel.cpp",
+				"SampleKernel/SampleKernelCore.cpp",
+				"SampleKernel/SampleKernelAPI.cpp",
+				"SampleKernel/SampleKernelObjectFilter.cpp",
+				"SampleKernel/SampleKernelProcessMonitor.cpp",
+				"SampleKernel/SampleKernel.vcxproj",
 			},
 			HighRiskFiles: []string{
-				"TavernKernel/TavernKernelCore.cpp",
-				"TavernKernel/TavernKernelObjectFilter.cpp",
-				"TavernKernel/TavernKernelAPI.cpp",
+				"SampleKernel/SampleKernelCore.cpp",
+				"SampleKernel/SampleKernelObjectFilter.cpp",
+				"SampleKernel/SampleKernelAPI.cpp",
 			},
 			ArchitectureGroups: []string{"Windows kernel driver", "IOCTL control surface", "Object and process filtering", "Dynamic kernel API resolution"},
 			Subsystems: []KnowledgeSubsystem{
-				{Title: "Kernel Driver Core", Group: "Driver", Responsibilities: []string{"Own DriverEntry handoff", "Create control device", "Dispatch IOCTLs"}, KeyFiles: []string{"TavernKernel/TavernKernel.cpp", "TavernKernel/TavernKernelCore.cpp"}, EntryPoints: []string{"DriverEntry", "TavernKernelCore::DeviceIoControlIrpHandleRoutine"}},
-				{Title: "Object And Process Enforcement", Group: "Security", Responsibilities: []string{"Filter process and thread handles", "Track process lifecycle"}, KeyFiles: []string{"TavernKernel/TavernKernelObjectFilter.cpp", "TavernKernel/TavernKernelProcessMonitor.cpp"}},
+				{Title: "Kernel Driver Core", Group: "Driver", Responsibilities: []string{"Own DriverEntry handoff", "Create control device", "Dispatch IOCTLs"}, KeyFiles: []string{"SampleKernel/SampleKernel.cpp", "SampleKernel/SampleKernelCore.cpp"}, EntryPoints: []string{"DriverEntry", "SampleKernelCore::DeviceIoControlIrpHandleRoutine"}},
+				{Title: "Object And Process Enforcement", Group: "Security", Responsibilities: []string{"Filter process and thread handles", "Track process lifecycle"}, KeyFiles: []string{"SampleKernel/SampleKernelObjectFilter.cpp", "SampleKernel/SampleKernelProcessMonitor.cpp"}},
 			},
 		},
 		SemanticIndexV2: indexV2,

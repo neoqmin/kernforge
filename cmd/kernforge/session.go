@@ -46,6 +46,7 @@ type Session struct {
 	LastTestImpactReport          *TestImpactReport          `json:"last_test_impact_report,omitempty"`
 	LastJobSupervisorReport       *JobSupervisorReport       `json:"last_job_supervisor_report,omitempty"`
 	LastReviewRun                 *ReviewRun                 `json:"last_review_run,omitempty"`
+	RuntimeGateLedger             *RuntimeGateLedger         `json:"runtime_gate_ledger,omitempty"`
 	ActiveFailureRepair           *FailureRepairAttempt      `json:"active_failure_repair,omitempty"`
 	FailureRepairAttempts         []FailureRepairAttempt     `json:"failure_repair_attempts,omitempty"`
 	LastSelection                 *ViewerSelection           `json:"last_selection,omitempty"`
@@ -121,6 +122,9 @@ func (s *Session) ApproxChars() int {
 	}
 	if s.LastJobSupervisorReport != nil {
 		total += len(s.LastJobSupervisorReport.RenderPromptSection())
+	}
+	if s.RuntimeGateLedger != nil {
+		total += len(s.RuntimeGateLedger.RenderPromptSection())
 	}
 	if s.ActiveFailureRepair != nil {
 		total += len(s.ActiveFailureRepair.RenderPromptSection())
@@ -333,6 +337,13 @@ func (s *Session) ExportText() string {
 	if s.LastJobSupervisorReport != nil {
 		if rendered := strings.TrimSpace(s.LastJobSupervisorReport.RenderPromptSection()); rendered != "" {
 			b.WriteString("## Last Job Supervisor Report\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.RuntimeGateLedger != nil {
+		if rendered := strings.TrimSpace(s.RuntimeGateLedger.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Runtime Gate Ledger\n\n")
 			b.WriteString(rendered)
 			b.WriteString("\n\n")
 		}

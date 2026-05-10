@@ -61,6 +61,25 @@ func TestBuildVerificationPlanIncludesSecuritySummary(t *testing.T) {
 	if !strings.Contains(plan.PlannerNote, "security_categories=telemetry") {
 		t.Fatalf("unexpected planner note: %q", plan.PlannerNote)
 	}
+	for _, step := range plan.Steps {
+		label := strings.ToLower(step.Label)
+		if strings.Contains(label, "logman provider lookup") || strings.Contains(label, "telemetry xml validation") {
+			t.Fatalf("source-only telemetry change should not trigger provider/XML checks, got %#v", step)
+		}
+	}
+}
+
+func TestGenericProviderSourceIsNotTelemetryVerification(t *testing.T) {
+	got := classifySecurityVerificationCategories([]string{
+		"cmd/kernforge/provider.go",
+		"cmd/kernforge/provider_test.go",
+		"cmd/kernforge/review_provider_behavior.go",
+	})
+	for _, category := range got {
+		if category == SecurityCategoryTelemetry {
+			t.Fatalf("generic provider code must not be treated as telemetry verification input: %#v", got)
+		}
+	}
 }
 
 func TestBuildVerificationPlanUsesLatestAnalysisDocsMatrix(t *testing.T) {

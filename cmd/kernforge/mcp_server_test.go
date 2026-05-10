@@ -809,7 +809,7 @@ func TestKernforgeMCPServerGuideRecommendsSourceFuzzForExplicitFuzzRequest(t *te
 			"name": "kernforge_guide",
 			"arguments": map[string]any{
 				"request": "fuzz IsValidCommand",
-				"file":    "TavernKernel/TavernKernelCore.cpp",
+				"file":    "src/driver/IoctlDispatch.cpp",
 			},
 		},
 	})
@@ -825,7 +825,7 @@ func TestKernforgeMCPServerGuideRecommendsSourceFuzzForExplicitFuzzRequest(t *te
 		`"name": "kernforge_fuzz"`,
 		`"mode": "source"`,
 		`"target": ""`,
-		`"file": "TavernKernel/TavernKernelCore.cpp"`,
+		`"file": "src/driver/IoctlDispatch.cpp"`,
 		`"codex_instruction":`,
 	} {
 		if !strings.Contains(text, want) {
@@ -849,7 +849,7 @@ func TestKernforgeMCPServerGuideBareTargetAsksUserForAction(t *testing.T) {
 			"name": "kernforge_guide",
 			"arguments": map[string]any{
 				"request": "IsValidCommand 봐줘",
-				"file":    "TavernKernel/TavernKernelCore.cpp",
+				"file":    "src/driver/IoctlDispatch.cpp",
 			},
 		},
 	})
@@ -870,7 +870,7 @@ func TestKernforgeMCPServerGuideBareTargetAsksUserForAction(t *testing.T) {
 		`"id": "build_only"`,
 		`"id": "verify"`,
 		`"name": "kernforge_fuzz_func_preview"`,
-		`"query": "IsValidCommand --file TavernKernel/TavernKernelCore.cpp"`,
+		`"query": "IsValidCommand --file src/driver/IoctlDispatch.cpp"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected guide output to contain %q: %s", want, text)
@@ -890,7 +890,7 @@ func TestKernforgeMCPServerLookAsksUserForAction(t *testing.T) {
 			"name": "kernforge_look",
 			"arguments": map[string]any{
 				"request": "KernForge로 IsValidCommand 봐줘",
-				"file":    "TavernKernel/TavernKernelCore.cpp",
+				"file":    "src/driver/IoctlDispatch.cpp",
 			},
 		},
 	})
@@ -907,7 +907,7 @@ func TestKernforgeMCPServerLookAsksUserForAction(t *testing.T) {
 		`"choices":`,
 		`"id": "preview"`,
 		`"name": "kernforge_fuzz_func_preview"`,
-		`"query": "IsValidCommand --file TavernKernel/TavernKernelCore.cpp"`,
+		`"query": "IsValidCommand --file src/driver/IoctlDispatch.cpp"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected look output to contain %q: %s", want, text)
@@ -927,7 +927,7 @@ func TestKernforgeMCPServerDefaultRouterAsksUserForAction(t *testing.T) {
 			"name": "kernforge",
 			"arguments": map[string]any{
 				"request": "KernForge로 IsValidCommand 봐줘",
-				"file":    "TavernKernel/TavernKernelCore.cpp",
+				"file":    "src/driver/IoctlDispatch.cpp",
 			},
 		},
 	})
@@ -945,7 +945,7 @@ func TestKernforgeMCPServerDefaultRouterAsksUserForAction(t *testing.T) {
 		`"id": "plan"`,
 		`"id": "build_only"`,
 		`"id": "verify"`,
-		`"query": "IsValidCommand --file TavernKernel/TavernKernelCore.cpp"`,
+		`"query": "IsValidCommand --file src/driver/IoctlDispatch.cpp"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected router output to contain %q: %s", want, text)
@@ -968,7 +968,7 @@ func TestKernforgeMCPServerDefaultRouterResolvesPreviewChoice(t *testing.T) {
 			"name": "kernforge",
 			"arguments": map[string]any{
 				"request": "KernForge로 IsValidCommand 봐줘",
-				"file":    "TavernKernel/TavernKernelCore.cpp",
+				"file":    "src/driver/IoctlDispatch.cpp",
 				"choice":  "preview",
 			},
 		},
@@ -983,7 +983,7 @@ func TestKernforgeMCPServerDefaultRouterResolvesPreviewChoice(t *testing.T) {
 		`"user_choice": "preview"`,
 		`"recommended_tool_call":`,
 		`"name": "kernforge_fuzz_func_preview"`,
-		`"query": "IsValidCommand --file TavernKernel/TavernKernelCore.cpp"`,
+		`"query": "IsValidCommand --file src/driver/IoctlDispatch.cpp"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected router choice output to contain %q: %s", want, text)
@@ -2176,16 +2176,16 @@ func TestMCPFunctionFuzzProblemCodeIncludesFullShortTargetFunction(t *testing.T)
 		t.Fatalf("mkdir src: %v", err)
 	}
 	sourceLines := []string{
-		"bool IsValidCommand(PTAVERN_IOCTL_COMMANDDATA_BASE commandData)",
+		"bool IsValidCommand(PIOCTL_COMMAND_HEADER commandData)",
 		"{",
 		"    bool isValid = false;",
 		"",
 		"    do",
 		"    {",
 		"        if (commandData == nullptr ||",
-		"            commandData->totalSize < sizeof(TAVERN_IOCTL_COMMANDDATA_BASE) ||",
-		"            commandData->command == (ULONG)TavernKernelCommand::Unknown ||",
-		"            commandData->command >= (ULONG)TavernKernelCommand::Max)",
+		"            commandData->totalSize < sizeof(IOCTL_COMMAND_HEADER) ||",
+		"            commandData->command == (ULONG)CommandId::Unknown ||",
+		"            commandData->command >= (ULONG)CommandId::Max)",
 		"        {",
 		"            break;",
 		"        }",
@@ -2238,18 +2238,18 @@ func TestMCPFunctionFuzzTriggerValuesIncludeCommandDataFields(t *testing.T) {
 		SourceExcerpt: FunctionFuzzSourceExcerpt{
 			Snippet: []string{
 				"if (commandData == nullptr ||",
-				"    commandData->totalSize < sizeof(TAVERN_IOCTL_COMMANDDATA_BASE) ||",
-				"    commandData->command == (ULONG)TavernKernelCommand::Unknown ||",
-				"    commandData->command >= (ULONG)TavernKernelCommand::Max)",
+				"    commandData->totalSize < sizeof(IOCTL_COMMAND_HEADER) ||",
+				"    commandData->command == (ULONG)CommandId::Unknown ||",
+				"    commandData->command >= (ULONG)CommandId::Max)",
 			},
 		},
 	})
 	joined := strings.Join(values, "\n")
 	for _, want := range []string{
-		"commandData.totalSize = sizeof(TAVERN_IOCTL_COMMANDDATA_BASE), commandData.command = first valid command requiring a larger command-specific payload",
-		"commandData.totalSize = sizeof(TAVERN_IOCTL_COMMANDDATA_BASE) + 1, commandData.command = valid command with payload shorter than its concrete struct",
-		"commandData.totalSize = oversized value, commandData.command = valid/reserved command below TavernKernelCommand::Max",
-		"commandData.command = reserved command below TavernKernelCommand::Max",
+		"commandData.totalSize = sizeof(IOCTL_COMMAND_HEADER), commandData.command = first valid command requiring a larger command-specific payload",
+		"commandData.totalSize = sizeof(IOCTL_COMMAND_HEADER) + 1, commandData.command = valid command with payload shorter than its concrete struct",
+		"commandData.totalSize = oversized value, commandData.command = valid/reserved command below CommandId::Max",
+		"commandData.command = reserved command below CommandId::Max",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected trigger values to contain %q, got %#v", want, values)

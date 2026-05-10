@@ -9,7 +9,7 @@ import (
 
 func TestResolveInteractiveShellPathAllowsParentWithinBaseRoot(t *testing.T) {
 	base := t.TempDir()
-	nested := filepath.Join(base, "TavernKernel", "TavernKernel", "TavernKernel")
+	nested := filepath.Join(base, "SampleKernel", "SampleKernel", "SampleKernel")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

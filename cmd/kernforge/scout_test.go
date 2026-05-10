@@ -10,7 +10,7 @@ import (
 )
 
 func TestShouldRunAutoScoutOnlyForLookupStyleQueries(t *testing.T) {
-	if shouldRunAutoScout("Explain TavernWorker startup flow.") {
+	if shouldRunAutoScout("Explain SampleWorker startup flow.") {
 		t.Fatalf("expected broad explanation query not to trigger auto scout")
 	}
 	if !shouldRunAutoScout("Where is WorkerBootstrap defined?") {

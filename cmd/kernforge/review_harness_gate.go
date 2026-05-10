@@ -5,11 +5,28 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFinding {
 	var findings []ReviewFinding
 	preWrite := strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write")
+	if reviewScopeDiscoveryNeedsNarrowing(run.RequestAnalysis.ScopeDiscovery) {
+		findings = append(findings, ReviewFinding{
+			Source:             "deterministic",
+			ReviewerRole:       "scope_discovery",
+			Severity:           reviewSeverityMedium,
+			Category:           "evidence_gap",
+			Confidence:         "medium",
+			Quality:            reviewFindingQualityComplete,
+			Title:              "Review scope needs narrowing",
+			Evidence:           reviewScopeDiscoveryFindingEvidence(run.RequestAnalysis.ScopeDiscovery),
+			Impact:             "A broad review can miss the exact bug surface or produce generic findings.",
+			RequiredFix:        "Rerun review with a focused path, symbol, selection, or one of the suggested narrowing commands.",
+			TestRecommendation: reviewScopePreferredNarrowingCommand(run.RequestAnalysis.ScopeDiscovery),
+			BlocksGate:         false,
+		})
+	}
 	if len(run.Evidence.Sources) == 0 || strings.TrimSpace(run.Evidence.Text) == "" {
 		findings = append(findings, ReviewFinding{
 			Source:       "deterministic",
@@ -194,11 +211,33 @@ func (f *ReviewFinding) Normalize() {
 		f.Quality = classifyReviewFindingQuality(*f)
 	}
 	if strings.TrimSpace(f.Title) == "" {
-		f.Title = compactPromptSection(firstNonBlankString(f.Impact, f.Evidence, f.RequiredFix), 100)
+		f.Title = synthesizeReviewFindingTitle(*f)
 	}
 	if f.Severity == reviewSeverityBlocker || (f.Severity == reviewSeverityHigh && f.Quality == reviewFindingQualityComplete) {
 		f.BlocksGate = f.BlocksGate || f.Severity == reviewSeverityBlocker
 	}
+}
+
+func synthesizeReviewFindingTitle(f ReviewFinding) string {
+	if strings.TrimSpace(firstNonBlankString(f.Path, f.Symbol, f.Evidence, f.Impact, f.RequiredFix, f.TestRecommendation, f.RawExcerpt)) == "" {
+		return ""
+	}
+	category := strings.TrimSpace(strings.ReplaceAll(f.Category, "_", " "))
+	pathBase := ""
+	if strings.TrimSpace(f.Path) != "" {
+		pathBase = filepath.Base(filepath.ToSlash(f.Path))
+	}
+	subject := strings.TrimSpace(firstNonBlankString(f.Symbol, pathBase))
+	if subject != "" && category != "" {
+		return strings.TrimSpace(category + " finding in " + subject)
+	}
+	if subject != "" {
+		return "Review finding in " + subject
+	}
+	if category != "" {
+		return strings.TrimSpace(category + " review finding")
+	}
+	return "Model reviewer finding"
 }
 
 func assignReviewFindingIDs(findings []ReviewFinding) {
@@ -341,10 +380,18 @@ func reviewFindingCountsAsWarning(finding ReviewFinding) bool {
 }
 
 func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
+	if strings.EqualFold(strings.TrimSpace(finding.Source), "model") &&
+		(strings.EqualFold(finding.Quality, reviewFindingQualityWeak) ||
+			strings.EqualFold(finding.Quality, reviewFindingQualityInvalid)) {
+		return false
+	}
 	if finding.BlocksGate || strings.EqualFold(finding.Severity, reviewSeverityBlocker) {
 		return true
 	}
 	if !strings.EqualFold(finding.Severity, reviewSeverityHigh) {
+		return false
+	}
+	if reviewRunLooksReadOnlyAnalysis(run) {
 		return false
 	}
 	if strings.EqualFold(finding.Category, "security") ||
@@ -353,8 +400,7 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		return true
 	}
 	for _, pack := range run.PolicyPacks {
-		if strings.EqualFold(pack, "base_security") ||
-			strings.EqualFold(pack, "windows_kernel_driver") ||
+		if strings.EqualFold(pack, "windows_kernel_driver") ||
 			strings.EqualFold(pack, "anti_cheat_telemetry") {
 			return true
 		}
@@ -383,73 +429,115 @@ func reviewHasOnlyEvidenceBlockers(findings []ReviewFinding, ids []string) bool 
 
 func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 	var out []ReviewNextCommand
+	if reviewScopeDiscoveryNeedsNarrowing(run.RequestAnalysis.ScopeDiscovery) {
+		out = append(out, ReviewNextCommand{
+			ID:             "narrow-review",
+			Command:        reviewScopePreferredNarrowingCommand(run.RequestAnalysis.ScopeDiscovery),
+			Reason:         "deterministic scope discovery marked the review target as broad",
+			Safety:         "read_only",
+			When:           "before relying on model findings as complete",
+			AutoRun:        false,
+			ClientHint:     "Narrow the review to a path, symbol, selection, or search result, then repeat /review.",
+			ExpectedResult: "A focused review run is created with concrete candidate files or symbols.",
+		})
+	}
 	if strings.TrimSpace(run.Evidence.VerificationSummary) == "" && reviewRunHasChangeEvidence(run) && run.Target != reviewTargetPlan {
 		out = append(out, ReviewNextCommand{
-			ID:         "verify",
-			Command:    "/verify --full",
-			Reason:     "changed files have no latest verification evidence",
-			Safety:     "safe_local",
-			When:       "before completion or git write",
-			AutoRun:    false,
-			ClientHint: "Run verification, then repeat /review.",
+			ID:             "verify",
+			Command:        "/verify --full",
+			Reason:         "changed files have no latest verification evidence",
+			Safety:         "safe_local",
+			When:           "before completion or git write",
+			AutoRun:        false,
+			ClientHint:     "Run verification, then repeat /review.",
+			ExpectedResult: "A current verification report is recorded for the changed files.",
 		})
 	}
 	if gate.Verdict == reviewVerdictNeedsRevision || gate.Verdict == reviewVerdictBlocked {
+		reason := "blocking findings need a focused repair pass"
+		when := "after reading review findings"
+		hint := "Use the repair prompt in the review artifact."
+		expected := "The latest review blockers are converted into a focused repair turn."
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			reason = "blocking findings were found; repair is optional unless the user asks to fix them"
+			when = "if you decide to turn the analysis into a repair pass"
+			hint = "Say `수정해줘` or run this command only if you want Kernforge to fix the findings."
+			expected = "The latest review blockers are converted into repair guidance only after an explicit repair request."
+		}
 		out = append(out, ReviewNextCommand{
-			ID:         "repair",
-			Command:    "/continuity continue from review",
-			Reason:     "blocking findings need a focused repair pass",
-			Safety:     "safe_local",
-			When:       "after reading review findings",
-			AutoRun:    false,
-			ClientHint: "Use the repair prompt in the review artifact.",
+			ID:             "repair",
+			Command:        "/continuity continue from review",
+			Reason:         reason,
+			Safety:         "safe_local",
+			When:           when,
+			AutoRun:        false,
+			ClientHint:     hint,
+			ExpectedResult: expected,
 		})
 	}
 	if gate.Verdict == reviewVerdictApprovedWithWarnings && reviewHasActionableWarningFindings(run, gate.WarningFindings) {
+		reason := "warning findings are actionable and can be fixed now"
+		when := "if you want to address the warnings instead of accepting them"
+		hint := "Say `수정해줘` or run this command to repair the latest review warnings."
+		expected := "Actionable warning findings are queued as repair guidance."
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			reason = "analysis findings are actionable, but repair is optional unless the user asks to fix them"
+			when = "if you decide to turn the analysis into a repair pass"
+			hint = "Say `수정해줘` or run this command only if you want Kernforge to fix the analysis findings."
+			expected = "The latest analysis findings are converted into repair guidance only after an explicit repair request."
+		}
 		out = append(out, ReviewNextCommand{
-			ID:         "repair-warnings",
-			Command:    "/continuity continue from review",
-			Reason:     "warning findings are actionable and can be fixed now",
-			Safety:     "safe_local",
-			When:       "if you want to address the warnings instead of accepting them",
-			AutoRun:    false,
-			ClientHint: "Say `수정해줘` or run this command to repair the latest review warnings.",
+			ID:             "repair-warnings",
+			Command:        "/continuity continue from review",
+			Reason:         reason,
+			Safety:         "safe_local",
+			When:           when,
+			AutoRun:        false,
+			ClientHint:     hint,
+			ExpectedResult: expected,
 		})
 	}
 	if gate.Verdict == reviewVerdictApprovedWithWarnings {
 		out = append(out, ReviewNextCommand{
-			ID:         "completion-audit",
-			Command:    "/completion-audit",
-			Reason:     "warnings remain; completion audit can validate final readiness",
-			Safety:     "read_only",
-			When:       "before final answer",
-			AutoRun:    false,
-			ClientHint: "Check final readiness before claiming completion.",
+			ID:             "completion-audit",
+			Command:        "/completion-audit",
+			Reason:         "warnings remain; completion audit can validate final readiness",
+			Safety:         "read_only",
+			When:           "before final answer",
+			AutoRun:        false,
+			ClientHint:     "Check final readiness before claiming completion.",
+			ExpectedResult: "Completion readiness is evaluated with warnings still visible.",
 		})
 	}
 	if strings.Contains(strings.Join(run.ModelPlan.MissingRoles, ","), "security_reviewer") || reviewHasSecurityFinding(run.Findings) {
 		out = append(out, ReviewNextCommand{
-			ID:         "set-security-model",
-			Command:    "/review models security",
-			Reason:     "security-sensitive review is using a fallback reviewer",
-			Safety:     "read_only",
-			When:       "before future security reviews",
-			AutoRun:    false,
-			ClientHint: "Configure a dedicated security reviewer model.",
+			ID:             "set-security-model",
+			Command:        "/review models security",
+			Reason:         "security-sensitive review is using a fallback reviewer",
+			Safety:         "read_only",
+			When:           "before future security reviews",
+			AutoRun:        false,
+			ClientHint:     "Configure a dedicated security reviewer model.",
+			ExpectedResult: "Future security reviews use a dedicated reviewer route.",
 		})
 	}
 	if strings.Contains(strings.Join(run.ModelPlan.MissingRoles, ","), "false_positive_reviewer") {
 		out = append(out, ReviewNextCommand{
-			ID:         "set-false-positive-model",
-			Command:    "/review models false-positive",
-			Reason:     "anti-cheat or detection review is using a fallback false-positive reviewer",
-			Safety:     "read_only",
-			When:       "before future security reviews",
-			AutoRun:    false,
-			ClientHint: "Configure a dedicated false-positive reviewer model.",
+			ID:             "set-false-positive-model",
+			Command:        "/review models false-positive",
+			Reason:         "anti-cheat or detection review is using a fallback false-positive reviewer",
+			Safety:         "read_only",
+			When:           "before future security reviews",
+			AutoRun:        false,
+			ClientHint:     "Configure a dedicated false-positive reviewer model.",
+			ExpectedResult: "Future detection reviews include a dedicated false-positive reviewer route.",
 		})
 	}
 	return out
+}
+
+func reviewRunLooksReadOnlyAnalysis(run ReviewRun) bool {
+	return prefersReadOnlyAnalysisIntent(run.Objective) && !looksLikeExplicitEditIntent(run.Objective)
 }
 
 func reviewHasActionableWarningFindings(run ReviewRun, warningIDs []string) bool {
@@ -502,9 +590,15 @@ func reviewRunHasChangeEvidence(run ReviewRun) bool {
 
 func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 	var blocking []ReviewFinding
+	var warnings []ReviewFinding
 	for _, finding := range run.Findings {
+		finding.Normalize()
 		if reviewFindingBlocksGate(run, finding) {
 			blocking = append(blocking, finding)
+			continue
+		}
+		if reviewFindingShouldBeRepairPlanWarning(finding) {
+			warnings = append(warnings, finding)
 		}
 	}
 	if len(blocking) == 0 {
@@ -534,6 +628,23 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 			fmt.Fprintf(&b, "  Verification: %s\n", finding.TestRecommendation)
 		}
 	}
+	if len(warnings) > 0 {
+		b.WriteString("\nMedium-or-higher actionable warnings that must also be handled:\n")
+		for _, finding := range warnings {
+			ids = append(ids, finding.ID)
+			actions = append(actions, finding.RequiredFix)
+			fmt.Fprintf(&b, "- %s [%s/%s] %s\n", finding.ID, finding.Severity, finding.Category, finding.Title)
+			if strings.TrimSpace(finding.Evidence) != "" {
+				fmt.Fprintf(&b, "  Evidence: %s\n", compactPromptSection(finding.Evidence, 350))
+			}
+			if strings.TrimSpace(finding.RequiredFix) != "" {
+				fmt.Fprintf(&b, "  Required fix: %s\n", compactPromptSection(finding.RequiredFix, 350))
+			}
+			if strings.TrimSpace(finding.TestRecommendation) != "" {
+				fmt.Fprintf(&b, "  Verification: %s\n", finding.TestRecommendation)
+			}
+		}
+	}
 	b.WriteString("\nDo not do unrelated cleanup, dependency upgrades, or large refactors unless a blocking finding explicitly requires it.")
 	return ReviewRepairPlan{
 		Required:        true,
@@ -541,6 +652,21 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		Findings:        ids,
 		RequiredActions: normalizeTaskStateList(actions, 12),
 	}
+}
+
+func reviewFindingShouldBeRepairPlanWarning(finding ReviewFinding) bool {
+	finding.Normalize()
+	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") ||
+		strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
+	return strings.TrimSpace(finding.RequiredFix) != "" ||
+		strings.TrimSpace(finding.Path) != "" ||
+		strings.TrimSpace(finding.Symbol) != "" ||
+		strings.TrimSpace(finding.Title) != ""
 }
 
 func reviewResultSummary(run ReviewRun) string {
@@ -609,6 +735,7 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 	}
 	omittedStructuredField := false
 	omittedPlaceholderAdded := false
+	truncatedStructuredTail := reviewRawLooksIncompleteStructuredTail(raw)
 	flush := func() {
 		current.Normalize()
 		if reviewFindingHasContent(current) {
@@ -631,6 +758,7 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 					omittedPlaceholderAdded = true
 				}
 			}
+			normalizeModelReviewFindingForGate(&current, korean)
 			findings = append(findings, current)
 		}
 		current = ReviewFinding{
@@ -712,6 +840,9 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 		}
 	}
 	flush()
+	if truncatedStructuredTail {
+		findings = append(findings, reviewTruncatedTailFindingPlaceholder(role, korean))
+	}
 	assignReviewFindingIDs(findings)
 	if len(findings) == 0 {
 		if reviewRawLooksNonBlockingApproval(raw) {
@@ -719,7 +850,7 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 		}
 		return []ReviewFinding{reviewNoStructuredFindingPlaceholder(raw, role, korean)}, reviewModelQualityWeak
 	}
-	if omittedStructuredField {
+	if omittedStructuredField || truncatedStructuredTail {
 		if !reviewFindingsContainOmittedOutputPlaceholder(findings) {
 			return findings, reviewModelQualityUsable
 		}
@@ -740,6 +871,59 @@ func reviewRawLooksNonBlockingApproval(raw string) bool {
 		"no blocking finding", "no blocking findings", "no blockers", "no blocker",
 		"no critical issue", "no critical issues", "approved", "looks good",
 		"차단 finding 없음", "차단 이슈 없음", "차단 문제 없음", "승인")
+}
+
+func normalizeModelReviewFindingForGate(f *ReviewFinding, korean bool) {
+	if f == nil || !strings.EqualFold(strings.TrimSpace(f.Source), "model") {
+		return
+	}
+	if strings.TrimSpace(f.Quality) == "" {
+		f.Quality = classifyReviewFindingQuality(*f)
+	}
+	if strings.EqualFold(f.Quality, reviewFindingQualityWeak) ||
+		strings.EqualFold(f.Quality, reviewFindingQualityInvalid) {
+		if strings.EqualFold(f.Severity, reviewSeverityBlocker) ||
+			strings.EqualFold(f.Severity, reviewSeverityHigh) {
+			f.Severity = reviewSeverityMedium
+		}
+		f.BlocksGate = false
+		return
+	}
+	if !strings.EqualFold(f.Severity, reviewSeverityBlocker) &&
+		!strings.EqualFold(f.Severity, reviewSeverityHigh) {
+		return
+	}
+	if reviewModelFindingHasActionableHighEvidence(*f) {
+		return
+	}
+	f.Severity = reviewSeverityMedium
+	f.BlocksGate = false
+	if !strings.EqualFold(f.Category, "test_gap") {
+		f.Category = "evidence_gap"
+	}
+	f.Confidence = "low"
+	f.Quality = reviewFindingQualityPartial
+	if strings.TrimSpace(f.Impact) == "" {
+		if korean {
+			f.Impact = "리뷰어가 high/blocker로 표시했지만 필수 근거 필드가 부족해 코드 수정 blocker로 승격하지 않습니다."
+		} else {
+			f.Impact = "The reviewer marked this as high or blocker, but required evidence fields are missing."
+		}
+	}
+	if strings.TrimSpace(f.RequiredFix) == "" {
+		if korean {
+			f.RequiredFix = "경로, 심볼, 근거, 영향, 수정 방법이 포함되도록 범위를 좁혀 리뷰를 다시 실행하세요."
+		} else {
+			f.RequiredFix = "Rerun review with a narrower target that includes path, symbol, evidence, impact, and fix details."
+		}
+	}
+}
+
+func reviewModelFindingHasActionableHighEvidence(f ReviewFinding) bool {
+	return (strings.TrimSpace(f.Path) != "" || strings.TrimSpace(f.Symbol) != "") &&
+		strings.TrimSpace(f.Evidence) != "" &&
+		strings.TrimSpace(f.Impact) != "" &&
+		strings.TrimSpace(f.RequiredFix) != ""
 }
 
 func reviewUnstructuredApprovalFinding(raw string, role string, korean bool) ReviewFinding {
@@ -856,7 +1040,40 @@ func reviewFindingIsOmittedOutputPlaceholder(finding ReviewFinding) bool {
 	}
 	title := strings.TrimSpace(finding.Title)
 	return title == "Reviewer output omitted part of a finding" ||
-		title == "리뷰어 출력이 finding 일부를 생략함"
+		title == "리뷰어 출력이 finding 일부를 생략함" ||
+		title == "Reviewer output appears cut off" ||
+		title == "리뷰어 출력이 중간에 잘린 것으로 보임"
+}
+
+func reviewTruncatedTailFindingPlaceholder(role string, korean bool) ReviewFinding {
+	if korean {
+		return ReviewFinding{
+			Source:       "model",
+			ReviewerRole: role,
+			Severity:     reviewSeverityMedium,
+			Category:     "evidence_gap",
+			Confidence:   "medium",
+			Quality:      reviewFindingQualityWeak,
+			Title:        "리뷰어 출력이 중간에 잘린 것으로 보임",
+			Evidence:     "리뷰어의 마지막 구조화 필드가 완성된 문장이나 충분한 검증 설명 없이 끝났습니다.",
+			Impact:       "잘린 finding을 그대로 승인하면 테스트 권고나 수정 조건이 누락된 상태로 repair 흐름이 시작될 수 있습니다.",
+			RequiredFix:  "엄격 리뷰를 다시 실행해 완성된 evidence, impact, required_fix, test_recommendation을 받으십시오.",
+			BlocksGate:   false,
+		}
+	}
+	return ReviewFinding{
+		Source:       "model",
+		ReviewerRole: role,
+		Severity:     reviewSeverityMedium,
+		Category:     "evidence_gap",
+		Confidence:   "medium",
+		Quality:      reviewFindingQualityWeak,
+		Title:        "Reviewer output appears cut off",
+		Evidence:     "The reviewer ended the final structured field without a complete sentence or sufficient validation detail.",
+		Impact:       "Accepting a cut-off finding can start repair with missing test guidance or fix conditions.",
+		RequiredFix:  "Retry strict review and require complete evidence, impact, required_fix, and test_recommendation fields.",
+		BlocksGate:   false,
+	}
 }
 
 func reviewSalvageOmittedFinding(finding ReviewFinding, korean bool) (ReviewFinding, bool) {
@@ -978,6 +1195,59 @@ func reviewTextHasOmissionMarker(text string) bool {
 		strings.Contains(lower, "details omitted") ||
 		strings.Contains(lower, "output omitted") ||
 		strings.Contains(lower, "omitted part")
+}
+
+func reviewRawLooksIncompleteStructuredTail(raw string) bool {
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(raw), "\r\n", "\n"), "\n")
+	last := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		last = strings.TrimSpace(strings.TrimLeft(lines[i], "-*0123456789. "))
+		if last != "" {
+			break
+		}
+	}
+	if last == "" || !strings.Contains(last, ":") {
+		return false
+	}
+	parts := strings.SplitN(last, ":", 2)
+	key := strings.ToLower(strings.TrimSpace(parts[0]))
+	value := strings.TrimSpace(parts[1])
+	if key != "test_recommendation" && key != "test" {
+		return false
+	}
+	if value == "" {
+		return true
+	}
+	if reviewTextEndsLikeCompleteSentence(value) {
+		return false
+	}
+	if reviewTextContainsHangul(value) && len([]rune(value)) < 12 {
+		return true
+	}
+	return false
+}
+
+func reviewTextEndsLikeCompleteSentence(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	last, _ := utf8.DecodeLastRuneInString(text)
+	switch last {
+	case '.', '!', '?', '。', '다', '요', '오', '음', '함', '됨':
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewTextContainsHangul(text string) bool {
+	for _, r := range text {
+		if r >= 0xAC00 && r <= 0xD7A3 {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewFallbackFindingTitle(line string, severityRe *regexp.Regexp) string {

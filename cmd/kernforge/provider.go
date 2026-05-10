@@ -1275,12 +1275,14 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 				continue
 			}
 			call := expected[callID]
+			text := missingOpenAIToolResultText(messages, next)
+			isError := strings.HasPrefix(text, "ERROR:")
 			out = append(out, Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
-				Text:       "ERROR: tool result was missing from the saved transcript; recover by re-running the tool if the result is still needed.",
-				IsError:    true,
+				Text:       text,
+				IsError:    isError,
 			})
 		}
 		for _, toolMsg := range orphanedToolMessages {
@@ -1289,6 +1291,43 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 		index = next - 1
 	}
 	return out
+}
+
+func missingOpenAIToolResultText(messages []Message, next int) string {
+	if next >= 0 && next < len(messages) && messages[next].Role == "user" && userMessageLooksLikeRuntimeToolRedirect(messages[next].Text) {
+		return "NOTICE: tool call was superseded before execution by runtime guidance in the next user message. Do not treat this as a tool infrastructure failure; follow the next user message instead."
+	}
+	return "ERROR: tool result was missing from the saved transcript; recover by re-running the tool if the result is still needed."
+}
+
+func userMessageLooksLikeRuntimeToolRedirect(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"do not repeat",
+		"do not call",
+		"your last",
+		"runtime gate",
+		"recovery mode:",
+		"tool budget",
+		"tool loop",
+		"reviewer feedback:",
+		"automatic verification",
+		"latest verification failed",
+		"the latest verification failed",
+		"pre-write review",
+		"edit targeted stale",
+		"stale or mismatched",
+		"malformed or truncated json",
+		"wrong patch format",
+		"같은 도구",
+		"반복하지",
+		"자동 검증",
+		"리뷰어 피드백",
+		"런타임 게이트",
+	)
 }
 
 func orphanOpenAIToolMessageAsUser(msg Message) Message {

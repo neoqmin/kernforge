@@ -459,29 +459,29 @@ func TestProjectAnalyzerParsesFencedWorkerAndReviewerJSON(t *testing.T) {
 
 func TestDeriveAnalysisGoalScopeMatchesDirectoryHint(t *testing.T) {
 	snapshot := ProjectSnapshot{
-		Directories: []string{"TavernWorker", "Common", "docs/internal"},
+		Directories: []string{"SampleWorker", "Common", "docs/internal"},
 		FilesByDirectory: map[string][]ScannedFile{
-			"TavernWorker": {{Path: "TavernWorker/worker.cpp", Directory: "TavernWorker"}},
+			"SampleWorker": {{Path: "SampleWorker/worker.cpp", Directory: "SampleWorker"}},
 			"Common":       {{Path: "Common/shared.cpp", Directory: "Common"}},
 		},
 	}
-	scope := deriveAnalysisGoalScope("TavernWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.", snapshot)
-	if len(scope.DirectoryPrefixes) != 1 || scope.DirectoryPrefixes[0] != "TavernWorker" {
-		t.Fatalf("expected TavernWorker scope, got %#v", scope)
+	scope := deriveAnalysisGoalScope("SampleWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.", snapshot)
+	if len(scope.DirectoryPrefixes) != 1 || scope.DirectoryPrefixes[0] != "SampleWorker" {
+		t.Fatalf("expected SampleWorker scope, got %#v", scope)
 	}
 }
 
 func TestProjectAnalyzerRunScopesShardsToRequestedDirectory(t *testing.T) {
 	root := t.TempDir()
 	for _, dir := range []string{
-		filepath.Join(root, "TavernWorker"),
+		filepath.Join(root, "SampleWorker"),
 		filepath.Join(root, "Common"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(root, "TavernWorker", "worker.cpp"), []byte("int Worker()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleWorker", "worker.cpp"), []byte("int Worker()\n{\n    return 1;\n}\n"), 0o644); err != nil {
 		t.Fatalf("write worker.cpp: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "Common", "shared.cpp"), []byte("int Shared()\n{\n    return 2;\n}\n"), 0o644); err != nil {
@@ -498,7 +498,7 @@ func TestProjectAnalyzerRunScopesShardsToRequestedDirectory(t *testing.T) {
 	}
 
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "TavernWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.", "")
+	run, err := analyzer.Run(context.Background(), "SampleWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -506,8 +506,8 @@ func TestProjectAnalyzerRunScopesShardsToRequestedDirectory(t *testing.T) {
 		t.Fatalf("expected scoped shards")
 	}
 	for _, shard := range run.Shards {
-		if !hasPathPrefix(shard.PrimaryFiles, "TavernWorker/") {
-			t.Fatalf("expected only TavernWorker shards, got %#v", run.Shards)
+		if !hasPathPrefix(shard.PrimaryFiles, "SampleWorker/") {
+			t.Fatalf("expected only SampleWorker shards, got %#v", run.Shards)
 		}
 	}
 	if client.workerCalls != len(run.Shards) {
@@ -1485,10 +1485,10 @@ func TestScanProjectExcludesVisualStudioBuildOutputs(t *testing.T) {
 		}
 	}
 
-	mustWrite("Tavern/Common/ETWConsumer.cpp", "int Etw()\n{\n    return 1;\n}\n")
-	mustWrite("Tavern/Tavern/x64/Live/Tavern.tlog/link.command.1.tlog", "^link\n")
-	mustWrite("Tavern/Tavern/x64/Live/Tavern.lastbuildstate", "state\n")
-	mustWrite("Tavern/TavernWorker/x64/Release/TavernWorker.tlog/CL.read.1.tlog", "log\n")
+	mustWrite("SampleApp/Common/ETWConsumer.cpp", "int Etw()\n{\n    return 1;\n}\n")
+	mustWrite("SampleApp/SampleApp/x64/Live/SampleApp.tlog/link.command.1.tlog", "^link\n")
+	mustWrite("SampleApp/SampleApp/x64/Live/SampleApp.lastbuildstate", "state\n")
+	mustWrite("SampleApp/SampleWorker/x64/Release/SampleWorker.tlog/CL.read.1.tlog", "log\n")
 
 	cfg := DefaultConfig(root)
 	ws := Workspace{
@@ -1510,7 +1510,7 @@ func TestScanProjectExcludesVisualStudioBuildOutputs(t *testing.T) {
 			t.Fatalf("expected build artifact file to be excluded, found %s", file.Path)
 		}
 	}
-	if _, ok := snapshot.FilesByPath["Tavern/Common/ETWConsumer.cpp"]; !ok {
+	if _, ok := snapshot.FilesByPath["SampleApp/Common/ETWConsumer.cpp"]; !ok {
 		t.Fatalf("expected normal source file to remain included")
 	}
 }
@@ -1636,8 +1636,8 @@ func TestMergeSessionSummaryWithAnalysisReplacesPreviousCachedBlock(t *testing.T
 		},
 		KnowledgePack: KnowledgePack{
 			ProjectSummary:    "Worker owns telemetry ingestion.",
-			PrimaryStartup:    "TavernWorker",
-			TopImportantFiles: []string{"TavernWorker/main.cpp"},
+			PrimaryStartup:    "SampleWorker",
+			TopImportantFiles: []string{"SampleWorker/main.cpp"},
 			Subsystems: []KnowledgeSubsystem{
 				{Title: "Worker Runtime", Group: "Forensic Analysis"},
 			},
@@ -1657,10 +1657,10 @@ func TestMergeSessionSummaryWithAnalysisReplacesPreviousCachedBlock(t *testing.T
 }
 
 func TestAnalysisQueryMeaningfullyChangedIgnoresShortFollowUpButDetectsNewTopic(t *testing.T) {
-	if analysisQueryMeaningfullyChanged("Explain TavernWorker startup flow.", "Now summarize risks only.") {
+	if analysisQueryMeaningfullyChanged("Explain SampleWorker startup flow.", "Now summarize risks only.") {
 		t.Fatalf("expected short follow-up not to trigger reinjection")
 	}
-	if !analysisQueryMeaningfullyChanged("Explain TavernWorker startup flow.", "Explain Common IPC module architecture in detail.") {
+	if !analysisQueryMeaningfullyChanged("Explain SampleWorker startup flow.", "Explain Common IPC module architecture in detail.") {
 		t.Fatalf("expected materially different topic to trigger reinjection")
 	}
 }
@@ -2323,27 +2323,27 @@ func TestBuildWorkerPromptIncludesBaselineMapContext(t *testing.T) {
 		AnalysisMode: "trace",
 		BaselineMap: AnalysisBaselineMap{
 			RunID:          "run-map",
-			Goal:           "map TavernKernel architecture",
+			Goal:           "map SampleKernel architecture",
 			ArtifactPath:   "C:/repo/.kernforge/analysis/run-map_map.json",
-			ProjectSummary: "TavernKernel separates driver dispatch, worker scanning, and reporting.",
+			ProjectSummary: "SampleKernel separates driver dispatch, worker scanning, and reporting.",
 			Subsystems:     []string{"Driver Dispatch", "Worker Scanner"},
-			SourceAnchors:  []string{"TavernKernel/TavernKernel/DriverDispatch.cpp", "TavernKernel/TavernKernel/WorkerScan.cpp"},
+			SourceAnchors:  []string{"SampleKernel/SampleKernel/DriverDispatch.cpp", "SampleKernel/SampleKernel/WorkerScan.cpp"},
 		},
 		FilesByPath: map[string]ScannedFile{
-			"TavernKernel/TavernKernel/DriverDispatch.cpp": {Path: "TavernKernel/TavernKernel/DriverDispatch.cpp", Directory: "TavernKernel/TavernKernel"},
+			"SampleKernel/SampleKernel/DriverDispatch.cpp": {Path: "SampleKernel/SampleKernel/DriverDispatch.cpp", Directory: "SampleKernel/SampleKernel"},
 		},
 	}
 	shard := AnalysisShard{
 		ID:           "shard-01",
 		Name:         "runtime_flow",
-		PrimaryFiles: []string{"TavernKernel/TavernKernel/DriverDispatch.cpp"},
+		PrimaryFiles: []string{"SampleKernel/SampleKernel/DriverDispatch.cpp"},
 	}
 	prompt := buildWorkerPrompt(snapshot, shard, "trace driver dispatch", "")
 	for _, expected := range []string{
 		"Baseline architecture map:",
 		"Baseline run: run-map",
-		"TavernKernel separates driver dispatch",
-		"Relevant anchors: TavernKernel/TavernKernel/DriverDispatch.cpp",
+		"SampleKernel separates driver dispatch",
+		"Relevant anchors: SampleKernel/SampleKernel/DriverDispatch.cpp",
 		"Use this map as prior structure only",
 	} {
 		if !strings.Contains(prompt, expected) {
@@ -2358,31 +2358,31 @@ func TestLoadBaselineMapForTraceUsesPreviousMapRun(t *testing.T) {
 	mapRun := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{
 			RunID:       "run-map",
-			Goal:        "map TavernKernel architecture",
+			Goal:        "map SampleKernel architecture",
 			Mode:        "map",
 			Status:      "completed",
 			CompletedAt: completedAt,
-			OutputPath:  filepath.Join(outputDir, "run-map_map_tavernkernel_architecture.md"),
+			OutputPath:  filepath.Join(outputDir, "run-map_map_samplekernel_architecture.md"),
 		},
 		Snapshot: ProjectSnapshot{
 			Root: "C:\\repo",
 			Files: []ScannedFile{
-				{Path: "TavernKernel/TavernKernel/DriverDispatch.cpp", Directory: "TavernKernel/TavernKernel", ImportanceScore: 10},
+				{Path: "SampleKernel/SampleKernel/DriverDispatch.cpp", Directory: "SampleKernel/SampleKernel", ImportanceScore: 10},
 			},
 		},
 		KnowledgePack: KnowledgePack{
 			RunID:          "run-map",
-			Goal:           "map TavernKernel architecture",
+			Goal:           "map SampleKernel architecture",
 			AnalysisMode:   "map",
-			ProjectSummary: "TavernKernel dispatches requests through the driver boundary.",
+			ProjectSummary: "SampleKernel dispatches requests through the driver boundary.",
 			TopImportantFiles: []string{
-				"TavernKernel/TavernKernel/DriverDispatch.cpp",
+				"SampleKernel/SampleKernel/DriverDispatch.cpp",
 			},
 			Subsystems: []KnowledgeSubsystem{
 				{
 					Title:         "Driver Dispatch",
-					KeyFiles:      []string{"TavernKernel/TavernKernel/DriverDispatch.cpp"},
-					EvidenceFiles: []string{"TavernKernel/TavernKernel/Ioctl.cpp"},
+					KeyFiles:      []string{"SampleKernel/SampleKernel/DriverDispatch.cpp"},
+					EvidenceFiles: []string{"SampleKernel/SampleKernel/Ioctl.cpp"},
 				},
 			},
 		},
@@ -2391,14 +2391,14 @@ func TestLoadBaselineMapForTraceUsesPreviousMapRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal map run: %v", err)
 	}
-	mapPath := filepath.Join(outputDir, "20260425-100000_map_tavernkernel_architecture.json")
+	mapPath := filepath.Join(outputDir, "20260425-100000_map_samplekernel_architecture.json")
 	if err := os.WriteFile(mapPath, data, 0o644); err != nil {
 		t.Fatalf("write map run: %v", err)
 	}
 	analyzer := &projectAnalyzer{
 		analysisCfg: ProjectAnalysisConfig{OutputDir: outputDir},
 	}
-	baseline, ok := analyzer.loadBaselineMapForMode("trace", AnalysisGoalScope{DirectoryPrefixes: []string{"TavernKernel/TavernKernel"}})
+	baseline, ok := analyzer.loadBaselineMapForMode("trace", AnalysisGoalScope{DirectoryPrefixes: []string{"SampleKernel/SampleKernel"}})
 	if !ok {
 		t.Fatalf("expected baseline map to load")
 	}
@@ -2408,7 +2408,7 @@ func TestLoadBaselineMapForTraceUsesPreviousMapRun(t *testing.T) {
 	if !strings.Contains(baseline.ProjectSummary, "driver boundary") {
 		t.Fatalf("unexpected baseline summary: %q", baseline.ProjectSummary)
 	}
-	if len(baseline.SourceAnchors) == 0 || baseline.SourceAnchors[0] != "TavernKernel/TavernKernel/DriverDispatch.cpp" {
+	if len(baseline.SourceAnchors) == 0 || baseline.SourceAnchors[0] != "SampleKernel/SampleKernel/DriverDispatch.cpp" {
 		t.Fatalf("unexpected baseline anchors: %#v", baseline.SourceAnchors)
 	}
 }
@@ -2599,34 +2599,34 @@ func TestNormalizeWorkerReportCanonicalizesEvidencePaths(t *testing.T) {
 	shard := AnalysisShard{
 		ID: "shard-01",
 		PrimaryFiles: []string{
-			"TavernKernel/TavernKernelPolicy.h",
+			"SampleKernel/SampleKernelPolicy.h",
 			"Common/UserCommon.h",
 		},
 		ReferenceFiles: []string{
-			"TavernKernel/TavernKernelPolicy.cpp",
-			"TavernKernel/TavernKernelCore.cpp",
+			"SampleKernel/SampleKernelPolicy.cpp",
+			"SampleKernel/SampleKernelCore.cpp",
 		},
 	}
 	report := WorkerReport{
 		KeyFiles: []string{
-			"TavernKernelPolicy.h",
-			"TavernKernelPolicy.cpp",
+			"SampleKernelPolicy.h",
+			"SampleKernelPolicy.cpp",
 			"NotInScope.cpp",
 		},
 		EvidenceFiles: []string{
 			"UserCommon.h",
-			"TavernKernelCore.cpp (allowed reference)",
+			"SampleKernelCore.cpp (allowed reference)",
 			"Other.cpp",
 		},
 	}
 	normalizeWorkerReport(&report, shard)
 	wantKey := []string{
-		"TavernKernel/TavernKernelPolicy.h",
-		"TavernKernel/TavernKernelPolicy.cpp",
+		"SampleKernel/SampleKernelPolicy.h",
+		"SampleKernel/SampleKernelPolicy.cpp",
 	}
 	wantEvidence := []string{
 		"Common/UserCommon.h",
-		"TavernKernel/TavernKernelCore.cpp",
+		"SampleKernel/SampleKernelCore.cpp",
 	}
 	if !reflect.DeepEqual(report.KeyFiles, wantKey) {
 		t.Fatalf("key files = %#v, want %#v", report.KeyFiles, wantKey)
@@ -2639,22 +2639,22 @@ func TestNormalizeWorkerReportCanonicalizesEvidencePaths(t *testing.T) {
 func TestNormalizeWorkerReportFiltersMetadataReferencedFilesFromKeyFiles(t *testing.T) {
 	shard := AnalysisShard{
 		ID:           "shard-01",
-		PrimaryFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters"},
+		PrimaryFiles: []string{"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj.filters"},
 	}
 	report := WorkerReport{
 		KeyFiles: []string{
-			"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters",
-			"TavernKernelTestConsole/TavernKernelTestConsole.cpp",
-			"TavernKernelTestConsole/TavernKernelManager.cpp",
-			"TavernKernelTestConsole/TavernKernelManager.h",
+			"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj.filters",
+			"SampleKernelTestConsole/SampleKernelTestConsole.cpp",
+			"SampleKernelTestConsole/SampleKernelManager.cpp",
+			"SampleKernelTestConsole/SampleKernelManager.h",
 		},
 		EvidenceFiles: []string{
-			"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters (inspected)",
-			"TavernKernelTestConsole/TavernKernelManager.cpp (referenced by filter metadata)",
+			"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj.filters (inspected)",
+			"SampleKernelTestConsole/SampleKernelManager.cpp (referenced by filter metadata)",
 		},
 	}
 	normalizeWorkerReport(&report, shard)
-	want := []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters"}
+	want := []string{"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj.filters"}
 	if !reflect.DeepEqual(report.KeyFiles, want) {
 		t.Fatalf("key files = %#v, want %#v", report.KeyFiles, want)
 	}
@@ -2736,20 +2736,20 @@ func TestBuildArchitectureFactPackCapturesDriverFacts(t *testing.T) {
 	for _, dir := range pack.TopLevelDirectories {
 		rootRows = append(rootRows, dir.Path)
 	}
-	for _, want := range []string{"Common/", "TavernKernel/", "TavernKernelTestConsole/"} {
+	for _, want := range []string{"Common/", "SampleKernel/", "SampleKernelTestConsole/"} {
 		if !containsString(rootRows, want) {
 			t.Fatalf("expected root directory %s in %+v", want, rootRows)
 		}
 	}
-	for _, bad := range []string{"TavernKernel/BuildCab/", "TavernKernel/BuildCab/TavernKernel.inf"} {
+	for _, bad := range []string{"SampleKernel/BuildCab/", "SampleKernel/BuildCab/SampleKernel.inf"} {
 		if containsString(rootRows, bad) {
 			t.Fatalf("did not expect nested/file path as top-level directory: %+v", rootRows)
 		}
 	}
-	if !containsString(pack.TopLevelNonDirectoryExclusions, "TavernKernel/BuildCab/TavernKernel.inf") {
+	if !containsString(pack.TopLevelNonDirectoryExclusions, "SampleKernel/BuildCab/SampleKernel.inf") {
 		t.Fatalf("expected nested/file exclusion, got %+v", pack.TopLevelNonDirectoryExclusions)
 	}
-	if !architectureAnchorRoleHasLocation(pack.CriticalAnchors, "object_callback_registration", "TavernKernel/TavernKernelObjectFilter.cpp:106") {
+	if !architectureAnchorRoleHasLocation(pack.CriticalAnchors, "object_callback_registration", "SampleKernel/SampleKernelObjectFilter.cpp:106") {
 		t.Fatalf("expected exact object callback registration anchor, got %+v", pack.CriticalAnchors)
 	}
 	if !architectureFlowContains(pack.FlowFacts, "REQUIRED device-control command spine", "DecryptIoctlData", "IsValidCommand") {
@@ -2763,18 +2763,18 @@ func TestArchitectureFactPackInjectedIntoPrompts(t *testing.T) {
 	shard := AnalysisShard{
 		ID:             "shard-ioctl",
 		Name:           "security_ioctl",
-		PrimaryFiles:   []string{"TavernKernel/TavernKernelCore.cpp"},
-		ReferenceFiles: []string{"TavernKernel/TavernKernelAPI.cpp"},
+		PrimaryFiles:   []string{"SampleKernel/SampleKernelCore.cpp"},
+		ReferenceFiles: []string{"SampleKernel/SampleKernelAPI.cpp"},
 	}
 	report := WorkerReport{
 		ShardID:          shard.ID,
 		Title:            "security_ioctl",
 		ScopeSummary:     "IOCTL dispatch",
 		Responsibilities: []string{"Own kernel IOCTL dispatch"},
-		KeyFiles:         []string{"TavernKernel/TavernKernelCore.cpp"},
-		EntryPoints:      []string{"TavernKernelCore::DeviceIoControlIrpHandleRoutine"},
+		KeyFiles:         []string{"SampleKernel/SampleKernelCore.cpp"},
+		EntryPoints:      []string{"SampleKernelCore::DeviceIoControlIrpHandleRoutine"},
 		InternalFlow:     []string{"device control -> decrypt -> command validation"},
-		EvidenceFiles:    []string{"TavernKernel/TavernKernelCore.cpp"},
+		EvidenceFiles:    []string{"SampleKernel/SampleKernelCore.cpp"},
 	}
 	workerPrompt := buildWorkerPrompt(run.Snapshot, shard, run.Summary.Goal, "")
 	reviewerPrompt := buildReviewerPrompt(run.Snapshot, shard, report, run.Summary.Goal, WorkerReport{}, false)
@@ -2787,7 +2787,7 @@ func TestArchitectureFactPackInjectedIntoPrompts(t *testing.T) {
 		if !strings.Contains(text, "Deterministic architecture fact pack") {
 			t.Fatalf("%s prompt missing architecture fact pack\n%s", name, text)
 		}
-		if !strings.Contains(text, "TavernKernelCore::DeviceIoControlIrpHandleRoutine") {
+		if !strings.Contains(text, "SampleKernelCore::DeviceIoControlIrpHandleRoutine") {
 			t.Fatalf("%s prompt missing exact IOCTL anchor\n%s", name, text)
 		}
 	}
@@ -3013,12 +3013,12 @@ func TestGroupedReportsForSynthesisAssignsArchitectureGroups(t *testing.T) {
 	}
 }
 
-func TestSynthesisGroupForShardAdaptsToTavernStyleModules(t *testing.T) {
-	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"TavernMaster/TavernMaster.cpp"}}, WorkerReport{}); got != "Security Control" {
-		t.Fatalf("expected TavernMaster to map to Security Control, got %q", got)
+func TestSynthesisGroupForShardAdaptsToSampleAppStyleModules(t *testing.T) {
+	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"SampleMaster/SampleMaster.cpp"}}, WorkerReport{}); got != "Security Control" {
+		t.Fatalf("expected SampleMaster to map to Security Control, got %q", got)
 	}
-	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"TavernWorker/PrefetchScanner.cpp"}}, WorkerReport{}); got != "Forensic Analysis" {
-		t.Fatalf("expected TavernWorker to map to Forensic Analysis, got %q", got)
+	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"SampleWorker/PrefetchScanner.cpp"}}, WorkerReport{}); got != "Forensic Analysis" {
+		t.Fatalf("expected SampleWorker to map to Forensic Analysis, got %q", got)
 	}
 	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"External/aws/include/aws/auth/auth.h"}}, WorkerReport{}); got != "External Dependencies" {
 		t.Fatalf("expected External to map to External Dependencies, got %q", got)
@@ -3028,7 +3028,7 @@ func TestSynthesisGroupForShardAdaptsToTavernStyleModules(t *testing.T) {
 func TestGroupedReportsForSynthesisPushesExternalDependenciesLast(t *testing.T) {
 	shards := []AnalysisShard{
 		{ID: "shard-01", Name: "misc", PrimaryFiles: []string{"External/aws/include/aws/auth/auth.h"}},
-		{ID: "shard-02", Name: "misc", PrimaryFiles: []string{"TavernMaster/TavernMaster.cpp"}},
+		{ID: "shard-02", Name: "misc", PrimaryFiles: []string{"SampleMaster/SampleMaster.cpp"}},
 	}
 	reports := []WorkerReport{
 		{Title: "aws auth"},
@@ -3854,25 +3854,25 @@ func TestAnalysisDashboardUsesQuestionLanguageAndConsistentDocsHref(t *testing.T
 		},
 		Snapshot: ProjectSnapshot{
 			Root:           "C:\\repo",
-			PrimaryStartup: "TavernKernelTestConsole",
+			PrimaryStartup: "SampleKernelTestConsole",
 			TotalFiles:     2,
 			TotalLines:     100,
 			SolutionProjects: []SolutionProject{
-				{Name: "TavernKernel", OutputType: "driver", EntryFiles: []string{"TavernKernel/TavernKernel.cpp"}},
-				{Name: "TavernKernelTestConsole", OutputType: "application", EntryFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.cpp"}, StartupCandidate: true},
+				{Name: "SampleKernel", OutputType: "driver", EntryFiles: []string{"SampleKernel/SampleKernel.cpp"}},
+				{Name: "SampleKernelTestConsole", OutputType: "application", EntryFiles: []string{"SampleKernelTestConsole/SampleKernelTestConsole.cpp"}, StartupCandidate: true},
 			},
 		},
 		KnowledgePack: KnowledgePack{
 			Goal:              "프로젝트 구조를 분석해서 문서로 작성해",
-			TopImportantFiles: []string{"BuildCab/TavernKernel.inf"},
+			TopImportantFiles: []string{"BuildCab/SampleKernel.inf"},
 			AnalysisExecution: AnalysisExecutionSummary{
 				InvalidationReasons: []string{"no_previous_run"},
 			},
 		},
 		SemanticIndexV2: SemanticIndexV2{
 			Symbols: []SymbolRecord{
-				{Name: "DriverEntry", Kind: "function", File: "TavernKernel/TavernKernel.cpp", Tags: []string{"driver"}},
-				{Name: "DeviceIoControlIrpHandleRoutine", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", Tags: []string{"ioctl"}},
+				{Name: "DriverEntry", Kind: "function", File: "SampleKernel/SampleKernel.cpp", Tags: []string{"driver"}},
+				{Name: "DeviceIoControlIrpHandleRoutine", Kind: "function", File: "SampleKernel/SampleKernelCore.cpp", Tags: []string{"ioctl"}},
 			},
 		},
 	}
@@ -3888,7 +3888,7 @@ func TestAnalysisDashboardUsesQuestionLanguageAndConsistentDocsHref(t *testing.T
 		"생성 문서",
 		"문서 포털",
 		"Startup 후보",
-		"TavernKernelTestConsole",
+		"SampleKernelTestConsole",
 		"DriverEntry",
 		"DeviceIoControlIrpHandleRoutine",
 		"run-dashboard-ko_docs/INDEX.md",
@@ -3916,13 +3916,13 @@ func TestAnalysisDashboardHonorsExplicitEnglishLanguageRequest(t *testing.T) {
 		},
 		Snapshot: ProjectSnapshot{
 			Root:           "C:\\repo",
-			PrimaryStartup: "Tavern",
+			PrimaryStartup: "SampleApp",
 			TotalFiles:     2,
 			TotalLines:     100,
 		},
 		KnowledgePack: KnowledgePack{
 			Goal:           "영어로 답변하고 문서를 생성해. 프로젝트 구조를 분석해.",
-			ProjectSummary: "Tavern is the startup application.",
+			ProjectSummary: "SampleApp is the startup application.",
 		},
 	}
 
@@ -3981,7 +3981,7 @@ func TestAnalysisDashboardUsesInlineMarkdownViewerForDocLinks(t *testing.T) {
 			Mode:   "map",
 			Status: "completed",
 		},
-		FinalDocument: "# Tavern Client Project Map\n\nSolution startup candidate:\n- `Tavern`\n\nAuxiliary executable projects:\n- `TavernControl`\n",
+		FinalDocument: "# SampleApp Client Project Map\n\nSolution startup candidate:\n- `SampleApp`\n\nAuxiliary executable projects:\n- `SampleAppControl`\n",
 		Snapshot: ProjectSnapshot{
 			Root:       "C:\\repo",
 			TotalFiles: 2,
@@ -4009,7 +4009,7 @@ func TestAnalysisDashboardUsesInlineMarkdownViewerForDocLinks(t *testing.T) {
 		`id="reader-toggle"`,
 		`setReaderMode`,
 		`body.reader-mode`,
-		`TavernControl`,
+		`SampleAppControl`,
 		`# Project Documentation Index`,
 	} {
 		if !strings.Contains(html, want) {
@@ -4762,20 +4762,20 @@ func TestEnsureFinalDocumentInsightsCompactsExternalDependencyAppendix(t *testin
 func TestEnsureFinalDocumentInsightsInjectsPrimaryStartupProject(t *testing.T) {
 	document := "# Project Analysis\n\n## 1. Project Overview\n\nOverview text.\n\n## 3. Execution Flow And Entry Points\n\nFlow text.\n"
 	snapshot := ProjectSnapshot{
-		PrimaryStartup:  "Tavern",
-		StartupProjects: []string{"Tavern", "TavernWorker", "TavernDart"},
+		PrimaryStartup:  "SampleApp",
+		StartupProjects: []string{"SampleApp", "SampleWorker", "SampleAppDart"},
 		SolutionProjects: []SolutionProject{
-			{Name: "Tavern", EntryFiles: []string{"Tavern/Tavern.cpp"}},
+			{Name: "SampleApp", EntryFiles: []string{"SampleApp/SampleApp.cpp"}},
 		},
 	}
 	got := ensureFinalDocumentInsights(document, snapshot, nil, nil)
 	if !strings.Contains(got, "Solution startup candidate:") {
 		t.Fatalf("expected startup project snippet\n%s", got)
 	}
-	if !strings.Contains(got, "`Tavern`") {
-		t.Fatalf("expected Tavern in startup snippet\n%s", got)
+	if !strings.Contains(got, "`SampleApp`") {
+		t.Fatalf("expected SampleApp in startup snippet\n%s", got)
 	}
-	if !strings.Contains(got, "`Tavern/Tavern.cpp`") {
+	if !strings.Contains(got, "`SampleApp/SampleApp.cpp`") {
 		t.Fatalf("expected startup entry file in snippet\n%s", got)
 	}
 }
@@ -4845,7 +4845,7 @@ func TestEnsureFinalDocumentInsightsInjectsSecuritySurfaceDecomposition(t *testi
 
 func TestIsVisualStudioCppProjectDetectsSolutionManifest(t *testing.T) {
 	snapshot := ProjectSnapshot{
-		ManifestFiles: []string{"Tavern.sln", "Tavern/Tavern.vcxproj"},
+		ManifestFiles: []string{"SampleApp.sln", "SampleApp/SampleApp.vcxproj"},
 	}
 	if !isVisualStudioCppProject(snapshot) {
 		t.Fatalf("expected Visual Studio / C++ project detection")
@@ -4855,28 +4855,28 @@ func TestIsVisualStudioCppProjectDetectsSolutionManifest(t *testing.T) {
 func TestEnrichSolutionMetadataFindsStartupProjectAndEntryFiles(t *testing.T) {
 	root := t.TempDir()
 	sln := `Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{GUID}") = "Tavern", "Tavern/Tavern.vcxproj", "{A}"
+Project("{GUID}") = "SampleApp", "SampleApp/SampleApp.vcxproj", "{A}"
 Project("{GUID}") = "Common", "Common/Common.vcxproj", "{B}"
 EndProject
 `
 	vcxprojApp := `<Project><PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType></PropertyGroup></Project>`
 	vcxprojLib := `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
-		t.Fatalf("mkdir Tavern: %v", err)
+	if err := os.MkdirAll(filepath.Join(root, "SampleApp"), 0o755); err != nil {
+		t.Fatalf("mkdir SampleApp: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "Common"), 0o755); err != nil {
 		t.Fatalf("mkdir Common: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern.sln"), []byte(sln), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleApp.sln"), []byte(sln), 0o644); err != nil {
 		t.Fatalf("write sln: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "Tavern.vcxproj"), []byte(vcxprojApp), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleApp", "SampleApp.vcxproj"), []byte(vcxprojApp), 0o644); err != nil {
 		t.Fatalf("write app vcxproj: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "Common", "Common.vcxproj"), []byte(vcxprojLib), 0o644); err != nil {
 		t.Fatalf("write lib vcxproj: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "main.cpp"), []byte("int main() { return 0; }\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleApp", "main.cpp"), []byte("int main() { return 0; }\n"), 0o644); err != nil {
 		t.Fatalf("write main.cpp: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "Common", "helper.cpp"), []byte("void helper() {}\n"), 0o644); err != nil {
@@ -4890,16 +4890,16 @@ EndProject
 	if err != nil {
 		t.Fatalf("scanProject returned error: %v", err)
 	}
-	if snapshot.PrimaryStartup != "Tavern" {
-		t.Fatalf("expected Tavern as primary startup, got %q", snapshot.PrimaryStartup)
+	if snapshot.PrimaryStartup != "SampleApp" {
+		t.Fatalf("expected SampleApp as primary startup, got %q", snapshot.PrimaryStartup)
 	}
 	if len(snapshot.SolutionProjects) != 2 {
 		t.Fatalf("expected solution projects to be discovered, got %d", len(snapshot.SolutionProjects))
 	}
-	if !containsString(snapshot.StartupProjects, "Tavern") {
-		t.Fatalf("expected Tavern in startup candidates: %#v", snapshot.StartupProjects)
+	if !containsString(snapshot.StartupProjects, "SampleApp") {
+		t.Fatalf("expected SampleApp in startup candidates: %#v", snapshot.StartupProjects)
 	}
-	if !containsString(snapshot.EntrypointFiles, "Tavern/main.cpp") {
+	if !containsString(snapshot.EntrypointFiles, "SampleApp/main.cpp") {
 		t.Fatalf("expected solution entrypoint file in snapshot: %#v", snapshot.EntrypointFiles)
 	}
 }
@@ -4956,12 +4956,12 @@ EndProject
 func TestFallbackFinalDocumentIncludesPrimaryStartupProject(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:           "C:\\repo",
-		PrimaryStartup: "Tavern",
+		PrimaryStartup: "SampleApp",
 		TotalFiles:     1,
 		TotalLines:     10,
 	}
 	doc := fallbackFinalDocument(snapshot, nil, nil, "goal")
-	if !strings.Contains(doc, "Solution startup candidate: `Tavern`") {
+	if !strings.Contains(doc, "Solution startup candidate: `SampleApp`") {
 		t.Fatalf("expected fallback doc to include primary startup project\n%s", doc)
 	}
 }
@@ -5106,22 +5106,22 @@ func TestInferRuntimeEdgesFindsProjectReferencesAndDynamicLoads(t *testing.T) {
 			t.Fatalf("write file: %v", err)
 		}
 	}
-	mustWrite(filepath.Join(root, "Tavern", "Tavern.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType></PropertyGroup><ItemGroup><ProjectReference Include="..\TavernMaster\TavernMaster.vcxproj" /></ItemGroup></Project>`)
-	mustWrite(filepath.Join(root, "TavernMaster", "TavernMaster.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup><ItemGroup><ProjectReference Include="..\TavernWorker\TavernWorker.vcxproj" /></ItemGroup></Project>`)
-	mustWrite(filepath.Join(root, "TavernCmn", "TavernCmn.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`)
-	mustWrite(filepath.Join(root, "TavernUpd", "TavernUpd.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`)
-	mustWrite(filepath.Join(root, "TavernCmn", "dllmain.cpp"), `LoadLibrary(L"TavernUpd.bin");`)
+	mustWrite(filepath.Join(root, "SampleApp", "SampleApp.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType></PropertyGroup><ItemGroup><ProjectReference Include="..\SampleMaster\SampleMaster.vcxproj" /></ItemGroup></Project>`)
+	mustWrite(filepath.Join(root, "SampleMaster", "SampleMaster.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup><ItemGroup><ProjectReference Include="..\SampleWorker\SampleWorker.vcxproj" /></ItemGroup></Project>`)
+	mustWrite(filepath.Join(root, "SampleAppCmn", "SampleAppCmn.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`)
+	mustWrite(filepath.Join(root, "SampleUpd", "SampleUpd.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`)
+	mustWrite(filepath.Join(root, "SampleAppCmn", "dllmain.cpp"), `LoadLibrary(L"SampleUpd.bin");`)
 	snapshot := ProjectSnapshot{
 		Root: root,
 		Files: []ScannedFile{
-			{Path: "TavernCmn/dllmain.cpp"},
+			{Path: "SampleAppCmn/dllmain.cpp"},
 		},
 		SolutionProjects: []SolutionProject{
-			{Name: "Tavern", Path: "Tavern/Tavern.vcxproj", Directory: "Tavern", ProjectReferences: parseVCXProjProjectReferences(root, "Tavern/Tavern.vcxproj")},
-			{Name: "TavernMaster", Path: "TavernMaster/TavernMaster.vcxproj", Directory: "TavernMaster", ProjectReferences: parseVCXProjProjectReferences(root, "TavernMaster/TavernMaster.vcxproj")},
-			{Name: "TavernWorker", Path: "TavernWorker/TavernWorker.vcxproj", Directory: "TavernWorker"},
-			{Name: "TavernCmn", Path: "TavernCmn/TavernCmn.vcxproj", Directory: "TavernCmn"},
-			{Name: "TavernUpd", Path: "TavernUpd/TavernUpd.vcxproj", Directory: "TavernUpd"},
+			{Name: "SampleApp", Path: "SampleApp/SampleApp.vcxproj", Directory: "SampleApp", ProjectReferences: parseVCXProjProjectReferences(root, "SampleApp/SampleApp.vcxproj")},
+			{Name: "SampleMaster", Path: "SampleMaster/SampleMaster.vcxproj", Directory: "SampleMaster", ProjectReferences: parseVCXProjProjectReferences(root, "SampleMaster/SampleMaster.vcxproj")},
+			{Name: "SampleWorker", Path: "SampleWorker/SampleWorker.vcxproj", Directory: "SampleWorker"},
+			{Name: "SampleAppCmn", Path: "SampleAppCmn/SampleAppCmn.vcxproj", Directory: "SampleAppCmn"},
+			{Name: "SampleUpd", Path: "SampleUpd/SampleUpd.vcxproj", Directory: "SampleUpd"},
 		},
 	}
 	edges := inferRuntimeEdges(snapshot, snapshot.SolutionProjects)
@@ -5129,19 +5129,19 @@ func TestInferRuntimeEdgesFindsProjectReferencesAndDynamicLoads(t *testing.T) {
 	foundMasterToWorker := false
 	foundCmnToUpd := false
 	for _, edge := range edges {
-		if edge.Source == "Tavern" && edge.Target == "TavernMaster" {
+		if edge.Source == "SampleApp" && edge.Target == "SampleMaster" {
 			if edge.Confidence != "high" {
 				t.Fatalf("expected high confidence for project reference edge, got %#v", edge)
 			}
 			foundAppToMaster = true
 		}
-		if edge.Source == "TavernMaster" && edge.Target == "TavernWorker" {
+		if edge.Source == "SampleMaster" && edge.Target == "SampleWorker" {
 			if edge.Confidence != "high" {
 				t.Fatalf("expected high confidence for worker edge, got %#v", edge)
 			}
 			foundMasterToWorker = true
 		}
-		if edge.Source == "TavernCmn" && edge.Target == "TavernUpd" {
+		if edge.Source == "SampleAppCmn" && edge.Target == "SampleUpd" {
 			if edge.Kind != "dynamic_load" || edge.Confidence != "high" {
 				t.Fatalf("expected high-confidence dynamic load edge, got %#v", edge)
 			}
@@ -5156,19 +5156,19 @@ func TestInferRuntimeEdgesFindsProjectReferencesAndDynamicLoads(t *testing.T) {
 func TestHighConfidenceRuntimeEdgesExcludeStringReferencesFromDocument(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:           "C:\\repo",
-		PrimaryStartup: "Tavern",
+		PrimaryStartup: "SampleApp",
 		RuntimeEdges: []RuntimeEdge{
-			{Source: "Tavern", Target: "TavernMaster", Kind: "project_reference", Confidence: "high", Evidence: []string{"Tavern/Tavern.vcxproj"}},
-			{Source: "TavernWorker", Target: "TavernUpd", Kind: "string_reference", Confidence: "low", Evidence: []string{"TavernWorker/worker.cpp"}},
+			{Source: "SampleApp", Target: "SampleMaster", Kind: "project_reference", Confidence: "high", Evidence: []string{"SampleApp/SampleApp.vcxproj"}},
+			{Source: "SampleWorker", Target: "SampleUpd", Kind: "string_reference", Confidence: "low", Evidence: []string{"SampleWorker/worker.cpp"}},
 		},
 		TotalFiles: 1,
 		TotalLines: 10,
 	}
 	doc := fallbackFinalDocument(snapshot, nil, nil, "goal")
-	if !strings.Contains(doc, "Tavern -> TavernMaster") {
+	if !strings.Contains(doc, "SampleApp -> SampleMaster") {
 		t.Fatalf("expected high-confidence runtime edge in document\n%s", doc)
 	}
-	if strings.Contains(doc, "TavernWorker -> TavernUpd") {
+	if strings.Contains(doc, "SampleWorker -> SampleUpd") {
 		t.Fatalf("expected low-confidence runtime edge to be excluded from document\n%s", doc)
 	}
 }
@@ -5184,35 +5184,35 @@ func TestNormalizeUnexpectedLocaleArtifacts(t *testing.T) {
 	}
 }
 
-func TestCanonicalProjectNameNormalizesTavernComnAlias(t *testing.T) {
-	got := canonicalProjectName("TavernComn", []string{"Tavern", "TavernCmn", "TavernUpd"})
-	if got != "TavernCmn" {
-		t.Fatalf("expected TavernComn alias to normalize to TavernCmn, got %q", got)
+func TestCanonicalProjectNameNormalizesSampleAppComnAlias(t *testing.T) {
+	got := canonicalProjectName("SampleAppComn", []string{"SampleApp", "SampleAppCmn", "SampleUpd"})
+	if got != "SampleAppCmn" {
+		t.Fatalf("expected SampleAppComn alias to normalize to SampleAppCmn, got %q", got)
 	}
 }
 
 func TestBuildOperationalChainUsesCollaborationAndOperationalEvidence(t *testing.T) {
 	snapshot := ProjectSnapshot{
-		PrimaryStartup: "Tavern",
+		PrimaryStartup: "SampleApp",
 		SolutionProjects: []SolutionProject{
-			{Name: "Tavern", Directory: "Tavern"},
-			{Name: "TavernMaster", Directory: "TavernMaster"},
-			{Name: "TavernWorker", Directory: "TavernWorker"},
-			{Name: "TavernCmn", Directory: "TavernCmn"},
-			{Name: "TavernUpd", Directory: "TavernUpd"},
+			{Name: "SampleApp", Directory: "SampleApp"},
+			{Name: "SampleMaster", Directory: "SampleMaster"},
+			{Name: "SampleWorker", Directory: "SampleWorker"},
+			{Name: "SampleAppCmn", Directory: "SampleAppCmn"},
+			{Name: "SampleUpd", Directory: "SampleUpd"},
 		},
 		RuntimeEdges: []RuntimeEdge{
-			{Source: "Tavern", Target: "TavernMaster", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"Tavern/TavernWorkerManager.cpp"}},
-			{Source: "TavernWorker", Target: "TavernComn", Kind: "string_reference", Confidence: "low", Evidence: []string{"TavernWorker/TavernUpdManager.cpp"}},
-			{Source: "TavernCmn", Target: "TavernUpd", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"TavernCmn/dllmain.cpp"}},
+			{Source: "SampleApp", Target: "SampleMaster", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"SampleApp/SampleWorkerManager.cpp"}},
+			{Source: "SampleWorker", Target: "SampleAppComn", Kind: "string_reference", Confidence: "low", Evidence: []string{"SampleWorker/SampleUpdManager.cpp"}},
+			{Source: "SampleAppCmn", Target: "SampleUpd", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"SampleAppCmn/dllmain.cpp"}},
 		},
 	}
 	reports := []WorkerReport{
 		{
-			Title:         "TavernMaster Analysis",
-			EvidenceFiles: []string{"TavernMaster/TavernMaster.cpp"},
-			Collaboration: []string{"TavernMaster coordinates with TavernWorker for forensic operations."},
-			InternalFlow:  []string{"TavernMaster launches worker-side detection orchestration."},
+			Title:         "SampleMaster Analysis",
+			EvidenceFiles: []string{"SampleMaster/SampleMaster.cpp"},
+			Collaboration: []string{"SampleMaster coordinates with SampleWorker for forensic operations."},
+			InternalFlow:  []string{"SampleMaster launches worker-side detection orchestration."},
 		},
 	}
 	chain := buildOperationalChain(snapshot, reports)
@@ -5221,14 +5221,14 @@ func TestBuildOperationalChainUsesCollaborationAndOperationalEvidence(t *testing
 		got = append(got, edge.Source+"->"+edge.Target)
 	}
 	joined := strings.Join(got, ",")
-	if !strings.Contains(joined, "TavernMaster->TavernWorker") {
-		t.Fatalf("expected TavernMaster->TavernWorker in operational chain, got %v", got)
+	if !strings.Contains(joined, "SampleMaster->SampleWorker") {
+		t.Fatalf("expected SampleMaster->SampleWorker in operational chain, got %v", got)
 	}
-	if !strings.Contains(joined, "TavernWorker->TavernCmn") {
-		t.Fatalf("expected TavernWorker->TavernCmn in operational chain, got %v", got)
+	if !strings.Contains(joined, "SampleWorker->SampleAppCmn") {
+		t.Fatalf("expected SampleWorker->SampleAppCmn in operational chain, got %v", got)
 	}
-	if !strings.Contains(joined, "TavernCmn->TavernUpd") {
-		t.Fatalf("expected TavernCmn->TavernUpd in operational chain, got %v", got)
+	if !strings.Contains(joined, "SampleAppCmn->SampleUpd") {
+		t.Fatalf("expected SampleAppCmn->SampleUpd in operational chain, got %v", got)
 	}
 }
 
@@ -6023,9 +6023,9 @@ func TestProjectAnalyzerRunAppliesStageTwoRefinement(t *testing.T) {
 func TestFallbackFinalDocumentIncludesRuntimeGraph(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:           "C:\\repo",
-		PrimaryStartup: "Tavern",
+		PrimaryStartup: "SampleApp",
 		RuntimeEdges: []RuntimeEdge{
-			{Source: "Tavern", Target: "TavernMaster", Kind: "project_reference", Confidence: "high", Evidence: []string{"Tavern/Tavern.vcxproj"}},
+			{Source: "SampleApp", Target: "SampleMaster", Kind: "project_reference", Confidence: "high", Evidence: []string{"SampleApp/SampleApp.vcxproj"}},
 		},
 		TotalFiles: 1,
 		TotalLines: 10,
@@ -6034,7 +6034,7 @@ func TestFallbackFinalDocumentIncludesRuntimeGraph(t *testing.T) {
 	if !strings.Contains(doc, "## Runtime Graph") {
 		t.Fatalf("expected runtime graph section\n%s", doc)
 	}
-	if !strings.Contains(doc, "Tavern -> TavernMaster") {
+	if !strings.Contains(doc, "SampleApp -> SampleMaster") {
 		t.Fatalf("expected runtime graph edge\n%s", doc)
 	}
 }
@@ -6043,36 +6043,36 @@ func TestBuildKnowledgePackIncludesStartupAndSubsystems(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:            "C:\\repo",
 		GeneratedAt:     time.Now(),
-		PrimaryStartup:  "Tavern",
-		StartupProjects: []string{"Tavern", "TavernWorker"},
-		ManifestFiles:   []string{"Tavern.sln"},
-		EntrypointFiles: []string{"Tavern/Tavern.cpp"},
+		PrimaryStartup:  "SampleApp",
+		StartupProjects: []string{"SampleApp", "SampleWorker"},
+		ManifestFiles:   []string{"SampleApp.sln"},
+		EntrypointFiles: []string{"SampleApp/SampleApp.cpp"},
 		SolutionProjects: []SolutionProject{
-			{Name: "Tavern", EntryFiles: []string{"Tavern/Tavern.cpp"}},
+			{Name: "SampleApp", EntryFiles: []string{"SampleApp/SampleApp.cpp"}},
 		},
 	}
 	shards := []AnalysisShard{
-		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"Tavern/Tavern.cpp"}},
+		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"SampleApp/SampleApp.cpp"}},
 	}
 	reports := []WorkerReport{
 		{
 			Title:            "Core Runtime",
 			Responsibilities: []string{"boot client", "load orchestrator"},
-			KeyFiles:         []string{"Tavern/Tavern.cpp", "TavernCmn/dllmain.cpp"},
-			EvidenceFiles:    []string{"Tavern/Tavern.cpp"},
-			EntryPoints:      []string{"Tavern/Tavern.cpp::main"},
-			Dependencies:     []string{"TavernCmn", "Common"},
+			KeyFiles:         []string{"SampleApp/SampleApp.cpp", "SampleAppCmn/dllmain.cpp"},
+			EvidenceFiles:    []string{"SampleApp/SampleApp.cpp"},
+			EntryPoints:      []string{"SampleApp/SampleApp.cpp::main"},
+			Dependencies:     []string{"SampleAppCmn", "Common"},
 			Risks:            []string{"startup chain is security-sensitive"},
 		},
 	}
 	pack := buildKnowledgePack(snapshot, shards, reports, "goal", "run-1")
-	if pack.PrimaryStartup != "Tavern" {
+	if pack.PrimaryStartup != "SampleApp" {
 		t.Fatalf("expected primary startup in knowledge pack, got %q", pack.PrimaryStartup)
 	}
 	if len(pack.Subsystems) != 1 {
 		t.Fatalf("expected subsystem in knowledge pack, got %#v", pack.Subsystems)
 	}
-	if !containsString(pack.StartupEntryFiles, "Tavern/Tavern.cpp") {
+	if !containsString(pack.StartupEntryFiles, "SampleApp/SampleApp.cpp") {
 		t.Fatalf("expected startup entry file in knowledge pack: %#v", pack.StartupEntryFiles)
 	}
 	if len(pack.PerformanceLens.Hotspots) == 0 {
@@ -6263,7 +6263,7 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 			RunID:          "run-1",
 			Goal:           "goal",
 			Root:           root,
-			PrimaryStartup: "Tavern",
+			PrimaryStartup: "SampleApp",
 			Subsystems: []KnowledgeSubsystem{
 				{Title: "Core Runtime", Group: "Core Application"},
 			},
@@ -6271,9 +6271,9 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 		Snapshot: ProjectSnapshot{
 			Root:           root,
 			GeneratedAt:    time.Now(),
-			PrimaryStartup: "Tavern",
+			PrimaryStartup: "SampleApp",
 			Files: []ScannedFile{
-				{Path: "Tavern/Tavern.cpp", Directory: "Tavern", Extension: ".cpp", LineCount: 40, IsEntrypoint: true, ImportanceScore: 12},
+				{Path: "SampleApp/SampleApp.cpp", Directory: "SampleApp", Extension: ".cpp", LineCount: 40, IsEntrypoint: true, ImportanceScore: 12},
 			},
 		},
 		SemanticIndex: SemanticIndex{
@@ -6282,10 +6282,10 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 			Root:        root,
 			GeneratedAt: time.Now(),
 			Files: []SemanticIndexedFile{
-				{Path: "Tavern/Tavern.cpp", IsEntrypoint: true},
+				{Path: "SampleApp/SampleApp.cpp", IsEntrypoint: true},
 			},
 			Symbols: []SemanticSymbol{
-				{ID: "module:Tavern", Name: "Tavern", Kind: "unreal_module"},
+				{ID: "module:SampleApp", Name: "SampleApp", Kind: "unreal_module"},
 			},
 		},
 		UnrealGraph: UnrealSemanticGraph{
@@ -6294,7 +6294,7 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 			Root:        root,
 			GeneratedAt: time.Now(),
 			Nodes: []UnrealSemanticNode{
-				{ID: "module:Tavern", Kind: "module", Name: "Tavern"},
+				{ID: "module:SampleApp", Kind: "module", Name: "SampleApp"},
 			},
 		},
 	}
@@ -6757,13 +6757,13 @@ func TestBuildUnrealSemanticGraphIncludesCoreEdges(t *testing.T) {
 
 func TestBuildPerformanceLensClassifiesHotspots(t *testing.T) {
 	snapshot := ProjectSnapshot{
-		PrimaryStartup: "Tavern",
+		PrimaryStartup: "SampleApp",
 		Files: []ScannedFile{
 			{Path: "Common/ETWConsumer.cpp", LineCount: 1032},
-			{Path: "TavernWorker/PrefetchScanner.cpp", LineCount: 920},
+			{Path: "SampleWorker/PrefetchScanner.cpp", LineCount: 920},
 		},
 		SolutionProjects: []SolutionProject{
-			{Name: "Tavern", EntryFiles: []string{"Tavern/Tavern.cpp"}},
+			{Name: "SampleApp", EntryFiles: []string{"SampleApp/SampleApp.cpp"}},
 		},
 	}
 	items := []synthesisSection{
@@ -6780,7 +6780,7 @@ func TestBuildPerformanceLensClassifiesHotspots(t *testing.T) {
 			Group:            "Forensic Analysis",
 			Responsibilities: []string{"scan prefetch and decode artifacts"},
 			EntryPoints:      []string{"ScannerBase::Scan"},
-			KeyFiles:         []string{"TavernWorker/PrefetchScanner.cpp"},
+			KeyFiles:         []string{"SampleWorker/PrefetchScanner.cpp"},
 			InternalFlow:     []string{"scan -> decompress -> hash"},
 		},
 	}

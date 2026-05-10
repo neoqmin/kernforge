@@ -95,6 +95,8 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		NoModel:         !postChangeReviewHasDedicatedModel(a),
 		AutoTriggered:   true,
 		AutoFollowUp:    "none",
+		EditProposals:   editProposalsForPreview(preview),
+		RepairFindings:  preWriteRepairObligationsFromLastReview(a.Session),
 		MaxContextChars: 60000,
 	})
 	if err != nil {
@@ -112,10 +114,53 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		}
 		return fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n%s", formatPreWriteReviewFeedback(run))
 	}
+	if warningBlockers := preWriteReviewBlockingWarningFindings(run); len(warningBlockers) > 0 {
+		if a.EmitProgress != nil {
+			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review found actionable warnings. Asking the model to revise...", "자동 쓰기 전 리뷰에서 수정이 필요한 경고를 발견했습니다. 모델에게 수정을 요청합니다..."))
+		}
+		return fmt.Errorf("automatic pre-write review blocked this edit on actionable warnings before writing:\n\n%s", formatPreWriteReviewWarningBlockFeedback(run, warningBlockers))
+	}
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedText(a.Config, "Automatic pre-write review completed.", "자동 쓰기 전 리뷰가 완료되었습니다."))
+		if len(run.Gate.WarningFindings) > 0 {
+			a.EmitProgress(formatPreWriteReviewWarningProgress(a.Config, run))
+		} else {
+			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review completed.", "자동 쓰기 전 리뷰가 완료되었습니다."))
+		}
 	}
 	return nil
+}
+
+func preWriteRepairObligationsFromLastReview(session *Session) []ReviewFinding {
+	if session == nil || session.LastReviewRun == nil {
+		return nil
+	}
+	return preFixRepairObligationFindings(*session.LastReviewRun)
+}
+
+func preFixRepairObligationFindings(run ReviewRun) []ReviewFinding {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		return nil
+	}
+	out := make([]ReviewFinding, 0, len(run.Findings))
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if strings.TrimSpace(finding.ID) == "" {
+			continue
+		}
+		if reviewFindingBlocksGate(run, finding) {
+			out = append(out, finding)
+			continue
+		}
+		if !preWritePreFixWarningShouldBeRepairObligation(finding) {
+			continue
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+func preWritePreFixWarningShouldBeRepairObligation(finding ReviewFinding) bool {
+	return reviewFindingShouldBeRepairPlanWarning(finding)
 }
 
 func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request string, lastFingerprint *string, revisionCount *int, exhaustedNudge *bool) (bool, error) {
@@ -313,5 +358,156 @@ func formatPreWriteReviewFeedback(run ReviewRun) string {
 	b.WriteString("\n\nImplementation rules:\n")
 	b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
 	b.WriteString("- Return a corrected edit proposal instead of retrying the same patch.")
+	b.WriteString("\n- Do not use run_shell, PowerShell file APIs, redirection, or direct filesystem writes to bypass pre-write review; use edit tools so the corrected proposal is reviewed.")
+	b.WriteString("\n- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate; use local source evidence and the inline findings above.")
 	return strings.TrimSpace(b.String())
+}
+
+func formatPreWriteReviewWarningBlockFeedback(run ReviewRun, warnings []ReviewFinding) string {
+	var b strings.Builder
+	b.WriteString("Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.")
+	fmt.Fprintf(&b, "\n\nReview gate: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	if strings.TrimSpace(run.MachineStatus) != "" {
+		fmt.Fprintf(&b, " (%s)", run.MachineStatus)
+	}
+	if strings.TrimSpace(run.Result.Summary) != "" {
+		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
+	}
+	b.WriteString("\n\nActionable warning findings:\n")
+	b.WriteString(renderReviewInlineFindings(ReviewRun{Findings: warnings}, true))
+	b.WriteString("\n\nImplementation rules:\n")
+	b.WriteString("- Treat these pre-write warnings as required repair guidance.\n")
+	b.WriteString("- Revise the proposed edit so the requested API surface and implementation evidence are both present.\n")
+	b.WriteString("- Do not write the previous incomplete patch.\n")
+	b.WriteString("- Do not use run_shell, PowerShell file APIs, redirection, or direct filesystem writes to bypass pre-write review; use edit tools so the corrected proposal is reviewed.\n")
+	b.WriteString("- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate; use local source evidence and the actionable warnings above.\n")
+	return strings.TrimSpace(b.String())
+}
+
+func preWriteReviewBlockingWarningFindings(run ReviewRun) []ReviewFinding {
+	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
+	if len(warningIDs) == 0 {
+		return nil
+	}
+	var out []ReviewFinding
+	for _, finding := range run.Findings {
+		if !warningIDs[finding.ID] {
+			continue
+		}
+		if preWriteReviewWarningShouldBlock(finding) {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
+	finding.Normalize()
+	if !strings.EqualFold(strings.TrimSpace(finding.Source), "model") {
+		return false
+	}
+	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "evidence_gap") {
+		return !reviewPreWriteWarningLooksLikePureVerificationGap(finding)
+	}
+	return true
+}
+
+func reviewPreWriteWarningLooksLikePureVerificationGap(finding ReviewFinding) bool {
+	text := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	if containsAny(text,
+		"api surface",
+		"accessor",
+		"getter",
+		"member declaration",
+		"member declarations",
+		"missing declaration",
+		"missing implementation",
+		"requested api",
+		"requested scope",
+		"does not implement",
+		"구현 증거",
+		"구현이",
+		"구현되지",
+		"멤버 선언",
+		"선언",
+		"초기값",
+		"조회 기능",
+		"요청 범위",
+		"충족하지",
+	) {
+		return false
+	}
+	return containsAny(text,
+		"verification was not run",
+		"no latest verification",
+		"run verification",
+		"/verify",
+		"검증",
+		"테스트 실행",
+	)
+}
+
+func formatPreWriteReviewWarningProgress(cfg Config, run ReviewRun) string {
+	warnings := reviewCLIWarningFindings(run)
+	korean := reviewRunPrefersKorean(cfg, run)
+	if len(warnings) == 0 {
+		if korean {
+			return fmt.Sprintf("자동 쓰기 전 리뷰가 경고와 함께 완료되었습니다. 경고 %d개.", len(run.Gate.WarningFindings))
+		}
+		return fmt.Sprintf("Automatic pre-write review completed with warnings. warnings=%d.", len(run.Gate.WarningFindings))
+	}
+	var titles []string
+	for _, finding := range limitReviewFindings(warnings, 3) {
+		title := strings.TrimSpace(finding.Title)
+		if title == "" {
+			title = strings.TrimSpace(finding.Evidence)
+		}
+		if title != "" {
+			titles = append(titles, fmt.Sprintf("%s %s: %s", valueOrDefault(finding.ID, "RF"), finding.Severity, compactPromptSection(title, 140)))
+		}
+	}
+	suffix := strings.Join(titles, " | ")
+	if len(warnings) > len(titles) {
+		if suffix != "" {
+			suffix += " | "
+		}
+		if korean {
+			suffix += fmt.Sprintf("외 %d개", len(warnings)-len(titles))
+		} else {
+			suffix += fmt.Sprintf("%d more", len(warnings)-len(titles))
+		}
+	}
+	if len(run.ArtifactRefs) > 0 {
+		if suffix != "" {
+			suffix += " | "
+		}
+		if korean {
+			suffix += "보고서: " + run.ArtifactRefs[0]
+		} else {
+			suffix += "report: " + run.ArtifactRefs[0]
+		}
+	}
+	if korean {
+		return strings.TrimSpace(fmt.Sprintf("자동 쓰기 전 리뷰가 경고와 함께 완료되었습니다. 경고 %d개. %s", len(run.Gate.WarningFindings), suffix))
+	}
+	return strings.TrimSpace(fmt.Sprintf("Automatic pre-write review completed with warnings. warnings=%d. %s", len(run.Gate.WarningFindings), suffix))
+}
+
+func limitReviewFindings(findings []ReviewFinding, limit int) []ReviewFinding {
+	if limit <= 0 || len(findings) <= limit {
+		return findings
+	}
+	return findings[:limit]
 }

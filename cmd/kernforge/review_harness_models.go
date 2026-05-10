@@ -180,7 +180,6 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		role = normalizeReviewRole(role)
 		client, model, label, err := reviewRoleClient(rt, role)
 		label = reviewModelDisplayLabel(rt.cfg, client, model, label, reviewRoleReasoningEffortForRun(rt.cfg, role, *run))
-		distinctReviewer := reviewModelLabelDiffersFromMain(rt.cfg, label)
 		reviewerRun := ReviewReviewerRun{
 			Role:      role,
 			Model:     label,
@@ -198,23 +197,19 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 			reviewerRuns = append(reviewerRuns, reviewerRun)
 			run.Result.Degraded = true
 			run.Result.DegradedReason = strings.TrimSpace(reviewerRun.Error)
-			if distinctReviewer {
-				emitReviewModelResultProgress(rt, reviewerRun, 0)
-			}
+			emitReviewModelResultProgress(rt, reviewerRun, 0)
 			continue
 		}
 		prompt := buildReviewModelPrompt(rt.cfg, *run, role)
 		promptPath, rawPath := reviewRoleArtifactPaths(root, run.ID, role)
 		_ = os.WriteFile(promptPath, []byte(prompt), 0o644)
 		reviewerRun.PromptPath = promptPath
-		if distinctReviewer {
-			emitReviewModelRequestProgress(rt, role, label)
-		}
+		emitReviewModelRequestProgress(rt, role, label)
 		resp, err := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
 			Model:           model,
 			System:          reviewModelSystemPrompt(rt.cfg, *run, role),
 			Messages:        []Message{{Role: "user", Text: prompt}},
-			MaxTokens:       reviewRoleMaxTokensForRun(rt.cfg, *run),
+			MaxTokens:       reviewRoleMaxTokensForRoleRun(rt.cfg, role, *run),
 			Temperature:     0.1,
 			ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
 			WorkingDir:      root,
@@ -227,9 +222,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 			reviewerRuns = append(reviewerRuns, reviewerRun)
 			run.Result.Degraded = true
 			run.Result.DegradedReason = "review model failed: " + err.Error()
-			if distinctReviewer {
-				emitReviewModelResultProgress(rt, reviewerRun, 0)
-			}
+			emitReviewModelResultProgress(rt, reviewerRun, 0)
 			continue
 		}
 		raw := strings.TrimSpace(resp.Message.Text)
@@ -240,58 +233,71 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		_ = os.WriteFile(rawPath, []byte(raw), 0o644)
 		reviewerRun.RawOutputPath = rawPath
 		roleFindings, quality := parseModelReviewFindingsForLanguage(raw, role, reviewRunPrefersKorean(rt.cfg, *run))
+		if reviewStopReasonLooksTruncated(resp.StopReason) {
+			roleFindings = append(roleFindings, reviewTruncatedTailFindingPlaceholder(role, reviewRunPrefersKorean(rt.cfg, *run)))
+			quality = reviewModelQualityWeak
+		}
 		for i := range roleFindings {
 			roleFindings[i].ReviewerRole = role
 			roleFindings[i].Source = "model"
 		}
 		run.Redaction = mergeReviewRedactionReports(run.Redaction, rawRedaction)
-		if reviewTextHasOmissionMarker(raw) || reviewFindingsContainOmittedOutputPlaceholder(roleFindings) {
-			if distinctReviewer {
-				emitReviewModelRetryProgress(rt, role, label)
-			}
+		omissionRetryBudget := reviewRoleOmissionRetryBudgetForRun(rt.cfg, role)
+		omissionRetryFailed := false
+		for attempt := 1; attempt <= omissionRetryBudget && (reviewTextHasOmissionMarker(raw) || reviewFindingsContainOmittedOutputPlaceholder(roleFindings)); attempt++ {
+			emitReviewModelRetryProgress(rt, role, label)
 			retryPrompt := buildReviewModelOmissionRetryPrompt(rt.cfg, *run, role)
-			retryPromptPath, retryRawPath := reviewRoleAttemptArtifactPaths(root, run.ID, role, 1)
+			retryPromptPath, retryRawPath := reviewRoleAttemptArtifactPaths(root, run.ID, role, attempt)
 			_ = os.WriteFile(retryPromptPath, []byte(retryPrompt), 0o644)
 			retryResp, retryErr := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
 				Model:           model,
 				System:          reviewModelSystemPrompt(rt.cfg, *run, role),
 				Messages:        []Message{{Role: "user", Text: retryPrompt}},
-				MaxTokens:       reviewRoleRetryMaxTokensForRun(rt.cfg, *run),
+				MaxTokens:       reviewRoleRetryMaxTokensForRoleRun(rt.cfg, role, *run),
 				Temperature:     0.05,
 				ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
 				WorkingDir:      root,
 			})
 			reviewerRun.FinishedAt = time.Now()
-			if retryErr == nil {
-				retryRaw := strings.TrimSpace(retryResp.Message.Text)
-				if retryRaw == "" {
-					retryRaw = "(empty review response)"
-				}
-				retryRaw, retryRedaction := redactSensitiveText(retryRaw)
-				_ = os.WriteFile(retryRawPath, []byte(retryRaw), 0o644)
-				retryFindings, retryQuality := parseModelReviewFindingsForLanguage(retryRaw, role, reviewRunPrefersKorean(rt.cfg, *run))
-				for i := range retryFindings {
-					retryFindings[i].ReviewerRole = role
-					retryFindings[i].Source = "model"
-				}
-				run.Redaction = mergeReviewRedactionReports(run.Redaction, retryRedaction)
-				reviewerRun.PromptPath = retryPromptPath
-				reviewerRun.RawOutputPath = retryRawPath
-				raw = retryRaw
-				roleFindings = retryFindings
-				quality = retryQuality
+			if retryErr != nil {
+				reviewerRun.Error = "omission retry failed: " + retryErr.Error()
+				omissionRetryFailed = true
+				break
 			}
+			retryRaw := strings.TrimSpace(retryResp.Message.Text)
+			if retryRaw == "" {
+				retryRaw = "(empty review response)"
+			}
+			retryRaw, retryRedaction := redactSensitiveText(retryRaw)
+			_ = os.WriteFile(retryRawPath, []byte(retryRaw), 0o644)
+			retryFindings, retryQuality := parseModelReviewFindingsForLanguage(retryRaw, role, reviewRunPrefersKorean(rt.cfg, *run))
+			if reviewStopReasonLooksTruncated(retryResp.StopReason) {
+				retryFindings = append(retryFindings, reviewTruncatedTailFindingPlaceholder(role, reviewRunPrefersKorean(rt.cfg, *run)))
+				retryQuality = reviewModelQualityWeak
+			}
+			for i := range retryFindings {
+				retryFindings[i].ReviewerRole = role
+				retryFindings[i].Source = "model"
+			}
+			run.Redaction = mergeReviewRedactionReports(run.Redaction, retryRedaction)
+			reviewerRun.PromptPath = retryPromptPath
+			reviewerRun.RawOutputPath = retryRawPath
+			raw = retryRaw
+			roleFindings = retryFindings
+			quality = retryQuality
 		}
 		reviewerRun.Status = "completed"
 		reviewerRun.ModelQuality = quality
 		reviewerRuns = append(reviewerRuns, reviewerRun)
 		findings = append(findings, roleFindings...)
-		if distinctReviewer {
-			emitReviewModelResultProgress(rt, reviewerRun, len(roleFindings))
-		}
+		emitReviewModelResultProgress(rt, reviewerRun, len(roleFindings))
 		if quality == reviewModelQualityWeak || quality == reviewModelQualityFailed {
 			run.Result.Degraded = true
 			run.Result.DegradedReason = "model reviewer output quality was " + quality
+		}
+		if omissionRetryFailed {
+			run.Result.Degraded = true
+			run.Result.DegradedReason = strings.TrimSpace(reviewerRun.Error)
 		}
 		if run.Result.ModelQuality == "" || reviewModelQualityRank(quality) > reviewModelQualityRank(run.Result.ModelQuality) {
 			run.Result.ModelQuality = quality
@@ -359,6 +365,76 @@ func normalizeReviewModelProgressLabel(label string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(label)), " "))
 }
 
+func emitReviewScopeDiscoveryProgress(rt *runtimeState, run ReviewRun) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	discovery := run.RequestAnalysis.ScopeDiscovery
+	if strings.TrimSpace(discovery.ScopeWidth) == "" &&
+		len(discovery.CandidateFiles) == 0 &&
+		len(discovery.CandidateSymbols) == 0 &&
+		len(discovery.SearchTerms) == 0 {
+		return
+	}
+	scope := firstNonBlankString(discovery.ScopeWidth, "unknown")
+	preview := reviewProgressPathPreview(discovery.CandidateFiles, 3)
+	if preview != "" {
+		preview = " " + fmt.Sprintf(localizedText(rt.cfg, "candidates=%s", "후보=%s"), preview)
+	}
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Review scope discovery: scope=%s confidence=%.2f files=%d symbols=%d terms=%d.%s", "리뷰 scope discovery: 범위=%s 신뢰도=%.2f 파일 후보=%d 심볼=%d 검색어=%d.%s"),
+		scope,
+		discovery.Confidence,
+		len(discovery.CandidateFiles),
+		len(discovery.CandidateSymbols),
+		len(discovery.SearchTerms),
+		preview,
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func emitReviewEvidenceProgress(rt *runtimeState, run ReviewRun, opts ReviewHarnessOptions) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	sourceText := "(none)"
+	if len(run.Evidence.Sources) > 0 {
+		sourceText = strings.Join(run.Evidence.Sources, ",")
+	}
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Review evidence prepared: sources=%s paths=%d chars=%d max_context=%d.", "리뷰 evidence 준비: sources=%s paths=%d chars=%d max_context=%d."),
+		sourceText,
+		len(run.ChangeSet.ChangedPaths),
+		len(run.Evidence.Text),
+		opts.MaxContextChars,
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func reviewProgressPathPreview(paths []string, limit int) string {
+	if limit <= 0 || len(paths) == 0 {
+		return ""
+	}
+	out := make([]string, 0, limit)
+	for _, path := range paths {
+		path = strings.TrimSpace(filepath.ToSlash(path))
+		if path == "" {
+			continue
+		}
+		out = append(out, truncateStatusSnippet(path, 64))
+		if len(out) >= limit {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	if len(paths) > len(out) {
+		out = append(out, fmt.Sprintf("+%d", len(paths)-len(out)))
+	}
+	return strings.Join(out, ", ")
+}
+
 func emitReviewModelRequestProgress(rt *runtimeState, role string, label string) {
 	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
 		return
@@ -410,11 +486,19 @@ func emitReviewModelRetryProgress(rt *runtimeState, role string, label string) {
 	}
 	roleName := reviewRoleProgressName(role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review model output used omission markers; retrying strict review: %s -> %s.", "리뷰 모델 출력에 생략 표식이 있어 엄격 리뷰로 재시도합니다: %s -> %s."),
+		localizedText(rt.cfg, "Review model output looked omitted or cut off; retrying strict review: %s -> %s.", "리뷰 모델 출력에 생략/잘림 징후가 있어 엄격 리뷰로 재시도합니다: %s -> %s."),
 		roleName,
 		label,
 	)
 	rt.agent.EmitProgress(message)
+}
+
+func reviewStopReasonLooksTruncated(stopReason string) bool {
+	lower := strings.ToLower(strings.TrimSpace(stopReason))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower, "length", "max_token", "max token", "token_limit", "incomplete", "partial", "truncated")
 }
 
 func emitDistinctReviewGateResultProgress(rt *runtimeState, run ReviewRun) {
@@ -464,7 +548,10 @@ func reviewRoleReasoningEffort(cfg Config, role string) string {
 			return roleCfg.ReasoningEffort
 		}
 	}
-	return cfg.ReasoningEffort
+	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
+		return cfg.ReasoningEffort
+	}
+	return reviewProviderBehavior(reviewRoleProviderForRun(cfg, role)).DefaultReviewEffort
 }
 
 func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) string {
@@ -481,25 +568,84 @@ func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) str
 			return roleCfg.ReasoningEffort
 		}
 	}
-	return "low"
+	if reviewBeforeFixNeedsDeepBugHunt(run) {
+		return "high"
+	}
+	return firstNonBlankString(reviewProviderBehavior(reviewRoleProviderForRun(cfg, role)).DefaultReviewEffort, "low")
 }
 
 func reviewRoleMaxTokensForRun(cfg Config, run ReviewRun) int {
+	return reviewRoleMaxTokensForProvider(cfg, cfg.Provider, run)
+}
+
+func reviewRoleMaxTokensForRoleRun(cfg Config, role string, run ReviewRun) int {
+	return reviewRoleMaxTokensForProvider(cfg, reviewRoleProviderForRun(cfg, role), run)
+}
+
+func reviewRoleMaxTokensForProvider(cfg Config, provider string, run ReviewRun) int {
+	behavior := reviewProviderBehavior(provider)
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
-		return cfg.MaxTokens
+		return reviewProviderTokenLimit(cfg.MaxTokens, behavior.MaxReviewTokens)
 	}
-	if cfg.MaxTokens <= 0 || cfg.MaxTokens > 2048 {
+	maxTokens := reviewProviderTokenLimit(cfg.MaxTokens, behavior.MaxReviewTokens)
+	if reviewBeforeFixNeedsDeepBugHunt(run) {
+		if maxTokens <= 0 {
+			return 4096
+		}
+		if maxTokens > 6000 {
+			return 6000
+		}
+		if maxTokens < 4096 {
+			return maxTokens
+		}
+		return maxTokens
+	}
+	if maxTokens <= 0 || maxTokens > 2048 {
 		return 2048
 	}
-	return cfg.MaxTokens
+	return maxTokens
 }
 
 func reviewRoleRetryMaxTokensForRun(cfg Config, run ReviewRun) int {
-	maxTokens := reviewRoleMaxTokensForRun(cfg, run)
+	return reviewRoleRetryMaxTokensForProvider(cfg, cfg.Provider, run)
+}
+
+func reviewRoleRetryMaxTokensForRoleRun(cfg Config, role string, run ReviewRun) int {
+	return reviewRoleRetryMaxTokensForProvider(cfg, reviewRoleProviderForRun(cfg, role), run)
+}
+
+func reviewRoleRetryMaxTokensForProvider(cfg Config, provider string, run ReviewRun) int {
+	behavior := reviewProviderBehavior(provider)
+	if behavior.RetryReviewTokens > 0 {
+		return behavior.RetryReviewTokens
+	}
+	maxTokens := reviewRoleMaxTokensForProvider(cfg, provider, run)
 	if maxTokens <= 0 || maxTokens < 4096 {
 		return 4096
 	}
 	return maxTokens
+}
+
+func reviewRoleOmissionRetryBudgetForRun(cfg Config, role string) int {
+	budget := reviewProviderBehavior(reviewRoleProviderForRun(cfg, role)).OmissionRetryBudget
+	if budget < 0 {
+		return 0
+	}
+	return budget
+}
+
+func reviewRoleProviderForRun(cfg Config, role string) string {
+	role = normalizeReviewRole(role)
+	reviewCfg := configReviewHarness(cfg)
+	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" {
+		return roleCfg.Provider
+	}
+	if role != "primary_reviewer" {
+		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" {
+			return roleCfg.Provider
+		}
+	}
+	return cfg.Provider
 }
 
 func preFixReviewRole(reviewCfg ReviewHarnessConfig, run ReviewRun) string {
@@ -571,6 +717,7 @@ func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	b.WriteString("  category: correctness|security|stability|performance|test_gap|maintainability|false_positive|bypass_surface|operational_risk|evidence_gap\n")
 	b.WriteString("  path: <path or empty>\n")
 	b.WriteString("  symbol: <symbol or surface>\n")
+	b.WriteString("  title: <complete short finding title under 120 characters>\n")
 	b.WriteString("  evidence: <specific evidence from supplied context>\n")
 	b.WriteString("  impact: <why it matters>\n")
 	b.WriteString("  required_fix: <concrete fix>\n")
@@ -603,21 +750,40 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	evidenceLimit := 60000
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		evidenceLimit = 12000
+		if reviewBeforeFixNeedsDeepBugHunt(run) {
+			evidenceLimit = 30000
+		}
 	}
 	b.WriteString("\nReview evidence:\n")
 	b.WriteString(compactReviewPromptSection(run.Evidence.Text, evidenceLimit))
 	b.WriteString("\n\nRequired review rules:\n")
 	b.WriteString("- Findings must be concrete and tied to supplied evidence.\n")
+	b.WriteString("- Every finding must include a title field. Do not copy a long evidence or impact sentence into title.\n")
 	b.WriteString("- A blocker/high finding must include evidence, impact, required_fix, and test_recommendation when applicable.\n")
 	b.WriteString("- If evidence is insufficient, emit insufficient_evidence or evidence_gap findings.\n")
 	b.WriteString("- Do not invent files, tests, or code not present in the evidence.\n")
 	b.WriteString("- Do not use ellipses or omission markers in summary, title, evidence, impact, required_fix, or test_recommendation. This includes three consecutive periods, Unicode ellipsis, truncation labels, and omitted-content labels. Every field must be a complete sentence or phrase.\n")
+	if run.Target == reviewTargetSourceAnalysis {
+		b.WriteString("- This is a source analysis review, not a proposed code-change review. Findings should describe risks in the supplied source evidence, not missing implementation work unless the user explicitly asked for a fix.\n")
+	}
+	if run.Mode == reviewModePerformanceAnalysis {
+		b.WriteString("- For performance or hitch analysis, calibrate severity carefully: use high/blocker only for evidence-backed data races, deadlocks, main-thread blocking, unbounded growth, or hot-path work that is clearly frequent. Use medium for plausible lock contention, repeated allocation, or broad-copy overhead when call frequency or profiling data is not supplied.\n")
+	}
 	if reviewRunPrefersKorean(cfg, run) {
 		b.WriteString("- Write narrative field values in Korean. Keep schema keys, enum values, code identifiers, paths, API names, commands, and quoted source code unchanged.\n")
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		b.WriteString("- This is a pre-fix review. Do not describe required fixes as already applied. Write required_fix as an imperative action for the implementer.\n")
 		b.WriteString("- Prefer code correctness findings over generic verification-gap findings unless verification evidence is essential to the fix.\n")
+		if reviewBeforeFixNeedsDeepBugHunt(run) {
+			b.WriteString("- This request asks to inspect code and fix bugs. Review the supplied source line by line for correctness, stability, performance, and boundary bugs before approving.\n")
+			b.WriteString("- If you return approved with no actionable bug findings, the implementation pass will still perform independent source inspection; do not imply the code is proven bug-free.\n")
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		b.WriteString("- This is a pre-write review. If evidence includes required repair findings from a pre-fix review, verify the proposed edit addresses every blocking finding and every medium-or-higher actionable warning listed there.\n")
+		b.WriteString("- Do not approve a proposed edit that only fixes a blocker while leaving a listed actionable warning unresolved, unless the diff itself contains a clear reason that the warning is intentionally out of scope.\n")
+		b.WriteString("- If a required repair finding is still unresolved, emit needs_revision with a concrete finding that names the original repair id.\n")
 	}
 	return b.String()
 }
@@ -650,6 +816,12 @@ func buildReviewModelOmissionRetryPrompt(cfg Config, run ReviewRun, role string)
 	}
 	if len(run.ChangeSet.ChangedPaths) > 0 {
 		fmt.Fprintf(&b, "\nChanged paths:\n- %s\n", strings.Join(limitStrings(run.ChangeSet.ChangedPaths, 24), "\n- "))
+	}
+	if run.Target == reviewTargetSourceAnalysis {
+		b.WriteString("\nScope rule: This is a source analysis review, not a proposed code-change review.\n")
+	}
+	if run.Mode == reviewModePerformanceAnalysis {
+		b.WriteString("Severity rule: use high/blocker only for evidence-backed data races, deadlocks, main-thread blocking, unbounded growth, or clearly frequent hot-path work. Use medium for plausible contention or allocation overhead without frequency/profiling evidence.\n")
 	}
 	b.WriteString("\nRequired schema:\n")
 	b.WriteString("REVIEW_RESULT\n")

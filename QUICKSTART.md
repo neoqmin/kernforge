@@ -12,7 +12,7 @@ The key loop to remember:
 7. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
 
 Before launching, `kernforge --help` shows the executable version plus standalone, one-shot, MCP server, and daemon proxy examples. Use `kernforge --version` for the same version-only check, and `kernforge help mcp` when wiring Kernforge into an MCP client.
-When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review_code`; it reviews Codex's supplied diff/code or the workspace git diff with Kernforge's main model.
+When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review`; it returns structured findings, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, and action-oriented `next_commands` instead of the older review-code-only surface.
 If the same MCP entry is reused across repositories, pass the current repo as the tool `workspace` argument or configure `-cwd` per repo; otherwise Kernforge falls back to the server launch directory.
 
 ## 1. The Core Loop In Five Minutes
@@ -201,7 +201,7 @@ Use `/new-feature` when you want persisted spec, plan, and task artifacts under 
 6. `/hooks`
 
 Quick interpretation:
-1. `/status` is the fast view for current session and runtime state, including approvals.
+1. `/status` is the fast view for current session and runtime state, including approvals and the runtime gate ledger. Check `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` before final answers or git/MCP write-side actions.
 2. `/config` is the fast view for effective settings such as provider defaults, hooks, locale, and verification toggles.
 3. `/provider status` is the fast view for provider wiring. It shows the normalized endpoint, whether an API key is configured, and what budget visibility is actually available for the current provider.
 
@@ -214,6 +214,13 @@ If a model tries to stage, commit, push, or open a PR:
 1. Kernforge treats git mutation as a separate approval path from file edits.
 2. `Allow git?` covers git-mutating tools for the current session.
 3. Normal review and edit prompts are not supposed to run git mutation unless you explicitly asked for it.
+
+If an edit is simple and exact:
+1. Prefer the structured `apply_edit_proposal` path. It records the file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, and review evidence before writing.
+2. Keep `apply_patch` for complex hunk-level fallback after the current file contents have been read.
+3. If `apply_patch` fails with a malformed wrapper or repeated invalid signature, reread the target file and generate a fresh patch instead of resubmitting the same text.
+4. If a review or runtime gate reports stale coverage, rerun `/review` or follow the displayed `next_command` before claiming completion.
+5. If `/review` returns `narrow-review`, supply the focused paths, diff, selection, or target symbol before treating model findings as complete.
 
 If the model keeps rereading a large file:
 1. Recent `read_file` cache hits now return a `NOTE:` prefix instead of silently rereading the same range.

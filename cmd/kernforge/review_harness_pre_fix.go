@@ -54,7 +54,7 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		}
 	}
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedText(a.Config, "Review before fix completed.", "수정 전 리뷰가 완료되었습니다."))
+		a.EmitProgress(formatReviewBeforeFixProgress(a.Config, run))
 	}
 	return true, nil
 }
@@ -106,6 +106,10 @@ func (rt *runtimeState) reviewBeforeFixOptions(input string, images []MessageIma
 	if target == "" {
 		return ReviewHarnessOptions{}, nil, false
 	}
+	maxContextChars := 20000
+	if target == reviewTargetSelection || len(paths) > 0 {
+		maxContextChars = 60000
+	}
 	return ReviewHarnessOptions{
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              target,
@@ -115,7 +119,7 @@ func (rt *runtimeState) reviewBeforeFixOptions(input string, images []MessageIma
 		IncludeFileContents: includeFileContents,
 		AutoTriggered:       true,
 		AutoFollowUp:        "none",
-		MaxContextChars:     20000,
+		MaxContextChars:     maxContextChars,
 		RawArgs:             request,
 	}, selection, true
 }
@@ -173,6 +177,155 @@ func reviewRunNeedsRepair(run ReviewRun) bool {
 		return true
 	}
 	return len(run.Gate.BlockingFindings) > 0
+}
+
+func reviewBeforeFixNeedsDeepBugHunt(run ReviewRun) bool {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		return false
+	}
+	if !looksLikeBugFindingFixIntent(run.Objective) && !(hasNaturalReviewIntent(run.Objective) && hasRepairActionIntent(strings.ToLower(run.Objective))) {
+		return false
+	}
+	if run.Target == reviewTargetSelection {
+		return true
+	}
+	if len(run.ChangeSet.ChangedPaths) > 0 || len(run.RequestAnalysis.ScopeDiscovery.CandidateFiles) > 0 {
+		return true
+	}
+	return false
+}
+
+func preFixNonConclusiveBugHuntFindings(run ReviewRun) []ReviewFinding {
+	if !reviewBeforeFixNeedsDeepBugHunt(run) || preFixReviewHasActionableBugHuntFinding(run) {
+		return nil
+	}
+	if len(run.Evidence.ChangedPaths) == 0 && len(run.ChangeSet.ChangedPaths) == 0 {
+		return nil
+	}
+	return []ReviewFinding{{
+		ID:                 "RF-PREFIX-001",
+		Source:             "deterministic",
+		Severity:           reviewSeverityMedium,
+		Category:           "evidence_gap",
+		Title:              "Pre-fix review returned no actionable bug findings",
+		Evidence:           "The request asks to inspect and fix bugs, but the pre-fix review did not produce any actionable correctness, stability, security, or performance finding.",
+		Impact:             "An approved pre-fix pass is not proof that the referenced code is bug-free; the implementation model must still inspect the code before editing.",
+		RequiredFix:        "Continue with an independent source inspection of the referenced code and apply only clearly necessary fixes.",
+		TestRecommendation: "After editing, run the focused verification available for the touched code and repeat review if possible.",
+		Confidence:         "medium",
+	}}
+}
+
+func preFixReviewHasActionableBugHuntFinding(run ReviewRun) bool {
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if strings.EqualFold(finding.Source, "deterministic") && strings.EqualFold(finding.Category, "evidence_gap") {
+			continue
+		}
+		if strings.EqualFold(finding.Category, "test_gap") || strings.EqualFold(finding.Category, "evidence_gap") {
+			continue
+		}
+		if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityLow) {
+			continue
+		}
+		if strings.TrimSpace(finding.Title) != "" || strings.TrimSpace(finding.RequiredFix) != "" || strings.TrimSpace(finding.Evidence) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func formatReviewBeforeFixProgress(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	blockers := reviewProgressFindingsByID(run, run.Gate.BlockingFindings, 3)
+	warnings := reviewCLIWarningFindings(run)
+	if len(blockers) == 0 && len(warnings) == 0 {
+		if korean {
+			return "수정 전 리뷰가 완료되었습니다."
+		}
+		return "Review before fix completed."
+	}
+	parts := make([]string, 0, 4)
+	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
+	if strings.TrimSpace(verdict) != "" {
+		if korean {
+			parts = append(parts, "결과="+verdict)
+		} else {
+			parts = append(parts, "verdict="+verdict)
+		}
+	}
+	if len(blockers) > 0 {
+		if korean {
+			parts = append(parts, fmt.Sprintf("차단 %d개. %s", len(run.Gate.BlockingFindings), strings.Join(reviewProgressFindingTitles(blockers, 3), " | ")))
+		} else {
+			parts = append(parts, fmt.Sprintf("blockers=%d. %s", len(run.Gate.BlockingFindings), strings.Join(reviewProgressFindingTitles(blockers, 3), " | ")))
+		}
+	}
+	if len(warnings) > 0 {
+		warningCount := len(run.Gate.WarningFindings)
+		if warningCount == 0 {
+			warningCount = len(warnings)
+		}
+		if korean {
+			parts = append(parts, fmt.Sprintf("경고 %d개. %s", warningCount, strings.Join(reviewProgressFindingTitles(warnings, 3), " | ")))
+		} else {
+			parts = append(parts, fmt.Sprintf("warnings=%d. %s", warningCount, strings.Join(reviewProgressFindingTitles(warnings, 3), " | ")))
+		}
+	}
+	if len(run.ArtifactRefs) > 0 {
+		if korean {
+			parts = append(parts, "보고서: "+run.ArtifactRefs[0])
+		} else {
+			parts = append(parts, "report: "+run.ArtifactRefs[0])
+		}
+	}
+	if korean {
+		if len(warnings) > 0 && len(blockers) == 0 {
+			return strings.TrimSpace("수정 전 리뷰가 경고와 함께 완료되었습니다. " + strings.Join(parts, " | "))
+		}
+		return strings.TrimSpace("수정 전 리뷰가 완료되었습니다. " + strings.Join(parts, " | "))
+	}
+	if len(warnings) > 0 && len(blockers) == 0 {
+		return strings.TrimSpace("Review before fix completed with warnings. " + strings.Join(parts, " | "))
+	}
+	return strings.TrimSpace("Review before fix completed. " + strings.Join(parts, " | "))
+}
+
+func reviewProgressFindingsByID(run ReviewRun, ids []string, limit int) []ReviewFinding {
+	idSet := reviewFindingIDSet(ids)
+	if len(idSet) == 0 {
+		return nil
+	}
+	out := make([]ReviewFinding, 0, minInt(len(ids), limit))
+	for _, finding := range run.Findings {
+		if !idSet[finding.ID] {
+			continue
+		}
+		out = append(out, finding)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func reviewProgressFindingTitles(findings []ReviewFinding, limit int) []string {
+	titles := make([]string, 0, minInt(len(findings), limit))
+	for _, finding := range limitReviewFindings(findings, limit) {
+		title := strings.TrimSpace(finding.Title)
+		evidence := strings.TrimSpace(finding.Evidence)
+		if title == "" || (strings.Contains(strings.ToLower(title), " finding in ") && evidence != "") {
+			title = evidence
+		}
+		if title == "" {
+			title = strings.TrimSpace(finding.Evidence)
+		}
+		if title == "" {
+			continue
+		}
+		titles = append(titles, fmt.Sprintf("%s %s: %s", valueOrDefault(finding.ID, "RF"), finding.Severity, compactPromptSection(title, 140)))
+	}
+	return titles
 }
 
 func (a *Agent) shouldConcludeAfterNonBlockingPreFixReview(userText string) bool {
@@ -347,16 +500,30 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 	}
 	b.WriteString("\n\nImplementation rules:\n")
 	b.WriteString("- Inspect further only where needed.\n")
-	b.WriteString("- Fix the reviewed issue directly with edit tools when a concrete fix is required.\n")
+	b.WriteString("- Fix every blocking finding and every medium-or-higher actionable warning from the pre-fix review.\n")
+	b.WriteString("- Do not silently ignore a listed warning; either repair it or explicitly explain why the warning is intentionally out of scope.\n")
 	b.WriteString("- Do not broaden scope beyond the reviewed code/change.\n")
 	b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
+	if korean {
+		b.WriteString("- 파일 쓰기 또는 패치 도구를 호출하기 전에 사용자에게 `검토 결과:` 섹션으로 RF 항목과 조치 방향을 짧게 요약하세요.\n")
+	} else {
+		b.WriteString("- Before calling any file write or patch tool, show the user a short `Review findings:` section with the RF items and repair direction.\n")
+	}
 	b.WriteString("- When using apply_patch, send only valid KernForge patch syntax. The first line after *** Begin Patch must be *** Update File:, *** Add File:, or *** Delete File:. Never start the patch body with @@.\n")
 	b.WriteString("- The normal pre-write review gate will run again before any file write.\n")
 	return strings.TrimSpace(b.String())
 }
 
 func renderReviewBeforeFixInlineFindings(run ReviewRun) string {
-	return renderReviewInlineFindings(run, false)
+	text := renderReviewInlineFindings(run, false)
+	if preFixHasNonConclusiveBugHuntWarning(run) {
+		note := "- Pre-fix review returned no actionable bug findings. Inspect the requested code independently before editing; do not treat this as proof that the code is bug-free."
+		if strings.TrimSpace(text) == "" {
+			return note
+		}
+		return strings.TrimSpace(text + "\n" + note)
+	}
+	return text
 }
 
 func renderReviewInlineFindings(run ReviewRun, includeVerificationGaps bool) string {
@@ -399,6 +566,15 @@ func renderReviewInlineFindings(run ReviewRun, includeVerificationGaps bool) str
 		b.WriteString("- Review only reported verification or evidence gaps. Inspect the requested code, apply no unrelated cleanup, and run focused verification if possible.")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func preFixHasNonConclusiveBugHuntWarning(run ReviewRun) bool {
+	for _, finding := range run.Findings {
+		if strings.EqualFold(strings.TrimSpace(finding.Title), "Pre-fix review returned no actionable bug findings") {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) primeTaskStateFromReviewBeforeFix(run ReviewRun) {

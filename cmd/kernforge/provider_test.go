@@ -368,6 +368,53 @@ func TestOpenAICompatibleClientSynthesizesMissingToolResponses(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleClientMarksRuntimeSupersededToolResponses(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_patch", Name: "apply_patch", Arguments: `{"patch":"..."}`},
+			}},
+			{Role: "user", Text: "Your last edit targeted stale or mismatched file contents. Read the file again before editing."},
+		},
+		Tools: []ToolDefinition{{Name: "apply_patch"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", captured["messages"])
+	}
+	if len(messages) < 4 {
+		t.Fatalf("expected synthesized superseded tool message, got %#v", messages)
+	}
+	tool, ok := messages[2].(map[string]any)
+	if !ok {
+		t.Fatalf("expected synthesized tool message, got %#v", messages[2])
+	}
+	content := fmt.Sprint(tool["content"])
+	if !strings.Contains(content, "superseded before execution") {
+		t.Fatalf("expected superseded tool content, got %#v", tool["content"])
+	}
+	if strings.Contains(content, "tool result was missing") {
+		t.Fatalf("expected no missing-transcript error for runtime superseded tool call, got %#v", tool["content"])
+	}
+}
+
 func TestOpenAICompatibleClientConvertsOrphanToolMessagesToUserContext(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -385,7 +432,7 @@ func TestOpenAICompatibleClientConvertsOrphanToolMessagesToUserContext(t *testin
 		Model: "deepseek-v4-pro",
 		Messages: []Message{
 			{Role: "user", Text: "inspect"},
-			{Role: "tool", ToolCallID: "call_orphan", ToolName: "write_file", Text: "wrote TavernKernel/ANTICHEAT_GAP_ANALYSIS.md"},
+			{Role: "tool", ToolCallID: "call_orphan", ToolName: "write_file", Text: "wrote SampleKernel/ANTICHEAT_GAP_ANALYSIS.md"},
 			{Role: "user", Text: "continue"},
 		},
 		Tools: []ToolDefinition{{Name: "write_file"}},

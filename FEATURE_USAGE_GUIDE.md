@@ -86,7 +86,7 @@ Useful commands:
 - `/provider status`
 
 Current behavior:
-1. `/status` shows session and runtime state such as the active session id, current approvals, selection state, verification state, and MCP counts.
+1. `/status` shows session and runtime state such as the active session id, current approvals, selection state, verification state, MCP counts, and the runtime gate ledger. Use `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` to decide whether review, verification, or completion audit needs repair before final answers or write-side actions.
 2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, and verification defaults.
 3. `/provider status` shows the active provider, normalized endpoint, API key presence, and provider-specific budget visibility.
 4. For OpenRouter, `/provider status` performs a live lookup of key-level `limit_remaining` and `usage`, and it also shows account credits when the key is a management key.
@@ -97,6 +97,7 @@ Current behavior:
 9. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
 10. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
 11. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
+12. `/hooks` prints the same compact runtime gate summary as `/status`, so hook/policy checks do not invent a second interpretation of review freshness.
 
 ### Prompt Intent Routing
 
@@ -767,8 +768,8 @@ Best used when:
 
 Review artifacts:
 1. `/review selection` writes `.kernforge/reviews/latest.json` and `.kernforge/reviews/latest.md`.
-2. The result includes typed findings, freshness/redaction state, gate status, repair steps, and recommended next commands.
-3. MCP clients get the same structure through `kernforge_review`.
+2. The result includes typed findings, freshness/redaction state, gate status, scope discovery, repair steps, runtime gate ledger, and recommended next commands.
+3. MCP clients get the same structure through `kernforge_review`, including `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, and action-contract fields on `next_commands`.
 
 ### 2.8 Plan Review Workflow
 
@@ -798,6 +799,12 @@ Current integration:
 6. Automatic pre-write review runs on valid edit previews before an edit is applied, and automatic post-change review runs after changed paths exist.
 7. Service, SCM, driver, and sensitive-path signals select the `security` reviewer role. The `false-positive` role is reserved for detection, telemetry, scan, spoofing, and evasion-quality surfaces.
 8. Review progress explicitly names the reviewer role and provider route when it differs from the main model, then prints the gate result and finding counts.
+9. Simple exact edits can use `apply_edit_proposal`, which records file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, and review evidence before the write. `apply_patch` remains available as a complex hunk-level fallback.
+10. Runtime gate freshness links review, patch transaction, verification, completion audit, and final-answer review. Stale review coverage or unwaived blockers can block final answers, explicit git writes, MCP write-side responses, and completion audit readiness until `/review`, verification, or the displayed `next_command` repairs the ledger.
+11. Invalid patch recovery normalizes common wrapper problems and records repeated patch signatures so the agent stops resubmitting the same malformed patch and refreshes target-file context instead.
+12. Provider behavior drives review token caps, omission retry budgets, schema strictness, and recovery prompts. Weak or incomplete high-severity model findings are downgraded to evidence-gap warnings unless they include a concrete path or symbol, evidence, impact, and required fix.
+13. Pre-fix review findings are surfaced to the user before any edit tool is allowed to run. If a repair turn has structured RF items, the assistant must show a short `Review findings:` summary with those IDs and the intended repair direction.
+14. Local code review and repair turns stay on local source evidence. Web/search/browser MCP tools are blocked unless the user explicitly asks for external research.
 
 ### 2.9 Tracked Feature Workflow
 
