@@ -388,6 +388,10 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	if finding.BlocksGate || strings.EqualFold(finding.Severity, reviewSeverityBlocker) {
 		return true
 	}
+	if strings.EqualFold(strings.TrimSpace(finding.Source), "deterministic") &&
+		strings.EqualFold(strings.TrimSpace(finding.ReviewerRole), "coding_harness") {
+		return false
+	}
 	if reviewRunLooksReadOnlyAnalysis(run) {
 		return false
 	}
@@ -638,8 +642,21 @@ func reviewRunHasChangeEvidence(run ReviewRun) bool {
 func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 	var blocking []ReviewFinding
 	var warnings []ReviewFinding
+	blockingIDs := reviewFindingIDSet(run.Gate.BlockingFindings)
+	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
+	hasGateClassification := len(blockingIDs) > 0 || len(warningIDs) > 0
 	for _, finding := range run.Findings {
 		finding.Normalize()
+		if hasGateClassification {
+			if blockingIDs[finding.ID] {
+				blocking = append(blocking, finding)
+				continue
+			}
+			if warningIDs[finding.ID] && reviewFindingShouldBeRepairPlanWarning(finding) {
+				warnings = append(warnings, finding)
+			}
+			continue
+		}
 		if reviewFindingBlocksGate(run, finding) {
 			blocking = append(blocking, finding)
 			continue

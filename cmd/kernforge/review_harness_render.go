@@ -387,13 +387,13 @@ func reviewCLIWarningFindings(run ReviewRun) []ReviewFinding {
 	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
 	var out []ReviewFinding
 	for _, finding := range run.Findings {
-		if reviewFindingBlocksGate(run, finding) {
-			continue
-		}
 		if len(warningIDs) > 0 {
 			if warningIDs[finding.ID] {
 				out = append(out, finding)
 			}
+			continue
+		}
+		if reviewFindingBlocksGate(run, finding) {
 			continue
 		}
 		if strings.EqualFold(run.Gate.Verdict, reviewVerdictApprovedWithWarnings) &&

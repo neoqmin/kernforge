@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -368,6 +369,7 @@ func registerCrossReviewerInModelPlan(run *ReviewRun, role string, label string)
 		run.ModelPlan.AssignedModels = map[string]string{}
 	}
 	run.ModelPlan.AssignedModels[role] = strings.TrimSpace(label)
+	markReviewModelRoleSatisfied(run, role)
 	if reviewRunRequiresSuccessfulCrossReviewer(*run) {
 		run.ModelPlan.RequiredRoles = analysisUniqueStrings(append(run.ModelPlan.RequiredRoles, role))
 	} else {
@@ -375,6 +377,47 @@ func registerCrossReviewerInModelPlan(run *ReviewRun, role string, label string)
 	}
 	if len(run.ModelPlan.RequiredRoles)+len(run.ModelPlan.OptionalRoles) > 1 {
 		run.ModelPlan.Strategy = "dual"
+	}
+}
+
+func markReviewModelRoleSatisfied(run *ReviewRun, role string) {
+	if run == nil {
+		return
+	}
+	role = normalizeReviewRole(role)
+	if role == "" {
+		return
+	}
+	run.ModelPlan.MissingRoles = removeStringCI(run.ModelPlan.MissingRoles, role)
+	run.ModelPlan.DegradedRoles = removeStringCI(run.ModelPlan.DegradedRoles, role)
+	run.ModelPlan.UserGuidance = removeReviewModelRoleGuidance(run.ModelPlan.UserGuidance, role)
+}
+
+func removeReviewModelRoleGuidance(items []string, role string) []string {
+	role = normalizeReviewRole(role)
+	if role == "" {
+		return items
+	}
+	var out []string
+	for _, item := range items {
+		if reviewModelGuidanceMentionsRole(item, role) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func reviewModelGuidanceMentionsRole(item string, role string) bool {
+	text := strings.ToLower(strings.TrimSpace(item))
+	switch normalizeReviewRole(role) {
+	case "security_reviewer":
+		return strings.Contains(text, "security reviewer")
+	case "false_positive_reviewer":
+		return strings.Contains(text, "false-positive reviewer") ||
+			strings.Contains(text, "false positive reviewer")
+	default:
+		return strings.Contains(text, strings.ToLower(strings.ReplaceAll(role, "_", " ")))
 	}
 }
 
@@ -388,6 +431,9 @@ func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles [
 	if err != nil || client == nil || strings.TrimSpace(model) == "" {
 		return nil, "", "", "", "", false
 	}
+	if reviewClientMatchesMain(rt, client, model) {
+		return nil, "", "", "", "", false
+	}
 	label = reviewModelDisplayLabel(rt.cfg, client, model, label, reviewRoleReasoningEffortForRun(rt.cfg, routeRole, run))
 	if !reviewModelLabelDiffersFromMain(rt.cfg, label) {
 		return nil, "", "", "", "", false
@@ -397,6 +443,31 @@ func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles [
 		crossRole = "cross_reviewer"
 	}
 	return client, model, label, normalizeReviewRole(crossRole), normalizeReviewRole(routeRole), true
+}
+
+func reviewClientMatchesMain(rt *runtimeState, client ProviderClient, model string) bool {
+	if rt == nil || rt.agent == nil || client == nil || rt.agent.Client == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(rt.cfg.Model)) {
+		return false
+	}
+	return sameProviderClient(client, rt.agent.Client)
+}
+
+func sameProviderClient(left ProviderClient, right ProviderClient) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	leftValue := reflect.ValueOf(left)
+	rightValue := reflect.ValueOf(right)
+	if !leftValue.IsValid() || !rightValue.IsValid() || leftValue.Type() != rightValue.Type() {
+		return false
+	}
+	if !leftValue.Type().Comparable() {
+		return false
+	}
+	return left == right
 }
 
 func reviewPreferredCrossReviewRouteRole(run ReviewRun, preferredRoles []string) string {

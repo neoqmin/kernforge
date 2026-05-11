@@ -800,6 +800,7 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"artifact_refs":           run.ArtifactRefs,
 		"result":                  run.Result,
 		"model_plan":              run.ModelPlan,
+		"reviewer_runs":           run.ReviewerRuns,
 		"freshness":               run.Freshness,
 		"latest_review_freshness": latestFreshness,
 		"redaction":               run.Redaction,

@@ -1044,7 +1044,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 @mcp:docs:getting-started 이 리소스를 요약해줘
 ```
 
-Kernforge가 MCP server로 동작하고 Codex가 MCP client인 경우, 리뷰 요청은 `kernforge_review`를 사용합니다. 이 tool은 CLI `/review`와 같은 공통 review harness를 실행하고, 전달된 diff/code, file path, plan, PR context 또는 현재 workspace의 `git diff`를 수집한 뒤 structured finding, gate status, model-role status, `scope_discovery`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, reason/when/safety/expected_result가 붙은 action-oriented `next_commands`, `.kernforge/reviews` artifact path를 반환합니다. 그래서 "KernForge로 리뷰해줘"가 project analysis, verification, worker/reviewer route로 잘못 빠지지 않습니다.
+Kernforge가 MCP server로 동작하고 Codex가 MCP client인 경우, 리뷰 요청은 `kernforge_review`를 사용합니다. 이 tool은 CLI `/review`와 같은 공통 review harness를 실행하고, 전달된 diff/code, file path, plan, PR context 또는 현재 workspace의 `git diff`를 수집한 뒤 structured finding, gate status, `model_plan`과 `reviewer_runs` 기반 model-role status, `scope_discovery`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, reason/when/safety/expected_result가 붙은 action-oriented `next_commands`, `.kernforge/reviews` artifact path를 반환합니다. 그래서 "KernForge로 리뷰해줘"가 project analysis, verification, worker/reviewer route로 잘못 빠지지 않습니다.
 
 여러 repository에서 하나의 Kernforge MCP server entry를 재사용하는 client라면 `-cwd`는 fallback workspace일 뿐입니다. Kernforge는 `initialize.rootUri`, `initialize.workspaceFolders`, `tools/call.params._meta.cwd`, 그리고 각 tool의 `workspace` 또는 `cwd` argument도 workspace hint로 인식합니다. Codex CLI에서 `kernforge_status`가 잘못된 workspace를 보고하면 Kernforge tool call에 현재 repo를 `workspace`로 넘기거나, 해당 repo에 맞게 MCP entry의 `-cwd`를 지정하세요.
 

@@ -770,7 +770,7 @@ Best used when:
 Review artifacts:
 1. `/review selection` writes `.kernforge/reviews/latest.json` and `.kernforge/reviews/latest.md`.
 2. The result includes typed findings, freshness/redaction state, gate status, scope discovery, repair steps, runtime gate ledger, and recommended next commands.
-3. MCP clients get the same structure through `kernforge_review`, including `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, and action-contract fields on `next_commands`.
+3. MCP clients get the same structure through `kernforge_review`, including `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, and action-contract fields on `next_commands`.
 
 ### 2.8 Plan Review Workflow
 
