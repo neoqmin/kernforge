@@ -767,7 +767,7 @@ diff workflow 메모:
 review artifact:
 1. `/review selection`은 `.kernforge/reviews/latest.json`과 `.kernforge/reviews/latest.md`를 쓴다.
 2. 결과에는 typed finding, freshness/redaction 상태, gate verdict, scope discovery, repair step, runtime gate ledger, 추천 next command가 포함된다.
-3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다. 응답에는 `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, `next_commands` action contract가 포함된다.
+3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다. 응답에는 `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, `next_commands` action contract가 포함된다.
 
 ### 2.8 Plan Review Workflow
 

@@ -31,7 +31,8 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		a.Session.LastReviewRun.AutoTriggered &&
 		strings.EqualFold(a.Session.LastReviewRun.Trigger, "post_change") &&
 		a.Session.LastReviewRun.ReviewFingerprint != "" &&
-		a.Session.LastReviewRun.ReviewFingerprint == strings.TrimSpace(lastFingerprint) {
+		a.Session.LastReviewRun.ReviewFingerprint == strings.TrimSpace(lastFingerprint) &&
+		postChangeReviewRunStillMatchesSessionEvidence(a.Session.LastReviewRun, a.Session) {
 		return false, false, "", lastFingerprint, nil
 	}
 	if a.EmitProgress != nil {
@@ -57,6 +58,21 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		run.Gate.Verdict == reviewVerdictInsufficientEvidence
 	feedback := formatPostChangeReviewFeedback(run, needsRevision)
 	return true, needsRevision, feedback, fingerprint, nil
+}
+
+func postChangeReviewRunStillMatchesSessionEvidence(run *ReviewRun, session *Session) bool {
+	if run == nil || session == nil {
+		return true
+	}
+	runSummary := strings.TrimSpace(run.Evidence.VerificationSummary)
+	runFailed := run.Evidence.VerificationFailed
+	currentSummary := ""
+	currentFailed := false
+	if session.LastVerification != nil {
+		currentSummary = strings.TrimSpace(session.LastVerification.SummaryLine())
+		currentFailed = session.LastVerification.HasFailures()
+	}
+	return strings.EqualFold(runSummary, currentSummary) && runFailed == currentFailed
 }
 
 func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) error {

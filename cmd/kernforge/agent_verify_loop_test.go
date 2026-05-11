@@ -4205,6 +4205,18 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 			{
 				Message: Message{
 					Role: "assistant",
+					Text: strings.Join([]string{
+						"REVIEW_RESULT",
+						"verdict: approved",
+						"summary: post-change review approved the edit",
+						"findings:",
+					}, "\n"),
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
 					Text: "I updated the fix, verified the result via go test ./..., and there are no remaining blockers.",
 				},
 				StopReason: "stop",
@@ -4304,6 +4316,18 @@ func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 				Message: Message{
 					Role: "assistant",
 					Text: "Updated main.go, go test ./... passed, and no remaining blockers were recorded.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: strings.Join([]string{
+						"REVIEW_RESULT",
+						"verdict: approved",
+						"summary: post-change review approved the edit",
+						"findings:",
+					}, "\n"),
 				},
 				StopReason: "stop",
 			},

@@ -1159,6 +1159,7 @@ ReviewMCPResponse
   artifact_refs
   result
   model_plan
+  reviewer_runs
   freshness
   redaction
   gate
@@ -1175,7 +1176,7 @@ MCP에서 plan review를 제공할 때는 `target=plan`과 `code` 또는 `reques
 
 MCP client가 별도 구현 도구나 workflow를 통해 workspace를 변경하는 경우, 서버 설정의 `review.auto_after_change=true`가 적용된다. MCP request의 `auto_review` 값은 `inherit`, `on`, `off` 중 하나로 두고, 생략 시 서버 설정을 따른다.
 
-MCP response의 `model_plan`은 현재 실행이 단일 모델, 복수 모델, deterministic-only, degraded 중 무엇인지 알려준다. MCP client는 `model_plan.missing_roles`와 `next_commands`를 보고 사용자에게 "더 강한 리뷰 구성을 원하면 `/review models security`를 설정하라"처럼 안내할 수 있다. MCP 서버는 클라이언트 대신 모델 설정을 변경하지 않는다.
+MCP response의 `model_plan`은 현재 실행이 단일 모델, 복수 모델, deterministic-only, degraded 중 무엇인지 알려주고, `reviewer_runs`는 실제 main/cross reviewer의 role, kind, model, status, quality를 알려준다. MCP client는 `model_plan.missing_roles`, `reviewer_runs`, `next_commands`를 보고 사용자에게 "더 강한 리뷰 구성을 원하면 `/review models security`를 설정하라"처럼 안내할 수 있다. MCP 서버는 클라이언트 대신 모델 설정을 변경하지 않는다.
 
 MCP status 처리:
 

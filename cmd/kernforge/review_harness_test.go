@@ -470,6 +470,165 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 	}
 }
 
+func TestReviewMCPRunUsesMainFirstAndResponseIncludesReviewerRuns(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	mainReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: main mcp review completed",
+				"findings:",
+			}, "\n")},
+		}},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved_with_warnings",
+				"summary: cross reviewer found a test gap",
+				"findings:",
+				"- severity: medium",
+				"  title: Missing MCP response contract test",
+				"  category: test_gap",
+				"  evidence: MCP clients need reviewer run status in the response",
+				"  required_fix: include reviewer_runs in the MCP response",
+			}, "\n")},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:         cfg,
+		Client:         mainReviewer,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             "explicit_mcp",
+		Target:              reviewTargetChange,
+		Request:             "review main.go through MCP",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(mainReviewer.requests) != 1 {
+		t.Fatalf("expected one main reviewer request, got %d", len(mainReviewer.requests))
+	}
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("expected one cross reviewer request, got %d", len(reviewer.requests))
+	}
+	if len(run.ReviewerRuns) != 2 {
+		t.Fatalf("expected main and cross reviewer runs, got %#v", run.ReviewerRuns)
+	}
+	if run.ReviewerRuns[0].Kind != "main" || run.ReviewerRuns[0].Role != "primary_reviewer" {
+		t.Fatalf("expected primary main run first, got %#v", run.ReviewerRuns[0])
+	}
+	if run.ReviewerRuns[1].Kind != "cross" || run.ReviewerRuns[1].Role != "cross_reviewer" {
+		t.Fatalf("expected cross reviewer run second, got %#v", run.ReviewerRuns[1])
+	}
+	if !stringSliceContainsCI(run.ModelPlan.OptionalRoles, "cross_reviewer") {
+		t.Fatalf("expected MCP cross reviewer to be optional in model plan, got %#v", run.ModelPlan)
+	}
+	rendered := renderReviewMCPResponse(run, 40000)
+	for _, needle := range []string{
+		`"model_plan"`,
+		`"reviewer_runs"`,
+		`"role": "primary_reviewer"`,
+		`"kind": "main"`,
+		`"role": "cross_reviewer"`,
+		`"kind": "cross"`,
+		`"Missing MCP response contract test"`,
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected MCP review response to contain %q, got %s", needle, rendered)
+		}
+	}
+}
+
+func TestMainFirstCrossReviewerSatisfiesDedicatedSecurityRole(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "driver.cpp")
+	if err := os.WriteFile(path, []byte("void DriverEntry() {}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	mainReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: main security pass completed",
+				"findings:",
+			}, "\n")},
+		}},
+	}
+	securityReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: security cross pass completed",
+				"findings:",
+			}, "\n")},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:         cfg,
+		Client:         mainReviewer,
+		ReviewerClient: securityReviewer,
+		ReviewerModel:  "security-reviewer-model",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             "explicit_command",
+		Target:              reviewTargetChange,
+		Mode:                reviewModeSecurityHardening,
+		Request:             "review kernel driver security boundary",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.ReviewerRuns) != 2 {
+		t.Fatalf("expected main and security cross reviewer runs, got %#v", run.ReviewerRuns)
+	}
+	if run.ReviewerRuns[1].Role != "security_reviewer" || run.ReviewerRuns[1].Kind != "cross" {
+		t.Fatalf("expected second pass to satisfy security reviewer role, got %#v", run.ReviewerRuns[1])
+	}
+	if stringSliceContainsCI(run.ModelPlan.MissingRoles, "security_reviewer") ||
+		stringSliceContainsCI(run.ModelPlan.DegradedRoles, "security_reviewer") {
+		t.Fatalf("satisfied security reviewer role should not remain missing or degraded: %#v", run.ModelPlan)
+	}
+	for _, command := range run.Gate.NextCommands {
+		if command.ID == "set-security-model" {
+			t.Fatalf("satisfied security reviewer should not recommend setup command: %#v", run.Gate.NextCommands)
+		}
+	}
+}
+
 func TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "PathConverter.cpp")
@@ -1139,7 +1298,14 @@ func TestReviewModelOmissionRetryFailureMarksRunDegraded(t *testing.T) {
 	if !run.Result.Degraded || !strings.Contains(run.Result.DegradedReason, "omission retry failed") {
 		t.Fatalf("expected degraded result from retry failure, got %#v", run.Result)
 	}
-	if len(run.ReviewerRuns) == 0 || !strings.Contains(run.ReviewerRuns[0].Error, "synthetic review retry failure") {
+	foundRetryFailure := false
+	for _, reviewerRun := range run.ReviewerRuns {
+		if strings.Contains(reviewerRun.Error, "synthetic review retry failure") {
+			foundRetryFailure = true
+			break
+		}
+	}
+	if !foundRetryFailure {
 		t.Fatalf("expected reviewer run to record retry failure, got %#v", run.ReviewerRuns)
 	}
 }
