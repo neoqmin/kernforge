@@ -120,7 +120,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - Windows용 별도 텍스트 viewer와 WebView2 기반 diff review/diff viewer
 - adaptive verification, 검증 이력 대시보드, checkpoint, rollback
 - hook engine, workspace hook rules, evidence-aware push/PR policy
-- plan, code, selection, PR, goal, final, analysis, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 공통 `/review` 하네스. main-first 리뷰, 선택적 cross reviewer, typed action envelope, 분리된 approval ledger, route health 기반 retry 억제, 로컬 코드 수리 중 웹 검색 차단, artifact integrity 검사, replay fixture, diff preview 전 최종 리뷰 본문 출력을 포함한다.
+- plan, code, selection, PR, goal, final, analysis, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 공통 `/review` 하네스. main-first 리뷰, 선택적 cross reviewer, typed action envelope, 분리된 approval ledger, route health 기반 retry 억제, 로컬 코드 수리 중 웹 검색 차단, pre-write repair 실패 후 명시적 `y/N` continuation, artifact integrity 검사, replay fixture, diff preview 전 최종 리뷰 본문 출력을 포함한다.
 - `.kernforge/features` 아래에 spec/plan/tasks/implementation artifact를 남기는 tracked feature 워크플로우
 - disjoint edit lease에 대한 automatic secondary editable worker와 specialist-aware background verification bundle chaining
 
@@ -779,8 +779,9 @@ current directory가 workspace 안에 있으면 `!cd ..`로 workspace root까지
 ### 인터랙티브 루프 내구성 메모
 
 - 인터랙티브 루프는 `/review`, 자연어 리뷰, 수정 전 repair check에서 active main model을 1차 reviewer로 사용한다. 명시적으로 설정된 공통 review role model은 이 흐름에서 2차 cross reviewer로 동작하고, pre-write review에서는 더 엄격한 필수 reviewer edit gate를 유지한다.
-- `@file:line-line 검토하고 수정` 같은 focused review는 더 작은 evidence/prompt budget을 쓰고, pre-write review는 proposed diff와 필수 repair finding을 먼저 보는 diff-first 예산을 쓴다. 그래서 몇십 줄 수리 요청이 불필요하게 전체 파일/세션 맥락을 다시 싣지 않는다.
+- `@file:line-line 검토하고 수정` 같은 focused review는 더 작은 evidence/prompt budget을 쓰고, pre-write review는 proposed diff와 필수 repair finding을 먼저 보는 diff-first 예산을 쓴다. 그래서 몇십 줄 수리 요청이 불필요하게 전체 파일/세션 맥락을 다시 싣지 않는다. range-focused pre-write에서는 current file context가 선택 범위부터 감싼 함수 끝까지를 우선 보장하고, `function_body_excerpt`를 별도 source로 추가해 cleanup/success 경로가 잘려 나가지 않게 한다.
 - 공통 review model 요청은 명시 timeout policy가 없으면 bounded per-attempt timeout을 사용한다. focused/pre-write cross reviewer에는 짧은 soft timeout을 걸고, DeepSeek strict-review retry는 작게 제한하며, progress log에는 현재 review 단계, retry budget, context mode, timeout을 모델 호출 전에 보여준다.
+- pre-write repair 시도가 다시 리뷰를 통과하지 못하면 Kernforge는 넓은 재탐색 루프를 더 돌리지 않고, 최신 리뷰 결과와 마지막 수정안을 먼저 보여준 뒤 session에 pending repair confirmation을 저장하고 `계속 수정할까요? [y/N]`으로 묻는다. `y`만 저장된 finding/proposal 기준으로 이어가고, `n`은 중단하며, 자연어 답변은 confirmation으로 소비하지 않는다.
 - final answer reviewer는 unresolved verification, coding harness blocker, 또는 실제 patch transaction 변경 path가 있을 때만 `APPROVED / NEEDS_REVISION` 판단을 수행한다. 단순 read-only 답변, 계획 상태, task graph 존재만으로 추가 LLM 왕복을 만들지 않는다.
 - 인터랙티브 런타임은 이제 transcript 외에 구조화된 `TaskState`와 지속되는 `TaskGraph`를 함께 유지한다. 그래서 goal, plan progress, pending check, background ownership, 고가치 event가 compact 이후에도 더 안정적으로 남는다.
 - 일반 구현/수정/실행 요청은 self-driving work loop로 승격된다. Kernforge는 inspect -> implement -> verify -> summarize 기본 흐름을 task graph에 시드하고, reviewer/planner가 있으면 그 preflight plan을 우선 사용한다.
@@ -796,6 +797,7 @@ current directory가 workspace 안에 있으면 `!cd ..`로 workspace root까지
 - `/completion-audit [note]`는 completion blocker, warning, required artifact, 최신 verification, open task, background job, 최근 error, coding harness evidence를 `.kernforge/completion_audit/latest.md/json`으로 저장해 final answer가 완료/검증/산출물을 과장하지 않게 한다.
 - background 작업은 이제 node-aware하게 연결된다. 오래 걸리는 verification은 `owner_node_id`와 owner lease를 들고 가고, 같은 owner나 같은 lease의 새 verification bundle은 이전 bundle을 supersede하며, verification-like bundle이 끝나면 owning plan node도 자동으로 완료/재개 상태로 동기화된다.
 - secondary executor node는 자동 read-only worker뿐 아니라 automatic editable worker follow-up도 가질 수 있다. disjoint lease에서는 specialist가 별도 worktree에서 추가 patch를 만들고, 그 결과와 verification bundle 요약이 task graph에 다시 적재된다.
+- 일반 작업 턴은 마지막에 턴 소요시간을 출력하지만, `/exit`, `/status`, `/config`, `/model` 같은 로컬 메타 명령은 해당 출력을 생략한다.
 
 ### 환경 변수
 

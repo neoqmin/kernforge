@@ -3032,6 +3032,7 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T)
 		reader:      bufio.NewReader(strings.NewReader("a\n")),
 		writer:      &bytes.Buffer{},
 		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
 		interactive: true,
 	}
 
@@ -3192,6 +3193,50 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	}
 	if strings.Contains(text, "write_approval:") {
 		t.Fatalf("did not expect runtime-only approval state in config, got %q", text)
+	}
+}
+
+func TestSlashCommandTurnElapsedPolicySuppressesLocalMetaCommands(t *testing.T) {
+	cases := []string{
+		"/exit",
+		"/quit",
+		"/status",
+		"/config",
+		"/model gpt-5.5",
+		"/provider openrouter",
+		"/profile",
+		"/help",
+		"/version",
+		"/clear",
+		"/reload",
+		"/selection",
+		"/mem recent",
+	}
+	for _, input := range cases {
+		cmd, ok := ParseCommand(input)
+		if !ok {
+			t.Fatalf("expected %q to parse as slash command", input)
+		}
+		if slashCommandShouldPrintTurnElapsed(cmd) {
+			t.Fatalf("expected %q to suppress turn elapsed", input)
+		}
+	}
+}
+
+func TestSlashCommandTurnElapsedPolicyKeepsWorkCommands(t *testing.T) {
+	cases := []string{
+		"/review",
+		"/verify",
+		"/analyze-project",
+	}
+	for _, input := range cases {
+		cmd, ok := ParseCommand(input)
+		if !ok {
+			t.Fatalf("expected %q to parse as slash command", input)
+		}
+		if !slashCommandShouldPrintTurnElapsed(cmd) {
+			t.Fatalf("expected %q to print turn elapsed", input)
+		}
 	}
 }
 
@@ -3428,6 +3473,7 @@ func TestRuntimeStatePreviewEditAutoAcceptsCurrentDiffPreviewAlwaysAnswer(t *tes
 		reader:      bufio.NewReader(strings.NewReader("a\n")),
 		writer:      &bytes.Buffer{},
 		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
 		interactive: true,
 	}
 
@@ -3448,11 +3494,30 @@ func TestRuntimeStatePreviewEditAutoAcceptsCurrentDiffPreviewAlwaysAnswer(t *tes
 
 func TestConfirmLabelUsesAutoAcceptHintForDiffPreview(t *testing.T) {
 	rt := &runtimeState{
-		ui: UI{},
+		ui:  UI{},
+		cfg: Config{AutoLocale: boolPtr(false)},
 	}
 
 	label := rt.confirmLabel("Open diff preview?")
 	if !strings.Contains(label, "a=auto-accept") {
 		t.Fatalf("expected diff preview hint to advertise auto-accept, got %q", label)
+	}
+}
+
+func TestConfirmLabelLocalizesDiffPreviewHintForKoreanLocale(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	rt := &runtimeState{
+		ui:  UI{},
+		cfg: Config{AutoLocale: boolPtr(true)},
+	}
+
+	label := rt.confirmLabel(diffPreviewQuestion(rt.cfg))
+	for _, want := range []string{"변경 미리보기를 열까요?", "a=자동 수락", "Esc=취소"} {
+		if !strings.Contains(label, want) {
+			t.Fatalf("expected localized diff preview label to contain %q, got %q", want, label)
+		}
+	}
+	if strings.Contains(label, "Open diff preview?") || strings.Contains(label, "auto-accept") || strings.Contains(label, "cancel") {
+		t.Fatalf("expected localized diff preview label, got %q", label)
 	}
 }

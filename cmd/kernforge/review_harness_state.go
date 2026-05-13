@@ -178,7 +178,9 @@ func reviewRuntimeHasDistinctCrossReviewer(rt *runtimeState) bool {
 		return false
 	}
 	if rt.agent.AuxReviewerClient != nil && strings.TrimSpace(rt.agent.AuxReviewerModel) != "" {
-		return true
+		if !reviewClientMatchesMain(rt, rt.agent.AuxReviewerClient, rt.agent.AuxReviewerModel) {
+			return true
+		}
 	}
 	if rt.agent.ReviewerClient != nil && strings.TrimSpace(rt.agent.ReviewerModel) != "" {
 		if !reviewClientMatchesMain(rt, rt.agent.ReviewerClient, rt.agent.ReviewerModel) {
@@ -188,7 +190,9 @@ func reviewRuntimeHasDistinctCrossReviewer(rt *runtimeState) bool {
 	reviewCfg := configReviewHarness(rt.cfg)
 	for _, roleCfg := range reviewCfg.RoleModels {
 		if strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
-			return true
+			if !reviewModelConfigMatchesMain(rt.cfg, roleCfg) {
+				return true
+			}
 		}
 	}
 	return false

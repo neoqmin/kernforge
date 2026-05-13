@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -188,6 +189,25 @@ func TestActivityLineUsesPaddedBadge(t *testing.T) {
 	}
 	if !strings.Contains(line, "read_file on main.go") {
 		t.Fatalf("expected activity body, got %q", line)
+	}
+}
+
+func TestTurnElapsedLineUsesTimeBadge(t *testing.T) {
+	ui := UI{color: false}
+
+	line := ui.turnElapsedLine(Config{AutoLocale: boolPtr(false)}, 90*time.Second)
+	for _, want := range []string{"[time", "turn elapsed: 1m30s"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected turn elapsed line to contain %q, got %q", want, line)
+		}
+	}
+
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	korean := ui.turnElapsedLine(Config{AutoLocale: boolPtr(true)}, 75*time.Second)
+	for _, want := range []string{"[time", "턴 소요 시간: 1m15s"} {
+		if !strings.Contains(korean, want) {
+			t.Fatalf("expected localized turn elapsed line to contain %q, got %q", want, korean)
+		}
 	}
 }
 

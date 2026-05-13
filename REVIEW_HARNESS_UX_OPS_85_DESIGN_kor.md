@@ -97,6 +97,11 @@ ReviewTimelineEvent
 2. progress line은 timeline event에서 파생한다.
 3. 사람이 읽는 제목과 machine field를 분리한다.
 4. timeline event는 append-only로 남긴다.
+5. pre-write에서 reviewer가 "증거가 부족하다"고 말하면 먼저 하네스가 evidence pack을 보강한다. 함수 후반부, selection 이후 cleanup/success 경로, current file context 부족은 코드 수리 루프가 아니라 하네스 수집 문제로 다룬다.
+6. implementation model에게 재수정을 요청하는 경고는 patch 자체의 결함으로 한정한다. 하네스가 제공하지 않은 증거를 근거로 반복 패치를 시키지 않는다.
+7. pre-fix RF가 여러 개일 때 pre-write gate는 부분 수리를 승인하지 않는다. 대신 repair prompt는 "필수 RF 전체 해결"과 "RF별 좁은 hunk"를 동시에 명시해야 한다. 구현 모델이 여러 함수를 한 hunk나 함수 전체 rewrite로 합치거나 함수 종료부/중괄호를 중복 삽입하도록 유도하면 안 된다.
+8. pre-write block 이후 복구 턴은 review artifact 재조회, shell 기반 `Get-Content` line dump, 반복 `git status` 확인으로 시간을 쓰지 않는다. 필요한 근거는 전용 workspace 도구로만 좁게 확인하고, 바로 더 좁은 edit proposal을 만든다.
+9. 최종적으로 리뷰를 통과하지 못하면 조용히 종료하지 않는다. 먼저 "리뷰 미통과"를 명시하고, 최신 review result와 마지막 edit proposal을 보여준 뒤 `계속 수정할까요? [y/N]` 상태로 전환한다. 이 상태는 session에 저장되며 `y` 또는 `n`만 소비하고 자연어 답변은 재질문한다.
 
 ### 4.2 Phase Banner와 Heartbeat
 
@@ -487,7 +492,7 @@ review_ui_contract
 1. `/review dashboard` static HTML 생성
 2. MCP `review_ui_contract` 확장
 3. timeline/report golden snapshot 확대
-4. 실제 Tavern smoke run을 dashboard artifact로 보존
+4. 실제 sample smoke run을 dashboard artifact로 보존
 5. route health 추세를 최근 N개 run 기준으로 시각화
 
 완료 기준:

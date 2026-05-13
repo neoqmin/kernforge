@@ -14,7 +14,7 @@ func NewApplyPatchTool(ws Workspace) ApplyPatchTool { return ApplyPatchTool{ws: 
 func (t ApplyPatchTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. Use this as an expert fallback for complex hunk-level edits after reading current file contents; prefer apply_edit_proposal for simple reviewed edit intent. Every update file section must contain at least one @@ hunk.",
+		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. Use this as an expert fallback for complex hunk-level edits after reading current file contents; prefer apply_edit_proposal for simple reviewed edit intent. Keep payloads narrow and anchored to current file contents; split large fixes into the first independent hunk, reread, then continue. Every update file section must contain at least one @@ hunk.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

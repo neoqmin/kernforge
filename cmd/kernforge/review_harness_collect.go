@@ -16,8 +16,11 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 	request := strings.TrimSpace(opts.Request)
 	target := normalizeReviewTarget(opts.Target)
 	scopePaths := append([]string(nil), opts.Paths...)
+	for _, proposal := range opts.EditProposals {
+		scopePaths = append(scopePaths, proposal.File)
+	}
 	scopePaths = append(scopePaths, reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
-	discovery := discoverReviewScope(root, request, scopePaths)
+	discovery := discoverReviewScopeForAnalysis(root, request, opts, scopePaths)
 	if target == reviewTargetAuto {
 		target = inferReviewTarget(rt, root, request, discovery)
 	}
@@ -73,6 +76,23 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		Reason:            reason,
 		AmbiguityWarnings: warnings,
 	}
+}
+
+func discoverReviewScopeForAnalysis(root string, request string, opts ReviewHarnessOptions, scopePaths []string) ReviewScopeDiscovery {
+	if strings.EqualFold(strings.TrimSpace(opts.Trigger), "pre_write") && len(mcpReviewCleanPaths(scopePaths)) > 0 {
+		discovery := discoverReviewScope(root, "", scopePaths)
+		if len(discovery.CandidateFiles) > 0 {
+			discovery.CandidateSymbols = nil
+			discovery.SearchTerms = nil
+			discovery.ScopeWidth, discovery.Confidence = reviewScopeWidth(request, discovery.CandidateFiles, nil)
+			discovery.NarrowingCommands = reviewScopeNarrowingCommands(discovery.CandidateFiles, nil, nil)
+			if !reviewScopeDiscoveryNeedsNarrowing(discovery) {
+				discovery.Warnings = nil
+			}
+			return discovery
+		}
+	}
+	return discoverReviewScope(root, request, scopePaths)
 }
 
 func inferReviewTarget(rt *runtimeState, root string, request string, discovery ReviewScopeDiscovery) string {
@@ -400,13 +420,14 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 	var evidence ReviewEvidencePack
 	focusPaths := reviewEvidenceFocusPaths(run, opts)
 	collectedSourceFirst := false
+	includePreWriteFileContext := reviewPreWriteShouldIncludeFileContext(run, opts, focusPaths)
 	evidence.Sources = []string{}
 	evidence.Warnings = append(evidence.Warnings, run.RequestAnalysis.AmbiguityWarnings...)
 	if strings.TrimSpace(opts.ProvidedDiff) != "" {
 		providedPaths := append(normalizeTaskStateList(opts.Paths, 128), reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
 		providedPaths = analysisUniqueStrings(providedPaths)
 		changeSet.Source = "provided_diff"
-		changeSet.DiffExcerpt = compactPromptSection(opts.ProvidedDiff, opts.MaxContextChars)
+		changeSet.DiffExcerpt = compactPromptSection(opts.ProvidedDiff, reviewProvidedDiffEvidenceBudget(opts, includePreWriteFileContext))
 		changeSet.ChangedPaths = append(changeSet.ChangedPaths, providedPaths...)
 		evidence.ChangedPaths = append(evidence.ChangedPaths, changeSet.ChangedPaths...)
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Provided diff", changeSet.DiffExcerpt)
@@ -424,6 +445,10 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Provided code", code)
 			evidence.Sources = append(evidence.Sources, "provided_code")
 		}
+	}
+	if includePreWriteFileContext {
+		collectPreWriteCurrentFileContextEvidence(rt, root, run, opts, focusPaths, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
+		collectedSourceFirst = true
 	}
 	if proposalText := renderEditProposalsForEvidence(run.EditProposals); strings.TrimSpace(proposalText) != "" {
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Edit proposal", proposalText)
@@ -490,6 +515,587 @@ func reviewEvidenceFocusPaths(run ReviewRun, opts ReviewHarnessOptions) []string
 		return nil
 	}
 	return mcpReviewCleanPaths(run.RequestAnalysis.ScopeDiscovery.CandidateFiles)
+}
+
+func reviewPreWriteShouldIncludeFileContext(run ReviewRun, opts ReviewHarnessOptions, focusPaths []string) bool {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return false
+	}
+	if strings.TrimSpace(opts.ProvidedDiff) == "" {
+		return false
+	}
+	return len(reviewPreWriteFileContextPaths(run, opts, focusPaths)) > 0
+}
+
+func reviewPreWriteFileContextPaths(run ReviewRun, opts ReviewHarnessOptions, focusPaths []string) []string {
+	var paths []string
+	paths = append(paths, focusPaths...)
+	paths = append(paths, normalizeTaskStateList(opts.Paths, 128)...)
+	paths = append(paths, reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
+	paths = append(paths, run.RequestAnalysis.ScopeDiscovery.CandidateFiles...)
+	for _, proposal := range run.EditProposals {
+		paths = append(paths, proposal.File)
+	}
+	return mcpReviewCleanPaths(analysisUniqueStrings(paths))
+}
+
+func reviewProvidedDiffEvidenceBudget(opts ReviewHarnessOptions, includePreWriteFileContext bool) int {
+	if opts.MaxContextChars <= 0 || !includePreWriteFileContext {
+		return opts.MaxContextChars
+	}
+	budget := reviewPreWriteDiffEvidenceMaxChars
+	if opts.MaxContextChars <= reviewPreWriteFileContextChars+budget {
+		budget = opts.MaxContextChars / 2
+	}
+	if budget < 4000 && opts.MaxContextChars >= 8000 {
+		return 4000
+	}
+	if budget <= 0 {
+		return opts.MaxContextChars
+	}
+	return budget
+}
+
+func collectPreWriteCurrentFileContextEvidence(rt *runtimeState, root string, run ReviewRun, opts ReviewHarnessOptions, focusPaths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) {
+	if maxChars <= 0 {
+		evidence.Warnings = append(evidence.Warnings, "pre-write file context omitted because review context budget is exhausted")
+		return
+	}
+	if maxChars > reviewPreWriteFileContextChars {
+		maxChars = reviewPreWriteFileContextChars
+	}
+	paths := reviewPreWriteFileContextPaths(run, opts, focusPaths)
+	if len(paths) == 0 {
+		return
+	}
+	requestText := strings.Join([]string{opts.Request, run.Objective, run.RequestAnalysis.OriginalRequest}, " ")
+	selections := reviewMentionSelections(root, requestText)
+	for _, selection := range selections {
+		for _, raw := range paths {
+			if !reviewSelectionMatchesPath(root, selection, raw) {
+				continue
+			}
+			if appendPreWriteSelectionFileContext(root, selection, changeSet, evidence, maxChars) {
+				return
+			}
+		}
+	}
+	collectFileReviewEvidence(rt, root, paths, run.RequestAnalysis.ScopeDiscovery.CandidateSymbols, changeSet, evidence, maxChars)
+}
+
+func reviewMentionSelections(root string, input string) []ViewerSelection {
+	var selections []ViewerSelection
+	seen := map[string]bool{}
+	for _, token := range strings.Fields(input) {
+		selection, ok := parseReviewMentionSelection(root, token)
+		if !ok || !selection.HasSelection() {
+			continue
+		}
+		key := strings.ToLower(filepath.Clean(selection.FilePath)) + fmt.Sprintf(":%d-%d", selection.StartLine, selection.EndLine)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		selections = append(selections, selection)
+	}
+	return selections
+}
+
+func reviewSelectionMatchesPath(root string, selection ViewerSelection, path string) bool {
+	selectionPath, ok := reviewAbsolutePath(root, selection.FilePath)
+	if !ok {
+		return false
+	}
+	candidatePath, ok := reviewAbsolutePath(root, path)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(selectionPath, candidatePath)
+}
+
+func reviewAbsolutePath(root string, path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return filepath.Clean(abs), true
+}
+
+func appendPreWriteSelectionFileContext(root string, selection ViewerSelection, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) bool {
+	resolved := selection.FilePath
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(root, resolved)
+	}
+	resolved, ok := reviewAbsolutePath(root, resolved)
+	if !ok {
+		return false
+	}
+	rel := filepath.ToSlash(relOrAbs(root, resolved))
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("pre-write file context skipped outside workspace: %s", selection.FilePath))
+		return false
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil || !isText(data) {
+		if err != nil {
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("pre-write file context unavailable for %s: %v", selection.FilePath, err))
+		}
+		return false
+	}
+	content := string(data)
+	lineCount := reviewLineCount(content)
+	contextStart := selection.StartLine - reviewPreWriteLineContextBefore
+	if contextStart < 1 {
+		contextStart = 1
+	}
+	contextEnd := selection.EndLine + reviewPreWriteLineContextAfter
+	if functionStart, functionEnd, ok := reviewFunctionSpanForSelection(content, selection); ok {
+		appendPreWriteFunctionBodyEvidence(rel, content, selection, functionStart, functionEnd, changeSet, evidence, maxChars)
+		contextStart = selection.StartLine
+		contextEnd = functionEnd
+	}
+	if lineCount > 0 && contextEnd > lineCount {
+		contextEnd = lineCount
+	}
+	body := preWriteSelectionFileContextBody(content, selection, contextStart, contextEnd, preWriteCurrentFileContextBudget(maxChars))
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	changeSet.ChangedPaths = append(changeSet.ChangedPaths, rel)
+	evidence.ChangedPaths = append(evidence.ChangedPaths, rel)
+	if changeSet.Source == "" {
+		changeSet.Source = "workspace_files"
+	}
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("Pre-write current file context: %s:%d-%d", rel, contextStart, contextEnd), body)
+	evidence.Sources = append(evidence.Sources, "file_excerpt")
+	return true
+}
+
+func appendPreWriteFunctionBodyEvidence(rel string, content string, selection ViewerSelection, start int, end int, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) {
+	budget := preWriteFunctionBodyContextBudget(maxChars)
+	if budget <= 0 {
+		return
+	}
+	body := preWriteFunctionBodyContextBody(content, selection, start, end, budget)
+	if strings.TrimSpace(body) == "" {
+		return
+	}
+	changeSet.ChangedPaths = append(changeSet.ChangedPaths, rel)
+	evidence.ChangedPaths = append(evidence.ChangedPaths, rel)
+	if changeSet.Source == "" {
+		changeSet.Source = "workspace_files"
+	}
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("Pre-write function body excerpt: %s:%d-%d", rel, start, end), body)
+	evidence.Sources = append(evidence.Sources, "function_body_excerpt")
+}
+
+func preWriteFunctionBodyContextBudget(maxChars int) int {
+	if maxChars <= 0 {
+		return 0
+	}
+	budget := (maxChars * 3) / 5
+	if budget < 3000 && maxChars >= 5000 {
+		return 3000
+	}
+	return budget
+}
+
+func preWriteCurrentFileContextBudget(maxChars int) int {
+	if maxChars <= 0 {
+		return 0
+	}
+	budget := maxChars - preWriteFunctionBodyContextBudget(maxChars)
+	if budget < 2500 && maxChars >= 5000 {
+		return 2500
+	}
+	return budget
+}
+
+func preWriteFunctionBodyContextBody(content string, selection ViewerSelection, start int, end int, maxChars int) string {
+	full := sliceLines(content, start, end)
+	if maxChars <= 0 || len(full) <= maxChars {
+		return full
+	}
+	beforeBudget := maxChars / 5
+	selectedBudget := maxChars / 5
+	importantBudget := maxChars / 5
+	tailBudget := maxChars - beforeBudget - selectedBudget - importantBudget - 384
+	if tailBudget < 1500 {
+		tailBudget = 1500
+		if beforeBudget > 800 {
+			beforeBudget -= 400
+		}
+		if selectedBudget > 800 {
+			selectedBudget -= 400
+		}
+		if importantBudget > 800 {
+			importantBudget -= 400
+		}
+	}
+	var sections []string
+	if start < selection.StartLine {
+		before := compactPromptSection(sliceLines(content, start, selection.StartLine-1), beforeBudget)
+		if strings.TrimSpace(before) != "" {
+			sections = append(sections, "-- function start to selection --\n"+before)
+		}
+	}
+	selected := compactPromptSectionPreserveHeadTail(sliceLines(content, selection.StartLine, selection.EndLine), selectedBudget)
+	if strings.TrimSpace(selected) != "" {
+		sections = append(sections, "-- selected range inside function --\n"+selected)
+	}
+	if selection.EndLine < end {
+		tail := compactPromptSectionPreserveHeadTail(sliceLines(content, selection.EndLine+1, end), tailBudget)
+		if strings.TrimSpace(tail) != "" {
+			sections = append(sections, "-- selection to function end --\n"+tail)
+		}
+	}
+	important := preWriteImportantFunctionTailLines(content, selection.EndLine+1, end, importantBudget)
+	if strings.TrimSpace(important) != "" {
+		sections = append(sections, "-- important lines from selection to function end --\n"+important)
+	}
+	return compactPromptSectionPreserveHeadTail(strings.Join(sections, "\n\n"), maxChars)
+}
+
+func preWriteSelectionFileContextBody(content string, selection ViewerSelection, start int, end int, maxChars int) string {
+	full := sliceLines(content, start, end)
+	if maxChars <= 0 || len(full) <= maxChars {
+		return full
+	}
+	immediateEnd := selection.EndLine + 80
+	if immediateEnd > end {
+		immediateEnd = end
+	}
+	beforeBudget := maxChars / 10
+	selectionBudget := maxChars / 5
+	postSelectionBudget := (maxChars * 3) / 5
+	laterBudget := maxChars - beforeBudget - selectionBudget - postSelectionBudget - 384
+	if laterBudget < 0 {
+		laterBudget = 0
+	}
+	var sections []string
+	if start < selection.StartLine {
+		before := compactPromptSectionPreserveHeadTail(sliceLines(content, start, selection.StartLine-1), beforeBudget)
+		if strings.TrimSpace(before) != "" {
+			sections = append(sections, "-- pre-selection context --\n"+before)
+		}
+	}
+	selected := compactPromptSectionPreserveHeadTail(sliceLines(content, selection.StartLine, selection.EndLine), selectionBudget)
+	if strings.TrimSpace(selected) != "" {
+		sections = append(sections, "-- selected range context --\n"+selected)
+	}
+	if selection.EndLine < immediateEnd {
+		immediate := compactPromptSection(sliceLines(content, selection.EndLine+1, immediateEnd), postSelectionBudget)
+		if strings.TrimSpace(immediate) != "" {
+			sections = append(sections, "-- immediate post-selection context --\n"+immediate)
+		}
+	}
+	if immediateEnd < end {
+		later := compactPromptSectionPreserveHeadTail(sliceLines(content, immediateEnd+1, end), laterBudget)
+		if strings.TrimSpace(later) != "" {
+			sections = append(sections, "-- later post-selection context --\n"+later)
+		}
+	}
+	important := preWriteImportantFunctionTailLines(content, selection.EndLine+1, end, maxChars/5)
+	if strings.TrimSpace(important) != "" {
+		sections = append(sections, "-- important lines from selection to function end --\n"+important)
+	}
+	return compactPromptSectionPreserveHeadTail(strings.Join(sections, "\n\n"), maxChars)
+}
+
+func preWriteImportantFunctionTailLines(content string, start int, end int, maxChars int) string {
+	if maxChars <= 0 || end < start {
+		return ""
+	}
+	lines := reviewNormalizedLines(content)
+	if start < 1 {
+		start = 1
+	}
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if end < start {
+		return ""
+	}
+	var body strings.Builder
+	for lineNumber := start; lineNumber <= end; lineNumber++ {
+		line := lines[lineNumber-1]
+		if lineNumber == end && strings.TrimSpace(line) == "}" {
+			fmt.Fprintf(&body, "%5d | %s\n", lineNumber, line)
+			continue
+		}
+		if !preWriteLineLooksImportantForFunctionTail(line) {
+			continue
+		}
+		fmt.Fprintf(&body, "%5d | %s\n", lineNumber, line)
+	}
+	return compactPromptSectionPreserveHeadTail(body.String(), maxChars)
+}
+
+func preWriteLineLooksImportantForFunctionTail(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return containsAny(lower,
+		"m_volumepathmap",
+		"m_serialmap",
+		"findnextvolume",
+		"findvolumeclose",
+		"getlasterror",
+		"error_no_more_files",
+		"success",
+		"return ",
+		"querydosdevice",
+		"getvolumepathnamesforvolumename",
+	)
+}
+
+func compactPromptSectionPreserveHeadTail(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	marker := "\n...\n"
+	if limit <= len(marker)+8 {
+		return compactPromptSection(text, limit)
+	}
+	remaining := limit - len(marker)
+	headBudget := remaining / 2
+	tailBudget := remaining - headBudget
+	head := compactPromptSection(text, headBudget)
+	head = strings.TrimSuffix(strings.TrimSpace(head), "...")
+	tail := compactPromptTail(text, tailBudget)
+	return strings.TrimSpace(head) + marker + strings.TrimSpace(tail)
+}
+
+func compactPromptTail(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	var size int
+	start := len(runes)
+	for start > 0 {
+		next := string(runes[start-1])
+		nextSize := len(next)
+		if size+nextSize > limit {
+			break
+		}
+		start--
+		size += nextSize
+	}
+	if start <= 0 {
+		return text
+	}
+	return "..." + strings.TrimSpace(string(runes[start:]))
+}
+
+type reviewBraceSpan struct {
+	start int
+	end   int
+}
+
+func reviewFunctionSpanForSelection(content string, selection ViewerSelection) (int, int, bool) {
+	if !selection.HasSelection() {
+		return 0, 0, false
+	}
+	lines := reviewNormalizedLines(content)
+	spans := reviewBraceSpans(lines)
+	var best reviewBraceSpan
+	bestSet := false
+	for _, span := range spans {
+		if span.start > selection.StartLine || span.end < selection.EndLine {
+			continue
+		}
+		signatureStart := reviewFunctionSignatureStartLine(lines, span.start)
+		if signatureStart <= 0 || !reviewSpanLooksLikeFunction(lines, signatureStart, span.start) {
+			continue
+		}
+		candidate := reviewBraceSpan{start: signatureStart, end: span.end}
+		if !bestSet ||
+			candidate.start > best.start ||
+			(candidate.start == best.start && candidate.end < best.end) {
+			best = candidate
+			bestSet = true
+		}
+	}
+	if !bestSet {
+		return 0, 0, false
+	}
+	return best.start, best.end, true
+}
+
+func reviewNormalizedLines(content string) []string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.Split(content, "\n")
+}
+
+func reviewBraceSpans(lines []string) []reviewBraceSpan {
+	var stack []int
+	var spans []reviewBraceSpan
+	inBlockComment := false
+	var quote rune
+	escape := false
+	for lineIndex, line := range lines {
+		lineSpans, lineStack, lineBlockComment, lineQuote, lineEscape := reviewBraceSpansForLine(line, lineIndex+1, stack, inBlockComment, quote, escape)
+		spans = append(spans, lineSpans...)
+		stack = lineStack
+		inBlockComment = lineBlockComment
+		quote = lineQuote
+		escape = lineEscape
+	}
+	return spans
+}
+
+func reviewBraceSpansForLine(line string, lineNumber int, stack []int, inBlockComment bool, quote rune, escape bool) ([]reviewBraceSpan, []int, bool, rune, bool) {
+	var spans []reviewBraceSpan
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		next := rune(0)
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+		if inBlockComment {
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			if escape {
+				escape = false
+				continue
+			}
+			if ch == '\\' {
+				escape = true
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '/' && next == '/' {
+			break
+		}
+		if ch == '/' && next == '*' {
+			inBlockComment = true
+			i++
+			continue
+		}
+		if ch == '"' || ch == '\'' || ch == '`' {
+			quote = ch
+			escape = false
+			continue
+		}
+		if ch == '{' {
+			stack = append(stack, lineNumber)
+			continue
+		}
+		if ch == '}' && len(stack) > 0 {
+			start := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			spans = append(spans, reviewBraceSpan{start: start, end: lineNumber})
+		}
+	}
+	return spans, stack, inBlockComment, quote, escape
+}
+
+func reviewFunctionSignatureStartLine(lines []string, braceLine int) int {
+	if braceLine <= 0 || braceLine > len(lines) {
+		return 0
+	}
+	start := braceLine
+	for start > 1 {
+		trimmed := strings.TrimSpace(lines[start-2])
+		if trimmed == "" {
+			break
+		}
+		start--
+		if strings.Contains(trimmed, ";") {
+			start++
+			break
+		}
+		if strings.Contains(trimmed, "}") {
+			start++
+			break
+		}
+		if strings.HasPrefix(trimmed, ":") || strings.HasPrefix(trimmed, ",") {
+			continue
+		}
+		if strings.Contains(trimmed, ")") {
+			break
+		}
+	}
+	return start
+}
+
+func reviewSpanLooksLikeFunction(lines []string, signatureStart int, braceLine int) bool {
+	if signatureStart <= 0 || braceLine <= 0 || signatureStart > len(lines) || braceLine > len(lines) {
+		return false
+	}
+	text := strings.TrimSpace(strings.Join(lines[signatureStart-1:braceLine], " "))
+	text = strings.TrimSpace(strings.TrimSuffix(text, "{"))
+	if text == "" || !strings.Contains(text, ")") {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if strings.Contains(lower, "](") && strings.Contains(lower, "[") {
+		return false
+	}
+	rejectPrefixes := []string{
+		"if ",
+		"if(",
+		"for ",
+		"for(",
+		"while ",
+		"while(",
+		"switch ",
+		"switch(",
+		"catch ",
+		"catch(",
+		"else ",
+		"else{",
+		"else\t",
+		"do ",
+		"do{",
+		"do\t",
+		"try ",
+		"try{",
+		"try\t",
+		"namespace ",
+		"class ",
+		"struct ",
+		"enum ",
+		"union ",
+	}
+	for _, prefix := range rejectPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	return !strings.Contains(lower, ";")
+}
+
+func reviewLineCount(content string) int {
+	if content == "" {
+		return 0
+	}
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return len(strings.Split(content, "\n"))
 }
 
 func reviewShouldCollectSourceEvidenceFirst(run ReviewRun, opts ReviewHarnessOptions, focusPaths []string) bool {

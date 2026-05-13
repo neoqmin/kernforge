@@ -87,6 +87,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	if diff == "" {
 		return nil
 	}
+	request := preWriteReviewUserRequest(a.Session)
 	root := workspaceSnapshotRoot(a.Workspace)
 	if strings.TrimSpace(root) == "" {
 		root = a.Workspace.Root
@@ -98,8 +99,8 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		return nil
 	}
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedText(a.Config, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다..."))
-		a.EmitProgress(localizedText(a.Config, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
+		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다..."))
+		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
 	}
 	rt := a.reviewHarnessRuntime(root)
 	reviewerGatePolicy := ""
@@ -107,16 +108,16 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		if a.Workspace.PreviewEdit != nil {
 			reviewerGatePolicy = reviewReviewerGatePolicyMainOnlyFallback
 			if a.EmitProgress != nil {
-				a.EmitProgress(localizedText(a.Config, "User approved main-model-only pre-write fallback. Cross-reviewer failure will be recorded, but it will not block this edit before diff preview.", "사용자가 메인 모델 기준 쓰기 전 리뷰 fallback을 승인했습니다. cross reviewer 실패는 기록하지만 이번 편집의 diff preview 진입을 막지는 않습니다."))
+				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "User approved main-model-only pre-write fallback. Cross-reviewer failure will be recorded, but it will not block this edit before diff preview.", "사용자가 메인 모델 기준 쓰기 전 리뷰 fallback을 승인했습니다. cross reviewer 실패는 기록하지만 이번 편집의 diff preview 진입을 막지는 않습니다."))
 			}
 		} else if a.EmitProgress != nil {
-			a.EmitProgress(localizedText(a.Config, "Main-model-only fallback was requested, but no diff preview confirmation is available, so the reviewer gate remains a hard stop.", "메인 모델 기준 fallback이 요청되었지만 diff preview 확인을 사용할 수 없어 reviewer gate를 계속 hard stop으로 유지합니다."))
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main-model-only fallback was requested, but no diff preview confirmation is available, so the reviewer gate remains a hard stop.", "메인 모델 기준 fallback이 요청되었지만 diff preview 확인을 사용할 수 없어 reviewer gate를 계속 hard stop으로 유지합니다."))
 		}
 	}
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
 		Trigger:            "pre_write",
 		Target:             reviewTargetChange,
-		Request:            latestUserMessageText(a.Session.Messages),
+		Request:            request,
 		Paths:              append([]string(nil), preview.Paths...),
 		ProvidedDiff:       diff,
 		IncludeGitDiff:     false,
@@ -130,7 +131,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	})
 	if err != nil {
 		if a.EmitProgress != nil {
-			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review failed: ", "자동 쓰기 전 리뷰 실패: ") + err.Error())
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic pre-write review failed: ", "자동 쓰기 전 리뷰 실패: ") + err.Error())
 		}
 		return fmt.Errorf("automatic pre-write review failed before writing: %w", err)
 	}
@@ -141,31 +142,181 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
-			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review could not use the required reviewer. Stopping the edit loop.", "자동 쓰기 전 리뷰에서 필수 리뷰어 결과를 신뢰할 수 없어 편집 루프를 중단합니다."))
+			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Automatic pre-write review could not use the required reviewer. Stopping the edit loop.", "자동 쓰기 전 리뷰에서 필수 리뷰어 결과를 신뢰할 수 없어 편집 루프를 중단합니다."))
 		}
-		return fmt.Errorf("%w: %s", ErrReviewerGateUnavailable, formatReviewerGateUnavailableToolError(run))
+		return fmt.Errorf("%w: %s", ErrReviewerGateUnavailable, formatReviewerGateUnavailableToolError(a.Config, run))
 	}
 	if needsRevision {
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
-			a.EmitProgress(localizedText(a.Config, "Review model returned required changes. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정 필수 항목을 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
+			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Review model returned required changes. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정 필수 항목을 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
 		}
-		return fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n%s", formatPreWriteReviewFeedback(run))
+		return fmt.Errorf("%s\n\n%s",
+			reviewRunLocalizedText(a.Config, run, "automatic pre-write review blocked this edit before writing:", "자동 쓰기 전 리뷰가 파일 쓰기를 차단했습니다:"),
+			formatPreWriteReviewFeedback(a.Config, run))
 	}
 	if warningBlockers := preWriteReviewBlockingWarningFindings(run); len(warningBlockers) > 0 {
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
-			a.EmitProgress(localizedText(a.Config, "Review model returned actionable warnings. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정이 필요한 경고를 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
+			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Review model returned actionable warnings. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정이 필요한 경고를 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
 		}
-		return fmt.Errorf("automatic pre-write review blocked this edit on actionable warnings before writing:\n\n%s", formatPreWriteReviewWarningBlockFeedback(run, warningBlockers))
+		return fmt.Errorf("%s\n\n%s",
+			reviewRunLocalizedText(a.Config, run, "automatic pre-write review blocked this edit on actionable warnings before writing:", "자동 쓰기 전 리뷰가 수정 필요한 경고 때문에 파일 쓰기를 차단했습니다:"),
+			formatPreWriteReviewWarningBlockFeedback(a.Config, run, warningBlockers))
 	}
 	if a.EmitProgress != nil {
 		a.emitPreWriteFinalVisibleReviewSummary(run, true)
 		a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, true))
 	}
 	return nil
+}
+
+func preWriteReviewUserRequest(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	lastReviewRequest := preWriteReviewLastReviewRequest(session)
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := session.Messages[i]
+		if !strings.EqualFold(msg.Role, "user") {
+			continue
+		}
+		text := strings.TrimSpace(baseUserQueryText(msg.Text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			continue
+		}
+		if shouldPreferLastReviewRequestForPreWrite(text, lastReviewRequest) {
+			return lastReviewRequest
+		}
+		return text
+	}
+	if lastReviewRequest != "" {
+		return lastReviewRequest
+	}
+	if session.AcceptanceContract != nil {
+		text := strings.TrimSpace(baseUserQueryText(session.AcceptanceContract.SourcePrompt))
+		if text != "" && !looksLikeInternalReviewFeedbackUserMessage(text) {
+			return text
+		}
+	}
+	if session.TaskState != nil {
+		text := strings.TrimSpace(baseUserQueryText(session.TaskState.Goal))
+		if text != "" && !looksLikeInternalReviewFeedbackUserMessage(text) {
+			return text
+		}
+	}
+	text := strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages)))
+	if text != "" && !looksLikeInternalReviewFeedbackUserMessage(text) {
+		return text
+	}
+	return ""
+}
+
+func preWriteReviewLastReviewRequest(session *Session) string {
+	if session == nil || session.LastReviewRun == nil {
+		return ""
+	}
+	for _, text := range []string{
+		session.LastReviewRun.RequestAnalysis.OriginalRequest,
+		session.LastReviewRun.Objective,
+	} {
+		text = strings.TrimSpace(baseUserQueryText(text))
+		if text != "" && !looksLikeInternalReviewFeedbackUserMessage(text) {
+			return text
+		}
+	}
+	return ""
+}
+
+func shouldPreferLastReviewRequestForPreWrite(candidate string, lastReviewRequest string) bool {
+	if strings.TrimSpace(lastReviewRequest) == "" {
+		return false
+	}
+	if strings.TrimSpace(candidate) == "" {
+		return true
+	}
+	if preWriteReviewTextRequestsEnglish(candidate) {
+		return false
+	}
+	return textContainsHangul(lastReviewRequest) && !textContainsHangul(candidate) && looksLikePreWriteInternalContextMessage(candidate)
+}
+
+func preWriteReviewTextRequestsEnglish(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	return containsAny(lower, "답변은 영어", "영어로 답", "영어로 설명", "english only", "in english", "respond in english", "answer in english")
+}
+
+func localizedTextForReviewRequest(cfg Config, request string, english string, korean string) string {
+	language, _ := inferResponseLanguageForUserText(strings.TrimSpace(baseUserQueryText(request)), cfg)
+	if language == "ko" {
+		return korean
+	}
+	return english
+}
+
+func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n")))
+	if lower == "" {
+		return false
+	}
+
+	hasToolFailurePrefix := strings.HasPrefix(lower, "apply_patch failed:") ||
+		strings.HasPrefix(lower, "apply_patch 실패:") ||
+		strings.HasPrefix(lower, "tool apply_patch failed:") ||
+		strings.HasPrefix(lower, "tool call failed:") ||
+		strings.HasPrefix(lower, "도구 apply_patch 실패:") ||
+		strings.HasPrefix(lower, "도구 호출 실패:") ||
+		strings.HasPrefix(lower, "run_shell failed:") ||
+		strings.HasPrefix(lower, "run_shell 실패:") ||
+		strings.HasPrefix(lower, "read_file failed:") ||
+		strings.HasPrefix(lower, "read_file 실패:") ||
+		strings.HasPrefix(lower, "git_diff failed:") ||
+		strings.HasPrefix(lower, "git_diff 실패:") ||
+		strings.HasPrefix(lower, "git_status failed:") ||
+		strings.HasPrefix(lower, "git_status 실패:")
+	hasInternalReviewPrefix := strings.HasPrefix(lower, "review-first pass completed before making edits.") ||
+		strings.HasPrefix(lower, "this is a follow-up repair request for the latest blocking review findings.") ||
+		strings.HasPrefix(lower, "수정 전에 리뷰를 완료했습니다.") ||
+		strings.HasPrefix(lower, "직전 리뷰의 차단 finding을 수정하는 후속 요청입니다.")
+
+	return strings.HasPrefix(lower, "automatic pre-write review ") ||
+		strings.HasPrefix(lower, "automatic post-change review ") ||
+		strings.HasPrefix(lower, "automatic verification ") ||
+		strings.HasPrefix(lower, "final review result:") ||
+		strings.HasPrefix(lower, "repair targets checked:") ||
+		strings.HasPrefix(lower, "remaining review items:") ||
+		strings.HasPrefix(lower, "자동 쓰기 전 리뷰") ||
+		strings.HasPrefix(lower, "자동 변경 후 리뷰") ||
+		strings.HasPrefix(lower, "자동 검증") ||
+		strings.HasPrefix(lower, "도구 경로 업데이트 후 자동 검증") ||
+		hasInternalReviewPrefix ||
+		hasToolFailurePrefix ||
+		looksLikePreWriteInternalContextMessage(text) ||
+		looksLikeMainOnlyReviewFallbackApproval(text)
+}
+
+func looksLikePreWriteInternalContextMessage(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	return strings.HasPrefix(lower, "you are repeating the same tool call sequence") ||
+		strings.HasPrefix(lower, "your last edit targeted stale or mismatched file contents") ||
+		strings.HasPrefix(lower, "your latest read_file result") ||
+		strings.HasPrefix(lower, "the same tool failure repeated") ||
+		strings.HasPrefix(lower, "recovery mode:") ||
+		strings.HasPrefix(lower, "next step requirements:") ||
+		strings.HasPrefix(lower, "use the extra turns to finish the investigation or fix") ||
+		strings.HasPrefix(lower, "the normal tool budget has been exhausted") ||
+		strings.HasPrefix(lower, "blocked web research tool call during local code review/repair") ||
+		strings.HasPrefix(lower, "this is a local code review or repair request") ||
+		strings.HasPrefix(lower, "this is local code review/repair work") ||
+		strings.HasPrefix(lower, "this is still local code review/repair work") ||
+		strings.HasPrefix(lower, "recovered transcript note:") ||
+		strings.HasPrefix(lower, "your last reply was empty") ||
+		strings.HasPrefix(lower, "do not repeat the same tool call; continue from local context")
 }
 
 func preWriteMainOnlyReviewerFallbackApproved(session *Session) bool {
@@ -182,17 +333,21 @@ func preWriteMainOnlyReviewerFallbackApproved(session *Session) bool {
 	if !reviewRunHasUsableMainReviewer(last) {
 		return false
 	}
-	text := strings.ToLower(strings.TrimSpace(latestUserMessageText(session.Messages)))
-	if text == "" {
+	return looksLikeMainOnlyReviewFallbackApproval(latestUserMessageText(session.Messages))
+}
+
+func looksLikeMainOnlyReviewFallbackApproval(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
 		return false
 	}
-	koreanApproval := strings.Contains(text, "메인") &&
-		strings.Contains(text, "리뷰") &&
-		strings.Contains(text, "기준") &&
-		(strings.Contains(text, "진행") || strings.Contains(text, "수정") || strings.Contains(text, "적용"))
-	englishApproval := strings.Contains(text, "main") &&
-		strings.Contains(text, "review") &&
-		(strings.Contains(text, "proceed") || strings.Contains(text, "continue") || strings.Contains(text, "apply"))
+	koreanApproval := strings.Contains(lower, "메인") &&
+		strings.Contains(lower, "리뷰") &&
+		strings.Contains(lower, "기준") &&
+		containsAny(lower, "진행", "수정", "적용")
+	englishApproval := strings.Contains(lower, "main") &&
+		strings.Contains(lower, "review") &&
+		containsAny(lower, "proceed", "continue", "apply")
 	return koreanApproval || englishApproval
 }
 
@@ -211,7 +366,11 @@ func preWriteRepairObligationsFromLastReview(session *Session) []ReviewFinding {
 	if session == nil || session.LastReviewRun == nil {
 		return nil
 	}
-	return preFixRepairObligationFindings(*session.LastReviewRun)
+	last := *session.LastReviewRun
+	if strings.EqualFold(strings.TrimSpace(last.Trigger), "pre_write") && len(last.RepairFindings) > 0 {
+		return preWriteCarriedRepairObligations(last.RepairFindings)
+	}
+	return preFixRepairObligationFindings(last)
 }
 
 func reviewRunHasUsableMainReviewer(run ReviewRun) bool {
@@ -260,6 +419,14 @@ func normalizeReviewFindingCopies(findings []ReviewFinding) []ReviewFinding {
 			continue
 		}
 		out = append(out, finding)
+	}
+	return out
+}
+
+func preWriteCarriedRepairObligations(findings []ReviewFinding) []ReviewFinding {
+	out := normalizeReviewFindingCopies(findings)
+	for i := range out {
+		out[i].ResolutionStatus = ""
 	}
 	return out
 }
@@ -459,9 +626,13 @@ func formatPostChangeReviewFeedback(run ReviewRun, needsRevision bool) string {
 	return strings.TrimSpace(b.String())
 }
 
-func formatReviewerGateUnavailableToolError(run ReviewRun) string {
+func formatReviewerGateUnavailableToolError(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
 	failed := reviewFailedRequiredReviewerRuns(run)
 	if len(failed) == 0 {
+		if korean {
+			return "필수 리뷰어가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 리뷰어 경로 문제를 보고하세요"
+		}
 		return "required reviewer failed or returned weak output; stop editing and report the reviewer route issue"
 	}
 	var details []string
@@ -472,11 +643,42 @@ func formatReviewerGateUnavailableToolError(run ReviewRun) string {
 		detail := firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), "reviewer output was too weak")
 		details = append(details, fmt.Sprintf("%s status=%s quality=%s: %s", role, status, quality, detail))
 	}
+	if korean {
+		return "필수 리뷰어가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 리뷰어 경로 문제를 보고하세요: " + strings.Join(details, " | ")
+	}
 	return "required reviewer failed or returned weak output; stop editing and report the reviewer route issue: " + strings.Join(details, " | ")
 }
 
-func formatPreWriteReviewFeedback(run ReviewRun) string {
+func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
 	var b strings.Builder
+	if korean {
+		b.WriteString("자동 쓰기 전 리뷰가 차단 항목을 발견했습니다. 파일을 쓰기 전에 수정안을 다시 작성하세요.")
+		fmt.Fprintf(&b, "\n\n검토 게이트: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+		if strings.TrimSpace(run.MachineStatus) != "" {
+			fmt.Fprintf(&b, " (%s)", run.MachineStatus)
+		}
+		if strings.TrimSpace(run.Result.Summary) != "" {
+			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
+		}
+		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
+			b.WriteString("\n\n")
+			b.WriteString(run.RepairPlan.Prompt)
+		} else {
+			b.WriteString("\n\n인라인 리뷰 finding:\n")
+			b.WriteString(renderReviewInlineFindingsLocalized(run, true, true))
+		}
+		b.WriteString("\n\n구현 규칙:\n")
+		b.WriteString("- 리뷰 artifact 파일을 다시 읽지 마세요. 필요한 리뷰 지침은 여기 모두 포함되어 있습니다.\n")
+		b.WriteString("- 같은 patch를 반복하지 말고 수정된 edit proposal을 반환하세요.")
+		b.WriteString("\n")
+		b.WriteString(reviewNarrowPatchGuidance(true))
+		b.WriteString("\n- pre-write review를 우회하기 위해 run_shell, PowerShell 파일 API, redirection, 직접 파일 쓰기를 사용하지 마세요. 수정안이 다시 리뷰되도록 edit tool을 사용하세요.")
+		b.WriteString("\n")
+		b.WriteString(reviewDedicatedInspectionToolGuidance(true))
+		b.WriteString("\n- 이 작업은 로컬 코드 리뷰/수리입니다. MCP web/search/browser 도구나 외부 웹 리서치를 사용하지 말고, 로컬 소스 근거와 위 finding만 사용하세요.")
+		return strings.TrimSpace(b.String())
+	}
 	b.WriteString("Automatic pre-write review found blockers. Revise the proposed edit before writing files.")
 	fmt.Fprintf(&b, "\n\nReview gate: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
 	if strings.TrimSpace(run.MachineStatus) != "" {
@@ -495,13 +697,41 @@ func formatPreWriteReviewFeedback(run ReviewRun) string {
 	b.WriteString("\n\nImplementation rules:\n")
 	b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
 	b.WriteString("- Return a corrected edit proposal instead of retrying the same patch.")
+	b.WriteString("\n")
+	b.WriteString(reviewNarrowPatchGuidance(false))
 	b.WriteString("\n- Do not use run_shell, PowerShell file APIs, redirection, or direct filesystem writes to bypass pre-write review; use edit tools so the corrected proposal is reviewed.")
+	b.WriteString("\n")
+	b.WriteString(reviewDedicatedInspectionToolGuidance(false))
 	b.WriteString("\n- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate; use local source evidence and the inline findings above.")
 	return strings.TrimSpace(b.String())
 }
 
-func formatPreWriteReviewWarningBlockFeedback(run ReviewRun, warnings []ReviewFinding) string {
+func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warnings []ReviewFinding) string {
+	korean := reviewRunPrefersKorean(cfg, run)
 	var b strings.Builder
+	if korean {
+		b.WriteString("자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다. 파일을 쓰기 전에 수정안을 다시 작성하세요.")
+		fmt.Fprintf(&b, "\n\n검토 게이트: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+		if strings.TrimSpace(run.MachineStatus) != "" {
+			fmt.Fprintf(&b, " (%s)", run.MachineStatus)
+		}
+		if strings.TrimSpace(run.Result.Summary) != "" {
+			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
+		}
+		b.WriteString("\n\n수정 필요한 경고 finding:\n")
+		b.WriteString(renderReviewInlineFindingsLocalized(ReviewRun{Findings: warnings}, true, true))
+		b.WriteString("\n\n구현 규칙:\n")
+		b.WriteString("- 이 pre-write 경고를 필수 수정 지침으로 취급하세요.\n")
+		b.WriteString("- 요청된 API surface와 구현 근거가 모두 보이도록 수정안을 다시 작성하세요.\n")
+		b.WriteString("- 이전의 불완전한 patch를 쓰지 마세요.\n")
+		b.WriteString(reviewNarrowPatchGuidance(true))
+		b.WriteString("\n")
+		b.WriteString("- pre-write review를 우회하기 위해 run_shell, PowerShell 파일 API, redirection, 직접 파일 쓰기를 사용하지 말고 edit tool을 사용하세요.\n")
+		b.WriteString(reviewDedicatedInspectionToolGuidance(true))
+		b.WriteString("\n")
+		b.WriteString("- 이 작업은 로컬 코드 리뷰/수리입니다. MCP web/search/browser 도구나 외부 웹 리서치를 사용하지 말고, 로컬 소스 근거와 위 경고만 사용하세요.\n")
+		return strings.TrimSpace(b.String())
+	}
 	b.WriteString("Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.")
 	fmt.Fprintf(&b, "\n\nReview gate: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
 	if strings.TrimSpace(run.MachineStatus) != "" {
@@ -516,7 +746,12 @@ func formatPreWriteReviewWarningBlockFeedback(run ReviewRun, warnings []ReviewFi
 	b.WriteString("- Treat these pre-write warnings as required repair guidance.\n")
 	b.WriteString("- Revise the proposed edit so the requested API surface and implementation evidence are both present.\n")
 	b.WriteString("- Do not write the previous incomplete patch.\n")
+	b.WriteString("\n")
+	b.WriteString(reviewNarrowPatchGuidance(false))
+	b.WriteString("\n")
 	b.WriteString("- Do not use run_shell, PowerShell file APIs, redirection, or direct filesystem writes to bypass pre-write review; use edit tools so the corrected proposal is reviewed.\n")
+	b.WriteString(reviewDedicatedInspectionToolGuidance(false))
+	b.WriteString("\n")
 	b.WriteString("- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate; use local source evidence and the actionable warnings above.\n")
 	return strings.TrimSpace(b.String())
 }
@@ -546,9 +781,6 @@ func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
 	if reviewPreWriteWarningLooksLikeStyleGap(finding) {
 		return true
 	}
-	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
-		return false
-	}
 	if reviewPreWriteWarningLooksLikePureVerificationGap(finding) {
 		return false
 	}
@@ -556,9 +788,105 @@ func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
 		return false
 	}
 	if strings.EqualFold(finding.Category, "evidence_gap") {
+		if reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding) {
+			return false
+		}
 		return true
 	}
+	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
+		return reviewPreWriteWarningLooksLikeActionableCodeGap(finding)
+	}
 	return true
+}
+
+func reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding ReviewFinding) bool {
+	actionableText := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+	}, " "))
+	if actionableText == "" && strings.TrimSpace(finding.TestRecommendation) == "" {
+		return false
+	}
+	if containsAny(actionableText,
+		"api surface",
+		"accessor",
+		"getter",
+		"member declaration",
+		"member declarations",
+		"missing declaration",
+		"missing implementation",
+		"requested api",
+		"requested scope",
+		"does not implement",
+		"build",
+		"compile",
+		"header",
+		"#include",
+		"missing include",
+		"storage",
+		"구현 증거",
+		"구현이",
+		"구현되지",
+		"빌드",
+		"컴파일",
+		"헤더",
+		"멤버 선언",
+		"선언",
+		"초기값",
+		"조회 기능",
+		"요청 범위",
+		"충족하지",
+	) {
+		return false
+	}
+	harnessText := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	return containsAny(harnessText,
+		"complete modified function body is not visible",
+		"complete function body is not visible",
+		"function body is not visible",
+		"provided after-preview",
+		"selection-focused preview",
+		"after-preview",
+		"does not show the remaining",
+		"does not show the rest",
+		"provide the complete current contents",
+		"complete current contents",
+		"remaining braces",
+		"remaining cleanup",
+		"success calculation",
+		"m_volumepathmap",
+		"findnextvolume",
+		"findvolumeclose",
+		"function 후반부",
+		"함수 후반부",
+		"변경 결과를 확인할 증거",
+		"확인할 증거가 부족",
+		"제공된 selection",
+	)
+}
+
+func reviewPreWriteWarningLooksLikeActionableCodeGap(finding ReviewFinding) bool {
+	if strings.TrimSpace(finding.RequiredFix) == "" {
+		return false
+	}
+	category := strings.ToLower(strings.TrimSpace(finding.Category))
+	switch category {
+	case "correctness", "security", "stability", "performance", "maintainability", "false_positive", "bypass_surface", "operational_risk", "design":
+		return strings.TrimSpace(finding.Path) != "" ||
+			strings.TrimSpace(finding.Symbol) != "" ||
+			strings.TrimSpace(finding.Evidence) != "" ||
+			strings.TrimSpace(finding.Impact) != ""
+	default:
+		return false
+	}
 }
 
 func reviewPreWriteWarningLooksLikeStyleGap(finding ReviewFinding) bool {
@@ -636,7 +964,6 @@ func reviewPreWriteWarningLooksLikePureVerificationGap(finding ReviewFinding) bo
 		"tests were not run",
 		"/verify",
 		"빌드 검증",
-		"검증",
 		"검증 생략",
 		"검증이 생략",
 		"검증을 생략",

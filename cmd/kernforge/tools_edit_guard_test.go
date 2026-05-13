@@ -85,6 +85,11 @@ func TestEditToolDescriptionsBiasTowardEditProposal(t *testing.T) {
 	if !strings.Contains(patchDesc, "expert fallback") {
 		t.Fatalf("expected apply_patch description to emphasize fallback usage, got %q", patchDesc)
 	}
+	for _, want := range []string{"payloads narrow", "first independent hunk", "reread"} {
+		if !strings.Contains(patchDesc, want) {
+			t.Fatalf("expected apply_patch description to contain narrow payload guidance %q, got %q", want, patchDesc)
+		}
+	}
 
 	replaceDesc := NewReplaceInFileTool(ws).Definition().Description
 	if !strings.Contains(replaceDesc, "only for very small single-location substitutions") {
@@ -197,6 +202,25 @@ func TestApplyPatchRequiresPreviewApprovalBeforeWriting(t *testing.T) {
 	}
 	if string(data) != original {
 		t.Fatalf("expected file to remain unchanged after preview rejection, got %q", string(data))
+	}
+}
+
+func TestWorkspaceConfirmEditTreatsPromptCancelAsEditCanceled(t *testing.T) {
+	ws := Workspace{
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			if !strings.Contains(preview.Preview, "Preview for main.go") {
+				t.Fatalf("expected preview contents, got %q", preview.Preview)
+			}
+			return false, ErrPromptCanceled
+		},
+	}
+
+	err := ws.ConfirmEdit(EditPreview{
+		Title:   "Apply patch",
+		Preview: "Preview for main.go\n+ change",
+	})
+	if !errors.Is(err, ErrEditCanceled) {
+		t.Fatalf("expected prompt cancel to be normalized to ErrEditCanceled, got %v", err)
 	}
 }
 

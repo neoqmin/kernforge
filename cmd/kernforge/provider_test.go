@@ -686,6 +686,9 @@ func TestShouldRetryProviderErrorUsesStructuredProviderAPIError(t *testing.T) {
 	}) {
 		t.Fatalf("expected structured 401 provider error to remain non-retryable")
 	}
+	if !shouldRetryProviderError(errors.New("stream error: stream ID 27; INTERNAL_ERROR; received from peer")) {
+		t.Fatalf("expected transient stream INTERNAL_ERROR to be retryable")
+	}
 }
 
 func TestOpenAIClientNormalizesAssistantToolCallArguments(t *testing.T) {

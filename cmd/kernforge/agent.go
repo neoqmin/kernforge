@@ -65,6 +65,10 @@ const (
 	repeatedReadFilePathNudgeTurns        = 4
 	repeatedReadFilePathRecoveryThreshold = 6
 	repeatedReadFilePathAbortTurns        = 8
+	maxPreWriteReviewRepairBlocksPerTurn  = 1
+	maxPreWriteReviewRepairInspectTools   = 6
+	maxPreWriteReviewRepairInspectNudges  = 1
+	maxEditTargetMismatchFailuresPerTurn  = 1
 	maxToolBudgetExtensions               = 2
 	compactPinnedMessagesToKeep           = 6
 )
@@ -76,6 +80,25 @@ func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
 func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
 	a.lastEmittedText = ""
 	startIndex := len(a.Session.Messages)
+	confirmedReviewRepair := false
+	if a.hasPendingReviewRepairConfirmation() {
+		switch parseReviewRepairConfirmationInput(userText) {
+		case reviewRepairConfirmationYes:
+			if a.Session.LastReviewRun == nil || !reviewRunNeedsRepair(*a.Session.LastReviewRun) {
+				reply, err := a.finishPendingReviewRepairConfirmation(userText, extraImages, true, formatMissingPendingReviewRepairReply(a.Config))
+				return reply, err
+			}
+			a.Session.PendingReviewRepairConfirm = nil
+			userText = "계속 수정해"
+			confirmedReviewRepair = true
+		case reviewRepairConfirmationNo:
+			reply, err := a.finishPendingReviewRepairConfirmation(userText, extraImages, true, formatCancelledPendingReviewRepairReply(a.Config))
+			return reply, err
+		default:
+			reply, err := a.finishPendingReviewRepairConfirmation(userText, extraImages, false, formatInvalidPendingReviewRepairReply(a.Config))
+			return reply, err
+		}
+	}
 	intent := classifyTurnIntent(userText)
 	a.noteUserConversationEvent(userText)
 	readOnlyAnalysis := prefersReadOnlyAnalysisIntent(userText)
@@ -89,6 +112,9 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		enriched += "\n\nRequest mode: analysis-only.\n- Investigate, explain, or document the issue.\n- Do not modify files or call edit tools unless the user explicitly asks for a fix.\n"
 	} else if explicitEditRequest {
 		enriched += "\n\nRequest mode: inspect-and-fix.\n- Investigate the referenced code and apply the necessary fix directly when needed.\n- Use available inspect tools first, then use edit tools to make the change.\n- Do not ask the user to apply the patch manually unless an edit tool actually failed and you cite that tool error.\n"
+	}
+	if confirmedReviewRepair {
+		enriched += "\n\nPending review repair confirmation:\n- The user selected `y` for the pending pre-write review repair prompt.\n- Continue from the latest review findings and the last edit proposal already stored in this session.\n- Do not run a new review-before-fix pass for this confirmation turn.\n- Do not run package-wide tests unless the user explicitly requests them; use focused verification only.\n"
 	}
 	if explicitGitRequest {
 		enriched += "\n\nGit intent:\n- The user explicitly asked for a git action such as staging, committing, pushing, or opening a PR.\n- If you perform a git-mutating action, summarize exactly what you are about to do.\n"
@@ -197,6 +223,75 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	return reply, nil
 }
 
+type reviewRepairConfirmationDecision int
+
+const (
+	reviewRepairConfirmationInvalid reviewRepairConfirmationDecision = iota
+	reviewRepairConfirmationYes
+	reviewRepairConfirmationNo
+)
+
+func (a *Agent) hasPendingReviewRepairConfirmation() bool {
+	return a != nil && a.Session != nil && a.Session.PendingReviewRepairConfirm != nil
+}
+
+func parseReviewRepairConfirmationInput(input string) reviewRepairConfirmationDecision {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "y":
+		return reviewRepairConfirmationYes
+	case "n":
+		return reviewRepairConfirmationNo
+	default:
+		return reviewRepairConfirmationInvalid
+	}
+}
+
+func (a *Agent) finishPendingReviewRepairConfirmation(userText string, images []MessageImage, clearPending bool, reply string) (string, error) {
+	if a == nil || a.Session == nil {
+		return strings.TrimSpace(reply), nil
+	}
+	reply = strings.TrimSpace(reply)
+	if clearPending {
+		a.Session.PendingReviewRepairConfirm = nil
+	}
+	a.noteUserConversationEvent(userText)
+	a.Session.AddMessage(Message{
+		Role:   "user",
+		Text:   userText,
+		Images: images,
+	})
+	a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+	a.noteAssistantConversationEvent(reply)
+	a.Session.RefreshConversationState()
+	if a.Store != nil {
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+	}
+	return reply, nil
+}
+
+func formatInvalidPendingReviewRepairReply(cfg Config) string {
+	if localePrefersKorean(cfg) {
+		return "계속 수정 여부는 `y` 또는 `n`만 입력해 주세요. `y`는 최신 리뷰 결과 기준으로 계속 수정하고, `n`은 여기서 중단합니다."
+	}
+	return "Please answer with exactly `y` or `n`. `y` continues from the latest review result, and `n` stops here."
+}
+
+func formatCancelledPendingReviewRepairReply(cfg Config) string {
+	if localePrefersKorean(cfg) {
+		return "알겠습니다. 리뷰 미통과 상태와 마지막 수정안은 세션에 남겨두고, 추가 수정은 진행하지 않겠습니다."
+	}
+	return "Understood. I kept the failed review result and latest proposal in the session, and I will not continue repairing."
+}
+
+func formatMissingPendingReviewRepairReply(cfg Config) string {
+	if localePrefersKorean(cfg) {
+		return "계속 수정할 최신 리뷰 결과가 더 이상 세션에 남아 있지 않습니다. 확인 상태를 닫고 여기서 멈춥니다."
+	}
+	return "There is no longer a repairable latest review result in the session. I cleared the confirmation state and stopped here."
+}
+
 func (a *Agent) Compact(instructions string) string {
 	cut := compactCutIndex(a.Session.Messages, 12, 4)
 	if cut <= 0 {
@@ -246,6 +341,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastPatchFormatFailureSignature := ""
 	invalidToolArgsRetries := 0
 	editTargetMismatchRetries := 0
+	editTargetMismatchFailures := 0
+	preWriteReviewRepairBlocks := 0
+	preWriteReviewRepairInspectTools := 0
+	preWriteReviewRepairInspectNudges := 0
 	lastToolError := ""
 	lastToolErrorCount := 0
 	lastToolCallSignature := ""
@@ -893,6 +992,107 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				return "", err
 			}
+			if err != nil && isPreWriteReviewBlockedError(err) {
+				preWriteReviewRepairBlocks++
+				preWriteReviewRepairInspectTools = 0
+				preWriteReviewRepairInspectNudges = 0
+				if preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
+					toolMsg.IsError = true
+					if result.DisplayText == "" {
+						toolMsg.Text = err.Error()
+					} else {
+						toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
+					}
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.emitProgressEvent(ProgressEvent{
+							Kind:             progressKindToolFailed,
+							Message:          summary,
+							ToolName:         call.Name,
+							ToolCallID:       call.ID,
+							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+							Status:           firstNonEmptyLine(err.Error()),
+						})
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					reply := formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
+			}
+			if preWriteReviewRepairBlocks > 0 && err != nil && !isPreWriteReviewBlockedError(err) && !isEditTool(call.Name) {
+				preWriteReviewRepairInspectTools++
+				if preWriteReviewRepairInspectTools > maxPreWriteReviewRepairInspectTools {
+					if preWriteReviewRepairInspectNudges < maxPreWriteReviewRepairInspectNudges {
+						preWriteReviewRepairInspectNudges++
+						preWriteReviewRepairInspectTools = 0
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: formatPreWriteReviewRepairForceEditGuidance(a.Config, summarizeRecentToolTurns(a.Session.Messages, 4)),
+						})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						lastToolError = ""
+						lastToolErrorCount = 0
+						lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+						continue
+					}
+					toolMsg.IsError = true
+					if result.DisplayText == "" {
+						toolMsg.Text = err.Error()
+					} else {
+						toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
+					}
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.emitProgressEvent(ProgressEvent{
+							Kind:             progressKindToolFailed,
+							Message:          summary,
+							ToolName:         call.Name,
+							ToolCallID:       call.ID,
+							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+							Status:           firstNonEmptyLine(err.Error()),
+						})
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					reply := formatPreWriteReviewRepairInspectionLoopLimitReply(a.Config, a.Session)
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
+			}
+			if err != nil && errors.Is(err, ErrEditTargetMismatch) {
+				editTargetMismatchFailures++
+				if editTargetMismatchFailures > maxEditTargetMismatchFailuresPerTurn {
+					toolMsg.IsError = true
+					if result.DisplayText == "" {
+						toolMsg.Text = err.Error()
+					} else {
+						toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
+					}
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.emitProgressEvent(ProgressEvent{
+							Kind:             progressKindToolFailed,
+							Message:          summary,
+							ToolName:         call.Name,
+							ToolCallID:       call.ID,
+							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+							Status:           firstNonEmptyLine(err.Error()),
+						})
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					reply := formatEditTargetMismatchLoopLimitReply(a.Config)
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
+			}
 			if err != nil && errors.Is(err, ErrInvalidToolArgumentsJSON) && invalidToolArgsRetries < 1 {
 				toolMsg.IsError = true
 				if result.DisplayText == "" {
@@ -1032,6 +1232,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					edited = true
 					attemptedEditTool = true
 					successfulEditTool = true
+					preWriteReviewRepairBlocks = 0
+					preWriteReviewRepairInspectTools = 0
+					preWriteReviewRepairInspectNudges = 0
 					lastPostChangeReviewFingerprint = ""
 					postChangeReviewExhaustedNudge = false
 				}
@@ -1057,6 +1260,35 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 				_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 				_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
+			}
+		}
+		if preWriteReviewRepairBlocks > 0 && iterationHadToolSuccess {
+			for _, call := range resp.Message.ToolCalls {
+				if isEditTool(call.Name) {
+					continue
+				}
+				preWriteReviewRepairInspectTools++
+				if preWriteReviewRepairInspectTools > maxPreWriteReviewRepairInspectTools {
+					if preWriteReviewRepairInspectNudges < maxPreWriteReviewRepairInspectNudges {
+						preWriteReviewRepairInspectNudges++
+						preWriteReviewRepairInspectTools = 0
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: formatPreWriteReviewRepairForceEditGuidance(a.Config, summarizeRecentToolTurns(a.Session.Messages, 4)),
+						})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+						continue
+					}
+					reply := formatPreWriteReviewRepairInspectionLoopLimitReply(a.Config, a.Session)
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
 			}
 		}
 		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
@@ -1120,22 +1352,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if edited {
 			autoVerifyDisabledAfterPrompt := false
 			if a.EmitProgress != nil {
-				a.EmitProgress("Edit applied. Checking follow-up steps...")
+				a.EmitProgress(localizedText(a.Config, "Edit applied. Checking follow-up steps...", "편집이 적용되었습니다. 후속 단계를 확인합니다..."))
 			}
 			if report, ok := a.autoVerifyChanges(ctx); ok {
 				a.noteVerificationResult(report)
 				autoVerifyRetryAttempted := false
 				if a.EmitProgress != nil {
 					if report.HasFailures() {
-						a.EmitProgress("Automatic verification failed. Asking the model to continue fixing the issue...")
+						a.EmitProgress(localizedText(a.Config, "Automatic verification failed. Asking the model to continue fixing the issue...", "자동 검증이 실패했습니다. 모델에 수정을 계속 요청합니다..."))
 					} else {
-						a.EmitProgress("Automatic verification finished. Waiting for the model to summarize the change...")
+						a.EmitProgress(localizedText(a.Config, "Automatic verification finished. Waiting for the model to summarize the change...", "자동 검증이 완료되었습니다. 모델의 변경 요약을 기다립니다..."))
 					}
 				}
 				verification := strings.TrimSpace(report.RenderDetailed())
 				a.Session.AddMessage(Message{
 					Role: "user",
-					Text: "Automatic verification results:\n" + verification,
+					Text: localizedText(a.Config, "Automatic verification results:\n", "자동 검증 결과:\n") + verification,
 				})
 				unresolvedVerification = report.HasFailures()
 				if report.HasFailures() {
@@ -1154,7 +1386,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							autoVerifyRetryAttempted = true
 							a.recordEditLoopRetry("Retry automatic verification after tool-path update.", report.FailureSummary())
 							if a.EmitProgress != nil {
-								a.EmitProgress("Verification tool path updated. Retrying automatic verification...")
+								a.EmitProgress(localizedText(a.Config, "Verification tool path updated. Retrying automatic verification...", "검증 도구 경로가 업데이트되었습니다. 자동 검증을 다시 실행합니다..."))
 							}
 							retriedReport, retriedOK := a.autoVerifyChanges(ctx)
 							if retriedOK {
@@ -1163,7 +1395,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								verification = strings.TrimSpace(report.RenderDetailed())
 								a.Session.AddMessage(Message{
 									Role: "user",
-									Text: "Automatic verification results after tool-path update:\n" + verification,
+									Text: localizedText(a.Config, "Automatic verification results after tool-path update:\n", "도구 경로 업데이트 후 자동 검증 결과:\n") + verification,
 								})
 								unresolvedVerification = report.HasFailures()
 							}
@@ -1174,7 +1406,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							autoVerifyDisabledAfterPrompt = true
 							a.recordEditLoopRisk("Automatic verification disabled after tool startup failure.", report.FailureSummary())
 							if a.EmitProgress != nil {
-								a.EmitProgress("Automatic verification was disabled after repeated tool-path verification failures.")
+								a.EmitProgress(localizedText(a.Config, "Automatic verification was disabled after repeated tool-path verification failures.", "검증 도구 경로 실패가 반복되어 자동 검증을 비활성화했습니다."))
 							}
 							a.Session.AddMessage(Message{
 								Role: "user",
@@ -1207,7 +1439,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				autoVerifyInfraFailureCount = 0
 				if a.EmitProgress != nil {
-					a.EmitProgress("Edit applied. Waiting for the model to summarize the change...")
+					a.EmitProgress(localizedText(a.Config, "Edit applied. Waiting for the model to summarize the change...", "편집이 적용되었습니다. 모델의 변경 요약을 기다립니다..."))
 				}
 				unresolvedVerification = false
 			}
@@ -1773,6 +2005,265 @@ func invalidPatchFormatGuidance(repeatedSignature bool, err error) string {
 		"Then use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\n" +
 		"For every *** Update File: section, include at least one @@ hunk with context and +/- lines. Do not send an update section with no hunks, and do not send prose, JSON, or code fences inside the patch string.\n" +
 		"Last parser error: " + reason)
+}
+
+func isPreWriteReviewBlockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "automatic pre-write review blocked this edit before writing") ||
+		strings.Contains(text, "automatic pre-write review blocked this edit on actionable warnings before writing") ||
+		strings.Contains(text, "자동 쓰기 전 리뷰가 파일 쓰기를 차단했습니다") ||
+		strings.Contains(text, "자동 쓰기 전 리뷰가 수정 필요한 경고 때문에 파일 쓰기를 차단했습니다")
+}
+
+func formatPreWriteReviewRepairLoopLimitReply(cfg Config, session *Session) string {
+	return formatPreWriteReviewRepairUserDecisionReply(
+		cfg,
+		session,
+		"The revised edit still did not pass the pre-write review.",
+		"수정안이 아직 쓰기 전 리뷰 모델을 통과하지 못했습니다.",
+	)
+}
+
+func formatPreWriteReviewRepairInspectionLoopLimitReply(cfg Config, session *Session) string {
+	return formatPreWriteReviewRepairUserDecisionReply(
+		cfg,
+		session,
+		"The pre-write review did not pass, and the repair pass used its local inspection budget without producing a reviewed patch.",
+		"쓰기 전 리뷰 모델을 통과하지 못했고, 수리 단계가 검토된 패치를 만들기 전에 로컬 상태 확인 예산을 사용했습니다.",
+	)
+}
+
+func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
+	recordPendingReviewRepairConfirmation(session)
+	korean := localePrefersKorean(cfg)
+	var b strings.Builder
+	if korean {
+		b.WriteString(koreanIntro)
+	} else {
+		b.WriteString(englishIntro)
+	}
+	if reviewText := formatLatestPreWriteReviewForUserDecision(cfg, session); reviewText != "" {
+		b.WriteString("\n\n")
+		b.WriteString(reviewText)
+	}
+	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); proposalText != "" {
+		b.WriteString("\n\n")
+		b.WriteString(proposalText)
+	}
+	if korean {
+		b.WriteString("\n\n이 검토 결과를 기준으로 계속 수정할까요? [y/N]\n`y` 또는 `n`만 입력해 주세요.")
+	} else {
+		b.WriteString("\n\nShould I keep repairing from this review result? [y/N]\nReply with exactly `y` or `n`.")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func recordPendingReviewRepairConfirmation(session *Session) {
+	if session == nil {
+		return
+	}
+	state := &ReviewRepairConfirmationState{CreatedAt: time.Now()}
+	if session.LastReviewRun != nil {
+		state.ReviewID = session.LastReviewRun.ID
+		state.Verdict = valueOrDefault(session.LastReviewRun.Gate.Verdict, session.LastReviewRun.Result.Verdict)
+	}
+	session.PendingReviewRepairConfirm = state
+	session.UpdatedAt = time.Now()
+}
+
+func formatLatestPreWriteReviewForUserDecision(cfg Config, session *Session) string {
+	if session == nil || session.LastReviewRun == nil {
+		return ""
+	}
+	run := *session.LastReviewRun
+	run.Findings = append([]ReviewFinding(nil), run.Findings...)
+	for i := range run.Findings {
+		run.Findings[i].Normalize()
+	}
+	korean := reviewRunPrefersKorean(cfg, run)
+	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
+	blockerCount := len(run.Gate.BlockingFindings)
+	warningCount := len(run.Gate.WarningFindings)
+	var b strings.Builder
+	if korean {
+		fmt.Fprintf(&b, "마지막 검토 결과: %s (차단=%d, 경고=%d)", valueOrUnset(verdict), blockerCount, warningCount)
+	} else {
+		fmt.Fprintf(&b, "Latest review result: %s (blockers=%d, warnings=%d)", valueOrUnset(verdict), blockerCount, warningCount)
+	}
+	if strings.TrimSpace(run.Result.Summary) != "" {
+		if korean {
+			fmt.Fprintf(&b, "\n요약: %s", compactPromptSection(run.Result.Summary, 500))
+		} else {
+			fmt.Fprintf(&b, "\nSummary: %s", compactPromptSection(run.Result.Summary, 500))
+		}
+	}
+	findings := latestReviewDecisionFindings(run)
+	if len(findings) > 0 {
+		if korean {
+			b.WriteString("\n주요 finding:")
+		} else {
+			b.WriteString("\nKey findings:")
+		}
+		for _, finding := range findings {
+			title := compactPromptSection(finding.Title, 180)
+			if title == "" {
+				title = compactPromptSection(finding.RequiredFix, 180)
+			}
+			fmt.Fprintf(&b, "\n- %s [%s/%s]: %s", valueOrUnset(finding.ID), valueOrUnset(finding.Severity), valueOrUnset(finding.Category), title)
+			if strings.TrimSpace(finding.RequiredFix) != "" {
+				if korean {
+					fmt.Fprintf(&b, " -> 조치: %s", compactPromptSection(localizedReviewRequiredFixText(finding.RequiredFix, true), 260))
+				} else {
+					fmt.Fprintf(&b, " -> fix: %s", compactPromptSection(finding.RequiredFix, 260))
+				}
+			}
+		}
+	}
+	if len(run.ArtifactRefs) > 0 {
+		if korean {
+			fmt.Fprintf(&b, "\n보고서: %s", run.ArtifactRefs[len(run.ArtifactRefs)-1])
+		} else {
+			fmt.Fprintf(&b, "\nReport: %s", run.ArtifactRefs[len(run.ArtifactRefs)-1])
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func latestReviewDecisionFindings(run ReviewRun) []ReviewFinding {
+	ids := append([]string{}, run.Gate.BlockingFindings...)
+	if len(ids) == 0 {
+		ids = append(ids, run.Gate.WarningFindings...)
+	}
+	idSet := reviewFindingIDSet(ids)
+	var out []ReviewFinding
+	if len(idSet) > 0 {
+		for _, finding := range run.Findings {
+			finding.Normalize()
+			if idSet[finding.ID] {
+				out = append(out, finding)
+			}
+			if len(out) >= 4 {
+				return out
+			}
+		}
+	}
+	if len(out) == 0 {
+		for _, finding := range run.Findings {
+			finding.Normalize()
+			if reviewFindingBlocksGate(run, finding) || reviewFindingCountsAsWarning(finding) {
+				out = append(out, finding)
+			}
+			if len(out) >= 4 {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+func formatLatestEditProposalForUserDecision(cfg Config, session *Session) string {
+	toolName, proposal := latestEditToolProposal(session)
+	if proposal == "" {
+		return ""
+	}
+	korean := localePrefersKorean(cfg)
+	var b strings.Builder
+	if korean {
+		fmt.Fprintf(&b, "마지막 수정안(%s):\n", toolName)
+	} else {
+		fmt.Fprintf(&b, "Latest edit proposal (%s):\n", toolName)
+	}
+	b.WriteString("```text\n")
+	b.WriteString(compactPromptSection(proposal, 4000))
+	b.WriteString("\n```")
+	return strings.TrimSpace(b.String())
+}
+
+func latestEditToolProposal(session *Session) (string, string) {
+	if session == nil {
+		return "", ""
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := session.Messages[i]
+		for j := len(msg.ToolCalls) - 1; j >= 0; j-- {
+			call := msg.ToolCalls[j]
+			if !isEditTool(call.Name) {
+				continue
+			}
+			proposal := editToolProposalText(call.Name, call.Arguments)
+			if strings.TrimSpace(proposal) != "" {
+				return call.Name, proposal
+			}
+		}
+	}
+	return "", ""
+}
+
+func editToolProposalText(toolName string, arguments string) string {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &decoded); err != nil {
+		return strings.TrimSpace(arguments)
+	}
+	switch strings.TrimSpace(toolName) {
+	case "apply_patch":
+		return strings.TrimSpace(stringValue(decoded, "patch"))
+	case "replace_in_file":
+		path := stringValue(decoded, "path")
+		search := stringValue(decoded, "search")
+		replace := stringValue(decoded, "replace")
+		return strings.TrimSpace(fmt.Sprintf("path: %s\nsearch:\n%s\nreplace:\n%s", path, search, replace))
+	case "write_file":
+		path := stringValue(decoded, "path")
+		content := stringValue(decoded, "content")
+		return strings.TrimSpace(fmt.Sprintf("path: %s\ncontent:\n%s", path, content))
+	default:
+		return strings.TrimSpace(arguments)
+	}
+}
+
+func formatPreWriteReviewRepairForceEditGuidance(cfg Config, recent string) string {
+	var b strings.Builder
+	korean := localePrefersKorean(cfg)
+	if korean {
+		b.WriteString("pre-write 리뷰가 이미 수정안을 차단했고, 필요한 로컬 상태 확인 예산도 충분히 사용했습니다.\n")
+		b.WriteString("다음 응답은 상태 확인 도구 호출이 아니라 반드시 edit tool 호출이어야 합니다.\n")
+		b.WriteString("규칙:\n")
+		b.WriteString("1. 최신 pre-write finding 중 unresolved 차단 항목만 고치세요.\n")
+		b.WriteString("2. 방금 확인한 현재 파일 내용에 고정된 좁은 apply_patch hunk를 작성하세요.\n")
+		b.WriteString("3. 같은 patch, replace_in_file 추측, review artifact 재읽기, run_shell 우회 쓰기는 금지합니다.\n")
+		b.WriteString("4. 필요한 문맥이 아직 부족하다고 판단되면, 먼저 한 문장으로 정확한 blocker를 말하고 수정 불가 사유를 보고하세요. 추가 탐색 루프를 시작하지 마세요.")
+	} else {
+		b.WriteString("The pre-write review already blocked the edit, and enough local state inspection has been spent.\n")
+		b.WriteString("The next response must be an edit-tool call, not another inspection-tool call.\n")
+		b.WriteString("Rules:\n")
+		b.WriteString("1. Fix only the latest unresolved blocking pre-write finding.\n")
+		b.WriteString("2. Use a narrow apply_patch hunk anchored to the current file contents just inspected.\n")
+		b.WriteString("3. Do not repeat the same patch, guess with replace_in_file, reread review artifacts, or bypass review with run_shell writes.\n")
+		b.WriteString("4. If the context is still insufficient, state the exact blocker in one sentence and report why editing cannot proceed. Do not start another inspection loop.")
+	}
+	recent = strings.TrimSpace(recent)
+	if recent != "" {
+		if korean {
+			b.WriteString("\n\n최근 도구 호출:\n")
+		} else {
+			b.WriteString("\n\nRecent tool turns:\n")
+		}
+		b.WriteString(recent)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatEditTargetMismatchLoopLimitReply(cfg Config) string {
+	return localizedText(cfg,
+		"Edit target mismatches repeated after a refresh attempt, so I stopped instead of continuing to guess at the file state. The file should be re-read and edited with a narrower, current-context patch.",
+		"파일 상태를 다시 확인한 뒤에도 edit target mismatch가 반복되어, 더 추측하며 진행하지 않고 중단했습니다. 파일을 다시 읽고 현재 내용 기준의 더 좁은 패치로 수정해야 합니다.",
+	)
 }
 
 func applyPatchFormatFailureSignature(arguments string) string {
@@ -3171,6 +3662,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("Work like a careful senior engineer inside the user's repository.\n")
 	b.WriteString("Use tools before making assumptions. Read relevant files before editing them. Keep answers concise and implementation-focused.\n")
 	b.WriteString("When code changes are needed, prefer the smallest correct diff and verify with tests or builds when practical.\n")
+	b.WriteString("When using edit tools, prefer narrow hunks anchored to current file contents; if a fix would produce a large patch, apply the first independent hunk and continue after rereading instead of generating a large tool-call payload. When a review/pre-write gate explicitly requires all RFs to be addressed, include the required RF hunks as separate narrow hunks instead of one large rewrite.\n")
 	b.WriteString("If the user asks a question, answer directly before suggesting extra work.\n")
 	if prefersReadOnlyAnalysisIntent(latestUser) {
 		b.WriteString("The latest user request is analysis-only. Investigate and explain the issue, but do not modify files or call edit tools unless the user explicitly asks for a fix.\n")
@@ -3193,7 +3685,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("The user prompt may include a 'Relevant persistent memory from past sessions' section. Treat it as best-effort historical context and verify it when needed. If you rely on a memory item in your answer, cite its memory id in brackets like [mem-...].\n")
 	b.WriteString("The user prompt may include a 'Relevant project analysis from past analyze-project runs' section. Treat it as a cached architecture summary derived from prior workspace analysis. Prefer using it before rereading large code areas, but verify details with tools before making edits or high-risk claims.\n")
 	b.WriteString("User messages may include attached images. Use visual details from them when relevant.\n")
-	b.WriteString("After successful file edits, the conversation may include an 'Automatic verification results' message generated by the CLI. Use it to validate or fix your changes.\n")
+	b.WriteString("After successful file edits, the conversation may include an 'Automatic verification results' message, or the localized equivalent '자동 검증 결과', generated by the CLI. Use it to validate or fix your changes.\n")
 	fmt.Fprintf(&b, "Workspace root: %s\n", a.Session.WorkingDir)
 	fmt.Fprintf(&b, "Provider/model: %s / %s\n", a.Session.Provider, a.Session.Model)
 	fmt.Fprintf(&b, "Permission mode: %s\n", a.Session.PermissionMode)
@@ -3383,7 +3875,8 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Do not use write_file for small edits to existing files. Read the file and use apply_patch instead.\n")
 	b.WriteString("- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.\n")
 	b.WriteString("- Use update_plan for multi-step tasks.\n")
-	b.WriteString("- Use run_shell for build, test, or local inspection commands.\n")
+	b.WriteString("- Use run_shell for build, test, or local inspection commands when no dedicated workspace tool fits.\n")
+	b.WriteString("- Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files for code, diff, and git-state inspection. Do not use run_shell with Get-Content or PowerShell pipelines just to print line numbers or file excerpts.\n")
 	b.WriteString("- Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.\n")
 	b.WriteString("- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.\n")
 	b.WriteString("- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.\n")

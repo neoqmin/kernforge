@@ -292,6 +292,30 @@ func TestSystemPromptMarksExplicitFixRequestsAsToolDriven(t *testing.T) {
 	}
 }
 
+func TestSystemPromptIncludesNarrowPatchPayloadGuidance(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Sample.cpp 버그를 수정해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	for _, want := range []string{
+		"prefer narrow hunks anchored to current file contents",
+		"apply the first independent hunk",
+		"large tool-call payload",
+		"include the required RF hunks as separate narrow hunks",
+		"Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files",
+		"Do not use run_shell with Get-Content",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected narrow patch payload guidance %q in system prompt, got %q", want, prompt)
+		}
+	}
+}
+
 func TestSystemPromptForbidsGitMutationsWithoutExplicitRequest(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

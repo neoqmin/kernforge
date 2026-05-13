@@ -662,6 +662,9 @@ func (w Workspace) ConfirmEdit(preview EditPreview) error {
 	}
 	ok, err := w.PreviewEdit(preview)
 	if err != nil {
+		if errors.Is(err, ErrPromptCanceled) {
+			return ErrEditCanceled
+		}
 		return err
 	}
 	if !ok {

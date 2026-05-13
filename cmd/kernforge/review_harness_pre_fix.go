@@ -8,6 +8,28 @@ import (
 
 const reviewBeforeFixTrigger = "pre_fix"
 
+func reviewNarrowPatchGuidance(korean bool) string {
+	if korean {
+		return strings.Join([]string{
+			"- apply_patch payload는 좁은 hunk만 포함하세요. 파일 전체 rewrite, 큰 함수 전체 교체, 여러 RF를 한 번에 합친 대형 patch를 만들지 마세요.",
+			"- 일반 edit 흐름에서 한 patch가 커질 것 같으면 첫 번째 독립 hunk만 적용하고, 성공 후 파일을 다시 읽어 다음 hunk를 진행하세요. 단, pre-write gate가 필수 RF 전체 해결을 요구한다고 명시한 경우에는 RF별 좁은 hunk를 모두 포함하세요.",
+			"- 각 hunk는 현재 파일 내용에서 방금 확인한 짧은 old snippet에 고정하세요.",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		"- Keep apply_patch payloads narrow: do not rewrite whole files, replace large whole functions, or combine unrelated RF fixes into one large patch.",
+		"- In ordinary edit flow, if the patch would be large, apply only the first independent hunk, then reread the file and continue with the next hunk after the edit succeeds. If the pre-write gate explicitly requires all RFs to be addressed, include all required RF hunks, but keep each hunk narrow.",
+		"- Anchor each hunk on a short old snippet that was just verified in the current file contents.",
+	}, "\n")
+}
+
+func reviewDedicatedInspectionToolGuidance(korean bool) string {
+	if korean {
+		return "- 파일 내용, diff, git 상태 확인은 read_file, grep, git_diff, git_status 같은 전용 workspace 도구를 사용하세요. 줄 번호나 파일 일부 출력을 위해 run_shell, Get-Content, PowerShell 파이프를 호출하지 마세요."
+	}
+	return "- Use dedicated workspace tools such as read_file, grep, git_diff, and git_status for file, diff, and git-state inspection. Do not call run_shell, Get-Content, or PowerShell pipelines just to print line numbers or file excerpts."
+}
+
 func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, images []MessageImage, readOnlyAnalysis bool, explicitEditRequest bool) (bool, error) {
 	if a == nil || a.Session == nil || readOnlyAnalysis || !explicitEditRequest || len(images) > 0 {
 		return false, nil
@@ -34,12 +56,12 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		rt.rememberNaturalReviewSelection(*selection)
 	}
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedText(a.Config, "Running review before fix...", "수정 전 리뷰를 실행합니다..."))
+		a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Running review before fix...", "수정 전 리뷰를 실행합니다..."))
 	}
 	run, err := runReviewHarness(ctx, rt, opts)
 	if err != nil {
 		if a.EmitProgress != nil {
-			a.EmitProgress(localizedText(a.Config, "Review before fix failed: ", "수정 전 리뷰 실패: ") + err.Error())
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Review before fix failed: ", "수정 전 리뷰 실패: ") + err.Error())
 		}
 		return true, fmt.Errorf("review before fix failed: %w", err)
 	}
@@ -191,7 +213,7 @@ func (a *Agent) maybePrimeRepairFromLastReview(userText string, images []Message
 	})
 	a.primeTaskStateFromReviewBeforeFix(*run)
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedText(a.Config, "Continuing from latest review findings...", "최신 리뷰 결과를 기준으로 수정 흐름을 이어갑니다..."))
+		a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Continuing from latest review findings...", "최신 리뷰 결과를 기준으로 수정 흐름을 이어갑니다..."))
 	}
 	return true
 }
@@ -244,6 +266,20 @@ func preFixNonConclusiveBugHuntFindings(run ReviewRun) []ReviewFinding {
 	}
 	if len(run.Evidence.ChangedPaths) == 0 && len(run.ChangeSet.ChangedPaths) == 0 {
 		return nil
+	}
+	if reviewRunPrefersKoreanFromRequest(run) {
+		return []ReviewFinding{{
+			ID:                 "RF-PREFIX-001",
+			Source:             "deterministic",
+			Severity:           reviewSeverityMedium,
+			Category:           "evidence_gap",
+			Title:              "수정 전 리뷰가 실행 가능한 버그 finding을 반환하지 않았습니다",
+			Evidence:           "요청은 버그를 검토하고 수정하라는 내용이지만, 수정 전 리뷰가 실행 가능한 correctness, stability, security, performance finding을 만들지 못했습니다.",
+			Impact:             "수정 전 리뷰의 approved 판정은 참조된 코드에 버그가 없다는 증거가 아닙니다. 구현 모델은 편집 전에 코드를 독립적으로 확인해야 합니다.",
+			RequiredFix:        "참조된 코드를 독립적으로 확인한 뒤 명확히 필요한 수정만 적용하세요.",
+			TestRecommendation: "편집 후 touched code에 사용할 수 있는 focused verification을 실행하고 가능하면 리뷰를 반복하세요.",
+			Confidence:         "medium",
+		}}
 	}
 	return []ReviewFinding{{
 		ID:                 "RF-PREFIX-001",
@@ -510,7 +546,7 @@ func nonBlockingReviewFindings(run ReviewRun, limit int) []ReviewFinding {
 }
 
 func formatReviewRepairFollowUpFeedback(run ReviewRun) string {
-	korean := textContainsHangul(run.Objective)
+	korean := reviewRunPrefersKoreanFromRequest(run)
 	var b strings.Builder
 	if korean {
 		b.WriteString("직전 리뷰의 차단 finding을 수정하는 후속 요청입니다. 아래 리뷰 결과를 수리 지침으로 사용해서 바로 수정하세요.")
@@ -523,7 +559,7 @@ func formatReviewRepairFollowUpFeedback(run ReviewRun) string {
 }
 
 func formatReviewBeforeFixFeedback(run ReviewRun) string {
-	korean := textContainsHangul(run.Objective)
+	korean := reviewRunPrefersKoreanFromRequest(run)
 	var b strings.Builder
 	if korean {
 		b.WriteString("수정 전에 리뷰를 완료했습니다. 아래 리뷰 결과를 수리 지침으로 사용해서 원래 요청을 계속 처리하세요.")
@@ -541,33 +577,73 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 	if korean {
 		b.WriteString("\n\n응답 언어 정책: 한국어로 답변하세요. 코드 식별자, 경로, 명령어는 원문을 유지하세요.")
 	}
-	fmt.Fprintf(&b, "\n\nReview gate: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	if korean {
+		fmt.Fprintf(&b, "\n\n검토 게이트: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	} else {
+		fmt.Fprintf(&b, "\n\nReview gate: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	}
 	if strings.TrimSpace(run.MachineStatus) != "" {
 		fmt.Fprintf(&b, " (%s)", run.MachineStatus)
 	}
 	if strings.TrimSpace(run.Result.Summary) != "" {
-		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
+		if korean {
+			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
+		} else {
+			fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
+		}
 	}
 	if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
-		b.WriteString("\n\nRequired repair plan:\n")
+		if korean {
+			b.WriteString("\n\n필수 수정 계획:\n")
+		} else {
+			b.WriteString("\n\nRequired repair plan:\n")
+		}
 		b.WriteString(run.RepairPlan.Prompt)
 	} else {
-		b.WriteString("\n\nInline review findings:\n")
+		if korean {
+			b.WriteString("\n\n인라인 리뷰 finding:\n")
+		} else {
+			b.WriteString("\n\nInline review findings:\n")
+		}
 		b.WriteString(renderReviewBeforeFixInlineFindings(run))
 	}
-	b.WriteString("\n\nImplementation rules:\n")
-	b.WriteString("- Inspect further only where needed.\n")
-	b.WriteString("- Fix every blocking finding and every medium-or-higher actionable warning from the pre-fix review.\n")
-	b.WriteString("- Do not silently ignore a listed warning; either repair it or explicitly explain why the warning is intentionally out of scope.\n")
-	b.WriteString("- Do not broaden scope beyond the reviewed code/change.\n")
-	b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
 	if korean {
+		b.WriteString("\n\n구현 규칙:\n")
+		b.WriteString("- 필요한 범위에서만 추가로 확인하세요.\n")
+		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
+			b.WriteString("- 필수 수정 계획의 patch 작성 원칙을 따르세요. pre-write gate가 필수 RF 전체 해결을 검사하므로, 큰 rewrite 대신 RF별 좁은 hunk로 전체 필수 항목을 해결하세요.\n")
+		} else {
+			b.WriteString("- 수정 전 리뷰의 모든 차단 finding과 medium 이상 실행 가능 경고를 수정하세요.\n")
+		}
+		b.WriteString("- 나열된 경고를 조용히 무시하지 말고, 수정하거나 의도적으로 범위 밖인 이유를 명시하세요.\n")
+		b.WriteString("- 리뷰된 코드/변경 범위를 넘겨 확장하지 마세요.\n")
+		b.WriteString("- 리뷰 artifact 파일을 다시 읽지 마세요. 필요한 리뷰 지침은 여기 모두 포함되어 있습니다.\n")
 		b.WriteString("- 파일 쓰기 또는 패치 도구를 호출하기 전에 사용자에게 `검토 결과:` 섹션으로 RF 항목과 조치 방향을 짧게 요약하세요.\n")
+		b.WriteString(reviewNarrowPatchGuidance(true))
+		b.WriteString("\n")
+		b.WriteString(reviewDedicatedInspectionToolGuidance(true))
+		b.WriteString("\n")
+		b.WriteString("- apply_patch를 사용할 때는 유효한 KernForge patch 문법만 보내세요. *** Begin Patch 다음 첫 줄은 반드시 *** Update File:, *** Add File:, 또는 *** Delete File:이어야 합니다. patch 본문을 @@로 시작하지 마세요.\n")
+		b.WriteString("- 파일 쓰기 전 일반 pre-write review gate가 다시 실행됩니다.\n")
 	} else {
+		b.WriteString("\n\nImplementation rules:\n")
+		b.WriteString("- Inspect further only where needed.\n")
+		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
+			b.WriteString("- Follow the repair plan's patch construction rules. The pre-write gate checks that every required RF is addressed, so satisfy the required set with separate narrow hunks instead of a large rewrite.\n")
+		} else {
+			b.WriteString("- Fix every blocking finding and every medium-or-higher actionable warning from the pre-fix review.\n")
+		}
+		b.WriteString("- Do not silently ignore a listed warning; either repair it or explicitly explain why the warning is intentionally out of scope.\n")
+		b.WriteString("- Do not broaden scope beyond the reviewed code/change.\n")
+		b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
 		b.WriteString("- Before calling any file write or patch tool, show the user a short `Review findings:` section with the RF items and repair direction.\n")
+		b.WriteString(reviewNarrowPatchGuidance(false))
+		b.WriteString("\n")
+		b.WriteString(reviewDedicatedInspectionToolGuidance(false))
+		b.WriteString("\n")
+		b.WriteString("- When using apply_patch, send only valid KernForge patch syntax. The first line after *** Begin Patch must be *** Update File:, *** Add File:, or *** Delete File:. Never start the patch body with @@.\n")
+		b.WriteString("- The normal pre-write review gate will run again before any file write.\n")
 	}
-	b.WriteString("- When using apply_patch, send only valid KernForge patch syntax. The first line after *** Begin Patch must be *** Update File:, *** Add File:, or *** Delete File:. Never start the patch body with @@.\n")
-	b.WriteString("- The normal pre-write review gate will run again before any file write.\n")
 	return strings.TrimSpace(b.String())
 }
 
@@ -619,9 +695,13 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 }
 
 func renderReviewBeforeFixInlineFindings(run ReviewRun) string {
-	text := renderReviewInlineFindings(run, false)
+	korean := reviewRunPrefersKoreanFromRequest(run)
+	text := renderReviewInlineFindingsLocalized(run, false, korean)
 	if preFixHasNonConclusiveBugHuntWarning(run) {
 		note := "- Pre-fix review returned no actionable bug findings. Inspect the requested code independently before editing; do not treat this as proof that the code is bug-free."
+		if korean {
+			note = "- 수정 전 리뷰가 실행 가능한 버그 finding을 반환하지 않았습니다. 편집 전에 요청된 코드를 독립적으로 확인하고, 이를 버그가 없다는 증거로 취급하지 마세요."
+		}
 		if strings.TrimSpace(text) == "" {
 			return note
 		}
@@ -631,8 +711,20 @@ func renderReviewBeforeFixInlineFindings(run ReviewRun) string {
 }
 
 func renderReviewInlineFindings(run ReviewRun, includeVerificationGaps bool) string {
+	return renderReviewInlineFindingsLocalized(run, includeVerificationGaps, false)
+}
+
+func renderReviewInlineFindingsLocalized(run ReviewRun, includeVerificationGaps bool, korean bool) string {
 	var b strings.Builder
 	if len(run.Findings) == 0 {
+		if korean {
+			if strings.TrimSpace(run.Result.Summary) != "" {
+				b.WriteString("- 구조화된 finding이 없습니다. 위 요약을 지침으로 사용하세요.")
+			} else {
+				b.WriteString("- 구조화된 finding이 없습니다. 참조된 코드를 직접 확인하고 명확히 필요한 수정만 적용하세요.")
+			}
+			return b.String()
+		}
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			b.WriteString("- No structured findings were returned. Use the summary above as guidance.")
 		} else {
@@ -648,25 +740,53 @@ func renderReviewInlineFindings(run ReviewRun, includeVerificationGaps bool) str
 		title := valueOrDefault(finding.Title, "Review finding")
 		fmt.Fprintf(&b, "- %s [%s/%s] %s\n", valueOrDefault(finding.ID, "finding"), finding.Severity, finding.Category, title)
 		if strings.TrimSpace(finding.Path) != "" {
-			fmt.Fprintf(&b, "  Path: %s\n", finding.Path)
+			if korean {
+				fmt.Fprintf(&b, "  경로: %s\n", finding.Path)
+			} else {
+				fmt.Fprintf(&b, "  Path: %s\n", finding.Path)
+			}
 		}
 		if strings.TrimSpace(finding.Symbol) != "" {
-			fmt.Fprintf(&b, "  Symbol: %s\n", finding.Symbol)
+			if korean {
+				fmt.Fprintf(&b, "  심볼: %s\n", finding.Symbol)
+			} else {
+				fmt.Fprintf(&b, "  Symbol: %s\n", finding.Symbol)
+			}
 		}
 		if strings.TrimSpace(finding.Evidence) != "" {
-			fmt.Fprintf(&b, "  Evidence: %s\n", finding.Evidence)
+			if korean {
+				fmt.Fprintf(&b, "  근거: %s\n", finding.Evidence)
+			} else {
+				fmt.Fprintf(&b, "  Evidence: %s\n", finding.Evidence)
+			}
 		}
 		if strings.TrimSpace(finding.Impact) != "" {
-			fmt.Fprintf(&b, "  Impact: %s\n", finding.Impact)
+			if korean {
+				fmt.Fprintf(&b, "  영향: %s\n", finding.Impact)
+			} else {
+				fmt.Fprintf(&b, "  Impact: %s\n", finding.Impact)
+			}
 		}
 		if strings.TrimSpace(finding.RequiredFix) != "" {
-			fmt.Fprintf(&b, "  Required fix: %s\n", finding.RequiredFix)
+			if korean {
+				fmt.Fprintf(&b, "  필요한 수정: %s\n", localizedReviewRequiredFixText(finding.RequiredFix, true))
+			} else {
+				fmt.Fprintf(&b, "  Required fix: %s\n", finding.RequiredFix)
+			}
 		}
 		if strings.TrimSpace(finding.TestRecommendation) != "" {
-			fmt.Fprintf(&b, "  Test: %s\n", finding.TestRecommendation)
+			if korean {
+				fmt.Fprintf(&b, "  테스트: %s\n", finding.TestRecommendation)
+			} else {
+				fmt.Fprintf(&b, "  Test: %s\n", finding.TestRecommendation)
+			}
 		}
 	}
 	if strings.TrimSpace(b.String()) == "" {
+		if korean {
+			b.WriteString("- 리뷰가 검증 또는 근거 gap만 보고했습니다. 요청된 코드를 확인하고, 관련 없는 정리는 피하며 가능하면 focused verification을 실행하세요.")
+			return strings.TrimSpace(b.String())
+		}
 		b.WriteString("- Review only reported verification or evidence gaps. Inspect the requested code, apply no unrelated cleanup, and run focused verification if possible.")
 	}
 	return strings.TrimSpace(b.String())
@@ -677,8 +797,30 @@ func preFixHasNonConclusiveBugHuntWarning(run ReviewRun) bool {
 		if strings.EqualFold(strings.TrimSpace(finding.Title), "Pre-fix review returned no actionable bug findings") {
 			return true
 		}
+		if strings.TrimSpace(finding.Title) == "수정 전 리뷰가 실행 가능한 버그 finding을 반환하지 않았습니다" {
+			return true
+		}
 	}
 	return false
+}
+
+func reviewRunPrefersKoreanFromRequest(run ReviewRun) bool {
+	return reviewRunPrefersKorean(Config{AutoLocale: boolPtr(false)}, run)
+}
+
+func localizedReviewRequiredFixText(value string, korean bool) string {
+	trimmed := strings.TrimSpace(value)
+	if !korean || trimmed == "" {
+		return value
+	}
+	const applyIfMissingPrefix = "Apply this fix if it is not already present: "
+	if strings.HasPrefix(trimmed, applyIfMissingPrefix) {
+		return "아직 반영되지 않았다면 이 수정을 적용하세요: " + strings.TrimSpace(trimmed[len(applyIfMissingPrefix):])
+	}
+	if strings.EqualFold(trimmed, "Apply the reviewer-described fix if it is not already present.") {
+		return "아직 반영되지 않았다면 리뷰어가 설명한 수정을 적용하세요."
+	}
+	return value
 }
 
 func (a *Agent) primeTaskStateFromReviewBeforeFix(run ReviewRun) {

@@ -185,6 +185,9 @@ func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || !run.SingleModelPolicy.Enabled {
 		return nil
 	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		return nil
+	}
 	if !run.SingleModelPolicy.RequiresRFObligationStatus || repairFindingsHaveResolutionStatus(run.RepairFindings) {
 		return nil
 	}
@@ -203,6 +206,69 @@ func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
 	}}
 	assignReviewFindingIDs(findings)
 	return findings
+}
+
+func annotateSingleModelPreWriteRepairStatuses(run *ReviewRun) {
+	if run == nil ||
+		!strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") ||
+		!run.SingleModelPolicy.Enabled ||
+		len(run.RepairFindings) == 0 ||
+		!reviewRunHasUsableMainReviewer(*run) {
+		return
+	}
+	for i := range run.RepairFindings {
+		if reviewRepairResolutionStatusKnown(run.RepairFindings[i].ResolutionStatus) {
+			continue
+		}
+		run.RepairFindings[i].ResolutionStatus = inferSingleModelPreWriteRepairStatus(*run, run.RepairFindings[i])
+	}
+}
+
+func inferSingleModelPreWriteRepairStatus(run ReviewRun, repair ReviewFinding) string {
+	for _, finding := range run.Findings {
+		if !strings.EqualFold(strings.TrimSpace(finding.Source), "model") {
+			continue
+		}
+		if !reviewFindingReferencesRepairFinding(finding, repair) {
+			continue
+		}
+		if strings.EqualFold(finding.Category, "test_gap") {
+			return "verification_needed"
+		}
+		if strings.EqualFold(finding.Category, "evidence_gap") {
+			return "partial"
+		}
+		if reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium) ||
+			strings.EqualFold(finding.Severity, reviewSeverityBlocker) {
+			return "unresolved"
+		}
+		return "partial"
+	}
+	return "resolved"
+}
+
+func reviewFindingReferencesRepairFinding(finding ReviewFinding, repair ReviewFinding) bool {
+	needles := []string{
+		strings.TrimSpace(repair.ID),
+		strings.TrimSpace(repair.Title),
+	}
+	haystack := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	for _, needle := range needles {
+		needle = strings.ToLower(strings.TrimSpace(needle))
+		if needle == "" {
+			continue
+		}
+		if strings.Contains(haystack, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func singleModelPreWriteHasFrozenDiff(run ReviewRun) bool {
@@ -750,6 +816,7 @@ func reviewRunHasChangeEvidence(run ReviewRun) bool {
 func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 	var blocking []ReviewFinding
 	var warnings []ReviewFinding
+	korean := reviewRunPrefersKoreanFromRequest(run)
 	blockingIDs := reviewFindingIDSet(run.Gate.BlockingFindings)
 	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
 	hasGateClassification := len(blockingIDs) > 0 || len(warningIDs) > 0
@@ -777,53 +844,123 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		return ReviewRepairPlan{}
 	}
 	var b strings.Builder
-	b.WriteString("Repair the review blockers without broadening scope.\n\n")
+	if korean {
+		b.WriteString("리뷰 차단 항목을 범위 확장 없이 수정하세요.\n\n")
+	} else {
+		b.WriteString("Repair the review blockers without broadening scope.\n\n")
+	}
 	if strings.TrimSpace(run.Objective) != "" {
-		b.WriteString("Objective:\n")
+		if korean {
+			b.WriteString("원래 요청:\n")
+		} else {
+			b.WriteString("Objective:\n")
+		}
 		b.WriteString(run.Objective)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("Blocking findings:\n")
+	b.WriteString(reviewRepairPatchConstructionGuidance(blocking, warnings, korean))
+	b.WriteString("\n\n")
+	if korean {
+		b.WriteString("차단 finding:\n")
+	} else {
+		b.WriteString("Blocking findings:\n")
+	}
 	var ids []string
 	var actions []string
 	for _, finding := range blocking {
 		ids = append(ids, finding.ID)
 		actions = append(actions, finding.RequiredFix)
-		fmt.Fprintf(&b, "- %s [%s/%s] %s\n", finding.ID, finding.Severity, finding.Category, finding.Title)
-		if strings.TrimSpace(finding.Evidence) != "" {
-			fmt.Fprintf(&b, "  Evidence: %s\n", compactPromptSection(finding.Evidence, 350))
-		}
-		if strings.TrimSpace(finding.RequiredFix) != "" {
-			fmt.Fprintf(&b, "  Required fix: %s\n", compactPromptSection(finding.RequiredFix, 350))
-		}
-		if strings.TrimSpace(finding.TestRecommendation) != "" {
-			fmt.Fprintf(&b, "  Verification: %s\n", finding.TestRecommendation)
-		}
+		writeReviewRepairPlanFinding(&b, finding, korean)
 	}
 	if len(warnings) > 0 {
-		b.WriteString("\nMedium-or-higher actionable warnings that must also be handled:\n")
+		if korean {
+			b.WriteString("\n반드시 함께 처리할 medium 이상 실행 가능 경고:\n")
+		} else {
+			b.WriteString("\nMedium-or-higher actionable warnings that must also be handled:\n")
+		}
 		for _, finding := range warnings {
 			ids = append(ids, finding.ID)
 			actions = append(actions, finding.RequiredFix)
-			fmt.Fprintf(&b, "- %s [%s/%s] %s\n", finding.ID, finding.Severity, finding.Category, finding.Title)
-			if strings.TrimSpace(finding.Evidence) != "" {
-				fmt.Fprintf(&b, "  Evidence: %s\n", compactPromptSection(finding.Evidence, 350))
-			}
-			if strings.TrimSpace(finding.RequiredFix) != "" {
-				fmt.Fprintf(&b, "  Required fix: %s\n", compactPromptSection(finding.RequiredFix, 350))
-			}
-			if strings.TrimSpace(finding.TestRecommendation) != "" {
-				fmt.Fprintf(&b, "  Verification: %s\n", finding.TestRecommendation)
-			}
+			writeReviewRepairPlanFinding(&b, finding, korean)
 		}
 	}
-	b.WriteString("\nDo not do unrelated cleanup, dependency upgrades, or large refactors unless a blocking finding explicitly requires it.")
+	if korean {
+		b.WriteString("\n차단 finding이 명시적으로 요구하지 않는 한 관련 없는 정리, 의존성 업그레이드, 대규모 리팩터링은 하지 마세요.")
+	} else {
+		b.WriteString("\nDo not do unrelated cleanup, dependency upgrades, or large refactors unless a blocking finding explicitly requires it.")
+	}
+	b.WriteString("\n")
+	b.WriteString(reviewNarrowPatchGuidance(korean))
 	return ReviewRepairPlan{
 		Required:        true,
 		Prompt:          b.String(),
 		Findings:        ids,
 		RequiredActions: normalizeTaskStateList(actions, 12),
 	}
+}
+
+func writeReviewRepairPlanFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
+	fmt.Fprintf(b, "- %s [%s/%s] %s\n", finding.ID, finding.Severity, finding.Category, finding.Title)
+	if strings.TrimSpace(finding.Evidence) != "" {
+		if korean {
+			fmt.Fprintf(b, "  근거: %s\n", compactPromptSection(finding.Evidence, 350))
+		} else {
+			fmt.Fprintf(b, "  Evidence: %s\n", compactPromptSection(finding.Evidence, 350))
+		}
+	}
+	if strings.TrimSpace(finding.RequiredFix) != "" {
+		if korean {
+			fmt.Fprintf(b, "  필요한 수정: %s\n", compactPromptSection(localizedReviewRequiredFixText(finding.RequiredFix, true), 350))
+		} else {
+			fmt.Fprintf(b, "  Required fix: %s\n", compactPromptSection(finding.RequiredFix, 350))
+		}
+	}
+	if strings.TrimSpace(finding.TestRecommendation) != "" {
+		if korean {
+			fmt.Fprintf(b, "  검증: %s\n", finding.TestRecommendation)
+		} else {
+			fmt.Fprintf(b, "  Verification: %s\n", finding.TestRecommendation)
+		}
+	}
+}
+
+func reviewRepairPatchConstructionGuidance(blocking []ReviewFinding, warnings []ReviewFinding, korean bool) string {
+	required := append([]ReviewFinding(nil), blocking...)
+	required = append(required, warnings...)
+	if len(required) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if korean {
+		b.WriteString("patch 작성 원칙:\n")
+		b.WriteString("- pre-write gate는 부분 수리를 승인하지 않습니다. 이번 edit proposal은 아래 필수 RF를 모두 해결해야 합니다.\n")
+		b.WriteString("- 단, 하나의 큰 hunk나 함수/파일 전체 rewrite로 합치지 말고, RF별로 현재 파일에서 방금 확인한 snippet에 고정된 독립 hunk를 작성하세요.\n")
+		b.WriteString("- 서로 다른 함수나 위치를 고칠 때는 같은 proposal 안에서도 hunk를 분리하고, 기존 함수 종료부/중괄호를 새 위치에 중복 삽입하지 마세요.\n")
+		b.WriteString("- 필요한 target snippet이 현재 context에 없으면 patch를 추측하지 말고 해당 함수 범위를 전용 파일 읽기 도구로 먼저 확인하세요.\n")
+		b.WriteString("필수 RF 처리 순서:\n")
+	} else {
+		b.WriteString("Patch construction rules:\n")
+		b.WriteString("- The pre-write gate does not approve partial repairs. This edit proposal must address every required RF below.\n")
+		b.WriteString("- Still, do not merge the fixes into one large hunk or whole-file/function rewrite. Use separate narrow hunks anchored to snippets just verified in the current file contents.\n")
+		b.WriteString("- When fixes touch different functions or locations, keep the hunks separate in the same proposal and do not duplicate existing function endings or braces in a new location.\n")
+		b.WriteString("- If a required target snippet is not in current context, do not guess the patch; inspect that exact function range with a dedicated file-read tool first.\n")
+		b.WriteString("Required RF order:\n")
+	}
+	for _, finding := range required {
+		id := strings.TrimSpace(finding.ID)
+		if id == "" {
+			id = "RF"
+		}
+		target := firstNonBlankString(strings.TrimSpace(finding.Symbol), strings.TrimSpace(finding.Path), strings.TrimSpace(finding.Title))
+		if target == "" {
+			target = strings.TrimSpace(finding.Title)
+		}
+		if target == "" {
+			target = "review finding"
+		}
+		fmt.Fprintf(&b, "- %s: %s\n", id, compactPromptSection(target, 140))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func reviewFindingShouldBeRepairPlanWarning(finding ReviewFinding) bool {
@@ -842,16 +979,39 @@ func reviewFindingShouldBeRepairPlanWarning(finding ReviewFinding) bool {
 }
 
 func reviewResultSummary(run ReviewRun) string {
+	return reviewResultSummaryForLanguage(run, reviewRunPrefersKoreanFromRequest(run))
+}
+
+func reviewResultSummaryForConfig(cfg Config, run ReviewRun) string {
+	return reviewResultSummaryForLanguage(run, reviewRunPrefersKorean(cfg, run))
+}
+
+func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
 	switch run.Gate.Verdict {
 	case reviewVerdictApproved:
+		if korean {
+			return "차단 finding 없이 리뷰가 승인되었습니다."
+		}
 		return "Review approved with no blocking findings."
 	case reviewVerdictApprovedWithWarnings:
+		if korean {
+			return fmt.Sprintf("리뷰가 경고와 함께 승인되었습니다: 경고 finding %d개.", len(run.Gate.WarningFindings))
+		}
 		return fmt.Sprintf("Review approved with warnings: %d warning finding(s).", len(run.Gate.WarningFindings))
 	case reviewVerdictNeedsRevision:
+		if korean {
+			return fmt.Sprintf("리뷰가 수정을 요구합니다: 차단 finding %d개.", len(run.Gate.BlockingFindings))
+		}
 		return fmt.Sprintf("Review needs revision: %d blocking finding(s).", len(run.Gate.BlockingFindings))
 	case reviewVerdictInsufficientEvidence:
+		if korean {
+			return "리뷰 승인에 필요한 근거가 부족합니다."
+		}
 		return "Review has insufficient evidence for approval."
 	default:
+		if korean {
+			return "리뷰가 차단되었습니다."
+		}
 		return "Review is blocked."
 	}
 }
@@ -951,6 +1111,7 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 		lower := strings.ToLower(trimmed)
 		if lower == "review_result" ||
 			lower == "findings:" ||
+			reviewLineIsEmptyFindingsMarker(lower) ||
 			strings.HasPrefix(lower, "verdict:") ||
 			strings.HasPrefix(lower, "summary:") {
 			continue
@@ -1017,6 +1178,9 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 	}
 	assignReviewFindingIDs(findings)
 	if len(findings) == 0 {
+		if strings.EqualFold(reviewStructuredReviewVerdict(raw), reviewVerdictApproved) {
+			return nil, reviewModelQualityUsable
+		}
 		if reviewRawLooksNonBlockingApproval(raw) {
 			return []ReviewFinding{reviewUnstructuredApprovalFinding(raw, role, korean)}, reviewModelQualityUsable
 		}
@@ -1029,6 +1193,33 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 		return findings, reviewModelQualityWeak
 	}
 	return findings, reviewModelQualityUsable
+}
+
+func reviewLineIsEmptyFindingsMarker(lowerLine string) bool {
+	lowerLine = strings.TrimSpace(lowerLine)
+	switch lowerLine {
+	case "findings: []", "findings:[]", "findings: none", "findings: none.", "findings: n/a", "findings: null":
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewStructuredReviewVerdict(raw string) string {
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(raw), "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimLeft(line, "-*0123456789. "))
+		lower := strings.ToLower(trimmed)
+		if !strings.HasPrefix(lower, "verdict:") {
+			continue
+		}
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		return strings.ToLower(strings.TrimSpace(parts[1]))
+	}
+	return ""
 }
 
 func reviewRawLooksNonBlockingApproval(raw string) bool {

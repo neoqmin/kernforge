@@ -184,6 +184,13 @@ type failingTool struct {
 	calls int
 }
 
+type sequenceTool struct {
+	name    string
+	outputs []string
+	errs    []error
+	calls   int
+}
+
 type observingSessionTool struct {
 	name        string
 	sessionPath string
@@ -257,6 +264,32 @@ func (t *failingTool) Execute(ctx context.Context, input any) (string, error) {
 	return "", t.err
 }
 
+func (t *sequenceTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        t.name,
+		Description: "Return scripted outputs and errors for retry-loop tests.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *sequenceTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	index := t.calls - 1
+	var output string
+	if index >= 0 && index < len(t.outputs) {
+		output = t.outputs[index]
+	}
+	var err error
+	if index >= 0 && index < len(t.errs) {
+		err = t.errs[index]
+	}
+	return output, err
+}
+
 func (t *observingSessionTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        t.name,
@@ -309,6 +342,17 @@ func toolCallResponse(name string, args map[string]any) ChatResponse {
 			}},
 		},
 	}
+}
+
+func scriptedRequestsContainText(requests []ChatRequest, needle string) bool {
+	for _, req := range requests {
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Text, needle) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func approvedReviewResponse(summary string) ChatResponse {
@@ -3546,7 +3590,7 @@ func TestAgentContinuesAfterWeakPreFixCrossReviewerAndStillBlocksWebResearch(t *
 	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	cfg := Config{}
+	cfg := Config{AutoLocale: boolPtr(false)}
 	cfg.Provider = "scripted"
 	cfg.Model = "main-model"
 	session := NewSession(root, "scripted", "main-model", "", "default")
@@ -3624,7 +3668,7 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 	}
 	runTestGit(t, root, "add", "main.cpp")
 	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	cfg := Config{}
+	cfg := Config{AutoLocale: boolPtr(false)}
 	session := NewSession(root, "scripted", "main-model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
@@ -3703,6 +3747,411 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 	}
 	if !reviewRunHasRequiredReviewerFailure(*session.LastReviewRun) {
 		t.Fatalf("expected required reviewer failure marker, got %#v", session.LastReviewRun.Findings)
+	}
+}
+
+func TestAgentReportsReviewAndProposalAfterRepeatedPreWriteBlock(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Result: ReviewResult{Summary: "Patch still misses the dynamic mount point buffer retry."},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "GetVolumePathNamesForVolumeName still uses a fixed buffer",
+			RequiredFix: "Retry with a returnCch-sized dynamic buffer.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err: fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n" +
+			"Automatic pre-write review found blockers.\n\nReview gate: needs_revision"),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			{Message: Message{Role: "assistant", Text: "this response must not be requested after repeated pre-write review blocks"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	for _, want := range []string{
+		"did not pass the pre-write review",
+		"Latest review result: needs_revision",
+		"RF-001",
+		"Latest edit proposal",
+		"*** Begin Patch",
+		"Should I keep repairing",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected repeated pre-write block reply to contain %q, got %q", want, reply)
+		}
+	}
+	if patchTool.calls != 2 {
+		t.Fatalf("expected exactly two blocked patch attempts, got %d", patchTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected agent to stop on the second pre-write block, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentForcesEditAfterPreWriteRepairInspectionBudget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for i := 1; i <= maxPreWriteReviewRepairInspectTools+1; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("file%d.go", i)), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile file%d.go: %v", i, err)
+		}
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	preWriteErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n" +
+		"Automatic pre-write review found blockers.\n\nReview gate: needs_revision")
+	patchTool := &sequenceTool{
+		name:    "apply_patch",
+		outputs: []string{"", "Patch applied successfully."},
+		errs:    []error{preWriteErr, nil},
+	}
+	replies := []ChatResponse{
+		toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+	}
+	for i := 1; i <= maxPreWriteReviewRepairInspectTools+1; i++ {
+		replies = append(replies, toolCallResponse("read_file", map[string]any{"path": fmt.Sprintf("file%d.go", i)}))
+	}
+	replies = append(replies,
+		toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// fixed\n*** End Patch\n"}),
+		ChatResponse{Message: Message{Role: "assistant", Text: "Applied the narrow pre-write repair."}},
+	)
+	provider := &scriptedProviderClient{
+		replies: replies,
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Applied the narrow pre-write repair.") {
+		t.Fatalf("expected repair to continue after inspection budget nudge, got %q", reply)
+	}
+	if patchTool.calls != 2 {
+		t.Fatalf("expected blocked patch plus forced repair patch, got %d", patchTool.calls)
+	}
+	if !scriptedRequestsContainText(provider.requests, "next response must be an edit-tool call") {
+		t.Fatalf("expected force-edit guidance after inspection budget, got %#v", provider.requests)
+	}
+}
+
+func TestAgentAsksUserAfterPreWriteRepairInspectionNudgeIsExhausted(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	for i := 1; i <= maxPreWriteReviewRepairInspectTools+1; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("file%d.go", i)), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile file%d.go: %v", i, err)
+		}
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-002"},
+		},
+		Result: ReviewResult{Summary: "The proposal still leaves the pre-write blocker unresolved."},
+		Findings: []ReviewFinding{{
+			ID:          "RF-002",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Mount point retry is still missing",
+			RequiredFix: "Allocate returnCch-sized storage and retry.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err: fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n" +
+			"Automatic pre-write review found blockers.\n\nReview gate: needs_revision"),
+	}
+	replies := []ChatResponse{
+		toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// attempt\n*** End Patch\n"}),
+	}
+	for cycle := 0; cycle < 2; cycle++ {
+		for i := 1; i <= maxPreWriteReviewRepairInspectTools+1; i++ {
+			replies = append(replies, toolCallResponse("read_file", map[string]any{"path": fmt.Sprintf("file%d.go", i)}))
+		}
+	}
+	provider := &scriptedProviderClient{
+		replies: replies,
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	for _, want := range []string{
+		"did not pass",
+		"Latest review result: needs_revision",
+		"RF-002",
+		"Latest edit proposal",
+		"// attempt",
+		"Should I keep repairing",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected inspection-limit reply to contain %q, got %q", want, reply)
+		}
+	}
+	if patchTool.calls != 1 {
+		t.Fatalf("expected one blocked patch attempt, got %d", patchTool.calls)
+	}
+	if !scriptedRequestsContainText(provider.requests, "next response must be an edit-tool call") {
+		t.Fatalf("expected force-edit guidance before asking the user, got %#v", provider.requests)
+	}
+}
+
+func TestAgentContinuesPendingReviewRepairOnlyOnY(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "review-continue",
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-009"},
+		},
+		Result: ReviewResult{Summary: "Latest repair still needs one narrow fix."},
+		Findings: []ReviewFinding{{
+			ID:          "RF-009",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Still needs the narrow repair",
+			RequiredFix: "Apply the narrow repair from the latest review.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	session.PendingReviewRepairConfirm = &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		ReviewID:  "review-continue",
+		Verdict:   reviewVerdictNeedsRevision,
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "y")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "repair continued" {
+		t.Fatalf("expected provider reply after y confirmation, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected pending confirmation to be cleared after y")
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected model to continue after y confirmation")
+	}
+	for _, want := range []string{
+		"Pending review repair confirmation",
+		"RF-009",
+		"Apply the narrow repair",
+	} {
+		if !scriptedRequestsContainText(provider.requests, want) {
+			t.Fatalf("expected continued request to contain %q, got %#v", want, provider.requests)
+		}
+	}
+}
+
+func TestAgentRejectsNaturalLanguagePendingReviewRepairAnswer(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "review-natural",
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-010"},
+		},
+	}
+	session.PendingReviewRepairConfirm = &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		ReviewID:  "review-natural",
+		Verdict:   reviewVerdictNeedsRevision,
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{Message: Message{Role: "assistant", Text: "this should not run"}}},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "yes")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "exactly `y` or `n`") {
+		t.Fatalf("expected y/n-only prompt, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm == nil {
+		t.Fatalf("expected pending confirmation to remain after natural-language answer")
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("natural-language confirmation should not call the model, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentStopsPendingReviewRepairOnN(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "review-stop",
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-011"},
+		},
+	}
+	session.PendingReviewRepairConfirm = &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		ReviewID:  "review-stop",
+		Verdict:   reviewVerdictNeedsRevision,
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{Message: Message{Role: "assistant", Text: "this should not run"}}},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "n")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "will not continue repairing") {
+		t.Fatalf("expected stop reply, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected pending confirmation to be cleared after n")
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("n confirmation should not call the model, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	replaceTool := &failingTool{
+		name: "replace_in_file",
+		err:  fmt.Errorf("%w: search text not found in main.go", ErrEditTargetMismatch),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("replace_in_file", map[string]any{"path": "main.go", "search": "missing", "replace": "present"}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			toolCallResponse("replace_in_file", map[string]any{"path": "main.go", "search": "missing", "replace": "present"}),
+			{Message: Message{Role: "assistant", Text: "this response must not be requested after repeated edit target mismatch"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(replaceTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Edit target mismatches repeated") {
+		t.Fatalf("expected bounded edit mismatch stop reply, got %q", reply)
+	}
+	if replaceTool.calls != 2 {
+		t.Fatalf("expected exactly two mismatched edit attempts, got %d", replaceTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected agent to stop on the second edit mismatch, got %d requests", len(provider.requests))
 	}
 }
 
@@ -4290,6 +4739,69 @@ func TestAgentSingleToolFailureGetsRecoveryTurnInsteadOfRepeatedFailureLabel(t *
 	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "tool budget has been exhausted") {
 		t.Fatalf("expected tool-loop-limit recovery guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentStopsAfterDiffPreviewPromptCanceledWithoutModelRetry(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := "package main\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "this response must not be requested after preview cancel",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	previewCalls := 0
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			previewCalls++
+			if !strings.Contains(preview.Preview, "Preview for main.go") {
+				t.Fatalf("expected patch preview contents, got %q", preview.Preview)
+			}
+			return false, ErrPromptCanceled
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "update main.go")
+	if !errors.Is(err, ErrEditCanceled) {
+		t.Fatalf("expected ErrEditCanceled after preview prompt cancel, got %v", err)
+	}
+	if previewCalls != 1 {
+		t.Fatalf("expected one preview call, got %d", previewCalls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("preview cancel must stop without a model retry, got %d requests", len(provider.requests))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("preview cancel must not change files, got %q", string(data))
 	}
 }
 

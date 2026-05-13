@@ -517,7 +517,17 @@ func reviewClientMatchesMain(rt *runtimeState, client ProviderClient, model stri
 	if !strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(rt.cfg.Model)) {
 		return false
 	}
-	return sameProviderClient(client, rt.agent.Client)
+	if sameProviderClient(client, rt.agent.Client) {
+		return true
+	}
+	clientRoute := providerClientReviewRoute(client, "")
+	mainRoute := providerClientReviewRoute(rt.agent.Client, rt.cfg.Provider)
+	if clientRoute.Provider == "" || mainRoute.Provider == "" || clientRoute.Provider != mainRoute.Provider {
+		return false
+	}
+	clientBaseURL := normalizeProviderBaseURL(clientRoute.Provider, clientRoute.BaseURL)
+	mainBaseURL := normalizeProviderBaseURL(mainRoute.Provider, firstNonBlankString(mainRoute.BaseURL, rt.cfg.BaseURL))
+	return strings.EqualFold(clientBaseURL, mainBaseURL)
 }
 
 func sameProviderClient(left ProviderClient, right ProviderClient) bool {
@@ -533,6 +543,40 @@ func sameProviderClient(left ProviderClient, right ProviderClient) bool {
 		return false
 	}
 	return left == right
+}
+
+func providerClientReviewRoute(client ProviderClient, fallbackProvider string) ModelRouteMetadata {
+	route := ModelRouteMetadata{}
+	if metaProvider, ok := client.(modelRouteMetadataProvider); ok {
+		route = metaProvider.ModelRouteMetadata()
+	}
+	if strings.TrimSpace(route.Provider) == "" && client != nil {
+		route.Provider = client.Name()
+	}
+	if strings.TrimSpace(route.Provider) == "" {
+		route.Provider = fallbackProvider
+	}
+	route.Provider = normalizeProviderName(route.Provider)
+	route.BaseURL = strings.TrimSpace(route.BaseURL)
+	return route
+}
+
+func reviewModelConfigMatchesMain(cfg Config, roleCfg ReviewModelConfig) bool {
+	if !strings.EqualFold(strings.TrimSpace(roleCfg.Model), strings.TrimSpace(cfg.Model)) {
+		return false
+	}
+	roleProvider := normalizeProviderName(roleCfg.Provider)
+	mainProvider := normalizeProviderName(cfg.Provider)
+	if roleProvider == "" || mainProvider == "" || roleProvider != mainProvider {
+		return false
+	}
+	roleBaseURLInput := strings.TrimSpace(roleCfg.BaseURL)
+	if roleBaseURLInput == "" {
+		roleBaseURLInput = strings.TrimSpace(cfg.BaseURL)
+	}
+	roleBaseURL := normalizeProviderBaseURL(roleProvider, roleBaseURLInput)
+	mainBaseURL := normalizeProviderBaseURL(mainProvider, cfg.BaseURL)
+	return strings.EqualFold(roleBaseURL, mainBaseURL)
 }
 
 func reviewPreferredCrossReviewRouteRole(run ReviewRun, preferredRoles []string) string {
@@ -1743,6 +1787,7 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 		b.WriteString("- This is a pre-write review. If evidence includes required repair findings from a pre-fix review, verify the proposed edit addresses every blocking finding and every medium-or-higher actionable warning listed there.\n")
 		b.WriteString("- Do not approve a proposed edit that only fixes a blocker while leaving a listed actionable warning unresolved, unless the diff itself contains a clear reason that the warning is intentionally out of scope.\n")
 		b.WriteString("- If a required repair finding is still unresolved, emit needs_revision with a concrete finding that names the original repair id.\n")
+		b.WriteString("- If the proposed diff tries to satisfy multiple RFs with a whole-file rewrite, a large whole-function replacement, duplicated function endings/braces, or code outside the intended function, treat that as a patch correctness blocker even if the idea of the fix is sound.\n")
 	}
 	return b.String()
 }

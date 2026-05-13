@@ -372,7 +372,15 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 		}},
 	}
 	post := formatPostChangeReviewFeedback(run, true)
-	preWrite := formatPreWriteReviewFeedback(run)
+	preWrite := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run)
+	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents"} {
+		if !strings.Contains(preWrite, want) {
+			t.Fatalf("expected pre-write feedback to contain narrow patch guidance %q, got %q", want, preWrite)
+		}
+	}
+	if !strings.Contains(preWrite, "Do not call run_shell, Get-Content, or PowerShell pipelines") {
+		t.Fatalf("expected pre-write feedback to steer inspection away from shell file reads, got %q", preWrite)
+	}
 	for _, feedback := range []string{post, preWrite} {
 		for _, banned := range []string{".kernforge", "review.md", "review.json", "\nReport:", "Review ID", "Next Commands"} {
 			if strings.Contains(feedback, banned) {
@@ -1896,7 +1904,10 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 	if finalReviewProgress < 0 {
 		finalReviewProgress = indexStringContaining(progress, "Final review result")
 	}
-	previewProgress := indexStringContaining(progress, "Edit applied. Checking follow-up steps")
+	previewProgress := indexStringContaining(progress, "편집이 적용되었습니다. 후속 단계를 확인합니다")
+	if previewProgress < 0 {
+		previewProgress = indexStringContaining(progress, "Edit applied. Checking follow-up steps")
+	}
 	if reviewProgress < 0 {
 		t.Fatalf("expected user-visible pre-write review progress, got %#v", progress)
 	}
@@ -1927,7 +1938,7 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 			ID:                 "RF-101",
 			Severity:           reviewSeverityHigh,
 			Category:           "correctness",
-			Path:               "Tavern/TavernWorker/PathConverter.cpp",
+			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
 			Symbol:             "_InitiateVolumePath",
 			Title:              "QueryDosDevice failure stops volume enumeration",
 			Evidence:           "The old code used break inside the per-volume processing block.",
@@ -1968,7 +1979,7 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 		"- Next: proceed to diff preview.",
 		"Repair targets checked:",
 		"- RF-101 [high/correctness]: QueryDosDevice failure stops volume enumeration",
-		"Code location: Tavern/TavernWorker/PathConverter.cpp",
+		"Code location: SampleApp/SampleWorker/PathConverter.cpp",
 		"Symbol: _InitiateVolumePath",
 		"Problem: The old code used break inside the per-volume processing block.",
 		"Required fix: Skip only the failed volume and continue enumerating.",
@@ -1983,6 +1994,591 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 		if !strings.Contains(visible, want) {
 			t.Fatalf("expected visible final review summary to contain %q, got %q", want, visible)
 		}
+	}
+}
+
+func TestPreWriteReviewUserRequestSkipsInternalReviewFeedback(t *testing.T) {
+	session := &Session{
+		Messages: []Message{
+			{Role: "user", Text: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"},
+			{Role: "assistant", Text: "검토 결과를 바탕으로 수정하겠습니다."},
+			{Role: "user", Text: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nReview gate: approved_with_warnings\n\nImplementation rules:\n- Do not write the previous incomplete patch."},
+		},
+	}
+	got := preWriteReviewUserRequest(session)
+	if !strings.Contains(got, "검토하고 버그를 수정해") {
+		t.Fatalf("expected original Korean user request, got %q", got)
+	}
+	if strings.Contains(got, "Automatic pre-write review") {
+		t.Fatalf("expected internal review feedback to be skipped, got %q", got)
+	}
+}
+
+func TestPreWriteReviewUserRequestSkipsWrappedInternalReviewFeedback(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	wrappers := []string{
+		"apply_patch 실패: 자동 쓰기 전 리뷰가 수정 필요한 경고 때문에 파일 쓰기를 차단했습니다:\n\n자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.\n\n검토 게이트: approved_with_warnings\n\n구현 규칙:\n- 이전의 불완전한 patch를 쓰지 마세요.",
+		"apply_patch failed: automatic pre-write review blocked this edit on actionable warnings before writing:\n\nAutomatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nReview gate: approved_with_warnings\n\nImplementation rules:\n- Do not write the previous incomplete patch.",
+	}
+	for _, wrapper := range wrappers {
+		session := &Session{
+			Messages: []Message{
+				{Role: "user", Text: original},
+				{Role: "assistant", Text: "패치를 다시 작성하겠습니다."},
+				{Role: "user", Text: wrapper},
+			},
+		}
+		got := preWriteReviewUserRequest(session)
+		if got != original {
+			t.Fatalf("expected wrapped internal feedback to be skipped, got %q", got)
+		}
+		if localizedTextForReviewRequest(Config{AutoLocale: boolPtr(false)}, got, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다...") != "자동 쓰기 전 리뷰를 실행합니다..." {
+			t.Fatalf("expected original Korean request to control pre-write locale, got %q", got)
+		}
+	}
+}
+
+func TestPreWriteReviewUserRequestFallsBackAfterBareToolFailure(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	session := &Session{
+		Messages: []Message{{
+			Role: "user",
+			Text: "apply_patch 실패: SampleApp/SampleWorker/PathConverter.cpp: failed to apply hunk @@: edit target mismatch",
+		}},
+		LastReviewRun: &ReviewRun{
+			RequestAnalysis: ReviewRequestAnalysis{
+				OriginalRequest: original,
+			},
+		},
+	}
+	got := preWriteReviewUserRequest(session)
+	if got != original {
+		t.Fatalf("expected bare tool failure to be skipped and original request fallback, got %q", got)
+	}
+	if !looksLikeInternalReviewFeedbackUserMessage(session.Messages[0].Text) {
+		t.Fatalf("expected bare apply_patch failure to be classified as internal feedback")
+	}
+}
+
+func TestPreWriteReviewUserRequestPrefersLastReviewKoreanOverEnglishInternalContext(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	internalMessages := []string{
+		"Your latest read_file result for SampleApp/SampleWorker/PathConverter.cpp came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again.",
+		"Recovery mode: the tool loop is still stuck on the same tool call sequence. Do not repeat that sequence again immediately.",
+		"Recovered transcript note: a saved tool result appeared without a matching preceding assistant tool_call, so it is provided as plain context instead of an API tool message.\ntool=read_file\nresult:\nPathConverter.cpp",
+		"Final review result:\n\n- Verdict: insufficient_evidence\n- Blockers: 1\n- Warnings: 0",
+		"This is a local code review or repair request. Do not use MCP web/search/browser tools unless the user explicitly asks for external web research.",
+	}
+	for _, internal := range internalMessages {
+		session := &Session{
+			Messages: []Message{
+				{Role: "user", Text: original},
+				{Role: "assistant", Text: "검토 결과를 바탕으로 수정하겠습니다."},
+				{Role: "user", Text: internal},
+			},
+			LastReviewRun: &ReviewRun{
+				Trigger: reviewBeforeFixTrigger,
+				RequestAnalysis: ReviewRequestAnalysis{
+					OriginalRequest: original,
+				},
+				Gate: GateDecision{
+					Verdict:          reviewVerdictNeedsRevision,
+					BlockingFindings: []string{"RF-001"},
+				},
+			},
+		}
+		got := preWriteReviewUserRequest(session)
+		if got != original {
+			t.Fatalf("expected internal English context to preserve original Korean request, got %q for internal %q", got, internal)
+		}
+		if !looksLikeInternalReviewFeedbackUserMessage(internal) {
+			t.Fatalf("expected internal context to be classified as internal feedback: %q", internal)
+		}
+		if localizedTextForReviewRequest(Config{AutoLocale: boolPtr(false)}, got, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다...") != "자동 쓰기 전 리뷰를 실행합니다..." {
+			t.Fatalf("expected original Korean request to control pre-write locale, got %q", got)
+		}
+	}
+}
+
+func TestPreWriteReviewUserRequestKeepsExplicitEnglishRequestOverLastKoreanReview(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	latest := "Please review this patch and answer in English."
+	session := &Session{
+		Messages: []Message{
+			{Role: "user", Text: original},
+			{Role: "assistant", Text: "검토 결과를 바탕으로 수정하겠습니다."},
+			{Role: "user", Text: latest},
+		},
+		LastReviewRun: &ReviewRun{
+			Trigger: reviewBeforeFixTrigger,
+			RequestAnalysis: ReviewRequestAnalysis{
+				OriginalRequest: original,
+			},
+		},
+	}
+	got := preWriteReviewUserRequest(session)
+	if got != latest {
+		t.Fatalf("expected explicit English request to remain active, got %q", got)
+	}
+	if localizedTextForReviewRequest(Config{AutoLocale: boolPtr(false)}, got, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다...") != "Running automatic pre-write review..." {
+		t.Fatalf("expected explicit English request to control pre-write locale, got %q", got)
+	}
+}
+
+func TestPreWriteReviewUserRequestSkipsPreFixFeedback(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: original,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "QueryDosDevice failure stops volume enumeration",
+			RequiredFix: "Continue to the next volume after a per-volume failure.",
+			BlocksGate:  true,
+		}},
+	}
+	run.RepairPlan = buildReviewRepairPlan(run)
+	feedback := formatReviewBeforeFixFeedback(run)
+	session := &Session{
+		Messages: []Message{
+			{Role: "user", Text: original},
+			{Role: "user", Text: feedback},
+		},
+	}
+	got := preWriteReviewUserRequest(session)
+	if got != original {
+		t.Fatalf("expected pre-fix feedback to be skipped, got %q", got)
+	}
+	if !looksLikeInternalReviewFeedbackUserMessage(feedback) {
+		t.Fatalf("expected pre-fix feedback to be classified as internal feedback")
+	}
+	if !strings.Contains(feedback, "apply_patch payload는 좁은 hunk만 포함하세요.") ||
+		!strings.Contains(feedback, "첫 번째 독립 hunk만 적용하고") {
+		t.Fatalf("expected pre-fix feedback to contain narrow patch guidance, got %q", feedback)
+	}
+	if !strings.Contains(feedback, "pre-write gate가 필수 RF 전체 해결을 검사하므로") ||
+		!strings.Contains(feedback, "줄 번호나 파일 일부 출력을 위해 run_shell, Get-Content, PowerShell 파이프를 호출하지 마세요.") {
+		t.Fatalf("expected pre-fix feedback to contain staged repair and dedicated inspection guidance, got %q", feedback)
+	}
+}
+
+func TestPreWriteReviewUserRequestSkipsMainModelFallbackApproval(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	session := &Session{
+		Messages: []Message{
+			{Role: "user", Text: original},
+			{Role: "user", Text: "메인 모델 리뷰 기준으로 진행"},
+		},
+		LastReviewRun: &ReviewRun{
+			Trigger: "pre_write",
+			RequestAnalysis: ReviewRequestAnalysis{
+				OriginalRequest: original,
+			},
+			ReviewerRuns: []ReviewReviewerRun{
+				{
+					Kind:         "main",
+					Status:       "completed",
+					ModelQuality: reviewModelQualityUsable,
+				},
+				{
+					Role:         "primary_reviewer",
+					Kind:         "cross",
+					Status:       "failed",
+					ModelQuality: reviewModelQualityFailed,
+					Error:        "stream error: stream ID 27; INTERNAL_ERROR; received from peer",
+				},
+			},
+		},
+	}
+	if !preWriteMainOnlyReviewerFallbackApproved(session) {
+		t.Fatalf("expected fallback approval to remain accepted")
+	}
+	got := preWriteReviewUserRequest(session)
+	if got != original {
+		t.Fatalf("expected fallback approval to be skipped and original request reused, got %q", got)
+	}
+}
+
+func TestPreWriteReviewUserRequestFallsBackToLastReviewOriginalRequestWhenOnlyInternalMessagesExist(t *testing.T) {
+	session := &Session{
+		Messages: []Message{{
+			Role: "user",
+			Text: "apply_patch failed: automatic pre-write review blocked this edit before writing:\n\nAutomatic pre-write review found blockers.\n\nReview gate: needs_revision\n\nImplementation rules:\n- Revise the patch.",
+		}},
+		LastReviewRun: &ReviewRun{
+			RequestAnalysis: ReviewRequestAnalysis{
+				OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+			},
+		},
+	}
+	got := preWriteReviewUserRequest(session)
+	if !strings.Contains(got, "검토하고 버그를 수정해") {
+		t.Fatalf("expected LastReviewRun original request fallback, got %q", got)
+	}
+}
+
+func TestPreWriteReviewUserRequestKeepsUserPastedReviewLog(t *testing.T) {
+	request := strings.Join([]string{
+		"이번 테스트 결과야.",
+		`"Final review result:`,
+		"",
+		"- Verdict: approved_with_warnings",
+		"",
+		"Review gate: approved_with_warnings",
+		"",
+		"Implementation rules:",
+		"- Revise the patch.",
+		`"`,
+		"이 결과를 보고 수정하자.",
+	}, "\n")
+	session := &Session{
+		Messages: []Message{{Role: "user", Text: request}},
+	}
+	got := preWriteReviewUserRequest(session)
+	if got != request {
+		t.Fatalf("expected pasted user review log to remain the active request, got %q", got)
+	}
+	if looksLikeInternalReviewFeedbackUserMessage(request) {
+		t.Fatalf("user-pasted review log should not be classified as internal feedback")
+	}
+	if localizedTextForReviewRequest(Config{AutoLocale: boolPtr(false)}, got, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다...") != "자동 쓰기 전 리뷰를 실행합니다..." {
+		t.Fatalf("expected pasted Korean user log to control pre-write locale, got %q", got)
+	}
+}
+
+func TestPreWriteKoreanRequestSurvivesInternalEnglishFeedback(t *testing.T) {
+	run := ReviewRun{
+		Objective: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.",
+		RequestAnalysis: ReviewRequestAnalysis{
+			OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		},
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Result: ReviewResult{
+			Summary: "수정안은 적용 가능하지만 빌드 검증이 남아 있습니다.",
+		},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-001",
+			Severity:           reviewSeverityLow,
+			Category:           "test_gap",
+			Title:              "빌드 검증이 생략되었습니다",
+			Evidence:           "최신 검증 보고서에 msbuild skip만 있습니다.",
+			RequiredFix:        "가능하면 프로젝트 빌드를 실행하십시오.",
+			TestRecommendation: "msbuild SampleApp/SampleApp.sln",
+		}},
+		ArtifactRefs: []string{"C:/tmp/review.md"},
+	}
+	progress := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(false)}, run, true)
+	for _, want := range []string{
+		"자동 쓰기 전 리뷰가 완료되었습니다.",
+		"최종 검토 결과: approved_with_warnings",
+		"검토 내용:",
+		"주요 finding:",
+		"diff preview로 진행합니다.",
+		"보고서: C:/tmp/review.md",
+	} {
+		if !strings.Contains(progress, want) {
+			t.Fatalf("expected Korean progress to contain %q, got %q", want, progress)
+		}
+	}
+	for _, banned := range []string{
+		"Automatic pre-write review completed",
+		"Final review result",
+		"Review content:",
+		"Proceeding to diff preview",
+	} {
+		if strings.Contains(progress, banned) {
+			t.Fatalf("expected Korean progress not to contain %q, got %q", banned, progress)
+		}
+	}
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
+	for _, want := range []string{
+		"최종 검토 결과:",
+		"- 판정: approved_with_warnings",
+		"- 진행: diff preview로 진행합니다.",
+		"검토 항목:",
+		"근거: 최신 검증 보고서",
+		"조치: 가능하면 프로젝트 빌드를 실행하십시오.",
+		"테스트: msbuild SampleApp/SampleApp.sln",
+		"리뷰 보고서: C:/tmp/review.md",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected Korean visible summary to contain %q, got %q", want, visible)
+		}
+	}
+	if strings.Contains(visible, "Final review result:") || strings.Contains(visible, "Review items:") || strings.Contains(visible, "Review report:") {
+		t.Fatalf("expected Korean visible summary labels, got %q", visible)
+	}
+}
+
+func TestReviewResultSummaryUsesOriginalKoreanRequest(t *testing.T) {
+	run := ReviewRun{
+		Objective: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.",
+		RequestAnalysis: ReviewRequestAnalysis{
+			OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		},
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001", "RF-002"},
+		},
+	}
+
+	summary := reviewResultSummary(run)
+	if !strings.Contains(summary, "리뷰가 경고와 함께 승인되었습니다") {
+		t.Fatalf("expected Korean review result summary, got %q", summary)
+	}
+	if strings.Contains(summary, "Review approved with warnings") {
+		t.Fatalf("expected Korean summary not to leak English, got %q", summary)
+	}
+}
+
+func TestReviewResultSummaryUsesDisplayLocaleWhenRequestMissing(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	cfg := Config{AutoLocale: boolPtr(true)}
+	run := ReviewRun{
+		Objective: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.",
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+	}
+
+	summary := reviewResultSummaryForConfig(cfg, run)
+	if !strings.Contains(summary, "리뷰가 경고와 함께 승인되었습니다") {
+		t.Fatalf("expected display-locale Korean summary, got %q", summary)
+	}
+	if strings.Contains(summary, "Review approved with warnings") {
+		t.Fatalf("expected display-locale summary not to leak English, got %q", summary)
+	}
+}
+
+func TestReviewResultSummaryKeepsEnglishRequestOverKoreanDisplayLocale(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	cfg := Config{AutoLocale: boolPtr(true)}
+	run := ReviewRun{
+		RequestAnalysis: ReviewRequestAnalysis{
+			OriginalRequest: "Please review this patch and answer in English.",
+		},
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+	}
+
+	summary := reviewResultSummaryForConfig(cfg, run)
+	if !strings.Contains(summary, "Review approved with warnings") {
+		t.Fatalf("expected English request to override Korean display locale, got %q", summary)
+	}
+	if strings.Contains(summary, "리뷰가 경고와 함께 승인되었습니다") {
+		t.Fatalf("expected English summary not to use Korean locale fallback, got %q", summary)
+	}
+}
+
+func TestPreWriteKoreanWarningFeedbackIsLocalized(t *testing.T) {
+	run := ReviewRun{
+		RequestAnalysis: ReviewRequestAnalysis{
+			OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApprovedWithWarnings,
+		},
+		Result: ReviewResult{Summary: "구현 증거가 부족합니다."},
+	}
+	warnings := []ReviewFinding{{
+		ID:          "RF-010",
+		Source:      "model",
+		Severity:    reviewSeverityMedium,
+		Category:    "evidence_gap",
+		Title:       "전체 구현 증거가 부족합니다",
+		Path:        "SampleApp/SampleWorker/PathConverter.cpp",
+		Evidence:    "diff에 일부 hunk만 포함되어 있습니다.",
+		Impact:      "컴파일 가능성을 확인할 수 없습니다.",
+		RequiredFix: "전체 수정 hunk를 포함하십시오.",
+	}}
+	feedback := formatPreWriteReviewWarningBlockFeedback(Config{AutoLocale: boolPtr(false)}, run, warnings)
+	for _, want := range []string{
+		"자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.",
+		"검토 게이트:",
+		"수정 필요한 경고 finding:",
+		"경로: SampleApp/SampleWorker/PathConverter.cpp",
+		"근거: diff에 일부 hunk만 포함되어 있습니다.",
+		"구현 규칙:",
+		"이전의 불완전한 patch를 쓰지 마세요.",
+		"apply_patch payload는 좁은 hunk만 포함하세요.",
+		"첫 번째 독립 hunk만 적용하고",
+		"줄 번호나 파일 일부 출력을 위해 run_shell, Get-Content, PowerShell 파이프를 호출하지 마세요.",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected Korean feedback to contain %q, got %q", want, feedback)
+		}
+	}
+	for _, banned := range []string{"Automatic pre-write review", "Review gate:", "Implementation rules:", "Required fix:"} {
+		if strings.Contains(feedback, banned) {
+			t.Fatalf("expected localized feedback not to contain %q, got %q", banned, feedback)
+		}
+	}
+}
+
+func TestReviewProposedEditUsesKoreanBlockFeedbackFromOriginalRequest(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "@main.cpp 검토하고 버그를 수정해",
+	}}
+	var progress []string
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: 수정안에 아직 차단 correctness finding이 있습니다.",
+				"severity: medium",
+				"category: correctness",
+				"path: main.cpp",
+				"title: QueryDosDevice failure still stops enumeration",
+				"evidence: The proposed diff leaves break in the per-item failure path.",
+				"required_fix: Use continue for per-item failure.",
+			}, "\n")},
+		}}},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:     "patch main.cpp",
+		Preview:   "- return 0;\n+ return 1;\n",
+		Paths:     []string{path},
+		Operation: "modify",
+	})
+	if err == nil {
+		t.Fatalf("expected pre-write review to block the edit")
+	}
+	errorText := err.Error()
+	for _, want := range []string{
+		"자동 쓰기 전 리뷰가 파일 쓰기를 차단했습니다:",
+		"자동 쓰기 전 리뷰가 차단 항목을 발견했습니다.",
+		"검토 게이트:",
+	} {
+		if !strings.Contains(errorText, want) {
+			t.Fatalf("expected Korean error feedback to contain %q, got %q", want, errorText)
+		}
+	}
+	for _, banned := range []string{
+		"automatic pre-write review blocked this edit before writing",
+		"Automatic pre-write review found blockers",
+		"Review gate:",
+	} {
+		if strings.Contains(errorText, banned) {
+			t.Fatalf("expected Korean error feedback not to contain %q, got %q", banned, errorText)
+		}
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "자동 쓰기 전 리뷰를 실행합니다.") {
+		t.Fatalf("expected Korean pre-write start progress, got %#v", progress)
+	}
+	if !strings.Contains(joinedProgress, "리뷰 모델이 수정 필수 항목을 반환했습니다.") {
+		t.Fatalf("expected Korean required-change progress, got %#v", progress)
+	}
+	for _, banned := range []string{
+		"Running automatic pre-write review",
+		"Review model returned required changes",
+	} {
+		if strings.Contains(joinedProgress, banned) {
+			t.Fatalf("expected progress not to leak English text %q, got %#v", banned, progress)
+		}
+	}
+}
+
+func TestReviewProposedEditKeepsKoreanAfterWrappedInternalFeedback(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: "@main.cpp 검토하고 버그를 수정해"},
+		{Role: "assistant", Text: "수정안을 다시 준비하겠습니다."},
+		{Role: "user", Text: "apply_patch failed: automatic pre-write review blocked this edit on actionable warnings before writing:\n\nAutomatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nReview gate: approved_with_warnings\n\nImplementation rules:\n- Do not write the previous incomplete patch."},
+	}
+	var progress []string
+	var persistent []string
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{replies: []ChatResponse{
+			approvedReviewResponse("patch satisfies the requested repair target"),
+		}},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+		EmitAssistantPersistent: func(message string) {
+			persistent = append(persistent, message)
+		},
+	}
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:     "patch main.cpp",
+		Preview:   "- return 0;\n+ return 1;\n",
+		Paths:     []string{path},
+		Operation: "modify",
+	})
+	if err != nil {
+		t.Fatalf("expected pre-write review to approve, got %v", err)
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	for _, want := range []string{
+		"자동 쓰기 전 리뷰를 실행합니다.",
+		"자동 쓰기 전 리뷰가 완료되었습니다.",
+		"최종 검토 결과:",
+	} {
+		if !strings.Contains(joinedProgress, want) {
+			t.Fatalf("expected Korean progress to contain %q, got %#v", want, progress)
+		}
+	}
+	for _, banned := range []string{
+		"Running automatic pre-write review",
+		"Automatic pre-write review completed",
+		"Final review result:",
+	} {
+		if strings.Contains(joinedProgress, banned) {
+			t.Fatalf("expected progress not to leak English text %q, got %#v", banned, progress)
+		}
+	}
+	joinedPersistent := strings.Join(persistent, "\n")
+	if !strings.Contains(joinedPersistent, "최종 검토 결과:") {
+		t.Fatalf("expected Korean visible final summary, got %#v", persistent)
+	}
+	if strings.Contains(joinedPersistent, "Final review result:") {
+		t.Fatalf("expected visible final summary not to leak English, got %#v", persistent)
 	}
 }
 
@@ -2007,7 +2603,7 @@ func TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails(t *testing.T) 
 			ID:                 "RF-777",
 			Severity:           reviewSeverityHigh,
 			Category:           "correctness",
-			Path:               "Tavern/TavernWorker/PathConverter.cpp",
+			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
 			Symbol:             "PathConverter::GetDosPathFromNtPath",
 			Title:              "NT device path prefix matching can choose the wrong volume",
 			Evidence:           longEvidence,
@@ -2222,14 +2818,17 @@ func TestPreWriteReviewBlocksActionableModelWarnings(t *testing.T) {
 	if len(blockingWarnings) != 2 {
 		t.Fatalf("expected two actionable model warnings to block pre-write, got %#v", blockingWarnings)
 	}
-	feedback := formatPreWriteReviewWarningBlockFeedback(run, blockingWarnings)
+	feedback := formatPreWriteReviewWarningBlockFeedback(Config{AutoLocale: boolPtr(false)}, run, blockingWarnings)
 	for _, want := range []string{
-		"Automatic pre-write review found actionable warnings",
+		"자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.",
 		"RF-002",
 		"멤버 선언과 초기값 변경 증거",
 		"RF-003",
 		"조회 기능 구현 증거",
-		"Do not write the previous incomplete patch.",
+		"이전의 불완전한 patch를 쓰지 마세요.",
+		"apply_patch payload는 좁은 hunk만 포함하세요.",
+		"첫 번째 독립 hunk만 적용하고",
+		"줄 번호나 파일 일부 출력을 위해 run_shell, Get-Content, PowerShell 파이프를 호출하지 마세요.",
 	} {
 		if !strings.Contains(feedback, want) {
 			t.Fatalf("expected warning block feedback to contain %q, got %q", want, feedback)
@@ -2280,6 +2879,80 @@ func TestPreWriteReviewDoesNotBlockBuildVerificationWarningWithWrongCategory(t *
 	}
 }
 
+func TestPreWriteReviewBlocksLowActionableCorrectnessWarning(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "correctness",
+			Title:       "volumeName prefix validation does not match QueryDosDevice slicing",
+			Path:        "SampleApp/SampleWorker/PathConverter.cpp",
+			Symbol:      "PathConverter::_InitiateVolumePath",
+			Evidence:    "The code validates volumeName[0..2] and lastIndex, then calls QueryDosDevice(&volumeName[4]).",
+			Impact:      "A malformed name can pass the guard and call QueryDosDevice with a wrongly sliced device name.",
+			RequiredFix: "Require volumeName[3] == L'\\\\' and a non-empty device name before calling QueryDosDevice.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
+		t.Fatalf("low actionable correctness warning should block pre-write, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewBlocksLowActionableStabilityWarningWithKoreanValidationText(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-001",
+			Source:             "model",
+			Severity:           reviewSeverityLow,
+			Category:           "stability",
+			Title:              "짧은 volumeName에 대한 고정 인덱스 접근 방어가 부족함",
+			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
+			Symbol:             "PathConverter::_InitiateVolumePath",
+			Evidence:           "변경 후 코드에서 volumeNameLength == 0만 검사한 뒤 volumeName[0], volumeName[1], volumeName[2]를 읽습니다.",
+			Impact:             "비정상 값이나 테스트 더블이 짧은 문자열을 제공하면 경계 밖 읽기가 발생할 수 있습니다.",
+			RequiredFix:        "volumeNameLength < 4 또는 필요한 최소 형식 길이를 먼저 검사한 뒤 고정 인덱스에 접근하도록 조건을 재구성하십시오.",
+			TestRecommendation: "볼륨 이름 검증 로직을 분리하고 길이 1, 2, 3인 문자열이 안전하게 거부되는 단위 테스트를 추가하십시오.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
+		t.Fatalf("low actionable stability warning should block pre-write, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewBlocksLowActionableMaintainabilityIncludeWarning(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-001",
+			Source:             "model",
+			Severity:           reviewSeverityLow,
+			Category:           "maintainability",
+			Title:              "std::vector use relies on an indirect include",
+			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
+			Symbol:             "PathConverter::_InitiateVolumePath",
+			Evidence:           "The proposed diff uses std::vector<WCHAR> but does not add a direct #include <vector>.",
+			Impact:             "A header cleanup or different compiler setup can break this translation unit.",
+			RequiredFix:        "Add #include <vector> in the file that uses std::vector.",
+			TestRecommendation: "Build the translation unit after removing unrelated indirect includes.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
+		t.Fatalf("low actionable maintainability include warning should block pre-write, got %#v", got)
+	}
+}
+
 func TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned(t *testing.T) {
 	run := ReviewRun{
 		Gate: GateDecision{
@@ -2300,6 +2973,53 @@ func TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentio
 	}
 	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 {
 		t.Fatalf("implementation evidence gap should block even when verification is mentioned, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-001",
+			Source:             "model",
+			Severity:           reviewSeverityLow,
+			Category:           "evidence_gap",
+			Title:              "함수 후반부 변경 결과를 확인할 증거가 부족함",
+			Path:               "Tavern/TavernWorker/PathConverter.cpp",
+			Evidence:           "The supplied selection-focused preview stops at auto drivePath = _getDrivePath(volumeName); and does not show the remaining m_volumePathMap update, FindNextVolume, FindVolumeClose, or success calculation.",
+			Impact:             "The review cannot confirm the function footer from the supplied evidence alone.",
+			RequiredFix:        "Provide the complete current contents or include the full function body in review evidence.",
+			TestRecommendation: "After the complete function body evidence is available, run the focused build or targeted review again.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 0 {
+		t.Fatalf("harness-only evidence gap should be handled by evidence collection, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "evidence_gap",
+			Title:       "Review evidence does not include the required #include",
+			Path:        "cmd/kernforge/review_harness_collect.go",
+			Evidence:    "The review evidence does not include #include <vector> even though the proposed edit uses std::vector.",
+			Impact:      "The proposed patch can fail to compile when indirect includes change.",
+			RequiredFix: "Add the direct #include in the file that uses the type.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
+		t.Fatalf("actionable evidence gap should still block pre-write, got %#v", got)
 	}
 }
 
@@ -2478,6 +3198,86 @@ func TestPreWriteRepairObligationsIncludeBlockingAndActionableWarnings(t *testin
 	}
 }
 
+func TestPreWriteRepairObligationsCarryAcrossPreWriteReview(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "review-prewrite",
+		Trigger: "pre_write",
+		RepairFindings: []ReviewFinding{
+			{
+				ID:               "RF-001",
+				Severity:         reviewSeverityHigh,
+				Category:         "correctness",
+				Title:            "Break stops the volume enumeration",
+				RequiredFix:      "Use continue for this volume only.",
+				ResolutionStatus: "resolved",
+			},
+			{
+				ID:               "RF-002",
+				Severity:         reviewSeverityMedium,
+				Category:         "stability",
+				Title:            "Mount point buffer is fixed to MAX_PATH",
+				RequiredFix:      "Retry with the required dynamic buffer size.",
+				ResolutionStatus: "verification_needed",
+			},
+		},
+	}
+	got := preWriteRepairObligationsFromLastReview(session)
+	if len(got) != 2 {
+		t.Fatalf("expected carried pre-write repair obligations, got %#v", got)
+	}
+	if got[0].ID != "RF-001" || got[1].ID != "RF-002" {
+		t.Fatalf("unexpected carried repair obligations: %#v", got)
+	}
+	if got[0].ResolutionStatus != "" || got[1].ResolutionStatus != "" {
+		t.Fatalf("expected carried repair obligation statuses to be recomputed by the next pre-write review, got %#v", got)
+	}
+}
+
+func TestPreWriteRepairObligationsRecomputeStatusAfterRetry(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "review-prewrite",
+		Trigger: "pre_write",
+		RepairFindings: []ReviewFinding{{
+			ID:               "RF-001",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Title:            "QueryDosDevice failure stops enumeration",
+			RequiredFix:      "Continue to the next volume after a per-volume failure.",
+			ResolutionStatus: "partial",
+		}},
+	}
+
+	carried := preWriteRepairObligationsFromLastReview(session)
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Status:       "completed",
+			ModelQuality: reviewModelQualityUsable,
+		}},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:                    true,
+			RequiresRFObligationStatus: true,
+		},
+		RepairFindings: carried,
+		Findings: []ReviewFinding{{
+			ID:          "RF-900",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "test_gap",
+			Title:       "RF-001 boundary coverage was not run",
+			RequiredFix: "Add focused verification for RF-001.",
+		}},
+	}
+
+	annotateSingleModelPreWriteRepairStatuses(&run)
+	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ResolutionStatus != "verification_needed" {
+		t.Fatalf("expected carried stale partial status to recompute from current test_gap finding, got %#v", run.RepairFindings)
+	}
+}
+
 func TestReviewRepairPlanIncludesActionableWarningsWithBlockers(t *testing.T) {
 	run := ReviewRun{
 		ID:        "review-prefix",
@@ -2521,14 +3321,29 @@ func TestReviewRepairPlanIncludesActionableWarningsWithBlockers(t *testing.T) {
 		t.Fatalf("expected repair plan to be required")
 	}
 	for _, want := range []string{
-		"Blocking findings:",
+		"리뷰 차단 항목을 범위 확장 없이 수정하세요.",
+		"patch 작성 원칙:",
+		"pre-write gate는 부분 수리를 승인하지 않습니다.",
+		"이번 edit proposal은 아래 필수 RF를 모두 해결해야 합니다.",
+		"RF별로 현재 파일에서 방금 확인한 snippet에 고정된 독립 hunk",
+		"기존 함수 종료부/중괄호를 새 위치에 중복 삽입하지 마세요.",
+		"필수 RF 처리 순서:",
+		"차단 finding:",
 		"RF-001",
-		"Medium-or-higher actionable warnings that must also be handled:",
+		"반드시 함께 처리할 medium 이상 실행 가능 경고:",
 		"RF-002",
+		"필요한 수정: Use continue for this volume only.",
 		"Retry with the required dynamic buffer size.",
+		"apply_patch payload는 좁은 hunk만 포함하세요.",
+		"첫 번째 독립 hunk만 적용하고",
 	} {
 		if !strings.Contains(run.RepairPlan.Prompt, want) {
 			t.Fatalf("expected repair plan to contain %q, got:\n%s", want, run.RepairPlan.Prompt)
+		}
+	}
+	for _, banned := range []string{"Blocking findings:", "Medium-or-higher actionable warnings", "Required fix:", "Verification:"} {
+		if strings.Contains(run.RepairPlan.Prompt, banned) {
+			t.Fatalf("expected Korean repair plan not to contain %q, got:\n%s", banned, run.RepairPlan.Prompt)
 		}
 	}
 	if strings.Contains(run.RepairPlan.Prompt, "RF-003") {
@@ -2568,6 +3383,166 @@ func TestPreWriteRepairObligationsIncludeApprovedActionableWarnings(t *testing.T
 	got := preWriteRepairObligationsFromLastReview(session)
 	if len(got) != 1 || got[0].ID != "RF-001" {
 		t.Fatalf("expected only medium actionable warning obligation from approved_with_warnings pre-fix review, got %#v", got)
+	}
+}
+
+func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash("Tavern/TavernWorker/PathConverter.cpp")
+	resolved := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	var source strings.Builder
+	for line := 1; line <= 280; line++ {
+		switch line {
+		case 120:
+			source.WriteString("bool PathConverter::_InitiateVolumePath()\n")
+		case 121:
+			source.WriteString("{\n")
+		case 132:
+			source.WriteString("void PathConverter::_InitiateVolumePath_marker_begin()\n")
+		case 221:
+			source.WriteString("\tauto drivePath = _getDrivePath(volumeName);\n")
+		case 238:
+			source.WriteString("\tm_volumePathMap[volumeName] = drivePath;\n")
+		case 240:
+			source.WriteString("\tFindVolumeClose(findHandle);\n")
+		case 246:
+			source.WriteString("\tsuccess = true;\n")
+		case 260:
+			source.WriteString("\treturn success;\n")
+		case 261:
+			source.WriteString("}\n")
+		default:
+			fmt.Fprintf(&source, "\tint path_converter_line_%03d = %d; // %s\n", line, line, strings.Repeat("context_", 18))
+		}
+	}
+	if err := os.WriteFile(resolved, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	request := "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	diff := "diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp\n"
+	diff += strings.Repeat("+int changed_line = 42; // DIFF_FIRST_CONTEXT\n", 500)
+	run := ReviewRun{
+		ID:      "review-prewrite-context",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Request:         request,
+		Paths:           []string{rel},
+		ProvidedDiff:    diff,
+		IncludeGitDiff:  false,
+		MaxContextChars: reviewPreWriteMaxContextChars,
+	})
+	for _, want := range []string{
+		"Provided diff",
+		"DIFF_FIRST_CONTEXT",
+		"Pre-write function body excerpt: Tavern/TavernWorker/PathConverter.cpp:120-261",
+		"Pre-write current file context: Tavern/TavernWorker/PathConverter.cpp",
+		"m_volumePathMap[volumeName] = drivePath;",
+		"FindVolumeClose(findHandle);",
+		"success = true;",
+		"return success;",
+	} {
+		if !strings.Contains(evidence.Text, want) {
+			t.Fatalf("expected pre-write evidence to contain %q, got:\n%s", want, evidence.Text)
+		}
+	}
+	if len(evidence.Sources) == 0 || evidence.Sources[0] != "provided_diff" {
+		t.Fatalf("pre-write evidence should remain diff-first, sources=%#v", evidence.Sources)
+	}
+	if !containsString(evidence.Sources, "file_excerpt") {
+		t.Fatalf("pre-write evidence should include current file context, sources=%#v", evidence.Sources)
+	}
+	if !containsString(evidence.Sources, "function_body_excerpt") {
+		t.Fatalf("pre-write evidence should include function body context, sources=%#v", evidence.Sources)
+	}
+	if len(evidence.Text) > reviewPreWriteMaxContextChars {
+		t.Fatalf("pre-write evidence should be capped, got %d > %d", len(evidence.Text), reviewPreWriteMaxContextChars)
+	}
+}
+
+func TestReviewFunctionSpanForSelectionAcceptsDoubleReturnType(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "double return type",
+			content: strings.Join([]string{
+				"double ComputeScore()",
+				"{",
+				"\tif (value > 0)",
+				"\t{",
+				"\t\treturn 1.0;",
+				"\t}",
+				"\treturn 0.0;",
+				"}",
+			}, "\n"),
+		},
+		{
+			name: "try-prefixed function name",
+			content: strings.Join([]string{
+				"bool TryParse()",
+				"{",
+				"\tif (input.empty())",
+				"\t{",
+				"\t\treturn false;",
+				"\t}",
+				"\treturn true;",
+				"}",
+			}, "\n"),
+		},
+		{
+			name: "constructor initializer list",
+			content: strings.Join([]string{
+				"PathConverter::PathConverter()",
+				"\t: m_ready(false)",
+				"{",
+				"\tif (!m_ready)",
+				"\t{",
+				"\t\treturn;",
+				"\t}",
+				"}",
+			}, "\n"),
+		},
+		{
+			name: "selection inside c++ lambda prefers outer function",
+			content: strings.Join([]string{
+				"bool PathConverter::_InitiateVolumePath()",
+				"{",
+				"\tauto getDrive = [](const wstring& volumeName)",
+				"\t{",
+				"\t\treturn volumeName.empty();",
+				"\t};",
+				"\tif (getDrive(L\"x\"))",
+				"\t{",
+				"\t\treturn true;",
+				"\t}",
+				"\treturn false;",
+				"}",
+			}, "\n"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end, ok := reviewFunctionSpanForSelection(tc.content, ViewerSelection{
+				FilePath:  "sample.cpp",
+				StartLine: 5,
+				EndLine:   6,
+			})
+			wantEnd := reviewLineCount(tc.content)
+			if !ok || start != 1 || end != wantEnd {
+				t.Fatalf("expected outer function span 1-%d, got start=%d end=%d ok=%t", wantEnd, start, end, ok)
+			}
+		})
 	}
 }
 
@@ -2862,6 +3837,22 @@ func TestReviewModelParserKeepsUnstructuredNoBlockingSummary(t *testing.T) {
 		finding.Title != raw ||
 		finding.BlocksGate {
 		t.Fatalf("unexpected unstructured approval finding: %#v", finding)
+	}
+}
+
+func TestReviewModelParserTreatsStructuredApprovedEmptyFindingsAsNoFindings(t *testing.T) {
+	raw := strings.Join([]string{
+		"REVIEW_RESULT",
+		"verdict: approved",
+		"summary: 차단 finding 없이 리뷰가 승인되었습니다.",
+		"findings: []",
+	}, "\n")
+	findings, quality := parseModelReviewFindingsForLanguage(raw, "primary_reviewer", true)
+	if quality != reviewModelQualityUsable {
+		t.Fatalf("expected usable structured approval, got quality=%s findings=%#v", quality, findings)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("empty structured findings list should not synthesize an info finding, got %#v", findings)
 	}
 }
 
@@ -3266,8 +4257,8 @@ func TestSourceSymbolRequestRequiresSymbolMatchBeforeDomainTerms(t *testing.T) {
 	files := map[string]string{
 		"Plugins/Aura/INDEX_IGNORE.txt":                         "DriverEntry IOCTL ProbeForWrite\n",
 		"Policy/HackPolicy.json":                                `{"terms":["IRP_MJ_DEVICE_CONTROL","DeviceIoControl"]}`,
-		"Source/DungeonCrawler/Core/Game/DCDungeonGameMode.cpp": "void DCDungeonGameMode::Tick(float DeltaSeconds) {}\n",
-		"Source/DungeonCrawler/FocusedServerRuntime.cpp": strings.Join([]string{
+		"Source/SampleGame/Core/Game/SampleDungeonGameMode.cpp": "void SampleDungeonGameMode::Tick(float DeltaSeconds) {}\n",
+		"Source/SampleGame/FocusedServerRuntime.cpp": strings.Join([]string{
 			"class FocusedServerRuntime",
 			"{",
 			"public:",
@@ -3291,7 +4282,7 @@ func TestSourceSymbolRequestRequiresSymbolMatchBeforeDomainTerms(t *testing.T) {
 		Request: "FocusedServerRuntime 코드를 분석해서 FocusedServerRuntime이 서버에서 동작할 때 서버의 성능이나 히칭에 영향을 줄 수 있는 부분을 검토해줘",
 	})
 	filesFound := analysis.ScopeDiscovery.CandidateFiles
-	if len(filesFound) == 0 || filesFound[0] != "Source/DungeonCrawler/FocusedServerRuntime.cpp" {
+	if len(filesFound) == 0 || filesFound[0] != "Source/SampleGame/FocusedServerRuntime.cpp" {
 		t.Fatalf("expected symbol source file first, got %#v", filesFound)
 	}
 	for _, rel := range filesFound {
@@ -3313,19 +4304,19 @@ func TestSourceSymbolRequestRequiresSymbolMatchBeforeDomainTerms(t *testing.T) {
 func TestSourceSymbolRequestPrefersDefinitionOverReferences(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
-		"Source/DungeonCrawler/Core/Arena/DCArenaGameMode.cpp": strings.Join([]string{
-			"void DCArenaGameMode::BeginPlay()",
+		"Source/SampleGame/Core/Arena/SampleArenaGameMode.cpp": strings.Join([]string{
+			"void SampleArenaGameMode::BeginPlay()",
 			"{",
 			"    FocusedServerRuntime->StartArena();",
 			"}",
 		}, "\n"),
-		"Source/DungeonCrawler/Core/Game/DCDungeonGameMode.cpp": strings.Join([]string{
-			"void DCDungeonGameMode::Tick(float DeltaSeconds)",
+		"Source/SampleGame/Core/Game/SampleDungeonGameMode.cpp": strings.Join([]string{
+			"void SampleDungeonGameMode::Tick(float DeltaSeconds)",
 			"{",
 			"    FocusedServerRuntime->Tick(DeltaSeconds);",
 			"}",
 		}, "\n"),
-		"Source/DungeonCrawler/Runtime/FocusedServerRuntime.cpp": strings.Join([]string{
+		"Source/SampleGame/Runtime/FocusedServerRuntime.cpp": strings.Join([]string{
 			"void FocusedServerRuntime::Tick(float DeltaSeconds)",
 			"{",
 			"    FlushReplicationQueue();",
@@ -3343,7 +4334,7 @@ func TestSourceSymbolRequestPrefersDefinitionOverReferences(t *testing.T) {
 	}
 
 	discovery := discoverReviewScope(root, "FocusedServerRuntime 코드를 분석해서 서버 성능이나 히칭을 검토해줘", nil)
-	if len(discovery.CandidateFiles) == 0 || discovery.CandidateFiles[0] != "Source/DungeonCrawler/Runtime/FocusedServerRuntime.cpp" {
+	if len(discovery.CandidateFiles) == 0 || discovery.CandidateFiles[0] != "Source/SampleGame/Runtime/FocusedServerRuntime.cpp" {
 		t.Fatalf("expected implementation file before reference files, got %#v", discovery.CandidateFiles)
 	}
 	for _, rel := range discovery.CandidateFiles {
@@ -3359,13 +4350,13 @@ func TestSourceSymbolRequestPrefersDefinitionOverReferences(t *testing.T) {
 func TestSourceSymbolRequestFindsUnrealPrefixedDefinition(t *testing.T) {
 	root := t.TempDir()
 	files := map[string]string{
-		"Source/DungeonCrawler/Core/Game/DCDungeonGameMode.cpp": strings.Join([]string{
-			"void DCDungeonGameMode::Tick(float DeltaSeconds)",
+		"Source/SampleGame/Core/Game/SampleDungeonGameMode.cpp": strings.Join([]string{
+			"void SampleDungeonGameMode::Tick(float DeltaSeconds)",
 			"{",
 			"    FocusedServerRuntime->Tick(DeltaSeconds);",
 			"}",
 		}, "\n"),
-		"Source/DungeonCrawler/Runtime/FocusedRuntimeSubsystem.h": strings.Join([]string{
+		"Source/SampleGame/Runtime/FocusedRuntimeSubsystem.h": strings.Join([]string{
 			"class UFocusedServerRuntime : public UGameInstanceSubsystem",
 			"{",
 			"    GENERATED_BODY()",
@@ -3383,7 +4374,7 @@ func TestSourceSymbolRequestFindsUnrealPrefixedDefinition(t *testing.T) {
 	}
 
 	discovery := discoverReviewScope(root, "FocusedServerRuntime 코드를 분석해서 서버 성능이나 히칭을 검토해줘", nil)
-	if len(discovery.CandidateFiles) != 1 || discovery.CandidateFiles[0] != "Source/DungeonCrawler/Runtime/FocusedRuntimeSubsystem.h" {
+	if len(discovery.CandidateFiles) != 1 || discovery.CandidateFiles[0] != "Source/SampleGame/Runtime/FocusedRuntimeSubsystem.h" {
 		t.Fatalf("expected Unreal-prefixed definition file only, got %#v", discovery.CandidateFiles)
 	}
 	if discovery.ScopeWidth != "focused" {
@@ -3395,7 +4386,7 @@ func TestSourceSymbolRequestRejectsBroadReferenceFanoutWithoutDefinition(t *test
 	root := t.TempDir()
 	files := map[string]string{}
 	for i := 0; i < 12; i++ {
-		files[fmt.Sprintf("Source/DungeonCrawler/Core/Game/ReferenceOnly%02d.cpp", i)] = strings.Join([]string{
+		files[fmt.Sprintf("Source/SampleGame/Core/Game/ReferenceOnly%02d.cpp", i)] = strings.Join([]string{
 			fmt.Sprintf("void FReferenceOnly%02d::Tick(float DeltaSeconds)", i),
 			"{",
 			"    FocusedServerRuntime->Tick(DeltaSeconds);",
@@ -3430,7 +4421,7 @@ func TestSourceSymbolRequestWithoutMatchSuggestsSymbolSearchNotUnrelatedPath(t *
 	files := map[string]string{
 		"Plugins/Aura/INDEX_IGNORE.txt":                         "DriverEntry IOCTL ProbeForWrite\n",
 		"Policy/HackPolicy.json":                                `{"terms":["IRP_MJ_DEVICE_CONTROL","DeviceIoControl"]}`,
-		"Source/DungeonCrawler/Core/Game/DCDungeonGameMode.cpp": "void DCDungeonGameMode::Tick(float DeltaSeconds) {}\n",
+		"Source/SampleGame/Core/Game/SampleDungeonGameMode.cpp": "void SampleDungeonGameMode::Tick(float DeltaSeconds) {}\n",
 	}
 	for rel, contents := range files {
 		path := filepath.Join(root, filepath.FromSlash(rel))
@@ -3834,6 +4825,50 @@ func TestReviewScopeDiscoveryUsesProvidedDiffPaths(t *testing.T) {
 	}
 }
 
+func TestPreWriteScopeDiscoveryLocksToProvidedEditPaths(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("bool ConvertPath() { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	analysis := analyzeReviewRequest(rt, root, ReviewHarnessOptions{
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Request: "automatic pre-write review %d/n /Conversation 0x%X)/n +4",
+		Paths:   []string{sourcePath},
+		EditProposals: []EditProposal{{
+			File:      "SampleApp/SampleWorker/PathConverter.cpp",
+			Operation: "apply_patch",
+		}},
+		ProvidedDiff: strings.Join([]string{
+			"diff --git a/SampleApp/SampleWorker/PathConverter.cpp b/SampleApp/SampleWorker/PathConverter.cpp",
+			"--- a/SampleApp/SampleWorker/PathConverter.cpp",
+			"+++ b/SampleApp/SampleWorker/PathConverter.cpp",
+			"@@ -1 +1 @@",
+			"+return false;",
+		}, "\n"),
+	})
+	if analysis.ScopeDiscovery.ScopeWidth != "focused" {
+		t.Fatalf("pre-write edit paths should keep focused scope, got %#v", analysis.ScopeDiscovery)
+	}
+	if len(analysis.ScopeDiscovery.CandidateFiles) != 1 || analysis.ScopeDiscovery.CandidateFiles[0] != "SampleApp/SampleWorker/PathConverter.cpp" {
+		t.Fatalf("expected only the edited source path, got %#v", analysis.ScopeDiscovery.CandidateFiles)
+	}
+	joined := strings.Join(analysis.ScopeDiscovery.CandidateFiles, " ")
+	for _, fragment := range []string{"%d/n", "/Conversation", "0x%X", "+4"} {
+		if strings.Contains(joined, fragment) {
+			t.Fatalf("synthetic request fragment %q leaked into pre-write candidates: %#v", fragment, analysis.ScopeDiscovery.CandidateFiles)
+		}
+	}
+}
+
 func TestReviewScopeDiscoveryNormalizesBeforeAfterDiffPaths(t *testing.T) {
 	diff := strings.Join([]string{
 		"--- before/Source/PathConverter.cpp",
@@ -3865,7 +4900,7 @@ func TestReviewScopeDiscoveryRejectsSyntheticToolPaths(t *testing.T) {
 
 	discovery := discoverReviewScope(
 		root,
-		"@Source/PathConverter.cpp:1-1 ConvertPath 검토하고 버그를 수정해 web/research web/search/browser code/change C:/Win C:// low/correctness medium/stability +/- L'//",
+		"@Source/PathConverter.cpp:1-1 ConvertPath 검토하고 버그를 수정해 web/research web/search/browser code/change C:/Win C:// low/correctness medium/stability +/- L'// %d/n /Conversation 0x%X)/n +4",
 		nil,
 	)
 	if len(discovery.CandidateFiles) != 1 || discovery.CandidateFiles[0] != "Source/PathConverter.cpp" {
@@ -3879,6 +4914,9 @@ func TestReviewScopeDiscoveryRejectsSyntheticToolPaths(t *testing.T) {
 			lower == "c:" ||
 			lower == "+/-" ||
 			strings.Contains(lower, "l'") ||
+			strings.Contains(lower, "%") ||
+			strings.Contains(lower, "conversation") ||
+			strings.Contains(lower, "0x%x") ||
 			strings.Contains(lower, "/correctness") ||
 			strings.Contains(lower, "/stability") {
 			t.Fatalf("synthetic tool path leaked into candidate files: %#v", discovery.CandidateFiles)
@@ -4306,6 +5344,34 @@ func TestReviewModelPromptCalibratesSourcePerformanceAnalysisSeverity(t *testing
 	retry := buildReviewModelOmissionRetryPrompt(cfg, run, "primary_reviewer")
 	if !strings.Contains(retry, "source analysis review") || !strings.Contains(retry, "Severity rule") {
 		t.Fatalf("expected retry prompt to preserve source performance calibration, got %q", retry)
+	}
+}
+
+func TestPreWriteReviewModelPromptRejectsMalformedMultiRFRewrite(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	run := ReviewRun{
+		ID:      "review-prewrite",
+		Trigger: "pre_write",
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Title:       "StringFromCLSID failure can pass null to map lookup",
+			RequiredFix: "Check HRESULT and pointer before lookup.",
+		}},
+	}
+
+	prompt := buildReviewModelPrompt(cfg, run, "primary_reviewer")
+	for _, want := range []string{
+		"verify the proposed edit addresses every blocking finding",
+		"whole-file rewrite",
+		"large whole-function replacement",
+		"duplicated function endings/braces",
+		"patch correctness blocker",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected pre-write prompt to contain %q, got %q", want, prompt)
+		}
 	}
 }
 

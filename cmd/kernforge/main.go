@@ -494,12 +494,15 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	if rt.clientErr != nil {
 		return rt.clientErr
 	}
+	turnStartedAt := time.Now()
 	ctx := context.Background()
 	reply, err := rt.runAgentReplyWithImages(ctx, prompt, images)
 	if err != nil {
+		rt.printTurnElapsed(turnStartedAt)
 		return err
 	}
 	rt.printAssistant(reply)
+	rt.printTurnElapsed(turnStartedAt)
 	return nil
 }
 
@@ -573,7 +576,7 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 		err         error
 	)
 	rt.withRequestCancelSuspended(func() {
-		openPreview, err = rt.confirm("Open diff preview?")
+		openPreview, err = rt.confirm(diffPreviewQuestion(rt.cfg))
 	})
 	if err != nil {
 		return false, err
@@ -593,8 +596,8 @@ func (rt *runtimeState) openEditPreview(preview EditPreview) (bool, error) {
 	if err == nil {
 		return ok, nil
 	}
-	fmt.Fprintln(rt.writer, rt.ui.warnLine("Falling back to terminal diff preview: "+err.Error()))
-	fmt.Fprintln(rt.writer, rt.ui.section("Diff Preview"))
+	fmt.Fprintln(rt.writer, rt.ui.warnLine(localizedText(rt.cfg, "Falling back to terminal diff preview: ", "터미널 변경 미리보기로 전환합니다: ")+err.Error()))
+	fmt.Fprintln(rt.writer, rt.ui.section(localizedText(rt.cfg, "Diff Preview", "변경 미리보기")))
 	if strings.TrimSpace(preview.Title) != "" {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(preview.Title))
 	}
@@ -648,21 +651,30 @@ func (rt *runtimeState) runREPL() error {
 		if line == "" {
 			continue
 		}
+		turnStartedAt := time.Now()
 		rt.promptTurn = nextTurn
 		rt.rememberInputHistory(input)
 		if strings.HasPrefix(line, "!") {
 			if err := rt.runShell(strings.TrimPrefix(line, "!")); err != nil {
 				fmt.Fprintln(rt.writer, rt.ui.errorLine("shell error: "+err.Error()))
 			}
+			rt.printTurnElapsed(turnStartedAt)
 			continue
 		}
 		if cmd, ok := ParseCommand(line); ok {
+			printElapsed := slashCommandShouldPrintTurnElapsed(cmd)
 			exit, err := rt.handleCommand(cmd)
 			if err != nil {
 				rt.printCommandExecutionError(line, err)
 			}
 			if exit {
+				if printElapsed {
+					rt.printTurnElapsed(turnStartedAt)
+				}
 				return nil
+			}
+			if printElapsed {
+				rt.printTurnElapsed(turnStartedAt)
 			}
 			continue
 		}
@@ -671,6 +683,7 @@ func (rt *runtimeState) runREPL() error {
 			if isMissingKeyError(rt.clientErr) {
 				_ = rt.handleAuthError()
 			}
+			rt.printTurnElapsed(turnStartedAt)
 			continue
 		}
 		ctx := context.Background()
@@ -678,14 +691,17 @@ func (rt *runtimeState) runREPL() error {
 		if err != nil {
 			if errors.Is(err, ErrEditCanceled) {
 				fmt.Fprintln(rt.writer, rt.ui.infoLine("Edit canceled."))
+				rt.printTurnElapsed(turnStartedAt)
 				continue
 			}
 			if errors.Is(err, ErrWriteDenied) {
 				fmt.Fprintln(rt.writer, rt.ui.infoLine("Write canceled."))
+				rt.printTurnElapsed(turnStartedAt)
 				continue
 			}
 			if errors.Is(err, ErrInvalidEditPayload) {
 				fmt.Fprintln(rt.writer, rt.ui.warnLine(err.Error()))
+				rt.printTurnElapsed(turnStartedAt)
 				continue
 			}
 			for _, line := range rt.formatAssistantError(err) {
@@ -694,11 +710,13 @@ func (rt *runtimeState) runREPL() error {
 			if isAuthError(err) {
 				_ = rt.handleAuthError()
 			}
+			rt.printTurnElapsed(turnStartedAt)
 			continue
 		}
 		if strings.TrimSpace(reply) != "" {
 			rt.printAssistant(reply)
 		}
+		rt.printTurnElapsed(turnStartedAt)
 	}
 }
 
@@ -713,6 +731,83 @@ func (rt *runtimeState) runAgentReplyWithExistingCancel(ctx context.Context, inp
 func (rt *runtimeState) printTurnSeparator(turn int) {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.turnSeparator(turn, rt.session.Provider, rt.session.Model))
+}
+
+func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
+	if startedAt.IsZero() {
+		return
+	}
+	rt.flushAssistantStream()
+	rt.clearThinkingStatus()
+	rt.clearThinkingDetails()
+	rt.stopThinkingIndicator()
+	rt.clearFooterLine()
+	rt.writeOutputLines(rt.ui.turnElapsedLine(rt.cfg, time.Since(startedAt)))
+}
+
+func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
+	switch normalizeSlashCommandName(cmd.Name) {
+	case "",
+		"exit",
+		"quit",
+		"help",
+		"status",
+		"config",
+		"version",
+		"context",
+		"session",
+		"sessions",
+		"clear",
+		"reset",
+		"new",
+		"tasks",
+		"skills",
+		"mcp",
+		"resources",
+		"prompts",
+		"reload",
+		"hook-reload",
+		"hooks",
+		"override",
+		"override-add",
+		"override-clear",
+		"memory",
+		"mem",
+		"mem-search",
+		"mem-show",
+		"mem-stats",
+		"model",
+		"effort",
+		"provider",
+		"profile",
+		"permissions",
+		"progress-display",
+		"selection",
+		"selections",
+		"use-selection",
+		"drop-selection",
+		"note-selection",
+		"tag-selection",
+		"clear-selection",
+		"clear-selections",
+		"set-max-tool-iterations",
+		"set-analysis-models",
+		"set-specialist-model",
+		"set-auto-verify",
+		"locale-auto",
+		"set-msbuild-path",
+		"clear-msbuild-path",
+		"set-cmake-path",
+		"clear-cmake-path",
+		"set-ctest-path",
+		"clear-ctest-path",
+		"set-ninja-path",
+		"clear-ninja-path",
+		"detect-verification-tools":
+		return false
+	default:
+		return true
+	}
 }
 
 func (rt *runtimeState) printCommandExecutionError(line string, err error) {
@@ -2214,11 +2309,11 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 }
 
 func (rt *runtimeState) confirmLabel(question string) string {
-	hint := "[y/N, Esc=cancel]"
+	hint := localizedText(rt.cfg, "[y/N, Esc=cancel]", "[y/N, Esc=취소]")
 	if isDiffPreviewQuestion(question) {
-		hint = "[y/N/a=auto-accept, Esc=cancel]"
+		hint = localizedText(rt.cfg, "[y/N/a=auto-accept, Esc=cancel]", "[y/N/a=자동 수락, Esc=취소]")
 	} else if supportsAlwaysApproval(question) {
-		hint = "[y/N/a=always, Esc=cancel]"
+		hint = localizedText(rt.cfg, "[y/N/a=always, Esc=cancel]", "[y/N/a=항상 승인, Esc=취소]")
 	}
 	return rt.ui.warnLine(question) + " " + rt.ui.dim(hint)
 }
@@ -2232,7 +2327,17 @@ func isWriteApprovalQuestion(question string) bool {
 }
 
 func isDiffPreviewQuestion(question string) bool {
-	return strings.EqualFold(strings.TrimSpace(question), "Open diff preview?")
+	normalized := strings.TrimSpace(question)
+	return strings.EqualFold(normalized, diffPreviewQuestionEnglish) || normalized == diffPreviewQuestionKorean
+}
+
+const (
+	diffPreviewQuestionEnglish = "Open diff preview?"
+	diffPreviewQuestionKorean  = "변경 미리보기를 열까요?"
+)
+
+func diffPreviewQuestion(cfg Config) string {
+	return localizedText(cfg, diffPreviewQuestionEnglish, diffPreviewQuestionKorean)
 }
 
 func isGitApprovalQuestion(question string) bool {
