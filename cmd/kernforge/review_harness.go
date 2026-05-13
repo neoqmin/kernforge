@@ -100,45 +100,54 @@ type ReviewHarnessConfig struct {
 }
 
 type ReviewRun struct {
-	ID                 string                 `json:"id"`
-	SchemaVersion      string                 `json:"schema_version"`
-	KernforgeVersion   string                 `json:"kernforge_version,omitempty"`
-	PolicyPackVersions map[string]string      `json:"policy_pack_versions,omitempty"`
-	ReviewFingerprint  string                 `json:"review_fingerprint,omitempty"`
-	Trigger            string                 `json:"trigger,omitempty"`
-	Target             string                 `json:"target,omitempty"`
-	Mode               string                 `json:"mode,omitempty"`
-	Flow               string                 `json:"flow,omitempty"`
-	RequestAnalysis    ReviewRequestAnalysis  `json:"request_analysis,omitempty"`
-	AutoTriggered      bool                   `json:"auto_triggered,omitempty"`
-	Status             string                 `json:"status,omitempty"`
-	MachineStatus      string                 `json:"machine_status,omitempty"`
-	ExitCode           int                    `json:"exit_code,omitempty"`
-	Objective          string                 `json:"objective,omitempty"`
-	CreatedAt          time.Time              `json:"created_at"`
-	Workspace          string                 `json:"workspace,omitempty"`
-	Branch             string                 `json:"branch,omitempty"`
-	Profiles           []string               `json:"profiles,omitempty"`
-	ModelPlan          ReviewModelPlan        `json:"model_plan,omitempty"`
-	ChangeSet          ReviewChangeSet        `json:"change_set,omitempty"`
-	Evidence           ReviewEvidencePack     `json:"evidence,omitempty"`
-	Freshness          ReviewFreshness        `json:"freshness,omitempty"`
-	Redaction          ReviewRedactionReport  `json:"redaction,omitempty"`
-	EditProposals      []EditProposal         `json:"edit_proposals,omitempty"`
-	RepairFindings     []ReviewFinding        `json:"repair_findings,omitempty"`
-	PolicyPacks        []string               `json:"policy_packs,omitempty"`
-	ReviewerRuns       []ReviewReviewerRun    `json:"reviewer_runs,omitempty"`
-	ReviewerGatePolicy string                 `json:"reviewer_gate_policy,omitempty"`
-	MergeResult        ReviewMergeResult      `json:"merge_result,omitempty"`
-	Result             ReviewResult           `json:"result,omitempty"`
-	Findings           []ReviewFinding        `json:"findings,omitempty"`
-	Gate               GateDecision           `json:"gate,omitempty"`
-	Waivers            []ReviewWaiver         `json:"waivers,omitempty"`
-	RepairPlan         ReviewRepairPlan       `json:"repair_plan,omitempty"`
-	RuntimeGateLedger  RuntimeGateLedger      `json:"runtime_gate_ledger,omitempty"`
-	NextCommandResults []ReviewNextCommandRun `json:"next_command_results,omitempty"`
-	ArtifactRefs       []string               `json:"artifact_refs,omitempty"`
-	AuditTrail         []string               `json:"audit_trail,omitempty"`
+	ID                    string                       `json:"id"`
+	SchemaVersion         string                       `json:"schema_version"`
+	KernforgeVersion      string                       `json:"kernforge_version,omitempty"`
+	PolicyPackVersions    map[string]string            `json:"policy_pack_versions,omitempty"`
+	ReviewFingerprint     string                       `json:"review_fingerprint,omitempty"`
+	Trigger               string                       `json:"trigger,omitempty"`
+	Target                string                       `json:"target,omitempty"`
+	Mode                  string                       `json:"mode,omitempty"`
+	Flow                  string                       `json:"flow,omitempty"`
+	RequestAnalysis       ReviewRequestAnalysis        `json:"request_analysis,omitempty"`
+	AutoTriggered         bool                         `json:"auto_triggered,omitempty"`
+	Status                string                       `json:"status,omitempty"`
+	MachineStatus         string                       `json:"machine_status,omitempty"`
+	ExitCode              int                          `json:"exit_code,omitempty"`
+	Objective             string                       `json:"objective,omitempty"`
+	CreatedAt             time.Time                    `json:"created_at"`
+	Workspace             string                       `json:"workspace,omitempty"`
+	Branch                string                       `json:"branch,omitempty"`
+	Profiles              []string                     `json:"profiles,omitempty"`
+	ModelPlan             ReviewModelPlan              `json:"model_plan,omitempty"`
+	ChangeSet             ReviewChangeSet              `json:"change_set,omitempty"`
+	Evidence              ReviewEvidencePack           `json:"evidence,omitempty"`
+	Freshness             ReviewFreshness              `json:"freshness,omitempty"`
+	Redaction             ReviewRedactionReport        `json:"redaction,omitempty"`
+	EditProposals         []EditProposal               `json:"edit_proposals,omitempty"`
+	RepairFindings        []ReviewFinding              `json:"repair_findings,omitempty"`
+	StateTransitions      []ReviewStateTransition      `json:"state_transitions,omitempty"`
+	ActionEnvelopes       []ReviewActionEnvelope       `json:"action_envelopes,omitempty"`
+	ApprovalLedger        ReviewApprovalLedger         `json:"approval_ledger,omitempty"`
+	CapabilityManifest    ReviewCapabilityManifest     `json:"capability_manifest,omitempty"`
+	SingleModelPolicy     SingleModelReviewPolicy      `json:"single_model_policy,omitempty"`
+	ExternalLookupIntents []ReviewExternalLookupIntent `json:"external_lookup_intents,omitempty"`
+	ArtifactIntegrity     ReviewArtifactIntegrity      `json:"artifact_integrity,omitempty"`
+	LedgerConsistency     ReviewLedgerConsistencyCheck `json:"ledger_consistency,omitempty"`
+	ResumeSanity          ReviewResumeSanityCheck      `json:"resume_sanity,omitempty"`
+	PolicyPacks           []string                     `json:"policy_packs,omitempty"`
+	ReviewerRuns          []ReviewReviewerRun          `json:"reviewer_runs,omitempty"`
+	ReviewerGatePolicy    string                       `json:"reviewer_gate_policy,omitempty"`
+	MergeResult           ReviewMergeResult            `json:"merge_result,omitempty"`
+	Result                ReviewResult                 `json:"result,omitempty"`
+	Findings              []ReviewFinding              `json:"findings,omitempty"`
+	Gate                  GateDecision                 `json:"gate,omitempty"`
+	Waivers               []ReviewWaiver               `json:"waivers,omitempty"`
+	RepairPlan            ReviewRepairPlan             `json:"repair_plan,omitempty"`
+	RuntimeGateLedger     RuntimeGateLedger            `json:"runtime_gate_ledger,omitempty"`
+	NextCommandResults    []ReviewNextCommandRun       `json:"next_command_results,omitempty"`
+	ArtifactRefs          []string                     `json:"artifact_refs,omitempty"`
+	AuditTrail            []string                     `json:"audit_trail,omitempty"`
 }
 
 type ReviewRequestAnalysis struct {
@@ -213,14 +222,16 @@ type ReviewEvidencePack struct {
 }
 
 type ReviewModelPlan struct {
-	Strategy       string            `json:"strategy,omitempty"`
-	RequiredRoles  []string          `json:"required_roles,omitempty"`
-	OptionalRoles  []string          `json:"optional_roles,omitempty"`
-	AssignedModels map[string]string `json:"assigned_models,omitempty"`
-	MissingRoles   []string          `json:"missing_roles,omitempty"`
-	DegradedRoles  []string          `json:"degraded_roles,omitempty"`
-	RouteLimits    []string          `json:"route_limits,omitempty"`
-	UserGuidance   []string          `json:"user_guidance,omitempty"`
+	Strategy           string                  `json:"strategy,omitempty"`
+	RequiredRoles      []string                `json:"required_roles,omitempty"`
+	OptionalRoles      []string                `json:"optional_roles,omitempty"`
+	AssignedModels     map[string]string       `json:"assigned_models,omitempty"`
+	CapabilityProfiles []ReviewModelCapability `json:"capability_profiles,omitempty"`
+	RouteHealth        []ReviewRouteHealth     `json:"route_health,omitempty"`
+	MissingRoles       []string                `json:"missing_roles,omitempty"`
+	DegradedRoles      []string                `json:"degraded_roles,omitempty"`
+	RouteLimits        []string                `json:"route_limits,omitempty"`
+	UserGuidance       []string                `json:"user_guidance,omitempty"`
 }
 
 type ReviewReviewerRun struct {
@@ -279,6 +290,7 @@ type ReviewFinding struct {
 	RequiredFix        string   `json:"required_fix,omitempty"`
 	TestRecommendation string   `json:"test_recommendation,omitempty"`
 	BlocksGate         bool     `json:"blocks_gate,omitempty"`
+	ResolutionStatus   string   `json:"resolution_status,omitempty"`
 	RelatedPolicy      string   `json:"related_policy,omitempty"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	FixRefs            []string `json:"fix_refs,omitempty"`
@@ -287,6 +299,7 @@ type ReviewFinding struct {
 
 type GateDecision struct {
 	Verdict              string              `json:"verdict,omitempty"`
+	Action               string              `json:"action,omitempty"`
 	Reason               string              `json:"reason,omitempty"`
 	BlockingFindings     []string            `json:"blocking_findings,omitempty"`
 	WarningFindings      []string            `json:"warning_findings,omitempty"`
@@ -534,36 +547,30 @@ func writeReviewRunArtifacts(root string, run *ReviewRun) error {
 	reviewJSON := filepath.Join(dir, "review.json")
 	reviewMD := filepath.Join(dir, "review.md")
 	evidenceMD := filepath.Join(dir, "evidence.md")
+	latestJSON := filepath.Join(reviewArtifactRoot(root), "latest.json")
+	latestMD := filepath.Join(reviewArtifactRoot(root), "latest.md")
+	protocolRefs, err := writeReviewProtocolArtifacts(dir, *run)
+	if err != nil {
+		return err
+	}
+	run.ArtifactRefs = append([]string{reviewMD, reviewJSON, evidenceMD, latestMD, latestJSON}, protocolRefs...)
 	data, err := json.MarshalIndent(run, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(reviewJSON, data, 0o644); err != nil {
+	if err := atomicWriteFile(reviewJSON, data, 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(reviewMD, []byte(renderReviewRunMarkdown(*run)), 0o644); err != nil {
+	if err := atomicWriteFile(reviewMD, []byte(renderReviewRunMarkdown(*run)), 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(evidenceMD, []byte(renderReviewEvidenceMarkdown(*run)), 0o644); err != nil {
+	if err := atomicWriteFile(evidenceMD, []byte(renderReviewEvidenceMarkdown(*run)), 0o644); err != nil {
 		return err
 	}
-	latestJSON := filepath.Join(reviewArtifactRoot(root), "latest.json")
-	latestMD := filepath.Join(reviewArtifactRoot(root), "latest.md")
-	if err := os.WriteFile(latestJSON, data, 0o644); err != nil {
+	if err := atomicWriteFile(latestJSON, data, 0o644); err != nil {
 		return err
 	}
-	if err := os.WriteFile(latestMD, []byte(renderReviewRunMarkdown(*run)), 0o644); err != nil {
-		return err
-	}
-	run.ArtifactRefs = []string{reviewMD, reviewJSON, evidenceMD, latestMD, latestJSON}
-	data, err = json.MarshalIndent(run, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(reviewJSON, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(latestJSON, data, 0o644); err != nil {
+	if err := atomicWriteFile(latestMD, []byte(renderReviewRunMarkdown(*run)), 0o644); err != nil {
 		return err
 	}
 	return nil
@@ -580,7 +587,11 @@ func loadLatestReviewRun(root string) (ReviewRun, string, bool, error) {
 	}
 	var run ReviewRun
 	if err := json.Unmarshal(data, &run); err != nil {
-		return ReviewRun{}, path, false, err
+		recovered, recoveredPath, recoveredOK, recoveredErr := recoverLatestReviewRun(root)
+		if recoveredErr != nil {
+			return ReviewRun{}, path, false, err
+		}
+		return recovered, recoveredPath, recoveredOK, nil
 	}
 	return run, path, true, nil
 }
@@ -589,6 +600,7 @@ func (s *Session) recordReviewRun(run ReviewRun) {
 	if s == nil {
 		return
 	}
+	s.ReviewRouteHealth = mergeReviewRouteHealthHistory(s.ReviewRouteHealth, reviewRouteHealthFromRun(&run), 8)
 	copyRun := run
 	s.LastReviewRun = &copyRun
 	s.AppendConversationEvent(ConversationEvent{
@@ -696,6 +708,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		opts.MaxContextChars = reviewDefaultMaxContextChars
 	}
 	run := newReviewRunSkeleton(rt, root, opts)
+	run.CapabilityManifest = buildReviewCapabilityManifest(rt, root)
 	analysis := analyzeReviewRequest(rt, root, opts)
 	opts.MaxContextChars = reviewMaxContextCharsForAnalysis(opts.MaxContextChars, analysis)
 	opts.MaxContextChars = reviewMaxContextCharsForFastPath(opts.MaxContextChars, opts, analysis, maxContextWasDefaulted)
@@ -715,6 +728,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	emitReviewEvidenceProgress(rt, run, opts)
 	run.Redaction = redactReviewRunEvidence(&run)
 	run.ModelPlan = planReviewModels(rt.cfg, run)
+	run.SingleModelPolicy = buildSingleModelReviewPolicy(run, reviewRuntimeHasDistinctCrossReviewer(rt))
 	run.Findings = append(run.Findings, deterministicReviewFindings(rt, run)...)
 	if !opts.NoModel && len(run.Evidence.Sources) > 0 {
 		modelFindings, reviewerRuns := executeReviewModelRuns(ctx, rt, root, &run)
@@ -728,6 +742,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	}
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Findings = append(run.Findings, preFixNonConclusiveBugHuntFindings(run)...)
+	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Gate = evaluateReviewGate(run)
 	run.RepairPlan = buildReviewRepairPlan(run)
@@ -749,6 +764,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	}
 	run.finalizeStatus(false)
 	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
+	finalizeReviewRunProtocol(root, rt, &run)
 	emitDistinctReviewGateResultProgress(rt, run)
 	if err := writeReviewRunArtifacts(root, &run); err != nil {
 		return run, err

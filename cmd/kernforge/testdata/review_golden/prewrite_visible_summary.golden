@@ -1,0 +1,24 @@
+Final review result:
+- Verdict: approved_with_warnings
+- Blockers: 0
+- Warnings: 1
+- Next: proceed to diff preview.
+- Summary: The proposed diff satisfies the repair target and leaves a verification obligation.
+
+Repair targets checked:
+- RF-010 [high/correctness]: Prefix match can select the wrong volume
+  - Code location: PathConverter.cpp
+  - Symbol: Convert
+  - Problem: The old code accepted a prefix without requiring a path boundary.
+  - Impact: A sibling device path can be trusted as the requested volume.
+  - Required fix: Require exact or slash-boundary matches before accepting the prefix.
+  - Resolution status: resolved
+  - Verification: Replay sibling volume names with shared prefixes.
+
+Remaining review items:
+- RF-020 [low/test_gap]: Focused verification was not run
+  - Evidence: The review has no focused test output for the proposed patch.
+  - Fix: Run focused verification before merging.
+  - Test: go test ./cmd/kernforge -run TestPathConverter
+
+Review report: C:/tmp/review.md

@@ -768,6 +768,7 @@ review artifact:
 1. `/review selection`은 `.kernforge/reviews/latest.json`과 `.kernforge/reviews/latest.md`를 쓴다.
 2. 결과에는 typed finding, freshness/redaction 상태, gate verdict, scope discovery, repair step, runtime gate ledger, 추천 next command가 포함된다.
 3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다. 응답에는 `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, `next_commands` action contract가 포함된다.
+4. protocol artifact에는 action envelope, approval ledger, capability manifest, external lookup intent, artifact integrity, ledger consistency, resume sanity, state transition, route health도 포함된다. 따라서 CLI 출력, Markdown report, JSON artifact, MCP 응답이 같은 gate 상태를 말한다.
 
 ### 2.8 Plan Review Workflow
 
@@ -809,6 +810,7 @@ review artifact:
 18. Claude Code CLI 기본 선택지는 현재 Claude family version을 표시하지만, 실제 CLI 실행에는 `sonnet`, `opus`, `haiku` 같은 안전한 alias를 넘긴다. `/review`, 자연어 리뷰, 수정 전 repair check는 main-first로 동작한다. active main model이 로컬 evidence로 첫 구조화 리뷰를 만들고, 별도 review role이 설정돼 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 다시 본다. cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질로 끝나도 run은 degraded 상태로 표시될 뿐, main review finding 보고나 repair loop 시작 자체를 막지는 않는다.
 19. common review role은 기본적으로 최소 `effort=high`를 사용하고, 저장된 `low`/`medium` 값도 reviewer 요청을 만들 때 `high`로 올린다. focused pre-fix bug-hunt review도 이 최소값을 유지한다. pre-write review는 여전히 hard edit gate다. 실제 edit preview가 생긴 뒤에는 필수 main/cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고, Kernforge는 파일을 건드리기 전에 reviewer route 문제를 보고한다. 이때도 implementation model에게 재시도나 웹 근거 수집을 시키지 않는다. 단, 메인 모델의 pre-write 1차 리뷰가 usable이면 중단 응답에 `메인 모델 리뷰 기준으로 진행` 선택지를 함께 보여준다. 사용자가 그 문구로 명시 승인하고 interactive diff preview가 가능한 경우에만 다음 pre-write review에서 cross reviewer 실패를 degraded evidence로 기록하되 hard blocker로는 보지 않고, 그래도 실제 쓰기 전에는 기존 diff preview 확인을 반드시 거친다.
 20. pre-write review가 diff preview로 진행할 수 있다고 판단하면, diff preview 질문 전에 최종 검토 결과 본문을 사용자에게 먼저 출력한다. 이 본문은 판정, blocker/warning 수, 수정 확인 대상, 남은 검토 항목, evidence, impact, required fix, test recommendation을 포함하며 긴 필드도 `...`로 잘라 조치 기준을 숨기지 않는다.
+21. 16.10 hardening 계층은 review action envelope, approval ledger, capability manifest, external lookup intent, artifact integrity, ledger consistency, resume sanity, route health를 review run에 기록한다. replay fixture는 reviewer route failure, omission/truncation, patch mismatch loop, local web block, pre-fix repair obligation, final visible summary, MCP response contract를 고정한다. 별도 `REVIEW_HARNESS_UX_OPS_85_DESIGN_kor.md` 문서는 Codex App parity를 향한 다음 UX/운영 안정성 목표를 설명한다.
 
 ### 2.9 Tracked Feature Workflow
 

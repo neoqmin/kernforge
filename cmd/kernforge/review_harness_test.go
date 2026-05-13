@@ -2040,6 +2040,50 @@ func TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails(t *testing.T) 
 	}
 }
 
+func TestPreWriteFinalVisibleReviewSummaryGolden(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-020"},
+		},
+		Result: ReviewResult{
+			Summary: "The proposed diff satisfies the repair target and leaves a verification obligation.",
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:                 "RF-010",
+			Severity:           reviewSeverityHigh,
+			Category:           "correctness",
+			Path:               "PathConverter.cpp",
+			Symbol:             "Convert",
+			Title:              "Prefix match can select the wrong volume",
+			Evidence:           "The old code accepted a prefix without requiring a path boundary.",
+			Impact:             "A sibling device path can be trusted as the requested volume.",
+			RequiredFix:        "Require exact or slash-boundary matches before accepting the prefix.",
+			ResolutionStatus:   "resolved",
+			TestRecommendation: "Replay sibling volume names with shared prefixes.",
+		}},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-020",
+			Severity:           reviewSeverityLow,
+			Category:           "test_gap",
+			Title:              "Focused verification was not run",
+			Evidence:           "The review has no focused test output for the proposed patch.",
+			RequiredFix:        "Run focused verification before merging.",
+			TestRecommendation: "go test ./cmd/kernforge -run TestPathConverter",
+		}},
+		ArtifactRefs: []string{"C:/tmp/review.md"},
+	}
+	got := normalizeGoldenText(formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true))
+	wantData, err := os.ReadFile(filepath.Join("testdata", "review_golden", "prewrite_visible_summary.golden"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	want := normalizeGoldenText(string(wantData))
+	if got != want {
+		t.Fatalf("visible summary golden mismatch\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
 func TestPreWriteRunStoresRepairFindingsForFinalSummary(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.cpp")
@@ -2067,12 +2111,13 @@ func TestPreWriteRunStoresRepairFindingsForFinalSummary(t *testing.T) {
 		Paths:        []string{path},
 		ProvidedDiff: "- break;\n+ continue;\n",
 		RepairFindings: []ReviewFinding{{
-			ID:          "RF-200",
-			Severity:    reviewSeverityMedium,
-			Category:    "correctness",
-			Path:        "main.cpp",
-			Title:       "break stops enumeration",
-			RequiredFix: "continue after the failed item",
+			ID:               "RF-200",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Path:             "main.cpp",
+			Title:            "break stops enumeration",
+			RequiredFix:      "continue after the failed item",
+			ResolutionStatus: "resolved",
 		}},
 		MaxContextChars: 20000,
 	})
@@ -4000,6 +4045,11 @@ func reviewFindingsContainTitle(findings []ReviewFinding, title string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeGoldenText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.TrimSpace(text)
 }
 
 func TestReviewModelsCommandShortFormConfiguresRole(t *testing.T) {

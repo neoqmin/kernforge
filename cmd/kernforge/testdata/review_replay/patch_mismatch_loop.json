@@ -1,0 +1,49 @@
+{
+  "name": "patch_mismatch_loop",
+  "category": "patch_mismatch",
+  "trigger": "pre_write",
+  "user_request": "Replay a repeated apply_patch mismatch that must force fresh context.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    },
+    {
+      "role": "cross_reviewer",
+      "kind": "cross",
+      "model": "scripted / reviewer-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "findings": [
+    {
+      "id": "RF-PATCH-001",
+      "source": "deterministic",
+      "reviewer_role": "loop_breaker",
+      "severity": "blocker",
+      "category": "operational_risk",
+      "confidence": "high",
+      "quality": "complete",
+      "title": "Repeated patch mismatch requires fresh file digest",
+      "evidence": "The same apply_patch signature failed twice against the same anchor.",
+      "impact": "Retrying the same patch can loop without observing current file contents.",
+      "required_fix": "Read the exact target file again and generate a fresh patch from the current digest.",
+      "blocks_gate": true
+    }
+  ],
+  "expected_gate": "needs_revision",
+  "expected_action": "repair_required",
+  "expected_ledger_status": "blocked",
+  "expected_progress_contains": [
+    "Repeated patch mismatch requires fresh file digest",
+    "Gate action: repair_required"
+  ],
+  "expected_markdown_contains": [
+    "Artifact Integrity",
+    "Ledger Consistency"
+  ]
+}

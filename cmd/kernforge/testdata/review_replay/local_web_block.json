@@ -1,0 +1,42 @@
+{
+  "name": "local_web_block",
+  "category": "local_web_block",
+  "trigger": "pre_write",
+  "user_request": "Replay local code repair where web research was blocked.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    },
+    {
+      "role": "cross_reviewer",
+      "kind": "cross",
+      "model": "scripted / reviewer-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "external_lookup_intents": [
+    {
+      "id": "ELI-replay-001",
+      "tool_name": "mcp__web_search",
+      "intent": "query=latest code sample",
+      "reason": "blocked_local_code_context",
+      "status": "blocked",
+      "blocked": true
+    }
+  ],
+  "expected_gate": "approved",
+  "expected_action": "diff_preview_allowed",
+  "expected_mcp_contains": [
+    "external_lookup_intents",
+    "blocked_local_code_context"
+  ],
+  "expected_markdown_contains": [
+    "External Lookup Intents",
+    "blocked"
+  ]
+}

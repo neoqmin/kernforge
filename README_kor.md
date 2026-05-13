@@ -9,7 +9,7 @@
 가장 먼저 봐야 할 대표 기능은 다음 다섯 가지입니다.
 
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`는 재사용 가능한 project intelligence를 만든다. architecture map, knowledge pack, performance lens, structural index, vector-ready analysis set, 운영 문서, HTML 대시보드까지 산출한다.
-- `/review`는 plan, code, selection, PR, goal, final answer, analysis report, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 evidence-backed review harness다. structured finding, freshness, next command, repair guidance를 함께 관리한다.
+- `/review`는 plan, code, selection, PR, goal, final answer, analysis report, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 evidence-backed review harness다. structured finding, typed state transition, action envelope, approval ledger, capability manifest, freshness, next command, repair guidance를 함께 관리한다.
 - fuzzing은 `/fuzz-func` source-level triage에서 시작해 `/fuzz-campaign`으로 campaign manifest, corpus/crash/coverage artifact, sanitizer 또는 verifier evidence, verification gate lifecycle까지 이어진다.
 - `/goal`, `-goal`, `-goal-file`은 긴 목표를 끝까지 밀어붙이는 autonomous execution 계층이다. prompt나 markdown 파일의 목표를 영속화하고, 구현, 독립 review, repair, full verification, completion audit, 최종 semantic review, recovery를 목표 완료 또는 구체 blocker 기록까지 반복한다.
 - `/find-root-cause [--pattern-pack <path-or-dir>] <problem>`은 증상 프롬프트를 명확성 검사한 뒤 1개부터 최대 8개의 route-limited worker shard, reviewer causality validation, deep verification, deterministic quality gate를 통해 가능한 근본 원인을 좁힌다.
@@ -72,6 +72,7 @@ Kernforge의 source-level fuzzing은 코드를 먼저 컴파일하지 않아도 
 - [한국어 Fuzzing 및 보안 도구 Gap Analysis](./FUZZING_SECURITY_TOOLS_GAP_ANALYSIS_kor.md)
 - [한국어 Hook Engine 스펙](./HOOK_ENGINE_SPEC_kor.md)
 - [한국어 공통 Review Harness 스펙](./REVIEW_HARNESS_SPEC_kor.md)
+- [한국어 Review Harness UX/Ops 85점 설계](./REVIEW_HARNESS_UX_OPS_85_DESIGN_kor.md)
 - [한국어 Live Investigation Mode 스펙](./LIVE_INVESTIGATION_SPEC_kor.md)
 - [한국어 Adversarial Simulation 스펙](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [한국어 차세대 Project Analysis 스펙](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
@@ -119,7 +120,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - Windows용 별도 텍스트 viewer와 WebView2 기반 diff review/diff viewer
 - adaptive verification, 검증 이력 대시보드, checkpoint, rollback
 - hook engine, workspace hook rules, evidence-aware push/PR policy
-- plan, code, selection, PR, goal, final, analysis, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 공통 `/review` 하네스. main-first 리뷰, 선택적 cross reviewer, bounded DeepSeek retry, 로컬 코드 수리 중 웹 검색 차단, diff preview 전 최종 리뷰 본문 출력을 포함한다.
+- plan, code, selection, PR, goal, final, analysis, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 공통 `/review` 하네스. main-first 리뷰, 선택적 cross reviewer, typed action envelope, 분리된 approval ledger, route health 기반 retry 억제, 로컬 코드 수리 중 웹 검색 차단, artifact integrity 검사, replay fixture, diff preview 전 최종 리뷰 본문 출력을 포함한다.
 - `.kernforge/features` 아래에 spec/plan/tasks/implementation artifact를 남기는 tracked feature 워크플로우
 - disjoint edit lease에 대한 automatic secondary editable worker와 specialist-aware background verification bundle chaining
 

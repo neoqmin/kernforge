@@ -46,6 +46,23 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 		// Pre-write review gates the proposed diff before it is applied. Runtime
 		// verification is still expected after the edit, so missing verification
 		// evidence must not block the pre-write gate.
+		if run.SingleModelPolicy.Enabled {
+			if !singleModelPreWriteHasFrozenDiff(run) {
+				findings = append(findings, ReviewFinding{
+					Source:       "deterministic",
+					ReviewerRole: "single_model_policy",
+					Severity:     reviewSeverityBlocker,
+					Category:     "evidence_gap",
+					Confidence:   "high",
+					Quality:      reviewFindingQualityComplete,
+					Title:        "Single-model pre-write review lacks a frozen diff",
+					Evidence:     "Single-model mode cannot independently re-check a write without a frozen diff or edit proposal fingerprint.",
+					Impact:       "The same model could approve a moving patch instead of the exact edit that will be shown in diff preview.",
+					RequiredFix:  "Create a frozen edit proposal with diff preview evidence, then rerun the pre-write review.",
+					BlocksGate:   true,
+				})
+			}
+		}
 	} else if run.Evidence.VerificationFailed {
 		findings = append(findings, ReviewFinding{
 			Source:             "deterministic",
@@ -164,6 +181,76 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 	return findings
 }
 
+func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || !run.SingleModelPolicy.Enabled {
+		return nil
+	}
+	if !run.SingleModelPolicy.RequiresRFObligationStatus || repairFindingsHaveResolutionStatus(run.RepairFindings) {
+		return nil
+	}
+	findings := []ReviewFinding{{
+		Source:       "deterministic",
+		ReviewerRole: "single_model_policy",
+		Severity:     reviewSeverityBlocker,
+		Category:     "evidence_gap",
+		Confidence:   "high",
+		Quality:      reviewFindingQualityComplete,
+		Title:        "Single-model pre-write review lacks repair obligation status",
+		Evidence:     "Required repair findings from the pre-fix review do not all record resolved, partial, unresolved, or verification_needed status.",
+		Impact:       "A single-model pre-write approval could hide an unresolved pre-fix obligation.",
+		RequiredFix:  "Record a resolution_status for each required repair finding before approving the single-model pre-write review.",
+		BlocksGate:   true,
+	}}
+	assignReviewFindingIDs(findings)
+	return findings
+}
+
+func singleModelPreWriteHasFrozenDiff(run ReviewRun) bool {
+	if strings.TrimSpace(run.ChangeSet.DiffExcerpt) != "" {
+		return true
+	}
+	for _, proposal := range run.EditProposals {
+		if strings.TrimSpace(proposal.PreviewFingerprint) != "" ||
+			strings.TrimSpace(proposal.ExpectedPreview) != "" ||
+			strings.TrimSpace(proposal.ExactSearch) != "" ||
+			strings.TrimSpace(proposal.Replacement) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func repairFindingsHaveResolutionStatus(findings []ReviewFinding) bool {
+	if len(findings) == 0 {
+		return true
+	}
+	for _, finding := range findings {
+		if !reviewRepairResolutionStatusKnown(finding.ResolutionStatus) {
+			return false
+		}
+	}
+	return true
+}
+
+func reviewRepairResolutionStatusKnown(status string) bool {
+	switch normalizeReviewRepairResolutionStatus(status) {
+	case "resolved", "partial", "unresolved", "verification_needed":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeReviewRepairResolutionStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(status, "-", "_")))
+	switch status {
+	case "verification_needed_only":
+		return "verification_needed"
+	default:
+		return status
+	}
+}
+
 func mergeReviewFindings(findings []ReviewFinding) ([]ReviewFinding, ReviewMergeResult) {
 	result := ReviewMergeResult{}
 	seen := map[string]int{}
@@ -200,6 +287,7 @@ func (f *ReviewFinding) Normalize() {
 		return
 	}
 	f.Severity = normalizeReviewSeverity(f.Severity)
+	f.ResolutionStatus = normalizeReviewRepairResolutionStatus(f.ResolutionStatus)
 	if strings.TrimSpace(f.Category) == "" {
 		f.Category = "correctness"
 	}
@@ -361,6 +449,8 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 		gate.Reason = "no blocking findings found"
 	}
 	gate.NextCommands = reviewNextCommands(run, gate)
+	run.Gate = gate
+	gate.Action = reviewGateActionForRun(run)
 	if run.Result.Degraded && strings.TrimSpace(run.Result.DegradedReason) != "" {
 		gate.QualityNotes = append(gate.QualityNotes, run.Result.DegradedReason)
 	}
@@ -470,6 +560,24 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 			AutoRun:        false,
 			ClientHint:     "Run verification, then repeat /review.",
 			ExpectedResult: "A current verification report is recorded for the changed files.",
+		})
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		expected := "The reviewer route is changed or the user explicitly chooses main-model fallback before any write is attempted."
+		hint := "Fix the reviewer route with /review models, retry with a longer timeout, or explicitly approve main-review fallback in an interactive diff-preview flow."
+		if reviewRunHasUsableMainReviewer(run) {
+			hint = "The main review is usable. In an interactive edit flow, explicitly say that the main model review may be used for this pre-write fallback before diff preview."
+		}
+		out = append(out, ReviewNextCommand{
+			ID:                   "reviewer-fallback",
+			Command:              "/review models status",
+			Reason:               "a required reviewer route failed or returned weak output",
+			Safety:               "read_only",
+			When:                 "before retrying the edit or approving a write",
+			AutoRun:              false,
+			RequiresConfirmation: true,
+			ClientHint:           hint,
+			ExpectedResult:       expected,
 		})
 	}
 	if gate.Verdict == reviewVerdictNeedsRevision || gate.Verdict == reviewVerdictBlocked {

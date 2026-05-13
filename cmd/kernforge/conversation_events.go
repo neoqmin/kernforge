@@ -30,6 +30,7 @@ const (
 	conversationEventKindEventStream     = "event_stream"
 	conversationEventKindGoal            = "goal"
 	conversationEventKindReview          = "review"
+	conversationEventKindExternalLookup  = "external_lookup"
 
 	conversationSeverityInfo  = "info"
 	conversationSeverityWarn  = "warn"
