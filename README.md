@@ -9,7 +9,7 @@
 The first five capabilities to understand are:
 
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
-- `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, freshness, next commands, and repair guidance.
+- `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, typed state transitions, action envelopes, approval ledgers, capability manifests, freshness, next commands, and repair guidance.
 - Fuzzing starts with `/fuzz-func` source-level triage and continues through `/fuzz-campaign` for campaign manifests, corpus/crash/coverage artifacts, sanitizer or verifier evidence, and verification gate lifecycle management.
 - `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
 - `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
@@ -72,6 +72,7 @@ Specs And Roadmap:
 - [Korean Fuzzing And Security Tools Gap Analysis](./FUZZING_SECURITY_TOOLS_GAP_ANALYSIS_kor.md)
 - [Korean Hook Engine Spec](./HOOK_ENGINE_SPEC_kor.md)
 - [Korean Common Review Harness Spec](./REVIEW_HARNESS_SPEC_kor.md)
+- [Korean Review Harness UX/Ops 85 Design](./REVIEW_HARNESS_UX_OPS_85_DESIGN_kor.md)
 - [Korean Live Investigation Mode Spec](./LIVE_INVESTIGATION_SPEC_kor.md)
 - [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [Korean Next-Gen Project Analysis Spec](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
@@ -122,7 +123,7 @@ Its current differentiators are:
 - Windows text viewer plus WebView2-based diff review and diff viewing for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
-- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows, including main-first review, optional cross reviewers, bounded DeepSeek retries, local-code web-research blocking, explicit main-review fallback after pre-write reviewer failure, and final review details before diff preview
+- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows, including main-first review, optional cross reviewers, typed action envelopes, separated approval ledgers, route-health-aware retries, local-code web-research blocking, explicit main-review fallback after pre-write reviewer failure, artifact integrity checks, replay fixtures, and final review details before diff preview
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
 - Automatic secondary editable workers for disjoint edit leases plus specialist-aware background verification bundle chaining
 

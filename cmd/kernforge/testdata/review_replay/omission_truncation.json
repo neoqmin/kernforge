@@ -1,0 +1,38 @@
+{
+  "name": "omission_truncation",
+  "category": "omission_truncation",
+  "trigger": "pre_write",
+  "user_request": "Review the proposed patch where the cross reviewer output was cut off.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    },
+    {
+      "role": "cross_reviewer",
+      "kind": "cross",
+      "model": "scripted / reviewer-model",
+      "status": "completed",
+      "model_quality": "weak",
+      "error": "reviewer output appears cut off"
+    }
+  ],
+  "expected_gate": "insufficient_evidence",
+  "expected_action": "user_decision_required",
+  "expected_ledger_status": "blocked",
+  "expected_progress_contains": [
+    "Gate action: user_decision_required",
+    "Required reviewer model failed or returned weak output"
+  ],
+  "expected_reply_contains": [
+    "required reviewer model failed",
+    "No code changes were applied"
+  ],
+  "expected_markdown_contains": [
+    "State Transitions",
+    "user_fallback_offer"
+  ]
+}

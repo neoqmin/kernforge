@@ -1,0 +1,25 @@
+{
+  "name": "final_visible_summary",
+  "category": "final_visible_summary",
+  "trigger": "explicit_command",
+  "user_request": "Replay an approved final visible summary.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "expected_gate": "approved",
+  "expected_action": "final_summary",
+  "expected_progress_contains": [
+    "Review replay-final_visible_summary: approved",
+    "Gate action: final_summary"
+  ],
+  "expected_markdown_contains": [
+    "Artifact Integrity",
+    "Resume Sanity"
+  ]
+}

@@ -57,6 +57,8 @@ func planReviewModels(cfg Config, run ReviewRun) ReviewModelPlan {
 		label, source := reviewRoleModelLabelAndSource(cfg, reviewCfg, role)
 		if label != "" {
 			plan.AssignedModels[role] = label
+			provider, model := reviewRoleProviderModelForRun(cfg, role)
+			plan.CapabilityProfiles = append(plan.CapabilityProfiles, reviewModelCapabilityProfile(role, provider, model, reviewRoleReasoningEffortForRun(cfg, role, run)))
 		} else {
 			plan.MissingRoles = append(plan.MissingRoles, role)
 		}
@@ -178,6 +180,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	mainClient, mainModel, mainLabel, mainErr := reviewMainRoleClient(rt)
 	mainLabel = reviewModelDisplayLabel(rt.cfg, mainClient, mainModel, mainLabel, reviewRoleReasoningEffortForRun(rt.cfg, "primary_reviewer", *run))
 	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles)
+	run.SingleModelPolicy = buildSingleModelReviewPolicy(*run, hasCrossReviewer)
 	phaseTotal := 1
 	if hasCrossReviewer {
 		phaseTotal = 2
@@ -205,6 +208,10 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		emitReviewModelCrossResultHandoffProgress(rt, crossRun)
 	} else {
 		emitReviewModelNoCrossReviewerProgress(rt)
+		if run.ModelPlan.UserGuidance == nil {
+			run.ModelPlan.UserGuidance = []string{}
+		}
+		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "Single-model review mode is active; no independent cross reviewer is configured for this run.")
 	}
 	assignReviewFindingIDs(findings)
 	return findings, reviewerRuns
@@ -307,6 +314,12 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		reviewShouldRetryOmittedReviewOutput(raw, roleFindings, quality) &&
 		reviewShouldSkipOptionalCrossOmissionRetry(rt.cfg, *run, reviewerRun, resp.StopReason, roleFindings, peer) {
 		emitReviewModelRetrySkippedProgress(rt, reviewerRun, label)
+		omissionRetryBudget = 0
+	}
+	if omissionRetryBudget > 0 &&
+		reviewShouldRetryOmittedReviewOutput(raw, roleFindings, quality) &&
+		reviewRouteHealthSuppressesStrictRetry(rt, reviewerRun) {
+		emitReviewModelHealthRetrySuppressedProgress(rt, reviewerRun, label)
 		omissionRetryBudget = 0
 	}
 	omissionRetryFailed := false
@@ -1139,52 +1152,11 @@ func reviewProviderModelFromDisplayLabel(label string) (string, string) {
 
 func reviewModelCapabilityRank(provider string, model string, effort string) int {
 	provider = normalizeProviderName(provider)
-	modelLower := strings.ToLower(strings.TrimSpace(model))
-	rank := 0
-	switch {
-	case strings.Contains(modelLower, "gpt-5.5"):
-		rank = 1000
-	case strings.Contains(modelLower, "gpt-5.4"):
-		rank = 940
-	case strings.Contains(modelLower, "gpt-5.3"):
-		rank = 900
-	case strings.Contains(modelLower, "gpt-5.2"):
-		rank = 860
-	case strings.Contains(modelLower, "opus"):
-		rank = 900
-	case strings.Contains(modelLower, "sonnet"):
-		rank = 780
-	case strings.Contains(modelLower, "deepseek-v4-pro") || strings.Contains(modelLower, "deepseek v4 pro"):
-		rank = 760
-	case strings.Contains(modelLower, "deepseek"):
-		rank = 730
-	case strings.Contains(modelLower, "haiku"):
-		rank = 480
-	case strings.Contains(modelLower, "gpt-4.1"):
-		rank = 760
-	case strings.Contains(modelLower, "gpt-4"):
-		rank = 700
+	rule, ok := reviewModelCapabilityRuleFor(provider, model)
+	if !ok || rule.CapabilityRank <= 0 {
+		return 0
 	}
-	if rank == 0 {
-		switch provider {
-		case "openai-codex":
-			rank = 900
-		case "codex-cli":
-			rank = 840
-		case "anthropic", "anthropic-claude-cli":
-			rank = 760
-		case "deepseek":
-			rank = 730
-		case "openai":
-			rank = 720
-		case "openrouter", "opencode", "opencode-go":
-			rank = 650
-		case "ollama", "lmstudio", "vllm", "llama.cpp":
-			rank = 520
-		default:
-			return 0
-		}
-	}
+	rank := rule.CapabilityRank
 	switch normalizeReasoningEffort(effort) {
 	case "xhigh":
 		rank += 40
@@ -1282,17 +1254,17 @@ func formatReviewModelLongWaitProgress(cfg Config, reviewerRun ReviewReviewerRun
 	switch strings.ToLower(strings.TrimSpace(reviewerRun.Kind)) {
 	case "main":
 		return fmt.Sprintf(
-			localizedText(cfg, "Main model first-pass review is still running (%s elapsed). When it returns, Kernforge will pass the draft to the review model or compute the gate if no separate reviewer is configured.", "메인 모델 1차 리뷰가 아직 진행 중입니다(경과 %s). 결과가 오면 리뷰 모델에 초안을 전달하거나, 별도 리뷰 모델이 없으면 바로 게이트를 계산합니다."),
+			localizedText(cfg, "Main model first-pass review is still running (%s elapsed). actor=main_model next_transition=cross_review_or_gate_decision. When it returns, Kernforge will pass the draft to the review model or compute the gate if no separate reviewer is configured.", "메인 모델 1차 리뷰가 아직 진행 중입니다(경과 %s). actor=main_model next_transition=cross_review_or_gate_decision. 결과가 오면 리뷰 모델에 초안을 전달하거나, 별도 리뷰 모델이 없으면 바로 게이트를 계산합니다."),
 			elapsedText,
 		)
 	case "cross":
 		return fmt.Sprintf(
-			localizedText(cfg, "Review model cross-check is still running (%s elapsed). When it returns, Kernforge will merge it with the main model review; timeout, cancellation, or an empty response will be recorded in the final gate.", "리뷰 모델 교차 검토가 아직 진행 중입니다(경과 %s). 결과가 오면 메인 모델 리뷰와 병합하고, timeout/취소/빈 응답은 최종 게이트에 실패 상태로 기록합니다."),
+			localizedText(cfg, "Review model cross-check is still running (%s elapsed). actor=reviewer_model next_transition=merge_reviews. When it returns, Kernforge will merge it with the main model review; timeout, cancellation, or an empty response will be recorded in the final gate.", "리뷰 모델 교차 검토가 아직 진행 중입니다(경과 %s). actor=reviewer_model next_transition=merge_reviews. 결과가 오면 메인 모델 리뷰와 병합하고, timeout/취소/빈 응답은 최종 게이트에 실패 상태로 기록합니다."),
 			elapsedText,
 		)
 	default:
 		return fmt.Sprintf(
-			localizedText(cfg, "Review model %s is still running (%s elapsed). Kernforge will use the result in the final gate when it returns.", "리뷰 모델 %s가 아직 실행 중입니다(경과 %s). 결과가 오면 최종 게이트에 반영합니다."),
+			localizedText(cfg, "Review model %s is still running (%s elapsed). actor=reviewer_model next_transition=gate_decision. Kernforge will use the result in the final gate when it returns.", "리뷰 모델 %s가 아직 실행 중입니다(경과 %s). actor=reviewer_model next_transition=gate_decision. 결과가 오면 최종 게이트에 반영합니다."),
 			roleName,
 			elapsedText,
 		)
@@ -1327,6 +1299,19 @@ func emitReviewModelRetrySkippedProgress(rt *runtimeState, reviewerRun ReviewRev
 	rt.agent.EmitProgress(message)
 }
 
+func emitReviewModelHealthRetrySuppressedProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, label string) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Review route health suppresses strict retry for %s -> %s. Recent route failures make another same-route retry low value.", "최근 리뷰 경로 상태 때문에 %s -> %s strict retry를 생략합니다. 같은 경로 재시도는 가치가 낮습니다."),
+		roleName,
+		label,
+	)
+	rt.agent.EmitProgress(message)
+}
+
 func reviewStopReasonLooksTruncated(stopReason string) bool {
 	lower := strings.ToLower(strings.TrimSpace(stopReason))
 	if lower == "" {
@@ -1355,6 +1340,35 @@ func reviewShouldSkipOptionalCrossOmissionRetry(cfg Config, run ReviewRun, revie
 		return false
 	}
 	return reviewPeerContextHasUsableMainActionableFindings(run, peer)
+}
+
+func reviewRouteHealthSuppressesStrictRetry(rt *runtimeState, reviewerRun ReviewReviewerRun) bool {
+	if rt == nil || rt.session == nil {
+		return false
+	}
+	health, ok := reviewRouteHealthForReviewerRun(rt.session.ReviewRouteHealth, reviewerRun)
+	if !ok {
+		return false
+	}
+	if health.RecentRuns < 2 {
+		return false
+	}
+	return health.TimeoutRate >= 0.50 || health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50
+}
+
+func reviewRouteHealthForReviewerRun(items []ReviewRouteHealth, reviewerRun ReviewReviewerRun) (ReviewRouteHealth, bool) {
+	role := normalizeReviewRole(reviewerRun.Role)
+	model := strings.ToLower(strings.TrimSpace(reviewerRun.Model))
+	for _, item := range items {
+		if normalizeReviewRole(item.Role) != role {
+			continue
+		}
+		if model != "" && !strings.EqualFold(strings.TrimSpace(item.Model), strings.TrimSpace(reviewerRun.Model)) {
+			continue
+		}
+		return item, true
+	}
+	return ReviewRouteHealth{}, false
 }
 
 func reviewPeerContextHasUsableMainActionableFindings(run ReviewRun, peer reviewModelRunPeerContext) bool {

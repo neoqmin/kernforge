@@ -190,6 +190,24 @@ func (rt *runtimeState) printReviewModelsStatus() {
 			fmt.Fprintln(rt.writer, rt.ui.info(line))
 		}
 	}
+	var lastReview *ReviewRun
+	if rt.session != nil {
+		lastReview = rt.session.LastReviewRun
+	}
+	health := []ReviewRouteHealth(nil)
+	if rt.session != nil {
+		health = append(health, rt.session.ReviewRouteHealth...)
+	}
+	if len(health) == 0 {
+		health = reviewRouteHealthFromRun(lastReview)
+	}
+	if len(health) > 0 {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, rt.ui.section("Route Health"))
+		for _, item := range health {
+			fmt.Fprintln(rt.writer, rt.ui.info(reviewRouteHealthStatusLine(item)))
+		}
+	}
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Direct form: /review models security openai-api gpt-5.4"))
 }
@@ -235,6 +253,15 @@ func reviewRoleRouteLine(label string, source string) string {
 		route = "follows main: " + label
 	}
 	return route
+}
+
+func reviewRouteHealthStatusLine(item ReviewRouteHealth) string {
+	role := valueOrDefault(strings.TrimSpace(item.Role), "reviewer")
+	status := valueOrDefault(strings.TrimSpace(item.LastStatus), "unknown")
+	quality := valueOrDefault(strings.TrimSpace(item.LastQuality), "unknown")
+	model := valueOrDefault(strings.TrimSpace(item.Model), "unconfigured")
+	recommendation := valueOrDefault(strings.TrimSpace(item.Recommendation), "insufficient recent route history")
+	return fmt.Sprintf("  %-21s health  model=%s status=%s quality=%s timeout_rate=%.2f weak_rate=%.2f recommendation=%s", role, model, status, quality, item.TimeoutRate, item.WeakRate, recommendation)
 }
 
 func reviewModelRoleDescription(role string) string {
@@ -806,6 +833,15 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"redaction":               run.Redaction,
 		"edit_proposals":          run.EditProposals,
 		"runtime_gate_ledger":     run.RuntimeGateLedger,
+		"state_transitions":       run.StateTransitions,
+		"action_envelopes":        run.ActionEnvelopes,
+		"approval_ledger":         run.ApprovalLedger,
+		"capability_manifest":     run.CapabilityManifest,
+		"single_model_policy":     run.SingleModelPolicy,
+		"external_lookup_intents": run.ExternalLookupIntents,
+		"artifact_integrity":      run.ArtifactIntegrity,
+		"ledger_consistency":      run.LedgerConsistency,
+		"resume_sanity":           run.ResumeSanity,
 		"gate":                    run.Gate,
 		"waivers":                 run.Waivers,
 		"findings":                run.Findings,

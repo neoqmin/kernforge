@@ -3125,6 +3125,39 @@ P2:
 4. provider health score를 저장해 반복적으로 weak/timeout이 나는 reviewer를 자동 degrade한다.
 5. 단일 모델 모드와 별도 reviewer 모드의 결과 품질을 같은 Tavern fixture로 비교하는 benchmark를 추가한다.
 
+구현 진행 기록:
+
+1. 2026-05-12 - protocol artifact/state machine 1차 구현
+   - `ReviewRun`에 `StateTransitions`, `ActionEnvelopes`, `ApprovalLedger`, `CapabilityManifest`, `SingleModelPolicy`를 추가했다.
+   - `GateDecision.Action`을 verdict와 분리해 `repair_required`, `reviewer_unavailable`, `user_decision_required`, `diff_preview_allowed`, `verification_required`, `final_summary` 중 하나로 기록한다.
+   - review artifact directory에 `action_envelope.jsonl`, `approval_ledger.json`, `capability_manifest.json`을 추가로 저장한다.
+   - `latest.json`이 깨진 경우 가장 최근 valid `review.json`으로 fallback recovery를 수행한다.
+   - MCP `kernforge_review` 응답에 `state_transitions`, `action_envelopes`, `approval_ledger`, `capability_manifest`, `single_model_policy`를 포함한다.
+   - 별도 cross reviewer가 없으면 `reviewer_unavailable`이 아니라 `single_model_mode`로 기록하고, CLI/Markdown summary에 independence level과 residual verification obligation을 표시한다.
+
+2. 2026-05-12 - route capability/health와 replay fixture 보강
+   - `ReviewModelCapability`와 `ReviewRouteHealth`를 추가해 provider/model/effort 기반 capability profile, schema reliability, blocker prior, latency class, retry budget, 최근 timeout/weak/empty 상태를 구조화했다.
+   - `/review models status`가 최근 review run의 route health와 추천 조치를 표시한다.
+   - `testdata/review_replay/`에 pre-write cross reviewer timeout fixture를 추가했고, `TestReviewReplayFixtures`가 provider 호출 없이 gate/action/fallback output을 재현한다.
+   - regression coverage: `TestReviewRunWritesProtocolArtifacts`, `TestSingleModelReviewModeDoesNotRequireCrossReviewer`, `TestReviewMCPResponseIncludesProtocolContract`, `TestReviewLatestRecoveryUsesMostRecentValidRun`, `TestReviewModelPlanRecordsCapabilityProfileAndRouteHealth`, `TestReviewModelsStatusReportsRouteHealth`, `TestReviewReplayFixtures`, `TestReviewReplayFixtureRejectsMissingExpectedGate`, `TestReviewReplayFixtureCanModelSoftTimeoutWithoutSleeping`.
+   - 전체 회귀: `go test ./cmd/kernforge -count=1 -timeout 20m` 통과.
+
+3. 2026-05-13 - 16.10 잔여 계약 구현
+   - `ReviewRun`에 `ExternalLookupIntents`, `ArtifactIntegrity`, `LedgerConsistency`, `ResumeSanity`를 추가했다.
+   - review artifact directory에 `external_lookup_intent.jsonl`, `artifact_integrity.json`, `ledger_consistency.json`, `resume_sanity.json`을 추가했다.
+   - local code review/repair 중 web/search/browser tool 호출을 차단할 때 `external_lookup_intent`를 session event와 review artifact에 기록한다. 허용된 web tool 호출도 실행 전 intent로 기록한다.
+   - `ReviewModelCapability` rank/timeout 기준을 profile table로 이동했고, session-level `ReviewRouteHealth`를 누적 저장해 `/review models status`와 strict retry suppression에 사용한다.
+   - single-model pre-write review는 frozen diff 없이는 diff preview gate를 열지 않고, pre-fix repair finding이 있으면 각 RF의 `resolution_status`를 요구한다.
+   - `LoopSignature`를 추가해 repeated tool call/read/failure recovery guidance가 현재 loop signature와 required shift를 출력한다.
+   - replay fixture 범주를 `reviewer route failure`, `omission/truncation`, `patch mismatch`, `local web block`, `pre-fix repair obligations`, `final visible summary`, `MCP response contract`로 확장했다.
+   - pre-write final visible summary golden snapshot을 `cmd/kernforge/testdata/review_golden/prewrite_visible_summary.golden`로 추가했다.
+   - targeted regression: `TestReviewRunWritesProtocolArtifacts`, `TestSingleModelReviewModeDoesNotRequireCrossReviewer`, `TestSingleModelPreWriteCannotApproveWithoutRFObligationStatus`, `TestSingleModelPreWriteReviewUsesFrozenDiff`, `TestSingleModelReviewRecordsIndependenceLevel`, `TestExternalLookupIntentRecordsBlockedLocalWebResearch`, `TestReviewLedgerConsistencyBlocksStaleFinalAnswer`, `TestResumeSanityDetectsConflictingLatestUserRequest`, `TestReviewArtifactAtomicWriteDoesNotCorruptLatest`, `TestReviewModelCapabilityProfileControlsTimeout`, `TestReviewRouteHealthSuppressesRepeatedStrictRetry`, `TestLoopSignatureRendersRepeatedReadAndToolFailure`, `TestMissingReviewerRouteStartsSingleModelReviewMode`, `TestReviewMCPResponseIncludesProtocolContract`, `TestPreWriteFinalVisibleReviewSummaryGolden`, `TestReviewReplayFixtures`, `TestReviewReplayFixtureCanModelSoftTimeoutWithoutSleeping` 통과.
+   - web/loop/visible-summary focused regression: `TestAgentBlocksWebResearchForLocalCodeRepair`, `TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog`, `TestAgentBlocksWebResearchAfterPreWriteReviewFeedback`, `TestAgentKeepsWebResearchHiddenAfterEditTargetMismatch`, `TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry`, `TestInvalidPatchFormatGuidanceChangesOnRepeatedSignature`, `TestAgentNudgesAfterRepeatedIdenticalToolCalls`, `TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges`, `TestAgentNudgesBeforeAbortingRepeatedToolFailure`, `TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails`, `TestPreWriteFinalReviewProgressMentionsDiffPreview`, `TestPreWriteRunStoresRepairFindingsForFinalSummary`, `TestReviewMCPResponseIncludesActionContractBooleans` 통과.
+   - review-mode pass:
+     - `go run ./cmd/kernforge -command "/review --no-model"`: blocker 없음, broad scope warning만 표시.
+     - `go run ./cmd/kernforge -command "/review --no-model --path cmd/kernforge/review_harness_integrity.go --path cmd/kernforge/review_harness_state.go --path cmd/kernforge/review_provider_behavior.go --path cmd/kernforge/review_harness_models.go --path cmd/kernforge/review_harness_gate.go --path cmd/kernforge/review_harness_replay_test.go --path cmd/kernforge/review_harness_state_test.go"`: blocker 없음, symbol excerpt unavailable 정보성 note만 표시.
+   - 최종 전체 회귀: `go test ./cmd/kernforge -count=1 -timeout 20m` 통과. (2026-05-13)
+
 남은 항목:
 
 1. 수동 smoke 검증

@@ -1,0 +1,25 @@
+{
+  "name": "mcp_response_contract",
+  "category": "mcp_response_contract",
+  "trigger": "explicit_mcp",
+  "user_request": "Replay MCP review response machine contract.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "expected_gate": "approved",
+  "expected_action": "final_summary",
+  "expected_mcp_contains": [
+    "state_transitions",
+    "action_envelopes",
+    "approval_ledger",
+    "capability_manifest",
+    "ledger_consistency",
+    "artifact_integrity"
+  ]
+}

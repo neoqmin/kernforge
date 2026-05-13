@@ -1,0 +1,32 @@
+{
+  "name": "prewrite_cross_timeout_after_main_usable",
+  "trigger": "pre_write",
+  "user_request": "Review the proposed PathConverter fix before writing files.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    },
+    {
+      "role": "cross_reviewer",
+      "kind": "cross",
+      "model": "scripted / reviewer-model",
+      "status": "failed",
+      "model_quality": "failed",
+      "error": "review model soft timeout after 5m0s"
+    }
+  ],
+  "expected_gate": "insufficient_evidence",
+  "expected_action": "user_decision_required",
+  "expected_progress_contains": [
+    "Gate action: user_decision_required",
+    "a required reviewer route failed or returned weak output"
+  ],
+  "expected_reply_contains": [
+    "proceed with the main model review",
+    "No code changes were applied"
+  ]
+}

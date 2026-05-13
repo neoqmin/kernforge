@@ -44,7 +44,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		Target:          reviewTargetChange,
 		Request:         request,
 		IncludeGitDiff:  true,
-		NoModel:         !postChangeReviewHasDedicatedModel(a),
+		NoModel:         !reviewHarnessCanUseAnyModel(a),
 		AutoTriggered:   true,
 		AutoFollowUp:    reviewCfg.AutoFollowUp,
 		MaxContextChars: reviewFocusedMaxContextChars,
@@ -120,7 +120,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		Paths:              append([]string(nil), preview.Paths...),
 		ProvidedDiff:       diff,
 		IncludeGitDiff:     false,
-		NoModel:            !postChangeReviewHasDedicatedModel(a),
+		NoModel:            !reviewHarnessCanUseAnyModel(a),
 		AutoTriggered:      true,
 		AutoFollowUp:       "none",
 		EditProposals:      editProposalsForPreview(preview),
@@ -397,6 +397,16 @@ func postChangeReviewHasDedicatedModel(a *Agent) bool {
 		}
 	}
 	return false
+}
+
+func reviewHarnessCanUseAnyModel(a *Agent) bool {
+	if a == nil {
+		return false
+	}
+	if a.Client != nil && strings.TrimSpace(a.Config.Model) != "" {
+		return true
+	}
+	return postChangeReviewHasDedicatedModel(a)
 }
 
 func autoReviewChangedPaths(session *Session, root string) []string {
@@ -877,6 +887,13 @@ func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding,
 			fmt.Fprintf(b, "\n  - 수정 기준: %s", reviewVisibleInlineText(finding.RequiredFix))
 		} else {
 			fmt.Fprintf(b, "\n  - Required fix: %s", reviewVisibleInlineText(finding.RequiredFix))
+		}
+	}
+	if strings.TrimSpace(finding.ResolutionStatus) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 해결 상태: %s", reviewVisibleInlineText(finding.ResolutionStatus))
+		} else {
+			fmt.Fprintf(b, "\n  - Resolution status: %s", reviewVisibleInlineText(finding.ResolutionStatus))
 		}
 	}
 	if strings.TrimSpace(finding.TestRecommendation) != "" {

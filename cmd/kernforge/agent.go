@@ -454,6 +454,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if shouldBlockWebResearchForLocalCodeWork(resp.Message.ToolCalls, a.Session, a.MCP) {
+				a.recordExternalLookupIntents(resp.Message.ToolCalls, "blocked_local_code_context", true)
 				if a.EmitProgress != nil {
 					a.EmitProgress(formatBlockedLocalCodeWebResearchProgress(a.Config, resp.Message.ToolCalls))
 				}
@@ -465,6 +466,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return "", err
 				}
 				continue
+			}
+			if toolCallsIncludeWebResearch(resp.Message.ToolCalls, a.MCP) {
+				a.recordExternalLookupIntents(resp.Message.ToolCalls, "tool_call_declared", false)
 			}
 			if shouldBlockLocalToolCallsBeforeWebResearch(resp.Message.ToolCalls, a.Session, a.MCP) {
 				researchCatalog := ""
@@ -1789,6 +1793,12 @@ func repeatedToolCallRecoveryGuidance(summary string, recent string) string {
 		"Next step requirements:\n1. State the blocker in one sentence.\n2. Choose one materially different next step: inspect a different file or tool, change the tool arguments, or provide the best final answer now.\n3. Only retry the same tool sequence if you can explain exactly what changed.",
 	}
 	if strings.TrimSpace(summary) != "" {
+		parts = append(parts, "Loop signature: "+renderLoopSignature(LoopSignature{
+			Kind:          "repeated_tool_calls",
+			Signature:     computeReviewFingerprint("tool_calls", summary),
+			RepeatCount:   repeatedToolCallRecoveryThreshold,
+			RequiredShift: "change tool, arguments, target path, or stop and summarize the blocker",
+		}))
 		parts = append(parts, "Repeated tool sequence:\n"+summary)
 	}
 	if strings.TrimSpace(recent) != "" {
@@ -1802,6 +1812,9 @@ func repeatedReadFilePathRecoveryGuidance(path string, turns int, recent string)
 		fmt.Sprintf("Recovery mode: you have read the same file path across %d tool turns: %s. Treat the existing reads as sufficient unless the file changed.", turns, path),
 		"Do not read the same path again immediately. Either inspect a different file or tool, explain the current findings, or provide the best final answer now. Only reread this path if you can name the exact missing section that is still required.",
 	}
+	if signature := renderLoopSignature(loopSignatureForRepeatedRead(path, turns)); signature != "" {
+		parts = append(parts, "Loop signature: "+signature)
+	}
 	if strings.TrimSpace(recent) != "" {
 		parts = append(parts, "Recent tool turns:\n"+recent)
 	}
@@ -1812,6 +1825,9 @@ func repeatedToolFailureRecoveryGuidance(toolErr string, recent string) string {
 	parts := []string{
 		"Recovery mode: the same tool failure has happened multiple times. Do not repeat the same failing tool call again with near-identical inputs.",
 		"Next step requirements:\n1. State the blocker in one sentence.\n2. Choose a materially different action: use another tool, change the target/path/arguments, or provide the best partial final answer with the blocker.\n3. Only retry the failing tool if you can explain what changed.",
+	}
+	if signature := renderLoopSignature(loopSignatureForToolFailure(toolErr, repeatedToolFailureRecoveryThreshold)); signature != "" {
+		parts = append(parts, "Loop signature: "+signature)
 	}
 	if strings.TrimSpace(toolErr) != "" {
 		parts = append(parts, "Latest tool failure:\n"+sanitizeDiagnosticValue(toolErr))

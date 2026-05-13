@@ -1,0 +1,44 @@
+{
+  "name": "pre_fix_repair_obligations",
+  "category": "pre_fix_repair_obligations",
+  "trigger": "before_fix",
+  "user_request": "Find and fix the correctness bug before editing.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "findings": [
+    {
+      "id": "RF-FIX-001",
+      "source": "model",
+      "reviewer_role": "primary_reviewer",
+      "severity": "medium",
+      "category": "correctness",
+      "confidence": "high",
+      "quality": "complete",
+      "path": "PathConverter.cpp",
+      "symbol": "Convert",
+      "title": "Prefix match can select the wrong volume",
+      "evidence": "The conversion checks a prefix without a boundary.",
+      "impact": "A sibling volume name can be trusted incorrectly.",
+      "required_fix": "Require exact boundary matching before accepting a prefix.",
+      "test_recommendation": "Replay sibling volume names with shared prefixes.",
+      "blocks_gate": true
+    }
+  ],
+  "expected_gate": "needs_revision",
+  "expected_action": "repair_required",
+  "expected_progress_contains": [
+    "Prefix match can select the wrong volume",
+    "Gate action: repair_required"
+  ],
+  "expected_markdown_contains": [
+    "Repair Prompt",
+    "RF-FIX-001"
+  ]
+}
