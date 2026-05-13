@@ -31,6 +31,10 @@ const (
 	reviewDeepSeekBroadCrossSoftTimeout    = 4 * time.Minute
 	reviewFocusedPrimaryRawCrossLimit      = 6000
 	reviewFocusedPrimaryFindingCrossLimit  = 6000
+	reviewPreWriteDiffEvidenceMaxChars     = 6000
+	reviewPreWriteFileContextChars         = 9000
+	reviewPreWriteLineContextBefore        = 20
+	reviewPreWriteLineContextAfter         = 180
 
 	reviewTargetAuto           = "auto"
 	reviewTargetPlan           = "plan"
@@ -742,6 +746,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	}
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Findings = append(run.Findings, preFixNonConclusiveBugHuntFindings(run)...)
+	annotateSingleModelPreWriteRepairStatuses(&run)
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Gate = evaluateReviewGate(run)
@@ -750,7 +755,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	if len(run.Result.ScopeReviewed) == 0 {
 		run.Result.ScopeReviewed = append([]string(nil), run.Evidence.Sources...)
 	}
-	run.Result.Summary = reviewResultSummary(run)
+	run.Result.Summary = reviewResultSummaryForConfig(rt.cfg, run)
 	run.Result.KeyRisks = reviewKeyRisks(run.Findings)
 	run.Result.MissingEvidence = reviewMissingEvidence(run.Findings)
 	run.Result.VerifiedEvidence = reviewVerifiedEvidence(run)

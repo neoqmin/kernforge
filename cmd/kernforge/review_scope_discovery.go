@@ -998,7 +998,7 @@ func renderReviewScopeDiscoveryForEvidence(analysis ReviewRequestAnalysis) strin
 func reviewScopeNormalizeCandidatePath(root string, path string) string {
 	path = strings.TrimSpace(strings.Trim(path, " \t\r\n\"'`<>.,;()[]{}"))
 	path = strings.TrimPrefix(path, "@")
-	if path == "" || strings.HasPrefix(path, "-") || strings.ContainsAny(path, " \t\r\n") {
+	if path == "" || strings.HasPrefix(path, "-") || strings.HasPrefix(path, "+") || strings.ContainsAny(path, " \t\r\n") {
 		return ""
 	}
 	if index := strings.Index(path, ":"); index > 1 && strings.Contains(path[index+1:], "-") {
@@ -1012,7 +1012,13 @@ func reviewScopeNormalizeCandidatePath(root string, path string) string {
 
 func reviewScopeCandidatePathLooksSynthetic(path string) bool {
 	rawNormalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	if strings.Contains(rawNormalized, "%") {
+		return true
+	}
 	if reviewScopeCodeLiteralPathFragmentPattern.MatchString(rawNormalized) {
+		return true
+	}
+	if strings.HasPrefix(rawNormalized, "/") && !strings.Contains(rawNormalized, ".") {
 		return true
 	}
 	normalized := rawNormalized
@@ -1047,7 +1053,7 @@ func reviewScopeCandidatePathLooksSynthetic(path string) bool {
 
 func reviewScopeTokenLooksLikePath(token string) bool {
 	token = strings.TrimSpace(strings.TrimPrefix(token, "@"))
-	if token == "" || strings.HasPrefix(token, "-") || strings.Contains(token, "://") || strings.ContainsAny(token, " \t\r\n") {
+	if token == "" || strings.HasPrefix(token, "-") || strings.HasPrefix(token, "+") || strings.Contains(token, "://") || strings.ContainsAny(token, " \t\r\n") {
 		return false
 	}
 	if reviewScopeCandidatePathLooksSynthetic(token) {

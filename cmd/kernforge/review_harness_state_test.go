@@ -48,7 +48,7 @@ func TestReviewRunWritesProtocolArtifacts(t *testing.T) {
 	}
 }
 
-func TestSingleModelPreWriteCannotApproveWithoutRFObligationStatus(t *testing.T) {
+func TestSingleModelPreWriteRecordsRFObligationStatus(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.cpp")
 	if err := os.WriteFile(path, []byte("int main(){return 0;}\n"), 0o644); err != nil {
@@ -78,11 +78,83 @@ func TestSingleModelPreWriteCannotApproveWithoutRFObligationStatus(t *testing.T)
 	if !run.SingleModelPolicy.RequiresRFObligationStatus {
 		t.Fatalf("expected RF obligation status requirement, got %#v", run.SingleModelPolicy)
 	}
+	if run.Gate.Verdict == reviewVerdictNeedsRevision || run.Gate.Verdict == reviewVerdictInsufficientEvidence || run.Gate.Verdict == reviewVerdictBlocked {
+		t.Fatalf("single-model pre-write review should not block after recording RF status, got %#v", run.Gate)
+	}
+	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ResolutionStatus != "resolved" {
+		t.Fatalf("expected resolved repair status to be recorded, got %#v", run.RepairFindings)
+	}
+	if reviewFindingsContainTitle(run.Findings, "Single-model pre-write review lacks repair obligation status") {
+		t.Fatalf("did not expect RF status blocker after annotation, got %#v", run.Findings)
+	}
+}
+
+func TestSingleModelPreWriteWithoutUsableReviewerBlocksMissingRFObligationStatus(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main(){return 0;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	rt := reviewStateTestRuntime(root, nil)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:      "pre_write",
+		Target:       reviewTargetChange,
+		Request:      "fix main.cpp",
+		Paths:        []string{path},
+		ProvidedDiff: "- return 0;\n+ return 1;\n",
+		NoModel:      true,
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-100",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "main.cpp",
+			Title:       "return value is wrong",
+			RequiredFix: "return the requested value",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if !run.SingleModelPolicy.RequiresRFObligationStatus {
+		t.Fatalf("expected RF obligation status requirement, got %#v", run.SingleModelPolicy)
+	}
 	if run.Gate.Verdict != reviewVerdictNeedsRevision && run.Gate.Verdict != reviewVerdictInsufficientEvidence {
-		t.Fatalf("expected single-model pre-write review to block without RF status, got %#v", run.Gate)
+		t.Fatalf("expected single-model pre-write review to block without usable RF status review, got %#v", run.Gate)
 	}
 	if !reviewFindingsContainTitle(run.Findings, "Single-model pre-write review lacks repair obligation status") {
 		t.Fatalf("expected RF status blocker, got %#v", run.Findings)
+	}
+}
+
+func TestSingleModelPreWriteDoesNotAddRFStatusBlockerOnRequiredReviewerFailure(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:                    true,
+			RequiresRFObligationStatus: true,
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "cross",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "stream error: stream ID 27; INTERNAL_ERROR; received from peer",
+		}},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-100",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "main.cpp",
+			Title:       "return value is wrong",
+			RequiredFix: "return the requested value",
+		}},
+	}
+	if got := singleModelPreWritePolicyFindings(run); len(got) != 0 {
+		t.Fatalf("required reviewer failure should own the gate reason, got %#v", got)
+	}
+	if !reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("expected required reviewer failure to remain detectable")
 	}
 }
 
@@ -259,6 +331,140 @@ func TestSingleModelReviewModeDoesNotRequireCrossReviewer(t *testing.T) {
 	}
 	if !reviewTransitionsInclude(run.StateTransitions, reviewStateNoCrossReview) {
 		t.Fatalf("expected no_cross_review transition, got %#v", run.StateTransitions)
+	}
+}
+
+func TestSameProviderModelReviewerConfigDoesNotCountAsDistinctCrossReviewer(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider:        "openai-codex-subscription",
+			Model:           "gpt-5.5",
+			ReasoningEffort: "high",
+		},
+	}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config: cfg,
+			Client: &scriptedProviderClient{},
+		},
+	}
+
+	if reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("same provider/model reviewer config should be treated as single-model mode")
+	}
+	if !reviewModelConfigMatchesMain(cfg, cfg.Review.RoleModels["primary_reviewer"]) {
+		t.Fatalf("expected same provider/model role config to match main route")
+	}
+}
+
+func TestSameProviderModelReviewerConfigInheritsMainBaseURL(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.BaseURL = "https://chatgpt.example.test/backend-api/codex/"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider: "openai-codex",
+			Model:    "gpt-5.5",
+		},
+	}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config: cfg,
+			Client: &scriptedProviderClient{},
+		},
+	}
+
+	if !reviewModelConfigMatchesMain(cfg, cfg.Review.RoleModels["primary_reviewer"]) {
+		t.Fatalf("expected empty role base URL to inherit the main route base URL")
+	}
+	if reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("same provider/model reviewer config with inherited base URL should be single-model mode")
+	}
+}
+
+func TestDifferentBaseURLReviewerConfigCountsAsDistinctCrossReviewer(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.BaseURL = "https://chatgpt.example.test/backend-api/codex/"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider: "openai-codex",
+			Model:    "gpt-5.5",
+			BaseURL:  "https://other.example.test/backend-api/codex/",
+		},
+	}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config: cfg,
+			Client: &scriptedProviderClient{},
+		},
+	}
+
+	if reviewModelConfigMatchesMain(cfg, cfg.Review.RoleModels["primary_reviewer"]) {
+		t.Fatalf("expected different role base URL to be treated as a distinct route")
+	}
+	if !reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("different reviewer route should count as an independent cross reviewer")
+	}
+}
+
+func TestReviewerClientSameProviderModelDoesNotCountAsDistinctCrossReviewer(t *testing.T) {
+	cfg := Config{
+		Provider:   "scripted",
+		Model:      "main-model",
+		AutoLocale: boolPtr(false),
+	}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config:         cfg,
+			Client:         &scriptedProviderClient{},
+			ReviewerClient: &scriptedProviderClient{},
+			ReviewerModel:  "main-model",
+		},
+	}
+
+	if reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("same provider/model reviewer client should not be treated as independent cross reviewer")
+	}
+	if !reviewClientMatchesMain(rt, rt.agent.ReviewerClient, rt.agent.ReviewerModel) {
+		t.Fatalf("expected same provider/model reviewer client to match main")
+	}
+}
+
+func TestAuxReviewerClientSameProviderModelDoesNotCountAsDistinctCrossReviewer(t *testing.T) {
+	cfg := Config{
+		Provider:   "scripted",
+		Model:      "main-model",
+		AutoLocale: boolPtr(false),
+	}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config:            cfg,
+			Client:            &scriptedProviderClient{},
+			AuxReviewerClient: &scriptedProviderClient{},
+			AuxReviewerModel:  "main-model",
+		},
+	}
+
+	if reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("same provider/model aux reviewer client should not be treated as independent cross reviewer")
+	}
+	if !reviewClientMatchesMain(rt, rt.agent.AuxReviewerClient, rt.agent.AuxReviewerModel) {
+		t.Fatalf("expected same provider/model aux reviewer client to match main")
 	}
 }
 

@@ -206,6 +206,11 @@ func (ui UI) progressLine(text string) string {
 	return ui.dim("  | ") + text
 }
 
+func (ui UI) turnElapsedLine(cfg Config, elapsed time.Duration) string {
+	text := fmt.Sprintf(localizedText(cfg, "turn elapsed: %s", "턴 소요 시간: %s"), formatProgressElapsed(elapsed))
+	return ui.progressLine(ui.activityLine("time", text))
+}
+
 func (ui UI) planItem(index int, status string, step string) string {
 	number := fmt.Sprintf("%02d.", index+1)
 	return ui.dim(number) + " " + ui.planBadge(status) + " " + strings.TrimSpace(step)
@@ -443,6 +448,8 @@ func (ui UI) activityBadge(kind string) string {
 		return ui.bold(ui.blush(label))
 	case "memory":
 		return ui.bold(ui.info(label))
+	case "time":
+		return ui.bold(ui.dim(label))
 	default:
 		return ui.bold(ui.dim(label))
 	}

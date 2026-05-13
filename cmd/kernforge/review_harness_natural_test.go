@@ -506,18 +506,21 @@ func TestReviewBeforeFixApprovedBugHuntAddsNonConclusiveWarning(t *testing.T) {
 	if run.Gate.Verdict != reviewVerdictApprovedWithWarnings {
 		t.Fatalf("empty approved pre-fix bug hunt should become warning, got %#v", run.Gate)
 	}
-	if !reviewFindingsContainTitle(run.Findings, "Pre-fix review returned no actionable bug findings") {
+	if !reviewFindingsContainTitle(run.Findings, "수정 전 리뷰가 실행 가능한 버그 finding을 반환하지 않았습니다") {
 		t.Fatalf("expected non-conclusive pre-fix warning, got %#v", run.Findings)
 	}
 	progressText := strings.Join(progress, "\n")
 	if !strings.Contains(progressText, "경고") ||
-		!strings.Contains(progressText, "Pre-fix review returned no actionable bug findings") {
+		!strings.Contains(progressText, "수정 전 리뷰가 실행 가능한 버그 finding을 반환하지 않았습니다") {
 		t.Fatalf("expected warning progress for non-conclusive bug hunt, got %#v", progress)
 	}
 	latest := latestUserMessageText(session.Messages)
-	if !strings.Contains(latest, "Inspect the requested code") &&
-		!strings.Contains(latest, "Review only reported verification or evidence gaps") {
+	if !strings.Contains(latest, "요청된 코드를 독립적으로 확인") &&
+		!strings.Contains(latest, "리뷰가 검증 또는 근거 gap만 보고했습니다") {
 		t.Fatalf("expected implementation guidance to require independent inspection, got %q", latest)
+	}
+	if strings.Contains(latest, "Review approved with warnings") || strings.Contains(latest, "Inspect the requested code") {
+		t.Fatalf("expected localized implementation guidance, got %q", latest)
 	}
 }
 
@@ -573,9 +576,14 @@ func TestReviewBeforeFixInlineFeedbackStripsArtifactRefs(t *testing.T) {
 			t.Fatalf("pre-fix inline feedback leaked non-actionable artifact/report text %q in %q", banned, feedback)
 		}
 	}
-	for _, required := range []string{"Counter can overflow", "Apply this fix if it is not already present: changing int to size_t.", "응답 언어 정책"} {
+	for _, required := range []string{"Counter can overflow", "아직 반영되지 않았다면 이 수정을 적용하세요: changing int to size_t.", "응답 언어 정책", "검토 게이트:", "구현 규칙:"} {
 		if !strings.Contains(feedback, required) {
 			t.Fatalf("expected inline feedback to contain %q, got %q", required, feedback)
+		}
+	}
+	for _, banned := range []string{"Review gate:", "Implementation rules:", "Inline review findings:", "Required fix:"} {
+		if strings.Contains(feedback, banned) {
+			t.Fatalf("expected localized pre-fix feedback not to contain %q, got %q", banned, feedback)
 		}
 	}
 	if run.Findings[0].ID == run.Findings[1].ID {
@@ -741,7 +749,7 @@ func TestFocusedPreFixBugHuntRaisesRoleEffortToHigh(t *testing.T) {
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetSelection,
 		Mode:      reviewModeLiveFix,
-		Objective: "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
 	}
 
 	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "high" {

@@ -398,11 +398,13 @@ Gate rule:
 4. 수정 전 리뷰의 style/formatting/maintainability finding은 코드 수리를 막는 blocker로 승격하지 않고 warning으로 남긴다.
 5. pre-write review에서는 low severity라도 Allman brace, indentation, formatting처럼 지금 쓰려는 patch 자체의 스타일 위반이면 rewrite가 가능한 actionable warning으로 보고 차단한다.
 6. pre-write review의 "build/test verification was not run" 류 순수 검증 gap은 edit preview를 막지 않고 post-edit verification obligation으로 남긴다.
-7. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, 별도 review role이 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 확인한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
-8. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
-9. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
-10. docs-only change는 test gap을 warning으로 낮출 수 있다.
-11. user가 명시적으로 waiver를 요청하지 않으면 blocker waiver는 불가.
+7. pre-write review에서 "함수 후반부가 보이지 않는다", "complete function body is not visible", "제공된 preview/evidence가 부족하다"처럼 하네스 증거 패키지 부족을 지적한 `evidence_gap`은 코드 수리 루프로 넘기지 않는다. 먼저 하네스가 current file context, selection 후반부, cleanup/success 경로를 증거에 보강해야 한다.
+8. 하네스 증거 부족 경고는 implementation model에게 패치를 다시 쓰게 할 근거가 아니다. 실제 코드 누락, header/API surface 누락, member declaration 누락, requested scope 미구현처럼 patch 자체의 결함을 가리키는 `evidence_gap`만 actionable warning으로 차단한다.
+9. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, 별도 review role이 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 확인한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
+10. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
+11. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
+12. docs-only change는 test gap을 warning으로 낮출 수 있다.
+13. user가 명시적으로 waiver를 요청하지 않으면 blocker waiver는 불가.
 
 ### 5.6 Review Artifact Versioning
 
@@ -855,6 +857,7 @@ Repair prompt는 다음을 포함해야 한다.
 5. required verification
 6. non-goals
 7. warning: do not broaden scope unless required by finding
+8. patch construction rule: pre-write gate는 부분 수리를 승인하지 않으므로 필수 RF 전체를 해결해야 하지만, 구현 모델은 RF별로 현재 파일에서 확인한 snippet에 고정된 좁은 hunk를 작성해야 한다. 서로 다른 함수/위치는 같은 proposal 안에서도 hunk를 분리하고, 함수 종료부/중괄호를 새 위치에 중복 삽입하는 대형 rewrite를 금지한다.
 
 자동 repair loop guard:
 
@@ -886,6 +889,7 @@ loop guard 규칙:
 5. repair prompt는 finding scope를 벗어난 리팩터링, unrelated cleanup, dependency upgrade를 금지한다.
 6. repair 이후 verification evidence가 없으면 gate는 approved로 올라갈 수 없다.
 7. 사용자가 명시적으로 계속 진행을 요청하면 새 review run을 만들고 이전 loop state를 audit trail로 연결한다.
+8. pre-write block 이후 수리 턴은 리뷰 artifact 재조회나 shell 기반 파일 출력으로 시간을 쓰지 않는다. 필요한 파일/diff 상태는 `read_file`, `grep`, `git_diff`, `git_status` 같은 전용 workspace 도구로만 확인하고 바로 더 좁은 edit proposal을 만든다.
 
 ### 6.8 Automatic Review Trigger
 
@@ -2376,7 +2380,7 @@ Phase 3: 장기 runtime protocol화
    - 회귀 테스트: `TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation`, `TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary`, 기존 `TestAgentRetriesEditToolWithoutPreFixReviewSummary`, `TestPreFixVisibleReviewSummaryRequiresStructuredFindingID`.
    - 검증: `go test ./cmd/kernforge -run "TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation|TestAgentRetriesEditToolWithoutPreFixReviewSummary|TestPreFixVisibleReviewSummaryRequiresStructuredFindingID|TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary" -count=1` 통과.
 42. 사용자 smoke - low effort DeepSeek reviewer가 weak/no-actionable 결과로 repair를 통과시키는 문제 수정
-   - 발견: review role을 `DeepSeek / deepseek-v4-pro / effort=low`로 바꾼 뒤 focused Tavern pre-fix review가 2회 모델 호출 후에도 `품질=weak`, `RF-PREFIX-001: Pre-fix review returned no actionable bug findings`만 반환했다. 그럼에도 gate가 `approved_with_warnings`로 끝나 구현 모델이 긴 독자 탐색과 patch 흐름을 이어갔다.
+   - 발견: review role을 `DeepSeek / deepseek-v4-pro / effort=low`로 바꾼 뒤 focused sample pre-fix review가 2회 모델 호출 후에도 `품질=weak`, `RF-PREFIX-001: Pre-fix review returned no actionable bug findings`만 반환했다. 그럼에도 gate가 `approved_with_warnings`로 끝나 구현 모델이 긴 독자 탐색과 patch 흐름을 이어갔다.
    - 영향: "검토하고 버그를 수정해" 흐름에서 별도 reviewer가 실질적인 검토를 못 하면 승인 비슷하게 보이거나, 반대로 hard stop이 걸려 main model의 1차 finding 기반 repair도 시작하지 못한다. pre-write review가 weak reviewer output을 `경고=0` 완료로 보여 diff preview까지 열릴 수 있는 문제는 여전히 막아야 한다.
    - 수정: focused pre-fix bug-hunt review는 role 설정이 `low` 또는 `medium`이어도 최소 `high` effort로 올린다. 이미 `xhigh`이면 그대로 유지한다. pre-fix의 weak cross reviewer는 degraded 상태로 남기고 main-first finding을 기준으로 repair를 이어가며, pre-write의 weak reviewer만 failed reviewer와 동일한 `RF-REVIEWER-001` blocker로 write를 막는다.
    - 회귀 테스트: `TestFocusedPreFixBugHuntRaisesRoleEffortToHigh`, `TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair`, `TestPreWriteWeakReviewModelQualityBlocksEditGate`, 기존 reviewer failure tests.
@@ -2408,14 +2412,14 @@ Phase 3: 장기 runtime protocol화
    - 검증: `go test ./cmd/kernforge -run "TestDistinctReviewModelProgressIsExplicit|TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate|TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair|TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair|TestAgentContinuesAfterWeakPreFixCrossReviewerAndStillBlocksWebResearch|TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry|TestPreWriteReviewModelFailureBlocksEditGate|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestPreWriteEmptyReviewModelResponseBlocksAsReviewerFailure" -count=1` 통과.
 
 47. 사용자 smoke - focused review가 작은 범위에도 20분 이상 걸리는 문제 수정
-   - 발견: `@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해`처럼 수십 줄을 보는 요청에서도 evidence budget이 60k로 유지되고, pre-write review가 diff보다 넓은 주변 context를 계속 싣고, DeepSeek cross-reviewer가 4~5분 응답 후 strict retry까지 반복했다. 사용자는 메인 모델, 리뷰 모델, 게이트 병합이 어느 단계인지 알 수 없고 긴 대기를 중단할 기준도 없었다.
+   - 발견: `@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해`처럼 수십 줄을 보는 요청에서도 evidence budget이 60k로 유지되고, pre-write review가 diff보다 넓은 주변 context를 계속 싣고, DeepSeek cross-reviewer가 4~5분 응답 후 strict retry까지 반복했다. 사용자는 메인 모델, 리뷰 모델, 게이트 병합이 어느 단계인지 알 수 없고 긴 대기를 중단할 기준도 없었다.
    - 영향: 작은 로컬 코드 수리도 main review, cross review, strict retry, pre-write review, cross retry가 누적되어 20분 이상 걸릴 수 있다. 빈 응답이나 weak cross reviewer가 반복될 때도 하네스가 같은 비용을 다시 쓰므로 실제 병목이 provider route인지 patch 문제인지 구분하기 어렵다.
    - 수정: focused/range review는 기본 evidence budget을 20k로 줄이고, prompt evidence도 focused/pre-write 별도 상한을 사용한다. pre-write review는 `ProvidedDiff`, edit proposal, pre-fix repair findings를 우선하는 diff-first 예산으로 실행한다. focused/pre-write cross reviewer에는 기본 3분 soft timeout을 걸고, 리뷰 모델이 active main model보다 낮은 성능으로 판정되면 자동으로 5분까지 늘린다. broad DeepSeek cross reviewer도 4분 soft timeout으로 끊는다. DeepSeek omission retry budget은 1회로 낮췄다. progress에는 `Review phase 1/2`, `Review phase 2/2`, context mode, evidence chars, retry budget, soft timeout을 모델 호출 전에 출력한다.
    - 회귀 테스트: `TestFocusedLineRangeReviewUsesFastContextBudget`, `TestPreWriteReviewUsesDiffFirstContextBudget`, `TestFocusedCrossReviewerUsesSoftTimeoutBudget`, `TestFocusedCrossReviewerKeepsDefaultSoftTimeoutWhenNotLowerPerformance`, `TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLowerPerformanceModel`, `TestDistinctReviewModelProgressIsExplicit`, `TestReviewProviderBehaviorControlsOmissionRetryBudget`, 기존 pre-write final summary tests.
    - 검증: `go test ./cmd/kernforge -run "TestDistinctReviewModelProgressIsExplicit|TestFocusedLineRangeReviewUsesFastContextBudget|TestPreWriteReviewUsesDiffFirstContextBudget|TestFocusedCrossReviewerUsesSoftTimeoutBudget|TestFocusedCrossReviewerKeepsDefaultSoftTimeoutWhenNotLowerPerformance|TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLowerPerformanceModel|TestReviewModelLongWaitProgressExplainsCrossHandoff|TestReviewModelRetryProgressIncludesAttemptBudget|TestReviewProviderBehaviorControlsOmissionRetryBudget|TestReviewProviderBehaviorCapsReviewTokens|TestPreWriteFinalReviewProgressMentionsDiffPreview|TestPreWriteRunStoresRepairFindingsForFinalSummary|TestAgentRunsPreWriteReviewBeforePreviewAndWrite|TestSameModelReviewProgressShowsScopeEvidenceAndRequest|TestReviewMCPRunUsesMainFirstAndResponseIncludesReviewerRuns"` 통과.
 
 48. 사용자 smoke - DeepSeek optional cross retry 반복, 웹 검색 재시도, 최종 리뷰 출력 생략 개선
-   - 발견: focused Tavern 수리 smoke에서 메인 모델 1차 리뷰가 이미 actionable finding을 반환했는데도 DeepSeek cross reviewer가 weak/omission 의심으로 strict retry를 반복했다. 같은 턴에서 edit target mismatch 이후 모델이 Microsoft Learn 웹 검색을 시도했고, 검색 API key 실패나 fetch 대기로 로컬 코드 수리 흐름이 다시 길어졌다. pre-write final review 본문은 diff preview 전에 보이기 시작했지만 일부 긴 evidence/impact/fix/test 필드가 `...`로 잘려 실제 조치 기준을 끝까지 확인하기 어려웠다.
+   - 발견: focused sample repair smoke에서 메인 모델 1차 리뷰가 이미 actionable finding을 반환했는데도 DeepSeek cross reviewer가 weak/omission 의심으로 strict retry를 반복했다. 같은 턴에서 edit target mismatch 이후 모델이 Microsoft Learn 웹 검색을 시도했고, 검색 API key 실패나 fetch 대기로 로컬 코드 수리 흐름이 다시 길어졌다. pre-write final review 본문은 diff preview 전에 보이기 시작했지만 일부 긴 evidence/impact/fix/test 필드가 `...`로 잘려 실제 조치 기준을 끝까지 확인하기 어려웠다.
    - 영향: 별도 cross reviewer가 보조 검증 역할인데도 provider 지연과 strict retry가 전체 repair loop의 병목이 됐다. 로컬 코드 수리에서 웹 검색이 열리면 API key 오류와 외부 fetch 대기가 섞여 patch 작성 전에 또 다른 긴 루프가 생긴다. 최종 리뷰 내용이 축약되면 사용자는 diff preview 승인 전에 어떤 RF가 확인됐고 어떤 항목이 남았는지 충분히 판단하기 어렵다.
    - 수정: 선택적 cross review이고 pre-write hard gate가 아닌 경우, DeepSeek cross output에 omission 의심이 있더라도 메인 1차 리뷰가 usable/actionable finding을 이미 제공했고 reviewer stop reason이 명시적 token-limit/truncation이 아니면 strict retry를 생략한다. `length`, `max_tokens`, `partial`, `truncated` 같은 stop reason은 여전히 strict retry 대상이다. 로컬 코드 리뷰/수리에서는 MCP catalog가 비어 있어도 web/search/browser 계열 tool을 숨기고 실행 전에 차단하며, 차단 시 모델이 무엇을 검색하려 했는지 query/url intent를 progress에 남긴다. pre-write final visible summary와 progress 요약은 full finding detail을 사용해 evidence, impact, required fix, test recommendation tail을 `...`로 자르지 않는다.
    - 회귀 테스트: `TestDeepSeekOptionalCrossSkipsOmissionRetryWhenMainReviewIsActionable`, `TestDeepSeekOptionalCrossRetriesExplicitTokenLimitStop`, `TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails`, `TestSummarizeToolInvocationWebResearchIncludesIntent`, `TestAgentKeepsWebResearchHiddenAfterEditTargetMismatch`, 기존 omission retry, local web block, pre-write final summary tests.
@@ -2430,7 +2434,7 @@ Phase 3: 장기 runtime protocol화
 
 ### 16.10 Review Harness 85점 이상 목표 설계
 
-아래 설계는 Codex App을 100점으로 둔 상대 평가에서 Kernforge review harness의 모든 주요 항목을 85점 이상으로 올리기 위한 목표 상태다. 현재 점수는 주관적 운영 평가이며, 구현 후에는 regression test, synthetic transcript replay, 실제 Tavern smoke run을 함께 통과해야 85점 달성으로 본다.
+아래 설계는 Codex App을 100점으로 둔 상대 평가에서 Kernforge review harness의 모든 주요 항목을 85점 이상으로 올리기 위한 목표 상태다. 현재 점수는 주관적 운영 평가이며, 구현 후에는 regression test, synthetic transcript replay, 실제 sample smoke run을 함께 통과해야 85점 달성으로 본다.
 
 | 항목 | 현재 추정 | 85점 이상 기준 |
 | --- | ---: | --- |
@@ -3043,7 +3047,7 @@ Acceptance criteria:
    - 완료 기준: pre-write reviewer failure, fallback, diff preview가 transition과 gate action으로 표현된다.
 
 2. P0 - Replay fixture 기반 회귀 테스트
-   - 이유: Tavern smoke log 기반 회귀가 많으므로 사람이 붙여넣은 로그를 deterministic fixture로 환원해야 한다.
+   - 이유: sample smoke log 기반 회귀가 많으므로 사람이 붙여넣은 로그를 deterministic fixture로 환원해야 한다.
    - 완료 기준: 최근 PathConverter smoke 계열 5개 이상이 fixture로 재현된다.
 
 3. P1 - Model capability profile과 route health
@@ -3065,7 +3069,7 @@ Acceptance criteria:
 1. 설계 항목별 acceptance criteria가 모두 테스트 또는 smoke evidence로 확인된다.
 2. `go test ./cmd/kernforge -count=1 -timeout 20m`가 통과한다.
 3. `TestReviewReplayFixtures`가 최근 사용자 smoke fixture를 모두 통과한다.
-4. 실제 Tavern focused repair smoke에서 다음이 관측된다.
+4. 실제 sample focused repair smoke에서 다음이 관측된다.
    - main-first review result가 먼저 표시된다.
    - cross reviewer 상태와 timeout이 명확하다.
    - reviewer failure 시 main review fallback 선택지가 보인다.
@@ -3123,7 +3127,7 @@ P2:
 2. review markdown report와 terminal output snapshot을 golden test로 관리한다.
 3. MCP review 서버도 동일 action envelope와 approval ledger를 반환하도록 확장한다.
 4. provider health score를 저장해 반복적으로 weak/timeout이 나는 reviewer를 자동 degrade한다.
-5. 단일 모델 모드와 별도 reviewer 모드의 결과 품질을 같은 Tavern fixture로 비교하는 benchmark를 추가한다.
+5. 단일 모델 모드와 별도 reviewer 모드의 결과 품질을 같은 sample fixture로 비교하는 benchmark를 추가한다.
 
 구현 진행 기록:
 
@@ -3157,6 +3161,21 @@ P2:
      - `go run ./cmd/kernforge -command "/review --no-model"`: blocker 없음, broad scope warning만 표시.
      - `go run ./cmd/kernforge -command "/review --no-model --path cmd/kernforge/review_harness_integrity.go --path cmd/kernforge/review_harness_state.go --path cmd/kernforge/review_provider_behavior.go --path cmd/kernforge/review_harness_models.go --path cmd/kernforge/review_harness_gate.go --path cmd/kernforge/review_harness_replay_test.go --path cmd/kernforge/review_harness_state_test.go"`: blocker 없음, symbol excerpt unavailable 정보성 note만 표시.
    - 최종 전체 회귀: `go test ./cmd/kernforge -count=1 -timeout 20m` 통과. (2026-05-13)
+
+49. 사용자 smoke - pre-write evidence gap을 코드 수리 루프로 반복시키는 문제 수정
+   - 발견: focused line-range edit의 pre-write review에서 reviewer가 "함수 후반부 변경 결과를 확인할 증거가 부족함" low `evidence_gap`을 냈다. 실제 문제는 patch 자체가 아니라 하네스가 selection-focused preview 앞부분만 제공하고 `m_volumePathMap`, `FindNextVolume`, `FindVolumeClose`, `success` 계산 구간을 evidence에 싣지 않은 것이다.
+   - 원칙: 하네스가 제공하지 않은 증거를 근거로 implementation model에게 반복 패치를 시키지 않는다. 함수 후반부, selection 이후 cleanup/success 경로, current file context 부족은 하네스 수집 문제로 보고 먼저 evidence pack을 보강한다. 실제 코드 누락, header/API surface 누락, member declaration 누락처럼 patch 자체의 결함을 가리키는 `evidence_gap`만 actionable warning으로 차단한다.
+   - 수정: pre-write review에서 provided diff가 evidence budget을 독점하지 않도록 diff excerpt 상한을 두고, `@file:start-end` 요청이면 current file context는 "선택 범위 + 함수 끝까지"를 우선 보장한다. 같은 파일에서 selection을 감싼 함수 body를 찾으면 `function_body_excerpt`를 별도 source로 추가하고, selection 이후 함수 끝까지의 map 갱신, `FindNextVolume`, `FindVolumeClose`, `GetLastError`, `success`, `return` 같은 cleanup/success 핵심 라인은 압축 후에도 남도록 별도 중요 라인 섹션으로 보존한다. 긴 selection 때문에 직후 cleanup/success 경로가 중간에서 잘리지 않도록 selected range와 immediate post-selection context를 별도 섹션으로 나누어 후자를 우선 보존한다. 하네스 증거 부족형 `evidence_gap` warning은 pre-write actionable warning block 대상에서 제외하되, `#include`, header, compile처럼 patch 자체 결함을 가리키는 evidence gap은 계속 차단한다.
+   - 회귀 테스트: `TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange`, `TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning`, `TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording`, 기존 `TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned`, `TestPreWriteReviewUsesDiffFirstContextBudget`.
+   - 검증: `go test ./cmd/kernforge -run "TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange|TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning|TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording|TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned|TestPreWriteReviewUsesDiffFirstContextBudget" -count=1 -timeout 5m` 통과.
+   - 최종 전체 회귀: `go test ./cmd/kernforge -count=1 -timeout 20m` 통과. (2026-05-13)
+
+50. 사용자 smoke - pre-write repair 실패 후 사용자 선택형 continuation과 턴 소요시간 표시
+   - 발견: pre-write review가 수정안을 막은 뒤 repair pass가 다시 막히거나 확인 도구만 반복하면, 이전에는 최신 검토 결과/수정안을 사용자에게 충분히 남기지 못한 채 중단하거나 넓은 재탐색 루프로 빠질 수 있었다. 또한 "계속 수정" 같은 자연어 확인은 실제 상태 전이가 모호했고, 긴 턴의 소요시간도 사용자가 별도로 계산해야 했다.
+   - 원칙: 최종적으로 리뷰 모델을 통과하지 못해도 조용히 끝내지 않는다. 먼저 리뷰 미통과를 알리고, 최신 review result와 마지막 edit proposal을 보여준 뒤 사용자에게 `y/N`만 받는다. `y`는 저장된 review/proposal 기준으로 repair를 이어가고, `n`은 중단한다. 자연어 답변은 confirmation으로 소비하지 않는다. 일반 작업 턴은 소요시간을 출력하되 `/exit`, `/status`, `/config`, `/model` 같은 로컬 메타 명령은 출력하지 않는다.
+   - 수정: session에 `pending_review_repair_confirmation` 상태를 추가하고, `ReplyWithImages` 진입 시 pending 상태가 있으면 모델 호출 전에 `y`/`n`만 라우팅한다. pre-write repair block 또는 inspection-budget 소진 시 `formatPreWriteReviewRepairUserDecisionReply`가 최신 검토 결과와 edit proposal을 보여주고 pending 상태를 기록한다. repair block 이후에는 한 번만 좁은 edit-tool 강제 지침을 넣고, 이후에도 편집 없이 확인 도구만 반복하면 사용자 확인으로 돌아온다. 턴 완료 시 `[time]`/`[time] 턴 소요 시간` 라인을 출력하고 local meta slash command는 제외한다.
+   - 회귀 테스트: `TestAgentReportsReviewAndProposalAfterRepeatedPreWriteBlock`, `TestAgentAsksUserAfterPreWriteRepairInspectionNudgeIsExhausted`, `TestAgentForcesEditAfterPreWriteRepairInspectionBudget`, `TestAgentContinuesPendingReviewRepairOnlyOnY`, `TestAgentRejectsNaturalLanguagePendingReviewRepairAnswer`, `TestAgentStopsPendingReviewRepairOnN`, `TestSlashCommandTurnElapsedPolicySuppressesLocalMetaCommands`, `TestSlashCommandTurnElapsedPolicyKeepsWorkCommands`.
+   - 검증: `go test ./cmd/kernforge -run "TestAgentContinuesPendingReviewRepairOnlyOnY|TestAgentRejectsNaturalLanguagePendingReviewRepairAnswer|TestAgentStopsPendingReviewRepairOnN|TestAgentReportsReviewAndProposalAfterRepeatedPreWriteBlock|TestAgentAsksUserAfterPreWriteRepairInspectionNudgeIsExhausted|TestAgentForcesEditAfterPreWriteRepairInspectionBudget" -count=1 -timeout 5m` 통과. 전체 패키지 테스트는 사용자가 요청할 때만 실행하는 정책에 따라 생략했다.
 
 남은 항목:
 

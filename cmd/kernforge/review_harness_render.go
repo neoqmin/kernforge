@@ -270,7 +270,23 @@ func renderReviewEvidenceMarkdown(run ReviewRun) string {
 }
 
 func reviewRunPrefersKorean(cfg Config, run ReviewRun) bool {
-	language, _ := inferResponseLanguageForUserText(run.Objective, cfg)
+	for _, text := range []string{
+		run.RequestAnalysis.OriginalRequest,
+		run.Objective,
+	} {
+		text = strings.TrimSpace(baseUserQueryText(text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			continue
+		}
+		language, _ := inferResponseLanguageForUserText(text, cfg)
+		switch language {
+		case "ko":
+			return true
+		case "en":
+			return false
+		}
+	}
+	language, _ := inferResponseLanguageForUserText("", cfg)
 	return language == "ko"
 }
 
