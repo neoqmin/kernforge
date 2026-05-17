@@ -213,7 +213,7 @@ func detectUserChangeConflicts(root string, baseline map[string]workspaceFileSig
 		conflicts = append(conflicts, filepath.ToSlash(clean))
 	}
 	sort.Strings(conflicts)
-	return normalizeTaskStateList(conflicts, 32)
+	return normalizeWorkspaceSignaturePathList(conflicts)
 }
 
 func (a *Agent) markAgentTouchedPaths(paths []string) {
@@ -248,7 +248,11 @@ func normalizeUserChangeIsolationPath(path string) string {
 	if trimmed == "" {
 		return ""
 	}
-	return strings.ToLower(filepath.ToSlash(filepath.Clean(trimmed)))
+	normalized := filepath.ToSlash(filepath.Clean(trimmed))
+	if workspacePathsAreCaseInsensitiveByDefault() {
+		return strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 func (r *UserChangeIsolationReport) Normalize() {

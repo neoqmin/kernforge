@@ -7,6 +7,14 @@ import (
 )
 
 func reviewLatestFreshnessForRoot(root string, run ReviewRun) ReviewFreshness {
+	var currentChanged []string
+	if strings.TrimSpace(root) != "" {
+		currentChanged = reviewCurrentChangedPaths(root)
+	}
+	return reviewLatestFreshnessAgainstPaths(root, run, currentChanged)
+}
+
+func reviewLatestFreshnessAgainstPaths(root string, run ReviewRun, currentChanged []string) ReviewFreshness {
 	freshness := run.Freshness
 	if strings.TrimSpace(freshness.ReviewFingerprint) == "" {
 		freshness.ReviewFingerprint = strings.TrimSpace(run.ReviewFingerprint)
@@ -25,11 +33,15 @@ func reviewLatestFreshnessForRoot(root string, run ReviewRun) ReviewFreshness {
 			invalidated = append(invalidated, "branch")
 			reasons = append(reasons, fmt.Sprintf("branch changed from %s to %s", run.Branch, branch))
 		}
-		if currentChanged := reviewCurrentChangedPaths(root); len(currentChanged) > 0 {
+		if len(currentChanged) > 0 {
 			if missing := reviewUnreviewedChangedPaths(run.ChangeSet.ChangedPaths, currentChanged); len(missing) > 0 {
 				invalidated = append(invalidated, "changed_paths")
 				reasons = append(reasons, "unreviewed changed files: "+strings.Join(limitStrings(missing, 6), ", "))
 			}
+		}
+		if mismatches := reviewCurrentFileHashMismatches(root, run.ArtifactIntegrity); len(mismatches) > 0 {
+			invalidated = append(invalidated, "file_hashes")
+			reasons = append(reasons, "reviewed files changed since review: "+strings.Join(limitStrings(mismatches, 6), ", "))
 		}
 	}
 	freshness.InvalidatedBy = analysisUniqueStrings(append(freshness.InvalidatedBy, invalidated...))

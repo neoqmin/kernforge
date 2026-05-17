@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,7 @@ type Agent struct {
 	FunctionFuzz                   *FunctionFuzzStore
 	FuzzCampaigns                  *FuzzCampaignStore
 	VerifyChanges                  func(context.Context) (VerificationReport, bool)
+	PromptConfirmAutoVerify        func(VerificationPlan) (bool, error)
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
 	PromptContinueReviewRepair     func(string) (bool, error)
 	UserChangeIsolation            *UserChangeIsolationState
@@ -66,13 +68,19 @@ const (
 	repeatedReadFilePathNudgeTurns        = 4
 	repeatedReadFilePathRecoveryThreshold = 6
 	repeatedReadFilePathAbortTurns        = 8
-	maxPreWriteReviewRepairBlocksPerTurn  = 1
+	maxPreWriteReviewRepairBlocksPerTurn  = 4
 	maxPreWriteReviewRepairInspectTools   = 6
 	maxPreWriteReviewRepairInspectNudges  = 1
 	maxEditTargetMismatchFailuresPerTurn  = 1
+	maxBroadRecoveryPatchDeferralsPerTurn = 1
 	maxToolBudgetExtensions               = 2
 	compactPinnedMessagesToKeep           = 6
 )
+
+var errVerificationFollowupBlocked = errors.New("verification follow-up blocked after verification was declined or skipped")
+var errVerificationOutOfScopeFollowupBlocked = errors.New("verification follow-up blocked after verification failed outside the current patch scope")
+var errReadOnlyAnalysisToolBlocked = errors.New("read-only analysis blocked a tool that can mutate external state")
+var errPreWriteReviewReanchorRequired = errors.New("pre-write blocked proposal requires current file reanchor before next edit")
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
 	return a.ReplyWithImages(ctx, userText, nil)
@@ -118,8 +126,10 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	intent := classifyTurnIntent(userText)
 	a.noteUserConversationEvent(userText)
-	readOnlyAnalysis := prefersReadOnlyAnalysisIntent(userText)
-	explicitEditRequest := looksLikeExplicitEditIntent(userText)
+	requestMode := resolveAgentRequestMode(userText, intent)
+	intent = requestMode.Intent
+	readOnlyAnalysis := requestMode.ReadOnlyAnalysis
+	explicitEditRequest := requestMode.ExplicitEditRequest
 	explicitGitRequest := looksLikeExplicitGitIntent(userText)
 	enriched, mentionImages := a.expandMentions(ctx, userText)
 	if runtimeContext := strings.TrimSpace(a.assembleConversationRuntimeContext(userText)); runtimeContext != "" {
@@ -140,13 +150,15 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		enriched += "\n\nGit intent:\n- The user explicitly asked for a git action such as staging, committing, pushing, or opening a PR.\n- If you perform a git-mutating action, summarize exactly what you are about to do.\n"
 	}
 	enriched = a.Skills.InjectPromptContext(enriched)
-	if memoryContext := a.LongMem.PromptContextDetails(a.Workspace.BaseRoot, userText, a.Session.ID); strings.TrimSpace(memoryContext.Text) != "" {
-		enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext.Text
-		if message := formatPersistentMemoryProgressMessage(a.Config, memoryContext); message != "" {
-			a.emitProgressEvent(ProgressEvent{
-				Kind:    progressKindMemoryContext,
-				Message: message,
-			})
+	if a.LongMem != nil {
+		if memoryContext := a.LongMem.PromptContextDetails(a.Workspace.BaseRoot, userText, a.Session.ID); strings.TrimSpace(memoryContext.Text) != "" {
+			enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext.Text
+			if message := formatPersistentMemoryProgressMessage(a.Config, memoryContext); message != "" {
+				a.emitProgressEvent(ProgressEvent{
+					Kind:    progressKindMemoryContext,
+					Message: message,
+				})
+			}
 		}
 	}
 	analysisContext := ""
@@ -183,11 +195,38 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		reply = a.maybeAppendProactiveSuggestion(reply, userText)
 		if len(a.Session.Messages) > 0 && a.Session.Messages[len(a.Session.Messages)-1].Role == "assistant" {
 			a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+		} else {
+			a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+			a.noteAssistantConversationEvent(reply)
+			a.Session.RefreshConversationState()
 		}
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
 		}
 		return reply, nil
+	}
+	ranReviewMode, reviewModeReply, err := a.maybeRunCodexAppReviewMode(ctx, userText, enriched, images)
+	if err != nil {
+		return "", err
+	}
+	if ranReviewMode {
+		a.Session.AddMessage(Message{Role: "assistant", Text: reviewModeReply})
+		if a.LongMem != nil {
+			safeStart := startIndex
+			if safeStart > len(a.Session.Messages) {
+				safeStart = len(a.Session.Messages)
+			}
+			_ = a.LongMem.CaptureTurn(a.Workspace, a.Session, userText, reviewModeReply, a.Session.Messages[safeStart:])
+		}
+		if a.Evidence != nil {
+			_ = a.Evidence.CaptureVerification(a.Workspace, a.Session)
+		}
+		a.noteAssistantConversationEvent(reviewModeReply)
+		a.Session.RefreshConversationState()
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+		return reviewModeReply, nil
 	}
 	if a.Client == nil {
 		return "", fmt.Errorf("no model provider is configured")
@@ -231,6 +270,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		return "", err
 	}
 	reply = a.maybeAppendProactiveSuggestion(reply, userText)
+	reply = sanitizeAssistantFinalText(reply)
 	if len(a.Session.Messages) > 0 && a.Session.Messages[len(a.Session.Messages)-1].Role == "assistant" {
 		a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 	}
@@ -249,6 +289,29 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	a.Session.RefreshConversationState()
 	_ = a.Store.Save(a.Session)
 	return reply, nil
+}
+
+type agentRequestMode struct {
+	Intent                TurnIntent
+	ReviewOnlyModeRequest bool
+	ReadOnlyAnalysis      bool
+	ExplicitEditRequest   bool
+}
+
+func resolveAgentRequestMode(userText string, intent TurnIntent) agentRequestMode {
+	repairActionNegated := hasRepairActionNegation(userText)
+	explicitEditRequest := looksLikeExplicitEditIntent(userText) && !repairActionNegated
+	reviewOnlyModeRequest := looksLikeReviewOnlyModeIntent(userText) && !explicitEditRequest
+	readOnlyAnalysis := repairActionNegated || prefersReadOnlyAnalysisIntent(userText) || reviewOnlyModeRequest
+	if readOnlyAnalysis && intent == TurnIntentEditCode {
+		intent = TurnIntentGeneral
+	}
+	return agentRequestMode{
+		Intent:                intent,
+		ReviewOnlyModeRequest: reviewOnlyModeRequest,
+		ReadOnlyAnalysis:      readOnlyAnalysis,
+		ExplicitEditRequest:   explicitEditRequest && !readOnlyAnalysis,
+	}
 }
 
 type reviewRepairConfirmationDecision int
@@ -375,11 +438,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		return reply, nil
 	}
 	latestUser := latestUserMessageText(a.Session.Messages)
+	latestUserExplicitWebResearch := requestExplicitlyAsksForWebResearch(strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUser))))
 	intent := classifyTurnIntent(latestUser)
 	_ = a.primeSelfDrivingWorkLoop(latestUser, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
 	if err := a.maybePrimeInteractivePlan(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest); err != nil {
 		return "", err
 	}
+	localCodeToolPolicyForTurn := !latestUserExplicitWebResearch && shouldUseLocalCodeToolPolicy(a.Session)
 	emptyFinalReplies := 0
 	unresolvedVerification := false
 	finalAnswerNudges := 0
@@ -388,9 +453,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	invalidToolArgsRetries := 0
 	editTargetMismatchRetries := 0
 	editTargetMismatchFailures := 0
+	broadRecoveryPatchDeferrals := 0
 	preWriteReviewRepairBlocks := 0
+	preWriteReviewRepairBlockFingerprints := map[string]int{}
 	preWriteReviewRepairInspectTools := 0
 	preWriteReviewRepairInspectNudges := 0
+	preWriteReviewRequiresReanchor := false
+	preWriteReviewReanchorBlocks := 0
 	lastToolError := ""
 	lastToolErrorCount := 0
 	lastToolCallSignature := ""
@@ -412,7 +481,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	autoVerifyDisablePrompted := false
 	manualEditHandoffRetries := 0
 	internalToolTranscriptFailureReplyRetries := 0
+	toolAvailabilityBlameReplyRetries := 0
 	abruptReplyRetries := 0
+	rawReviewResultReplyRetries := 0
 	finalAnswerReviewRevisions := 0
 	finalHarnessRevisions := 0
 	runtimeGateFinalAnswerRevisions := 0
@@ -424,6 +495,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	attemptedEditTool := false
 	successfulEditTool := false
 	sawToolResultThisTurn := false
+	verificationDeclinedThisTurn := false
+	verificationOutOfScopeThisTurn := false
+	verificationOutOfScopeFinalOnly := false
 	repeatedToolFailureRecoveryTurns := 0
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
@@ -501,7 +575,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
 		_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
 		turnDisabledTools := cloneDisabledTools(disabledTools)
-		if shouldUseLocalCodeToolPolicy(a.Session) {
+		if verificationOutOfScopeFinalOnly {
+			disableAllTools(turnDisabledTools, a.Tools)
+		}
+		if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
 			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
 		}
 		turnReq := ChatRequest{
@@ -562,11 +639,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		if len(resp.Message.ToolCalls) > 0 {
 			if !explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first. Continue with inspection, edits, verification, and a summary instead.",
-				})
-				if err := a.Store.Save(a.Session); err != nil {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: git write actions require an explicit user request; continue without staging, committing, pushing, or opening a PR.",
+					"Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first. Continue with inspection, edits, verification, and a summary instead.",
+				); err != nil {
 					return "", err
 				}
 				continue
@@ -578,36 +655,38 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if runtimeGateGitWriteNudges > 3 {
 						return "", fmt.Errorf("runtime gate still blocks git write after repeated attempts")
 					}
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: feedback,
-					})
-					if err := a.Store.Save(a.Session); err != nil {
+					if err := a.addToolCallRedirectGuidance(
+						resp.Message.ToolCalls,
+						"NOT_EXECUTED: runtime gate blocked this git write action; follow the gate feedback before retrying.",
+						feedback,
+					); err != nil {
 						return "", err
 					}
 					continue
 				}
 			}
 			if replyBlamesInternalToolTranscriptRecovery(resp.Message.Text) {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: internalToolTranscriptFailureGuidance(explicitEditRequest),
-				})
-				if err := a.Store.Save(a.Session); err != nil {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: assistant text blamed internal transcript recovery; retry using the next guidance instead of executing this batch.",
+					internalToolTranscriptFailureGuidance(explicitEditRequest),
+				); err != nil {
 					return "", err
 				}
 				continue
 			}
-			if shouldBlockWebResearchForLocalCodeWork(resp.Message.ToolCalls, a.Session, a.MCP) {
+			if !latestUserExplicitWebResearch &&
+				(shouldBlockWebResearchForLocalCodeWork(resp.Message.ToolCalls, a.Session, a.MCP) ||
+					(localCodeToolPolicyForTurn && toolCallsIncludeWebResearch(resp.Message.ToolCalls, a.MCP))) {
 				a.recordExternalLookupIntents(resp.Message.ToolCalls, "blocked_local_code_context", true)
 				if a.EmitProgress != nil {
 					a.EmitProgress(formatBlockedLocalCodeWebResearchProgress(a.Config, resp.Message.ToolCalls))
 				}
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: localCodeWebResearchBlockGuidance(a.Config, a.Session),
-				})
-				if err := a.Store.Save(a.Session); err != nil {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: external research tools are blocked for this local code repair turn unless the user explicitly asks for external research.",
+					localCodeWebResearchBlockGuidance(a.Config, a.Session),
+				); err != nil {
 					return "", err
 				}
 				continue
@@ -625,31 +704,31 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					guidance += "\n\nRelevant web/research capabilities:\n" + researchCatalog
 				}
 				guidance += "\n\nRecommended flow:\n1. Break the topic into a few focused search facets.\n2. Use MCP web/search/browser tools to gather multiple current sources.\n3. Compare recency and source authority.\n4. Then inspect local files or write the requested document."
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: guidance,
-				})
-				if err := a.Store.Save(a.Session); err != nil {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: local tools were deferred until required external research is gathered.",
+					guidance,
+				); err != nil {
 					return "", err
 				}
 				continue
 			}
 			if block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls(resp.Message.ToolCalls, a.Session); block {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: fmt.Sprintf("This request is document/report authoring work. Do not guess that generated files already exist and call read_file on them immediately. First use list_files on the parent directory %s to confirm whether %s actually exists. If the parent directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools instead.", parentPath, targetPath),
-				})
-				if err := a.Store.Save(a.Session); err != nil {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: document read was deferred until the target path is confirmed by listing the parent directory.",
+					fmt.Sprintf("This request is document/report authoring work. Do not guess that generated files already exist and call read_file on them immediately. First use list_files on the parent directory %s to confirm whether %s actually exists. If the parent directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools instead.", parentPath, targetPath),
+				); err != nil {
 					return "", err
 				}
 				continue
 			}
 			if readOnlyAnalysis && allToolCallsAreEditTools(resp.Message.ToolCalls) {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "This request is analysis-only. Do not edit files or call edit tools. Investigate the current code and logs, then answer with the root cause or findings.",
-				})
-				if err := a.Store.Save(a.Session); err != nil {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: this is a read-only analysis turn; edit tools are blocked.",
+					"This request is analysis-only. Do not edit files or call edit tools. Investigate the current code and logs, then answer with the root cause or findings.",
+				); err != nil {
 					return "", err
 				}
 				continue
@@ -815,6 +894,19 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
+				if verificationDeclinedThisTurn &&
+					replyBlamesToolAvailabilityAfterSkippedVerification(reply) &&
+					toolAvailabilityBlameReplyRetries < 1 {
+					toolAvailabilityBlameReplyRetries++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: toolAvailabilityAfterSkippedVerificationGuidance(a.Config),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
 				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && manualEditHandoffRetries < 1 {
 					manualEditHandoffRetries++
 					a.Session.AddMessage(Message{
@@ -839,16 +931,50 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if unresolvedVerification && finalAnswerNudges < 1 {
-					finalAnswerNudges++
+				if rawReviewResultReplyRetries < 1 && replyLooksLikeRawReviewHarnessResult(reply) {
+					rawReviewResultReplyRetries++
 					a.Session.AddMessage(Message{
 						Role: "user",
-						Text: "Verification is still failing. Continue fixing the issue if possible. If you cannot fully fix it, give a final answer that explicitly explains the blocker and references the failing verification results.",
+						Text: "Your last response was a raw internal REVIEW_RESULT block. Do not expose review harness result syntax to the user as the final answer. Provide a normal user-facing final answer that summarizes what changed, verification status, and any remaining blockers or risks.",
 					})
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
 					continue
+				}
+				if unresolvedVerification && finalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+					finalAnswerNudges++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: "Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed.",
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				if verificationOutOfScopeFinalOnly {
+					reply = a.ensureOutOfScopeVerificationFinalDisclosure(reply)
+					if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
+						a.Session.Messages[continuedReplyMessageIndex].Text = reply
+					} else if len(a.Session.Messages) > 0 {
+						a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+					}
+					if a.Session.TaskState != nil {
+						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, false) && a.shouldCompleteSharedPlanOnReturn(false) {
+							a.Session.TaskState.SetPhase("done")
+							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+							a.Session.TaskState.ClearExecutorFocus()
+							a.Session.completeSharedPlan()
+						}
+					}
+					a.finalizePatchTransactionOnReturn()
+					a.finalizeEditLoopOnReturn(reply, false)
+					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
 				}
 				if finalHarnessRevisions < 2 {
 					approved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
@@ -954,6 +1080,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		edited := false
 		iterationToolError := ""
 		iterationHadToolSuccess := false
+		deferEditToolsInBatch := shouldDeferEditToolsInToolCallBatch(resp.Message.ToolCalls)
+		deferredMixedTools := false
+		preWriteBlockedRetryQueued := false
+		editMismatchRetryQueued := false
+		preWriteForceEditQueued := false
 		toolMsgIndexes, saveErr := a.beginToolExecutions(resp.Message.ToolCalls)
 		if saveErr != nil {
 			return "", saveErr
@@ -962,10 +1093,170 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
-			if isEditTool(call.Name) {
-				attemptedEditTool = true
-				lastPostChangeReviewFingerprint = ""
-				postChangeReviewExhaustedNudge = false
+			toolMsgIndex := -1
+			if callIndex >= 0 && callIndex < len(toolMsgIndexes) {
+				toolMsgIndex = toolMsgIndexes[callIndex]
+			}
+			if deferEditToolsInBatch && shouldDeferToolCallInMixedEditBatch(call) {
+				result := deferredMixedToolResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				sawToolResultThisTurn = true
+				deferredMixedTools = true
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				continue
+			}
+			if verificationOutOfScopeFinalOnly {
+				result := outOfScopeVerificationFinalOnlyBlockedResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
+				if a.EmitProgress != nil {
+					a.EmitProgress(localizedText(a.Config, "Tool call blocked: verification already failed outside the current patch scope; final answer only.", "도구 호출을 차단했습니다: 검증이 현재 patch scope 밖에서 실패했으므로 최종 답변만 허용합니다."))
+				}
+				sawToolResultThisTurn = true
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: verificationOutOfScopeFinalOnlyGuidance(a.Config),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: automatic verification already failed outside the current patch scope; no further tools are available in this turn, provide the final answer.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				break
+			}
+			if verificationDeclinedThisTurn && toolCallIsVerificationRetryOrPoll(call, a.Session) {
+				result := declinedVerificationFollowupBlockedResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    false,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolExecutionResultDetailed(call, result, nil)
+				sawToolResultThisTurn = true
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: verificationFollowupBlockedGuidance(a.Config),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier verification command was already skipped or declined in this turn; do not retry verification until the user explicitly approves it.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				break
+			}
+			if verificationOutOfScopeThisTurn && toolCallIsVerificationRetryOrPoll(call, a.Session) {
+				result := outOfScopeVerificationFollowupBlockedResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
+				sawToolResultThisTurn = true
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: verificationOutOfScopeFollowupBlockedGuidance(a.Config),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: automatic verification already failed outside the current patch scope; do not retry build, test, or verification commands in this turn.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				break
+			}
+			if preWriteReviewRequiresReanchor && isEditTool(call.Name) {
+				preWriteReviewReanchorBlocks++
+				result := preWriteReviewReanchorRequiredResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolExecutionResultDetailed(call, result, errPreWriteReviewReanchorRequired)
+				sawToolResultThisTurn = true
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: preWriteReviewReanchorRequiredGuidance(a.Config),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit proposal was blocked before writing; re-read the current file or current diff before issuing another edit.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				preWriteBlockedRetryQueued = true
+				break
+			}
+			if preWriteReviewRepairBlocks > 0 && !isEditTool(call.Name) {
+				preWriteReviewRepairInspectTools++
+				if preWriteReviewRepairInspectTools > maxPreWriteReviewRepairInspectTools {
+					toolMsg := Message{
+						Role:       "tool",
+						ToolCallID: call.ID,
+						ToolName:   call.Name,
+						Text:       "NOT_EXECUTED: pre-write repair inspection budget was exhausted; retry from the next model turn with an edit tool or final answer.",
+						IsError:    true,
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					sawToolResultThisTurn = true
+					if preWriteReviewRepairInspectNudges < maxPreWriteReviewRepairInspectNudges {
+						preWriteReviewRepairInspectNudges++
+						preWriteReviewRepairInspectTools = 0
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: formatPreWriteReviewRepairForceEditGuidance(a.Config, a.Session, summarizeRecentToolTurns(a.Session.Messages, 4)),
+						})
+						a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: pre-write repair inspection budget was exhausted; retry from the next model turn with an edit tool or final answer.")
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						lastToolError = ""
+						lastToolErrorCount = 0
+						lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+						preWriteForceEditQueued = true
+						break
+					}
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: pre-write repair inspection budget was exhausted; the repair loop is asking the user how to proceed.")
+					reply := formatPreWriteReviewRepairInspectionLoopLimitReply(a.Config, a.Session)
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
 			}
 			if summary := summarizeToolInvocation(a.Config, call); summary != "" {
 				a.emitProgressEvent(ProgressEvent{
@@ -978,13 +1269,55 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			a.noteToolConversationStart(call)
 			a.noteToolExecutionStart(call)
-			toolMsgIndex := -1
-			if callIndex >= 0 && callIndex < len(toolMsgIndexes) {
-				toolMsgIndex = toolMsgIndexes[callIndex]
+			if isEditTool(call.Name) {
+				attemptedEditTool = true
+				lastPostChangeReviewFingerprint = ""
+				postChangeReviewExhaustedNudge = false
+			}
+			if shouldDeferBroadRecoveryPatch(call, preWriteReviewRepairBlocks, editTargetMismatchFailures) {
+				shape, _ := applyPatchPayloadShapeFromCall(call)
+				broadRecoveryPatchDeferrals++
+				result := broadRecoveryPatchDeferredResult(call, shape)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				sawToolResultThisTurn = true
+				disabledTools["replace_in_file"] = true
+				if broadRecoveryPatchDeferrals > maxBroadRecoveryPatchDeferralsPerTurn {
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier recovery edit patch was too broad for stale-context repair and the recovery loop stopped.")
+					reply := formatBroadRecoveryPatchLoopLimitReply(a.Config, a.Session)
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: broadRecoveryPatchDeferralGuidance(a.Config, a.Session, shape),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier recovery edit patch was too broad for stale-context repair; retry from the next model turn.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				break
 			}
 			var result ToolExecutionResult
 			var err error
-			if isolationErr := a.checkUserChangeIsolationBeforeTool(call); isolationErr != nil {
+			blockedToolResult := false
+			if readOnlyAnalysis && !toolCallAllowedInReadOnlyAnalysis(call) {
+				result = readOnlyAnalysisToolBlockedResult(a.Config, call)
+				err = fmt.Errorf("%w: %s", errReadOnlyAnalysisToolBlocked, strings.TrimSpace(call.Name))
+				blockedToolResult = true
+			} else if isolationErr := a.checkUserChangeIsolationBeforeTool(call); isolationErr != nil {
 				err = isolationErr
 				result = userChangeIsolationToolResult(call, isolationErr)
 			} else {
@@ -994,7 +1327,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			a.rebaselineUserChangeIsolationFromRead(call, err)
 			sawToolResultThisTurn = true
-			if err == nil {
+			if err == nil && !blockedToolResult {
 				a.noteToolConversationResult(call, result)
 			}
 			toolMsg := Message{
@@ -1004,8 +1337,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				Text:       result.DisplayText,
 				ToolMeta:   result.Meta,
 			}
+			if blockedToolResult {
+				toolMsg.IsError = true
+			}
+			if toolMetaVerificationWasSkipped(result.Meta, result.DisplayText) {
+				verificationDeclinedThisTurn = true
+			}
 			a.setToolExecutionResult(toolMsgIndex, toolMsg)
 			a.noteToolExecutionResultDetailed(call, result, err)
+			if err == nil && preWriteReviewRequiresReanchor && preWriteReviewReanchorTool(call) {
+				preWriteReviewRequiresReanchor = false
+				preWriteReviewReanchorBlocks = 0
+			}
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
 				return "", saveErr
 			}
@@ -1042,7 +1385,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				preWriteReviewRepairBlocks++
 				preWriteReviewRepairInspectTools = 0
 				preWriteReviewRepairInspectNudges = 0
-				if preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
+				preWriteReviewRequiresReanchor = true
+				blockFingerprint := preWriteReviewRepairBlockFingerprint(a.Session, err)
+				if blockFingerprint != "" {
+					preWriteReviewRepairBlockFingerprints[blockFingerprint]++
+				}
+				repeatedPreWriteBlock := blockFingerprint != "" && preWriteReviewRepairBlockFingerprints[blockFingerprint] > 1
+				if repeatedPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
 					toolMsg.IsError = true
 					if result.DisplayText == "" {
 						toolMsg.Text = err.Error()
@@ -1067,49 +1416,36 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					return reply, nil
 				}
-			}
-			if preWriteReviewRepairBlocks > 0 && err != nil && !isPreWriteReviewBlockedError(err) && !isEditTool(call.Name) {
-				preWriteReviewRepairInspectTools++
-				if preWriteReviewRepairInspectTools > maxPreWriteReviewRepairInspectTools {
-					if preWriteReviewRepairInspectNudges < maxPreWriteReviewRepairInspectNudges {
-						preWriteReviewRepairInspectNudges++
-						preWriteReviewRepairInspectTools = 0
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: formatPreWriteReviewRepairForceEditGuidance(a.Config, summarizeRecentToolTurns(a.Session.Messages, 4)),
-						})
-						if saveErr := a.Store.Save(a.Session); saveErr != nil {
-							return "", saveErr
-						}
-						lastToolError = ""
-						lastToolErrorCount = 0
-						lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
-						continue
-					}
-					toolMsg.IsError = true
-					if result.DisplayText == "" {
-						toolMsg.Text = err.Error()
-					} else {
-						toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-					}
-					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
-						a.emitProgressEvent(ProgressEvent{
-							Kind:             progressKindToolFailed,
-							Message:          summary,
-							ToolName:         call.Name,
-							ToolCallID:       call.ID,
-							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
-							Status:           firstNonEmptyLine(err.Error()),
-						})
-					}
-					a.setToolExecutionResult(toolMsgIndex, toolMsg)
-					reply := formatPreWriteReviewRepairInspectionLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
-					if saveErr := a.Store.Save(a.Session); saveErr != nil {
-						return "", saveErr
-					}
-					return reply, nil
+				toolMsg.IsError = true
+				if result.DisplayText == "" {
+					toolMsg.Text = err.Error()
+				} else {
+					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
+				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:             progressKindToolFailed,
+						Message:          summary,
+						ToolName:         call.Name,
+						ToolCallID:       call.ID,
+						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+						Status:           firstNonEmptyLine(err.Error()),
+					})
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				disabledTools["replace_in_file"] = true
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: formatPreWriteReviewBlockedRetryGuidance(a.Config, a.Session),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response was blocked by pre-write review; retry from the next model turn.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				preWriteBlockedRetryQueued = true
+				break
 			}
 			if err != nil && errors.Is(err, ErrEditTargetMismatch) {
 				editTargetMismatchFailures++
@@ -1131,7 +1467,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						})
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
-					reply := formatEditTargetMismatchLoopLimitReply(a.Config)
+					reply := formatEditTargetMismatchLoopLimitReply(a.Config, a.Session)
 					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
@@ -1190,17 +1526,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					})
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				disabledTools["replace_in_file"] = true
 				a.Session.AddMessage(Message{
 					Role: "user",
-					Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat the same edit immediately. First read the exact file again from the same path, confirm the current contents, and then build a new edit against that fresh text. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
+					Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. Then build one narrow standalone apply_patch hunk anchored to exact current lines, including indentation and tabs. If the repair spans separate locations, submit only the first independent hunk and wait for the tool result before continuing. Do not broaden into a function rewrite or adjacent API redesign to recover from the mismatch. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
 				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response targeted stale file contents; retry from the next model turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
 				editTargetMismatchRetries++
 				lastToolError = ""
 				lastToolErrorCount = 0
-				continue
+				editMismatchRetryQueued = true
+				break
 			}
 			if err != nil {
 				a.noteToolConversationError(call.Name, err, toolMsg.Text)
@@ -1228,6 +1567,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					)
 					if a.Session != nil && a.Session.LastReviewRun != nil {
 						reply = formatReviewerGateUnavailableUserDecisionReply(a.Config, a.Session)
+						if reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) && a.PromptContinueReviewRepair == nil {
+							recordPendingReviewerGateRepairConfirmation(a.Session)
+						}
 					}
 					if a.PromptContinueReviewRepair != nil && a.Session != nil && a.Session.LastReviewRun != nil {
 						if !reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) {
@@ -1317,8 +1659,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					attemptedEditTool = true
 					successfulEditTool = true
 					preWriteReviewRepairBlocks = 0
+					preWriteReviewRepairBlockFingerprints = map[string]int{}
 					preWriteReviewRepairInspectTools = 0
 					preWriteReviewRepairInspectNudges = 0
+					preWriteReviewRequiresReanchor = false
+					preWriteReviewReanchorBlocks = 0
 					lastPostChangeReviewFingerprint = ""
 					postChangeReviewExhaustedNudge = false
 				}
@@ -1346,34 +1691,21 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 			}
 		}
-		if preWriteReviewRepairBlocks > 0 && iterationHadToolSuccess {
-			for _, call := range resp.Message.ToolCalls {
-				if isEditTool(call.Name) {
-					continue
-				}
-				preWriteReviewRepairInspectTools++
-				if preWriteReviewRepairInspectTools > maxPreWriteReviewRepairInspectTools {
-					if preWriteReviewRepairInspectNudges < maxPreWriteReviewRepairInspectNudges {
-						preWriteReviewRepairInspectNudges++
-						preWriteReviewRepairInspectTools = 0
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: formatPreWriteReviewRepairForceEditGuidance(a.Config, summarizeRecentToolTurns(a.Session.Messages, 4)),
-						})
-						if saveErr := a.Store.Save(a.Session); saveErr != nil {
-							return "", saveErr
-						}
-						lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
-						continue
-					}
-					reply := formatPreWriteReviewRepairInspectionLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
-					if saveErr := a.Store.Save(a.Session); saveErr != nil {
-						return "", saveErr
-					}
-					return reply, nil
-				}
+		if deferredMixedTools {
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: mixedToolCallEditDeferralGuidance(a.Config),
+			})
+			if saveErr := a.Store.Save(a.Session); saveErr != nil {
+				return "", saveErr
 			}
+			lastToolError = ""
+			lastToolErrorCount = 0
+			lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+			continue
+		}
+		if preWriteForceEditQueued || preWriteBlockedRetryQueued || editMismatchRetryQueued {
+			continue
 		}
 		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
 			repeatedCachedReadFileNudges++
@@ -1443,17 +1775,26 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				autoVerifyRetryAttempted := false
 				if a.EmitProgress != nil {
 					if report.HasFailures() {
-						a.EmitProgress(localizedText(a.Config, "Automatic verification failed. Asking the model to continue fixing the issue...", "자동 검증이 실패했습니다. 모델에 수정을 계속 요청합니다..."))
+						a.EmitProgress(localizedText(a.Config, "Automatic verification failed. Classifying whether the failure belongs to the current patch...", "자동 검증이 실패했습니다. 실패가 현재 patch에 속하는지 판정합니다..."))
+					} else if report.WasSkipped() {
+						a.EmitProgress(localizedText(a.Config, "Automatic verification was skipped. Waiting for the model to summarize the unverified change...", "자동 검증이 생략되었습니다. 모델의 미검증 변경 요약을 기다립니다..."))
 					} else {
 						a.EmitProgress(localizedText(a.Config, "Automatic verification finished. Waiting for the model to summarize the change...", "자동 검증이 완료되었습니다. 모델의 변경 요약을 기다립니다..."))
 					}
 				}
 				verification := strings.TrimSpace(report.RenderDetailed())
+				verificationPrefix := localizedText(a.Config, "Automatic verification results:\n", "자동 검증 결과:\n")
+				if report.WasSkipped() {
+					verificationPrefix = localizedText(a.Config, "Automatic verification was not run:\n", "자동 검증이 실행되지 않았습니다:\n")
+				}
 				a.Session.AddMessage(Message{
 					Role: "user",
-					Text: localizedText(a.Config, "Automatic verification results:\n", "자동 검증 결과:\n") + verification,
+					Text: verificationPrefix + verification,
 				})
-				unresolvedVerification = report.HasFailures()
+				unresolvedVerification = report.HasFailures() || report.WasSkipped()
+				if report.WasSkipped() {
+					verificationDeclinedThisTurn = true
+				}
 				if report.HasFailures() {
 					if report.HasCommandMissingFailure() {
 						autoVerifyInfraFailureCount++
@@ -1481,7 +1822,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 									Role: "user",
 									Text: localizedText(a.Config, "Automatic verification results after tool-path update:\n", "도구 경로 업데이트 후 자동 검증 결과:\n") + verification,
 								})
-								unresolvedVerification = report.HasFailures()
+								unresolvedVerification = report.HasFailures() || report.WasSkipped()
+								if report.WasSkipped() {
+									verificationDeclinedThisTurn = true
+								}
 							}
 						}
 						if resolution == AutoVerifyFailureDisable {
@@ -1499,25 +1843,43 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 					}
 					if !autoVerifyDisabledAfterPrompt {
-						failureSummary := strings.TrimSpace(report.FailureSummary())
-						repairGuidance := strings.TrimSpace(report.RepairGuidance())
-						text := "The latest verification failed. Investigate the failure and continue working if you can. Prefer fixing the problem over stopping early."
-						if failureSummary != "" {
-							text += "\n\nLikely failure summary:\n" + failureSummary
-						}
-						if repairGuidance != "" {
-							text += "\n\nSuggested repair strategy:\n" + repairGuidance
-						}
-						text = a.appendFailureRepairPrompt(text)
-						if decision := a.recordEditLoopRetry("Verification failed; continue the repair loop.", strings.Join([]string{failureSummary, repairGuidance}, "\n")); decision != nil {
-							if policy := editLoopRetryDecisionPrompt(*decision); policy != "" {
-								text += "\n\nRetry loop policy:\n" + policy
+						scopeDecision := a.verificationFailureRepairScope(report)
+						if !scopeDecision.ShouldRepair {
+							unresolvedVerification = false
+							verificationOutOfScopeThisTurn = true
+							verificationOutOfScopeFinalOnly = true
+							a.recordEditLoopRisk("Automatic verification failed outside the current patch scope.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"))
+							if a.Session.TaskState != nil {
+								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; switching to final-answer-only.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "blocked", true)
 							}
+							a.Session.AddMessage(Message{
+								Role: "user",
+								Text: automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision),
+							})
+							if a.EmitProgress != nil {
+								a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; stopping edit expansion and requiring disclosure.", "검증 실패가 현재 patch scope 밖입니다. 수정 범위 확장을 중단하고 보고하도록 전환합니다."))
+							}
+						} else {
+							failureSummary := strings.TrimSpace(report.FailureSummary())
+							repairGuidance := strings.TrimSpace(report.RepairGuidance())
+							text := "The latest verification failed within the current patch scope. Investigate the failure and continue repairing only the current patch scope. Do not broaden into unrelated files or project settings unless the failure output directly names them as part of the current patch."
+							if failureSummary != "" {
+								text += "\n\nLikely failure summary:\n" + failureSummary
+							}
+							if repairGuidance != "" {
+								text += "\n\nSuggested repair strategy:\n" + repairGuidance
+							}
+							text = a.appendFailureRepairPrompt(text)
+							if decision := a.recordEditLoopRetry("Verification failed; continue the repair loop.", strings.Join([]string{failureSummary, repairGuidance}, "\n")); decision != nil {
+								if policy := editLoopRetryDecisionPrompt(*decision); policy != "" {
+									text += "\n\nRetry loop policy:\n" + policy
+								}
+							}
+							a.Session.AddMessage(Message{
+								Role: "user",
+								Text: text,
+							})
 						}
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: text,
-						})
 					}
 				}
 			} else {
@@ -1645,6 +2007,115 @@ func internalToolTranscriptFailureGuidance(explicitEditRequest bool) string {
 	return guidance
 }
 
+func replyBlamesToolAvailabilityAfterSkippedVerification(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hasAvailabilityClaim := containsAny(lower,
+		"blocked by tool availability",
+		"tool availability/session error",
+		"tool availability error",
+		"requested mcp tools",
+		"not exposed in the callable tool namespace",
+		"enable/expose",
+		"workspace tools are returning results",
+		"local inspection/verification tools are currently returning",
+		"transcript-recovery errors",
+		"cannot currently re-read",
+		"도구 가용성",
+		"도구를 사용할 수",
+		"mcp 도구",
+		"노출되어 있지",
+		"워크스페이스 도구",
+	)
+	if !hasAvailabilityClaim {
+		return false
+	}
+	return containsAny(lower,
+		"verification",
+		"검증",
+		"web",
+		"mcp",
+		"tool",
+		"도구",
+		"session",
+		"세션",
+	)
+}
+
+func toolAvailabilityAfterSkippedVerificationGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"Your previous answer converted a skipped or declined verification step into a tool-availability/session failure. Do not do that. If verification was skipped or declined, say that verification was not run and do not ask the user to enable web/MCP tools. Keep verification gaps separate from code findings: do not relabel resolved code-review findings as remaining bugs only because verification is missing. This is local code work; use the latest review, patch, and tool-result evidence. Provide the final answer now unless a concrete available local tool is still necessary.",
+		"이전 답변은 생략되었거나 거절된 검증 단계를 도구 가용성/세션 장애로 잘못 해석했습니다. 그렇게 처리하지 마세요. 검증이 생략되었거나 거절되었다면 검증을 실행하지 않았다고만 밝히고, web/MCP 도구를 활성화하라고 요구하지 마세요. 검증 공백과 코드 finding은 분리하세요. 검증 증거가 없다는 이유만으로 해결된 코드 리뷰 finding을 남은 버그처럼 다시 표시하지 마세요. 이 작업은 로컬 코드 작업입니다. 최신 리뷰, 패치, 도구 결과 근거를 기준으로 최종 답변을 작성하세요. 꼭 필요한 경우에만 실제 사용 가능한 로컬 도구를 호출하세요.",
+	)
+}
+
+func verificationFollowupBlockedGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"A build, test, or verification command was already skipped or declined in this turn. Do not call run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, or check_shell_bundle for the same verification again unless the user explicitly approves verification. Use the existing code, diff, review, and tool-output evidence and provide the final answer now. State that verification was not run; do not describe it as a tool outage. Keep verification gaps separate from code findings: do not relabel resolved code-review findings as remaining bugs only because verification is missing.",
+		"이번 턴에서 빌드/테스트/검증 명령이 이미 생략되었거나 거절되었습니다. 사용자가 명시적으로 검증 실행을 승인하기 전에는 같은 검증을 위해 run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, check_shell_bundle를 다시 호출하지 마세요. 기존 코드, diff, 리뷰, 도구 출력 근거만 사용해 지금 최종 답변을 작성하세요. 검증은 실행하지 않았다고 밝히되, 도구 장애로 표현하지 마세요. 검증 공백과 코드 finding은 분리하세요. 검증 증거가 없다는 이유만으로 해결된 코드 리뷰 finding을 남은 버그처럼 다시 표시하지 마세요.",
+	)
+}
+
+func verificationOutOfScopeFollowupBlockedGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"Automatic verification already failed outside the current patch scope. Do not call run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, or check_shell_bundle to rerun or probe build/test/verification in this turn. Use the existing code, diff, review, and verification output evidence and provide the final answer now. Disclose the verification failure as an external or ambient blocker/risk, and do not broaden the repair into unrelated files or project settings unless the user explicitly approves a new verification or scope expansion.",
+		"자동 검증이 이미 현재 patch scope 밖의 실패로 판정되었습니다. 이 턴에서는 build/test/verification을 다시 실행하거나 탐색하기 위해 run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, check_shell_bundle를 호출하지 마세요. 기존 코드, diff, 리뷰, 검증 출력 근거만 사용해 지금 최종 답변을 작성하세요. 검증 실패는 외부/환경성 blocker 또는 risk로 명시하고, 사용자가 새 검증이나 범위 확장을 명시적으로 승인하기 전에는 관련 없는 파일이나 프로젝트 설정으로 수리 범위를 넓히지 마세요.",
+	)
+}
+
+func verificationOutOfScopeFinalOnlyGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"Automatic verification already failed outside the current patch scope, so this turn is now final-answer-only. Do not request more tools, do not retry verification, and do not broaden the repair. Use the accepted patch/review evidence and disclose the out-of-scope verification blocker or risk in the final answer.",
+		"자동 검증이 현재 patch scope 밖의 실패로 판정되었으므로 이 턴은 이제 최종 답변 전용입니다. 추가 도구를 요청하지 말고, 검증을 재시도하지 말고, 수리 범위를 넓히지 마세요. 승인된 패치/리뷰 근거를 기준으로 최종 답변을 작성하고 out-of-scope 검증 blocker 또는 risk만 명시하세요.",
+	)
+}
+
+func (a *Agent) ensureOutOfScopeVerificationFinalDisclosure(reply string) string {
+	reply = strings.TrimSpace(reply)
+	if reply != "" && (replyMentionsVerificationBlocker(reply) || replyMentionsVerificationNotRun(reply)) {
+		return reply
+	}
+	summary := ""
+	if a != nil && a.Session != nil && a.Session.LastVerification != nil {
+		summary = strings.TrimSpace(a.Session.LastVerification.FailureSummary())
+		if summary == "" {
+			summary = strings.TrimSpace(a.Session.LastVerification.SummaryLine())
+		}
+	}
+	korean := true
+	if a != nil {
+		korean = localePrefersKorean(a.Config)
+	}
+	var note string
+	if korean {
+		note = "검증 참고: 자동 검증은 현재 patch scope 밖의 실패로 종료되어, 이번 수정 범위에서는 추가 수리를 진행하지 않았습니다."
+		if summary != "" {
+			note += "\n" + compactPromptSection(summary, 500)
+		}
+	} else {
+		note = "Verification note: automatic verification failed outside the current patch scope, so no additional repair was made in this change scope."
+		if summary != "" {
+			note += "\n" + compactPromptSection(summary, 500)
+		}
+	}
+	return strings.TrimSpace(reply + "\n\n" + note)
+}
+
+func disableAllTools(disabled map[string]bool, registry *ToolRegistry) {
+	if disabled == nil || registry == nil {
+		return
+	}
+	for _, def := range registry.Definitions() {
+		name := strings.TrimSpace(def.Name)
+		if name == "" {
+			continue
+		}
+		disabled[name] = true
+	}
+}
+
 func replySuggestsManualEditHandoff(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
@@ -1715,6 +2186,20 @@ func replyLooksAbruptlyTruncated(text string) bool {
 		return true
 	}
 	return false
+}
+
+func replyLooksLikeRawReviewHarnessResult(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lines := strings.Split(strings.ReplaceAll(trimmed, "\r\n", "\n"), "\n")
+	first := strings.ToUpper(strings.TrimSpace(lines[0]))
+	if first != "REVIEW_RESULT" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, "verdict:") || strings.Contains(lower, "findings:")
 }
 
 func hasUnbalancedContinuationDelimiters(text string) bool {
@@ -2023,7 +2508,22 @@ func readFilePathKey(arguments string) string {
 	if path == "" {
 		return ""
 	}
-	return strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+	key := filepath.ToSlash(filepath.Clean(path))
+	if readFilePathKeyUsesCaseInsensitiveMatch(path) {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
+func readFilePathKeyUsesCaseInsensitiveMatch(path string) bool {
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	trimmed := strings.TrimSpace(path)
+	if len(trimmed) >= 2 && trimmed[1] == ':' {
+		return true
+	}
+	return strings.HasPrefix(trimmed, `\\`) || strings.HasPrefix(trimmed, `//`)
 }
 
 func summarizeEditToolResult(name, out string) string {
@@ -2114,6 +2614,115 @@ func formatPreWriteReviewRepairLoopLimitReply(cfg Config, session *Session) stri
 	)
 }
 
+func preWriteReviewRepairBlockFingerprint(session *Session, err error) string {
+	if session == nil || session.LastReviewRun == nil {
+		return preWriteReviewRepairFallbackFingerprint(err)
+	}
+	run := *session.LastReviewRun
+	run.Gate.BlockingFindings = normalizeTaskStateList(run.Gate.BlockingFindings, 64)
+	run.Gate.WarningFindings = normalizeTaskStateList(run.Gate.WarningFindings, 64)
+	actionable := preWriteReviewRepairActionableFindingFingerprintParts(run)
+	if len(actionable) > 0 {
+		parts := []string{
+			"actionable",
+			strings.TrimSpace(run.Trigger),
+			strings.TrimSpace(run.Gate.Verdict),
+		}
+		parts = append(parts, actionable...)
+		return strings.Join(parts, "\n")
+	}
+	fallback := preWriteReviewRepairVisibleFindingFingerprintParts(run)
+	if len(fallback) > 0 {
+		parts := []string{
+			"visible",
+			strings.TrimSpace(run.Trigger),
+			strings.TrimSpace(run.Gate.Verdict),
+		}
+		parts = append(parts, fallback...)
+		return strings.Join(parts, "\n")
+	}
+	return preWriteReviewRepairFallbackFingerprint(err)
+}
+
+func preWriteReviewRepairActionableFindingFingerprintParts(run ReviewRun) []string {
+	ids := append([]string{}, run.Gate.BlockingFindings...)
+	ids = append(ids, run.Gate.WarningFindings...)
+	idSet := reviewFindingIDSet(ids)
+	parts := make([]string, 0)
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if !preWriteReviewRepairFindingMatchesGate(finding, idSet) {
+			continue
+		}
+		if !preWriteReviewRepairFindingIsActionable(run, finding) {
+			continue
+		}
+		parts = append(parts, preWriteReviewRepairFindingFingerprintPart(finding))
+	}
+	sort.Strings(parts)
+	return parts
+}
+
+func preWriteReviewRepairVisibleFindingFingerprintParts(run ReviewRun) []string {
+	ids := append([]string{}, run.Gate.BlockingFindings...)
+	ids = append(ids, run.Gate.WarningFindings...)
+	idSet := reviewFindingIDSet(ids)
+	parts := make([]string, 0)
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if !preWriteReviewRepairFindingMatchesGate(finding, idSet) {
+			continue
+		}
+		if strings.TrimSpace(firstNonBlankString(finding.ID, finding.Title, finding.RequiredFix, finding.Evidence)) == "" {
+			continue
+		}
+		parts = append(parts, preWriteReviewRepairFindingFingerprintPart(finding))
+	}
+	sort.Strings(parts)
+	return parts
+}
+
+func preWriteReviewRepairFindingMatchesGate(finding ReviewFinding, idSet map[string]bool) bool {
+	if len(idSet) == 0 {
+		return true
+	}
+	id := strings.TrimSpace(finding.ID)
+	if id == "" {
+		return false
+	}
+	return idSet[id]
+}
+
+func preWriteReviewRepairFindingIsActionable(run ReviewRun, finding ReviewFinding) bool {
+	if strings.EqualFold(strings.TrimSpace(finding.ID), requiredReviewerFailureFindingID) {
+		return false
+	}
+	if preWritePreFixFindingIsConcreteRepairObligation(finding) {
+		return true
+	}
+	return reviewFindingIsActionableNonReviewerFinding(run, finding, nil)
+}
+
+func preWriteReviewRepairFindingFingerprintPart(finding ReviewFinding) string {
+	return strings.Join([]string{
+		strings.TrimSpace(finding.ID),
+		strings.TrimSpace(finding.Source),
+		strings.TrimSpace(finding.ReviewerRole),
+		strings.TrimSpace(finding.Severity),
+		strings.TrimSpace(finding.Category),
+		compactPromptSection(finding.Title, 180),
+		compactPromptSection(finding.RequiredFix, 260),
+		compactPromptSection(finding.Evidence, 260),
+	}, "|")
+}
+
+func preWriteReviewRepairFallbackFingerprint(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "error|" + firstNonEmptyLine(err.Error())
+}
+
 func formatPreWriteReviewRepairInspectionLoopLimitReply(cfg Config, session *Session) string {
 	return formatPreWriteReviewRepairUserDecisionReply(
 		cfg,
@@ -2140,6 +2749,14 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 		}
 		b.WriteString(reviewText)
 	}
+	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
+		if korean {
+			b.WriteString("\n\n[1a] 계속 유효한 전체 수리 의무\n")
+		} else {
+			b.WriteString("\n\n[1a] Still-active full repair obligations\n")
+		}
+		b.WriteString(carried)
+	}
 	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); proposalText != "" {
 		if korean {
 			b.WriteString("\n\n[2] 마지막 수정안\n")
@@ -2157,9 +2774,6 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 }
 
 func formatReviewerGateUnavailableUserDecisionReply(cfg Config, session *Session) string {
-	if reviewRunHasActionableNonReviewerFindingsFromSession(session) {
-		recordPendingReviewerGateRepairConfirmation(session)
-	}
 	return formatReviewerGateUnavailableUserDecisionContent(cfg, session, true)
 }
 
@@ -2172,19 +2786,44 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 	if session != nil && session.LastReviewRun != nil {
 		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
 	}
+	var lastRun *ReviewRun
+	if session != nil {
+		lastRun = session.LastReviewRun
+	}
 	var b strings.Builder
+	preWriteGate := lastRun != nil && strings.EqualFold(strings.TrimSpace(lastRun.Trigger), "pre_write")
 	if korean {
-		b.WriteString("쓰기 전 리뷰어 게이트: 통과하지 못함")
+		if preWriteGate {
+			b.WriteString("쓰기 전 리뷰어 게이트: 통과하지 못함")
+		} else {
+			b.WriteString("리뷰어 게이트: 통과하지 못함")
+		}
 		b.WriteString("\n- 결과: 코드 수정은 적용하지 않았습니다.")
 		b.WriteString("\n- 원인: 필수 리뷰 단계의 모델 route가 실패했거나 `weak` 품질로 판정되었습니다. `primary` 실패는 현재 메인 모델 route 문제이고, `cross` 실패는 전용 reviewer route 문제입니다.")
 		b.WriteString("\n- 중요한 점: 이 상태는 쓰기 승인도, 리뷰 우회 승인도 아닙니다.")
-		b.WriteString("\n- 다음 조건: 최신 리뷰 finding과 마지막 수정안을 기준으로 다시 수리한 뒤, 일반 파일 쓰기 경로에서 pre-write review를 다시 통과해야 합니다.")
+		if preWriteGate {
+			b.WriteString("\n- 다음 조건: 최신 리뷰 finding과 마지막 수정안을 기준으로 다시 수리한 뒤, 일반 파일 쓰기 경로에서 pre-write review를 다시 통과해야 합니다.")
+		} else {
+			b.WriteString("\n- 다음 조건: 실패한 리뷰 route를 복구하거나 모델을 바꾼 뒤 같은 요청을 다시 실행해야 합니다.")
+		}
 	} else {
-		b.WriteString("Pre-write reviewer gate: not approved (did not pass)")
+		if preWriteGate {
+			b.WriteString("Pre-write reviewer gate: not approved (did not pass)")
+		} else {
+			b.WriteString("Reviewer gate: not approved (did not pass)")
+		}
 		b.WriteString("\n- Result: no code changes were applied.")
 		b.WriteString("\n- Cause: a required review-stage model route failed or was classified as `weak` quality. A `primary` failure points at the active main model route; a `cross` failure points at a dedicated reviewer route.")
 		b.WriteString("\n- Important: this is not write approval and not approval to bypass review.")
-		b.WriteString("\n- Next condition: repair from the latest review findings and last edit proposal below, then pass the normal pre-write review through the edit tool path.")
+		if preWriteGate {
+			b.WriteString("\n- Next condition: repair from the latest review findings and last edit proposal below, then pass the normal pre-write review through the edit tool path.")
+		} else {
+			b.WriteString("\n- Next condition: restore the failed review route or change model, then rerun the same request.")
+		}
+	}
+	if recoveryOptions := formatReviewerGateRecoveryOptions(korean, lastRun); recoveryOptions != "" {
+		b.WriteString("\n\n")
+		b.WriteString(recoveryOptions)
 	}
 	if session != nil && session.LastReviewRun != nil {
 		failed := reviewFailedRequiredReviewerRuns(*session.LastReviewRun)
@@ -2212,6 +2851,15 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n")
 		b.WriteString(reviewText)
 	}
+	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
+		if korean {
+			b.WriteString("\n\n[1a] 계속 유효한 전체 수리 의무")
+		} else {
+			b.WriteString("\n\n[1a] Still-active full repair obligations")
+		}
+		b.WriteString("\n")
+		b.WriteString(carried)
+	}
 	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); proposalText != "" {
 		if korean {
 			b.WriteString("\n\n[2] 마지막 수정안")
@@ -2236,7 +2884,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 	} else if korean {
 		b.WriteString("\n\n[3] 다음 조치\n이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다.")
 		b.WriteString("\n- 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다.")
-		b.WriteString("\n- `[0] 실패한 리뷰어`에 `primary`가 보이면 현재 메인 모델 route가 문제입니다. `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요.")
+		b.WriteString("\n- `[0] 실패한 리뷰어`에 `primary`가 보이면 현재 메인 모델 route가 문제입니다. `/model`로 메인 모델을 바꾸거나 해당 provider route를 먼저 복구하세요.")
 		b.WriteString("\n- `cross` 또는 전용 reviewer가 보이면 `/review models`로 해당 reviewer route를 정상 동작하는 모델로 바꾸세요.")
 		b.WriteString("\n- route를 복구한 뒤 같은 요청을 다시 실행하세요.")
 		if includeInlinePrompt {
@@ -2245,7 +2893,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 	} else {
 		b.WriteString("\n\n[3] Next step\nThis stop was caused by a required review-stage model route failure or weak output, not by a code finding.")
 		b.WriteString("\n- There is no code item to repair right now, so I will not continue editing.")
-		b.WriteString("\n- If `[0] Failed reviewer` shows `primary`, the active main model route is the problem. Use `/model` to switch the main model or fix the LM Studio/Qwen response issue first.")
+		b.WriteString("\n- If `[0] Failed reviewer` shows `primary`, the active main model route is the problem. Use `/model` to switch the main model or fix that provider route first.")
 		b.WriteString("\n- If it shows `cross` or a dedicated reviewer, use `/review models` to switch that reviewer route to a working model.")
 		b.WriteString("\n- Restore the route, then rerun the same request.")
 		if includeInlinePrompt {
@@ -2337,6 +2985,19 @@ func formatLatestPreWriteReviewForUserDecision(cfg Config, session *Session) str
 	return strings.TrimSpace(b.String())
 }
 
+func formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg Config, session *Session) string {
+	if session == nil || session.LastReviewRun == nil {
+		return ""
+	}
+	run := *session.LastReviewRun
+	if len(run.RepairFindings) == 0 {
+		return ""
+	}
+	korean := reviewRunPrefersKorean(cfg, run)
+	text := formatPreWriteCarriedRepairObligationsFeedback(run, korean)
+	return compactPromptSection(text, 2400)
+}
+
 func latestReviewDecisionFindings(run ReviewRun) []ReviewFinding {
 	ids := append([]string{}, run.Gate.BlockingFindings...)
 	if len(ids) == 0 {
@@ -2370,7 +3031,7 @@ func latestReviewDecisionFindings(run ReviewRun) []ReviewFinding {
 }
 
 func formatLatestEditProposalForUserDecision(cfg Config, session *Session) string {
-	toolName, proposal, skippedIncludeOnlyDelta := latestEditToolProposalForUserDecision(session)
+	toolName, proposal := latestEditToolProposalForUserDecision(session)
 	if proposal == "" {
 		return ""
 	}
@@ -2381,93 +3042,46 @@ func formatLatestEditProposalForUserDecision(cfg Config, session *Session) strin
 	} else {
 		fmt.Fprintf(&b, "Latest edit proposal (%s):\n", toolName)
 	}
-	if skippedIncludeOnlyDelta {
-		if korean {
-			b.WriteString("\n참고: 최신 edit tool 호출은 include-only delta였지만, 최신 차단 finding은 본문 코드 수정을 요구합니다. 사용자에게 보여줄 수정안은 그 이전의 의미 있는 코드 수정안으로 되돌렸습니다.\n")
-		} else {
-			b.WriteString("\nNote: the latest edit-tool call was an include-only delta, but the latest blocking findings require code-body changes. Showing the previous meaningful code proposal instead.\n")
-		}
-	}
 	b.WriteString("```text\n")
 	b.WriteString(compactPromptSection(proposal, 4000))
 	b.WriteString("\n```")
 	return strings.TrimSpace(b.String())
 }
 
-func latestEditToolProposalForUserDecision(session *Session) (string, string, bool) {
-	proposals := latestEditToolProposals(session)
-	if len(proposals) == 0 {
-		return "", "", false
+func latestEditToolProposalForUserDecision(session *Session) (string, string) {
+	toolName, proposal, latestIdx := latestEditToolProposalWithIndex(session)
+	if session == nil || strings.TrimSpace(proposal) == "" {
+		return toolName, proposal
 	}
-	latest := proposals[0]
-	if !proposalLooksIncludeOnly(latest.Proposal) || !lastReviewRequiresNonIncludeCodePatch(session) {
-		return latest.ToolName, latest.Proposal, false
+	if !lastReviewRequiresNonIncludeCodePatch(session) || !proposalLooksIncludeOnly(proposal) {
+		return toolName, proposal
 	}
-	for _, proposal := range proposals[1:] {
-		if strings.TrimSpace(proposal.Proposal) == "" || proposalLooksIncludeOnly(proposal.Proposal) {
-			continue
-		}
-		return proposal.ToolName, proposal.Proposal, true
-	}
-	return latest.ToolName, latest.Proposal, false
-}
-
-type editToolProposalRecord struct {
-	ToolName string
-	Proposal string
-}
-
-func latestEditToolProposals(session *Session) []editToolProposalRecord {
-	if session == nil {
-		return nil
-	}
-	var proposals []editToolProposalRecord
-	for i := len(session.Messages) - 1; i >= 0; i-- {
+	startIdx := latestEditProposalFallbackStart(session, latestIdx)
+	for i := latestIdx; i >= startIdx; i-- {
 		msg := session.Messages[i]
 		for j := len(msg.ToolCalls) - 1; j >= 0; j-- {
 			call := msg.ToolCalls[j]
 			if !isEditTool(call.Name) {
 				continue
 			}
-			proposal := editToolProposalText(call.Name, call.Arguments)
-			if strings.TrimSpace(proposal) == "" {
+			candidate := editToolProposalText(call.Name, call.Arguments)
+			if strings.TrimSpace(candidate) == "" || proposalLooksIncludeOnly(candidate) {
 				continue
 			}
-			proposals = append(proposals, editToolProposalRecord{
-				ToolName: call.Name,
-				Proposal: proposal,
-			})
+			return call.Name, candidate
 		}
 	}
-	return proposals
-}
-
-func lastReviewRequiresNonIncludeCodePatch(session *Session) bool {
-	if session == nil || session.LastReviewRun == nil {
-		return false
-	}
-	run := *session.LastReviewRun
-	for _, finding := range run.RepairFindings {
-		finding.Normalize()
-		if repairFindingNeedsProposalAlignment(finding) && !repairFindingAllowsIncludeOnlyProposal(finding) {
-			return true
-		}
-	}
-	for _, finding := range run.Findings {
-		finding.Normalize()
-		if !reviewFindingBlocksGate(run, finding) {
-			continue
-		}
-		if repairFindingNeedsProposalAlignment(finding) && !repairFindingAllowsIncludeOnlyProposal(finding) {
-			return true
-		}
-	}
-	return false
+	return toolName, proposal
 }
 
 func latestEditToolProposal(session *Session) (string, string) {
+	toolName, proposal, _ := latestEditToolProposalWithIndex(session)
+	return toolName, proposal
+}
+
+func latestEditToolProposalWithIndex(session *Session) (string, string, int) {
 	if session == nil {
-		return "", ""
+		return "", "", -1
 	}
 	for i := len(session.Messages) - 1; i >= 0; i-- {
 		msg := session.Messages[i]
@@ -2478,11 +3092,134 @@ func latestEditToolProposal(session *Session) (string, string) {
 			}
 			proposal := editToolProposalText(call.Name, call.Arguments)
 			if strings.TrimSpace(proposal) != "" {
-				return call.Name, proposal
+				return call.Name, proposal, i
 			}
 		}
 	}
-	return "", ""
+	return "", "", -1
+}
+
+func latestEditProposalFallbackStart(session *Session, latestIdx int) int {
+	if session == nil || latestIdx <= 0 {
+		return latestIdx
+	}
+	for idx := latestIdx - 1; idx >= 0; idx-- {
+		if messageLooksLikeCurrentReviewBoundary(session.Messages[idx], session.LastReviewRun) {
+			return idx + 1
+		}
+	}
+	return 0
+}
+
+func messageLooksLikeCurrentReviewBoundary(msg Message, run *ReviewRun) bool {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return false
+	}
+	if run != nil {
+		if id := strings.TrimSpace(run.ID); id != "" && strings.Contains(text, id) {
+			return true
+		}
+	}
+	lower := strings.ToLower(text)
+	return containsAny(text,
+		"검토 결과",
+		"리뷰 결과",
+		"최신 리뷰",
+		"수정 확인 대상",
+		"남은 검토 항목",
+		"자동 쓰기 전 리뷰",
+	) || containsAny(lower,
+		"latest review",
+		"review result",
+		"review finding",
+		"review findings",
+		"pre-write review",
+		"remaining review",
+	)
+}
+
+func proposalLooksIncludeOnly(proposal string) bool {
+	lines := strings.Split(proposal, "\n")
+	changed := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" ||
+			strings.HasPrefix(line, "+++") ||
+			strings.HasPrefix(line, "---") ||
+			strings.HasPrefix(line, "@@") {
+			continue
+		}
+		prefix := line[0]
+		if prefix != '+' && prefix != '-' {
+			continue
+		}
+		code := strings.TrimSpace(line[1:])
+		if code == "" {
+			continue
+		}
+		changed++
+		if !strings.HasPrefix(code, "#include") {
+			return false
+		}
+	}
+	return changed > 0
+}
+
+func lastReviewRequiresNonIncludeCodePatch(session *Session) bool {
+	if session == nil || session.LastReviewRun == nil {
+		return false
+	}
+	findings := append([]ReviewFinding(nil), session.LastReviewRun.RepairFindings...)
+	if len(findings) == 0 {
+		findings = latestReviewDecisionFindings(*session.LastReviewRun)
+	}
+	for _, finding := range findings {
+		if reviewFindingRequiresNonIncludeCodePatch(finding) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewFindingRequiresNonIncludeCodePatch(finding ReviewFinding) bool {
+	text := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+		finding.Symbol,
+		finding.Category,
+	}, "\n"))
+	if reviewFindingIsIncludeFocused(text) {
+		return false
+	}
+	if finding.BlocksGate {
+		return true
+	}
+	return reviewFindingTextHasAny(text, []string{
+		"function", "loop", "control flow", "body", "branch", "condition", "hunk", "patch", "rewrite", "resubmit",
+		"함수", "루프", "흐름", "본문", "조건", "분기", "수정", "패치", "재작성",
+	})
+}
+
+func reviewFindingIsIncludeFocused(text string) bool {
+	if !strings.Contains(text, "#include") {
+		return false
+	}
+	return !reviewFindingTextHasAny(text, []string{
+		"function", "loop", "control flow", "body", "branch", "condition", "rewrite",
+		"함수", "루프", "흐름", "본문", "조건", "분기", "재작성",
+	})
+}
+
+func reviewFindingTextHasAny(text string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func editToolProposalText(toolName string, arguments string) string {
@@ -2507,27 +3244,38 @@ func editToolProposalText(toolName string, arguments string) string {
 	}
 }
 
-func formatPreWriteReviewRepairForceEditGuidance(cfg Config, recent string) string {
+func formatPreWriteReviewRepairForceEditGuidance(cfg Config, session *Session, recent string) string {
 	var b strings.Builder
 	korean := localePrefersKorean(cfg)
+	if session != nil && session.LastReviewRun != nil {
+		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
+	}
 	if korean {
 		b.WriteString("pre-write 리뷰가 이미 수정안을 차단했고, 필요한 로컬 상태 확인 예산도 충분히 사용했습니다.\n")
 		b.WriteString("다음 응답은 상태 확인 도구 호출이 아니라 반드시 edit tool 호출이어야 합니다.\n")
 		b.WriteString("규칙:\n")
-		b.WriteString("1. 최신 pre-write finding 중 unresolved 차단 항목만 고치세요.\n")
+		b.WriteString("1. 최신 pre-write blocker는 이전 proposal이 불완전했던 근거입니다. 원래 pre-fix 필수 RF 전체를 계속 수리 대상으로 유지하세요.\n")
 		b.WriteString("2. 차단된 이전 patch는 적용되지 않았으므로, 누락분 delta가 아니라 현재 파일에 바로 적용 가능한 완전한 standalone patch를 작성하세요.\n")
-		b.WriteString("3. 방금 확인한 현재 파일 내용에 고정된 좁은 apply_patch hunk를 작성하세요.\n")
+		b.WriteString("3. 방금 확인한 현재 파일 내용에 고정된 좁은 apply_patch hunk를 작성하되, 필요한 RF hunk를 같은 proposal 안에 모두 포함하세요.\n")
 		b.WriteString("4. 같은 patch, replace_in_file 추측, review artifact 재읽기, run_shell 우회 쓰기는 금지합니다.\n")
 		b.WriteString("5. 필요한 문맥이 아직 부족하다고 판단되면, 먼저 한 문장으로 정확한 blocker를 말하고 수정 불가 사유를 보고하세요. 추가 탐색 루프를 시작하지 마세요.")
 	} else {
 		b.WriteString("The pre-write review already blocked the edit, and enough local state inspection has been spent.\n")
 		b.WriteString("The next response must be an edit-tool call, not another inspection-tool call.\n")
 		b.WriteString("Rules:\n")
-		b.WriteString("1. Fix only the latest unresolved blocking pre-write finding.\n")
+		b.WriteString("1. Treat the latest pre-write blocker as evidence that the previous proposal was incomplete. Keep every original required pre-fix RF in force.\n")
 		b.WriteString("2. The previously blocked patch was not applied, so produce a complete standalone patch for the current file instead of a missing-piece delta.\n")
-		b.WriteString("3. Use a narrow apply_patch hunk anchored to the current file contents just inspected.\n")
+		b.WriteString("3. Use narrow apply_patch hunks anchored to the current file contents just inspected, and include every required RF hunk in the same proposal.\n")
 		b.WriteString("4. Do not repeat the same patch, guess with replace_in_file, reread review artifacts, or bypass review with run_shell writes.\n")
 		b.WriteString("5. If the context is still insufficient, state the exact blocker in one sentence and report why editing cannot proceed. Do not start another inspection loop.")
+	}
+	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
+		if korean {
+			b.WriteString("\n\n계속 유효한 전체 수리 의무:\n")
+		} else {
+			b.WriteString("\n\nStill-active full repair obligations:\n")
+		}
+		b.WriteString(carried)
 	}
 	recent = strings.TrimSpace(recent)
 	if recent != "" {
@@ -2541,11 +3289,119 @@ func formatPreWriteReviewRepairForceEditGuidance(cfg Config, recent string) stri
 	return strings.TrimSpace(b.String())
 }
 
-func formatEditTargetMismatchLoopLimitReply(cfg Config) string {
-	return localizedText(cfg,
-		"Edit target mismatches repeated after a refresh attempt, so I stopped instead of continuing to guess at the file state. The file should be re-read and edited with a narrower, current-context patch.",
-		"파일 상태를 다시 확인한 뒤에도 edit target mismatch가 반복되어, 더 추측하며 진행하지 않고 중단했습니다. 파일을 다시 읽고 현재 내용 기준의 더 좁은 패치로 수정해야 합니다.",
-	)
+func formatPreWriteReviewBlockedRetryGuidance(cfg Config, session *Session) string {
+	var b strings.Builder
+	korean := localePrefersKorean(cfg)
+	if session != nil && session.LastReviewRun != nil {
+		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
+	}
+	if korean {
+		b.WriteString("pre-write 리뷰가 이미 수정안을 차단했습니다.\n")
+		b.WriteString("다음 턴은 차단된 proposal의 누락분만 보강하는 방식이 아니라, 현재 파일 기준의 완전한 standalone apply_patch를 다시 작성해야 합니다.\n")
+		b.WriteString("규칙:\n")
+		b.WriteString("1. 최신 pre-write blocker와 원래 pre-fix 필수 RF를 모두 같은 수리 의무로 유지하세요.\n")
+		b.WriteString("2. replace_in_file은 이번 복구 경로에서 비활성화되었으니 사용하지 마세요.\n")
+		b.WriteString("3. 차단된 proposal은 파일에 쓰이지 않았습니다. 다음 edit tool 전에 read_file, grep, git_diff 중 하나로 현재 대상 파일 또는 현재 diff를 다시 확인하세요.\n")
+		b.WriteString("4. 그 다음 현재 상태에 바로 적용 가능한 완전한 standalone apply_patch를 작성하세요. review artifact 재읽기나 run_shell 우회 쓰기로 게이트를 우회하지 마세요.")
+	} else {
+		b.WriteString("The pre-write review already blocked the edit.\n")
+		b.WriteString("On the next turn, do not submit a missing-piece delta for the blocked proposal; produce a complete standalone apply_patch anchored to the current file state.\n")
+		b.WriteString("Rules:\n")
+		b.WriteString("1. Keep both the latest pre-write blocker and every original required pre-fix RF as active repair obligations.\n")
+		b.WriteString("2. replace_in_file is disabled for this recovery path; do not use it.\n")
+		b.WriteString("3. The blocked proposal was not written. Before the next edit tool, re-read the current target file or current diff with read_file, grep, or git_diff.\n")
+		b.WriteString("4. Then write a complete standalone apply_patch against that current state. Do not reread review artifacts or bypass the gate with run_shell writes.")
+	}
+	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
+		if korean {
+			b.WriteString("\n\n계속 유효한 전체 수리 의무:\n")
+		} else {
+			b.WriteString("\n\nStill-active full repair obligations:\n")
+		}
+		b.WriteString(carried)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatEditTargetMismatchLoopLimitReply(cfg Config, session *Session) string {
+	korean := localePrefersKorean(cfg)
+	var b strings.Builder
+	if korean {
+		b.WriteString("파일 상태를 다시 확인한 뒤에도 edit target mismatch가 반복되어, 더 추측하며 진행하지 않고 중단했습니다.")
+		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
+		b.WriteString("\n- 원인: 마지막 patch가 현재 파일 내용에 고정되지 않았거나, 너무 넓은 rewrite 형태라 hunk를 안정적으로 맞출 수 없었습니다.")
+		b.WriteString("\n- 다음 조건: 현재 파일을 다시 읽은 뒤, 같은 수정 대상을 하나의 좁은 standalone hunk로 다시 작성해야 합니다.")
+	} else {
+		b.WriteString("Edit target mismatches repeated after a refresh attempt, so I stopped instead of continuing to guess at the file state.")
+		b.WriteString("\n\n- Result: no code changes were applied.")
+		b.WriteString("\n- Cause: the latest patch was not anchored to the current file contents, or it was too broad to match safely.")
+		b.WriteString("\n- Next condition: re-read the current file and produce one narrow standalone hunk for the same repair target.")
+	}
+	if session != nil && session.LastReviewRun != nil {
+		reviewText := strings.TrimSpace(formatLatestPreWriteReviewForUserDecision(cfg, session))
+		if reviewText == "" {
+			reviewText = strings.TrimSpace(formatPreFixVisibleReviewSummary(cfg, *session.LastReviewRun))
+		}
+		if reviewText := compactPromptSection(reviewText, 1800); strings.TrimSpace(reviewText) != "" {
+			if korean {
+				b.WriteString("\n\n[1] 최신 리뷰 기준\n")
+			} else {
+				b.WriteString("\n\n[1] Latest review basis\n")
+			}
+			b.WriteString(reviewText)
+		}
+	}
+	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); strings.TrimSpace(proposalText) != "" {
+		if korean {
+			b.WriteString("\n\n[2] 마지막 수정안\n")
+		} else {
+			b.WriteString("\n\n[2] Latest edit proposal\n")
+		}
+		b.WriteString(proposalText)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatBroadRecoveryPatchLoopLimitReply(cfg Config, session *Session) string {
+	korean := localePrefersKorean(cfg)
+	if session != nil && session.LastReviewRun != nil {
+		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
+	}
+	var b strings.Builder
+	if korean {
+		b.WriteString("복구 경로에서 넓은 apply_patch가 반복되어, 파일을 추측해서 쓰지 않고 중단했습니다.")
+		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
+		b.WriteString("\n- 원인: stale-context 복구 상태에서는 여러 파일 또는 여러 hunk를 한 번에 실행하면 같은 mismatch나 불완전 리뷰 증거로 회귀할 위험이 큽니다.")
+		b.WriteString("\n- 다음 조건: 현재 파일을 다시 확인한 뒤, 한 파일과 한 hunk만 포함한 standalone apply_patch로 첫 독립 수정만 제출해야 합니다.")
+	} else {
+		b.WriteString("Broad apply_patch payloads repeated during recovery, so I stopped instead of guessing at the file state.")
+		b.WriteString("\n\n- Result: no code changes were applied.")
+		b.WriteString("\n- Cause: after a stale-context recovery, executing multiple files or multiple hunks at once risks repeating the mismatch or producing incomplete review evidence.")
+		b.WriteString("\n- Next condition: re-read the current file and submit only the first independent repair as one file and one standalone hunk.")
+	}
+	if session != nil && session.LastReviewRun != nil {
+		reviewText := strings.TrimSpace(formatLatestPreWriteReviewForUserDecision(cfg, session))
+		if reviewText == "" {
+			reviewText = strings.TrimSpace(formatPreFixVisibleReviewSummary(cfg, *session.LastReviewRun))
+		}
+		if reviewText := compactPromptSection(reviewText, 1800); strings.TrimSpace(reviewText) != "" {
+			if korean {
+				b.WriteString("\n\n[1] 최신 리뷰 기준\n")
+			} else {
+				b.WriteString("\n\n[1] Latest review basis\n")
+			}
+			b.WriteString(reviewText)
+		}
+	}
+	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); strings.TrimSpace(proposalText) != "" {
+		if korean {
+			b.WriteString("\n\n[2] 마지막 수정안\n")
+		} else {
+			b.WriteString("\n\n[2] Latest edit proposal\n")
+		}
+		b.WriteString(proposalText)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func applyPatchFormatFailureSignature(arguments string) string {
@@ -2800,6 +3656,67 @@ func (a *Agent) setToolExecutionResult(index int, msg Message) {
 	a.Session.AddMessage(msg)
 }
 
+func (a *Agent) setRemainingToolCallsNotExecuted(calls []ToolCall, indexes []int, start int, reason string) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "NOT_EXECUTED: a previous tool call in this model response required a retry from the next model turn."
+	}
+	for i := start; i < len(calls); i++ {
+		call := calls[i]
+		index := -1
+		if i >= 0 && i < len(indexes) {
+			index = indexes[i]
+		}
+		a.setToolExecutionResult(index, Message{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Text:       reason,
+			IsError:    true,
+			ToolMeta: map[string]any{
+				"status": "not_executed",
+				"reason": reason,
+			},
+		})
+	}
+}
+
+func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, guidance string) error {
+	if a == nil || a.Session == nil {
+		return nil
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "NOT_EXECUTED: this tool-call batch was redirected by the runtime before execution."
+	}
+	for _, call := range calls {
+		a.Session.AddMessage(Message{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Text:       reason,
+			IsError:    true,
+			ToolMeta: map[string]any{
+				"status": "not_executed",
+				"reason": reason,
+			},
+		})
+	}
+	if strings.TrimSpace(guidance) != "" {
+		a.Session.AddMessage(Message{
+			Role: "user",
+			Text: guidance,
+		})
+	}
+	if a.Store != nil {
+		return a.Store.Save(a.Session)
+	}
+	return nil
+}
+
 func summarizeToolInvocation(cfg Config, call ToolCall) string {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
@@ -2843,6 +3760,12 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 		if len(command) > 72 {
 			command = command[:69] + "..."
 		}
+		if shellToolArgsLookLikeVerification(args) {
+			if command == "" {
+				return localizedText(cfg, "Requesting verification command approval...", "검증 명령 승인 확인 중 ...")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Requesting verification command approval: %s", "검증 명령 승인 확인 중 ... %s"), command)
+		}
 		if command == "" {
 			return localizedText(cfg, "Using run_shell...", "shell 실행 중 ...")
 		}
@@ -2852,12 +3775,24 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 		if len(command) > 72 {
 			command = command[:69] + "..."
 		}
+		if shellToolArgsLookLikeVerification(args) {
+			if command == "" {
+				return localizedText(cfg, "Requesting background verification approval...", "백그라운드 검증 승인 확인 중 ...")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Requesting background verification approval: %s", "백그라운드 검증 승인 확인 중 ... %s"), command)
+		}
 		if command == "" {
 			return localizedText(cfg, "Starting background shell...", "백그라운드 shell 시작 중 ...")
 		}
 		return fmt.Sprintf(localizedText(cfg, "Starting background shell: %s", "백그라운드 shell 시작 중 ... %s"), command)
 	case "run_shell_bundle_background":
 		commands := stringSliceValue(args, "commands")
+		if shellBundleArgsLookLikeVerification(args) {
+			if len(commands) == 0 {
+				return localizedText(cfg, "Requesting background verification bundle approval...", "백그라운드 검증 묶음 승인 확인 중 ...")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Requesting background verification bundle approval for %d command(s)...", "백그라운드 검증 묶음 %d개 승인 확인 중 ..."), len(commands))
+		}
 		if len(commands) == 0 {
 			return localizedText(cfg, "Starting background shell bundle...", "백그라운드 shell 묶음 시작 중 ...")
 		}
@@ -2902,6 +3837,29 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 	}
 }
 
+func shellToolArgsLookLikeVerification(args map[string]any) bool {
+	if boolValue(args, "verification_like", false) {
+		return true
+	}
+	command := strings.TrimSpace(stringValue(args, "command"))
+	if command == "" {
+		return false
+	}
+	return assessShellCommandMutation(command).Class == shellMutationVerificationArtifacts
+}
+
+func shellBundleArgsLookLikeVerification(args map[string]any) bool {
+	if boolValue(args, "verification_like", false) {
+		return true
+	}
+	for _, command := range stringSliceValue(args, "commands") {
+		if assessShellCommandMutation(command).Class == shellMutationVerificationArtifacts {
+			return true
+		}
+	}
+	return false
+}
+
 func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
@@ -2943,18 +3901,36 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 		return fmt.Sprintf(localizedText(cfg, "list_files returned %[1]d item(s) from %[2]s.", "list_files 완료 %[2]s (%[1]d개)."), itemCount, path)
 	case "run_shell":
 		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if runShellOutputLooksLikeSkippedVerification(out) {
+			if snippet == "" {
+				return localizedText(cfg, "Verification command skipped.", "검증 명령 생략됨.")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Verification command skipped: %s", "검증 명령 생략됨: %s"), snippet)
+		}
 		if snippet == "" {
 			return localizedText(cfg, "run_shell completed with no output.", "shell 완료: 출력 없음.")
 		}
 		return fmt.Sprintf(localizedText(cfg, "run_shell completed: %s", "shell 완료: %s"), snippet)
 	case "run_shell_background":
 		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if runShellOutputLooksLikeSkippedVerification(out) || strings.Contains(strings.ToLower(out), "no background jobs started") {
+			if snippet == "" {
+				return localizedText(cfg, "Background verification skipped.", "백그라운드 검증 생략됨.")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Background verification skipped: %s", "백그라운드 검증 생략됨: %s"), snippet)
+		}
 		if snippet == "" {
 			return localizedText(cfg, "Background shell job started.", "백그라운드 shell 시작됨.")
 		}
 		return fmt.Sprintf(localizedText(cfg, "Background shell started: %s", "백그라운드 shell 시작: %s"), snippet)
 	case "run_shell_bundle_background":
 		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if runShellOutputLooksLikeSkippedVerification(out) || strings.Contains(strings.ToLower(out), "no background jobs started") {
+			if snippet == "" {
+				return localizedText(cfg, "Background verification bundle skipped.", "백그라운드 검증 묶음 생략됨.")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Background verification bundle skipped: %s", "백그라운드 검증 묶음 생략됨: %s"), snippet)
+		}
 		if snippet == "" {
 			return localizedText(cfg, "Background shell bundle started.", "백그라운드 shell 묶음 시작됨.")
 		}
@@ -3239,6 +4215,187 @@ func allToolCallsAreEditTools(calls []ToolCall) bool {
 	return true
 }
 
+func shouldDeferEditToolsInToolCallBatch(calls []ToolCall) bool {
+	return len(calls) > 1 && toolCallsIncludeEditTool(calls)
+}
+
+func shouldDeferToolCallInMixedEditBatch(call ToolCall) bool {
+	if isEditTool(call.Name) {
+		return true
+	}
+	return !toolCallIsReadOnlyDuringMixedEditBatch(call)
+}
+
+func toolCallIsReadOnlyDuringMixedEditBatch(call ToolCall) bool {
+	switch inferToolExecutionEffect(call.Name) {
+	case "inspect", "plan":
+		return true
+	}
+	switch strings.TrimSpace(call.Name) {
+	case "check_shell_job", "check_shell_bundle":
+		return true
+	case "run_shell":
+		assessment := assessShellCommandMutation(toolCallCommandArgument(call))
+		return assessment.Class == shellMutationReadOnly
+	default:
+		return false
+	}
+}
+
+func deferredMixedToolResult(call ToolCall) ToolExecutionResult {
+	args := toolCallArgumentsMap(call)
+	meta := defaultToolExecutionMeta(call.Name, args)
+	meta["success"] = false
+	meta["deferred"] = true
+	meta["requires_reissue"] = true
+	meta["changed_workspace"] = false
+	if isEditTool(call.Name) {
+		meta["reason"] = "edit_tool_must_be_single_tool_call"
+	} else {
+		meta["reason"] = "non_read_only_tool_deferred_until_edit_is_isolated"
+	}
+	return ToolExecutionResult{
+		DisplayText: mixedToolDeferralResultText(call.Name),
+		Meta:        meta,
+	}
+}
+
+func preWriteReviewReanchorTool(call ToolCall) bool {
+	switch strings.TrimSpace(call.Name) {
+	case "read_file", "grep", "git_diff":
+		return true
+	default:
+		return false
+	}
+}
+
+func preWriteReviewReanchorRequiredResult(call ToolCall) ToolExecutionResult {
+	args := toolCallArgumentsMap(call)
+	meta := defaultToolExecutionMeta(call.Name, args)
+	meta["success"] = false
+	meta["deferred"] = true
+	meta["requires_reissue"] = true
+	meta["changed_workspace"] = false
+	meta["reason"] = "pre_write_blocked_proposal_requires_current_file_reanchor"
+	return ToolExecutionResult{
+		DisplayText: "NOT_EXECUTED: the previous edit proposal was blocked before writing, so it is not the current file state. Re-read the current target file or current diff, then issue one standalone edit anchored to that fresh evidence. Do not submit a delta against the rejected proposal.",
+		Meta:        meta,
+	}
+}
+
+func preWriteReviewReanchorRequiredGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"The previous edit proposal was blocked by pre-write review and was not written. Before another edit tool can run, re-anchor on committed workspace state with read_file, grep, or git_diff for the current target. Then submit one complete standalone patch against that current state. Do not treat the rejected proposal as applied, and do not submit a missing-piece delta.",
+		"이전 수정안은 pre-write review에서 차단되어 파일에 쓰이지 않았습니다. 다음 edit tool을 실행하기 전에는 read_file, grep, git_diff 중 하나로 현재 대상 파일이나 현재 diff를 다시 확인해야 합니다. 그 뒤 현재 상태에 바로 적용 가능한 완전한 standalone patch 하나를 제출하세요. 거절된 proposal이 적용된 것처럼 다루거나 누락분 delta만 제출하지 마세요.",
+	)
+}
+
+type applyPatchPayloadShape struct {
+	FileSections int
+	UpdateHunks  int
+}
+
+func shouldDeferBroadRecoveryPatch(call ToolCall, preWriteReviewRepairBlocks int, editTargetMismatchFailures int) bool {
+	if strings.TrimSpace(call.Name) != "apply_patch" {
+		return false
+	}
+	shape, ok := applyPatchPayloadShapeFromCall(call)
+	if !ok {
+		return false
+	}
+	if editTargetMismatchFailures > 0 {
+		return shape.FileSections > 1 || shape.UpdateHunks > 1
+	}
+	if preWriteReviewRepairBlocks > 0 {
+		return shape.FileSections > 1
+	}
+	return false
+}
+
+func applyPatchPayloadShapeFromCall(call ToolCall) (applyPatchPayloadShape, bool) {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &decoded); err != nil {
+		return applyPatchPayloadShape{}, false
+	}
+	patchText := strings.TrimSpace(stringValue(decoded, "patch"))
+	if patchText == "" {
+		return applyPatchPayloadShape{}, false
+	}
+	doc, err := parsePatchDocument(patchText)
+	if err != nil {
+		return applyPatchPayloadShape{}, false
+	}
+	shape := applyPatchPayloadShape{FileSections: len(doc.ops)}
+	for _, op := range doc.ops {
+		shape.UpdateHunks += len(op.hunks)
+	}
+	return shape, true
+}
+
+func broadRecoveryPatchDeferredResult(call ToolCall, shape applyPatchPayloadShape) ToolExecutionResult {
+	args := toolCallArgumentsMap(call)
+	meta := defaultToolExecutionMeta(call.Name, args)
+	meta["success"] = false
+	meta["deferred"] = true
+	meta["requires_reissue"] = true
+	meta["changed_workspace"] = false
+	meta["reason"] = "recovery_patch_too_broad"
+	meta["file_sections"] = shape.FileSections
+	meta["update_hunks"] = shape.UpdateHunks
+	return ToolExecutionResult{
+		DisplayText: "NOT_EXECUTED: this recovery apply_patch was not executed because stale-context repair must be narrowed before another write attempt. Re-issue a patch against one file with one current, standalone hunk, then wait for that tool result before submitting additional hunks. Do not assume this skipped patch was applied.",
+		Meta:        meta,
+	}
+}
+
+func broadRecoveryPatchDeferralGuidance(cfg Config, session *Session, shape applyPatchPayloadShape) string {
+	korean := localePrefersKorean(cfg)
+	if session != nil && session.LastReviewRun != nil {
+		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
+	}
+	var b strings.Builder
+	if korean {
+		b.WriteString("방금 apply_patch는 실행하지 않았습니다. 이전 edit target mismatch 또는 pre-write 차단 이후의 복구 경로에서는 stale context 위험을 줄이기 위해 넓은 patch payload를 바로 실행하지 않습니다.\n")
+		fmt.Fprintf(&b, "감지된 patch 형태: file sections=%d, update hunks=%d\n", shape.FileSections, shape.UpdateHunks)
+		b.WriteString("다음 응답 규칙:\n")
+		b.WriteString("1. 현재 파일에서 이미 확인한 정확한 줄을 기준으로 apply_patch 하나만 다시 제출하세요.\n")
+		b.WriteString("2. patch는 한 파일, 한 개의 독립 hunk만 포함해야 합니다.\n")
+		b.WriteString("3. 여러 수정 지점이 필요하면 첫 번째 독립 hunk를 적용한 뒤, 도구 결과와 갱신된 파일 상태를 보고 다음 hunk를 진행하세요.\n")
+		b.WriteString("4. 건너뛴 patch가 적용되었다고 요약하거나 검증하지 마세요.")
+	} else {
+		b.WriteString("The last apply_patch was not executed. After an edit target mismatch or pre-write block, broad patch payloads are deferred to reduce stale-context write risk.\n")
+		fmt.Fprintf(&b, "Detected patch shape: file sections=%d, update hunks=%d\n", shape.FileSections, shape.UpdateHunks)
+		b.WriteString("Next response rules:\n")
+		b.WriteString("1. Re-issue exactly one apply_patch anchored to the exact current lines already inspected.\n")
+		b.WriteString("2. The patch must contain one file and one independent hunk.\n")
+		b.WriteString("3. If multiple locations still need repair, apply the first independent hunk, wait for the tool result, then continue from the refreshed file state.\n")
+		b.WriteString("4. Do not summarize or verify the skipped patch as if it ran.")
+	}
+	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
+		if korean {
+			b.WriteString("\n\n계속 유효한 전체 수리 의무:\n")
+		} else {
+			b.WriteString("\n\nStill-active full repair obligations:\n")
+		}
+		b.WriteString(carried)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func mixedToolDeferralResultText(name string) string {
+	if isEditTool(name) {
+		return "NOT_EXECUTED: edit tools must be issued as the only tool call in an assistant response. Only read-only inspect or plan tool calls from this response are handled in this turn. Re-issue this edit tool by itself in the next assistant response if the edit is still needed. Do not assume this skipped tool operation was applied."
+	}
+	return "NOT_EXECUTED: non-read-only tool calls cannot run in the same assistant response as an edit tool. Re-issue this tool separately after the edit has been isolated and reviewed, if it is still needed."
+}
+
+func mixedToolCallEditDeferralGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"Some tool calls were not executed because edit tools must be isolated as the only mutation-capable tool call in an assistant response. Use only the completed read-only inspect or plan tool results above, then if an edit is still needed, issue exactly one edit tool call by itself in the next assistant response. Re-issue any deferred non-read-only tool separately after the edit is isolated and reviewed. Do not summarize or verify any skipped tool as if it ran.",
+		"일부 tool call은 실행하지 않았습니다. edit tool은 assistant 응답 하나에서 mutation 가능 tool call과 섞이면 안 되며 단독으로 격리되어야 합니다. 위에서 완료된 read-only inspect 또는 plan tool 결과만 반영한 뒤, 수정이 여전히 필요하면 다음 assistant 응답에서 edit tool call 하나만 단독으로 다시 호출하세요. 보류된 non-read-only tool은 수정이 격리되고 리뷰된 뒤 별도로 다시 호출해야 합니다. 건너뛴 tool이 실행된 것처럼 요약하거나 검증하지 마세요.",
+	)
+}
+
 func hasMutatingGitToolCalls(calls []ToolCall) bool {
 	for _, call := range calls {
 		if toolCallMutatesGitState(call) {
@@ -3377,26 +4534,85 @@ func shouldUseLocalCodeToolPolicy(session *Session) bool {
 	if requestLooksLikeLocalCodeWork(latestUser) {
 		return true
 	}
-	if reviewRunLooksLikeLocalCodeWork(session.LastReviewRun) {
+	if requestLooksLikeLocalVerificationWork(latestUser) {
 		return true
 	}
-	const recentUserScanLimit = 12
-	scanned := 0
-	for i := len(session.Messages) - 1; i >= 0 && scanned < recentUserScanLimit; i-- {
-		msg := session.Messages[i]
-		if msg.Role != "user" {
-			continue
-		}
-		scanned++
-		text := strings.ToLower(strings.TrimSpace(baseUserQueryText(msg.Text)))
-		if text == "" || requestExplicitlyAsksForWebResearch(text) {
-			continue
-		}
-		if requestLooksLikeLocalCodeWork(text) {
+	if latestUserLooksLikeLocalCodeContinuation(latestUser) && sessionHasRecentLocalCodeWorkContext(session) {
+		return true
+	}
+	if latestUserLooksLikeReviewRepairContinuation(latestUser) && reviewRunLooksLikeLocalCodeWork(session.LastReviewRun) {
+		return true
+	}
+	return false
+}
+
+func latestUserLooksLikeLocalCodeContinuation(text string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	if trimmed == "" {
+		return false
+	}
+	return containsAny(trimmed,
+		"continue", "keep going", "proceed", "next step", "retry", "rerun", "run verification", "run tests", "run build",
+		"계속", "이어", "다음", "재시도", "다시 실행", "검증 실행", "테스트 실행", "빌드 실행", "검증 명령",
+	)
+}
+
+func latestUserLooksLikeReviewRepairContinuation(text string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(text))
+	if trimmed == "" {
+		return false
+	}
+	return containsAny(trimmed,
+		"pending review repair confirmation",
+		"pending reviewer-gate repair confirmation",
+		"continue repairing",
+		"continue repair",
+		"계속 수정",
+	)
+}
+
+func sessionHasRecentLocalCodeWorkContext(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	const recentMessageScanLimit = 80
+	start := len(session.Messages) - recentMessageScanLimit
+	if start < 0 {
+		start = 0
+	}
+	for i := len(session.Messages) - 1; i >= start; i-- {
+		if messageLooksLikeLocalCodeWorkContext(session.Messages[i]) {
 			return true
 		}
 	}
 	return false
+}
+
+func messageLooksLikeLocalCodeWorkContext(msg Message) bool {
+	if msg.Role == "user" {
+		text := strings.ToLower(strings.TrimSpace(baseUserQueryText(msg.Text)))
+		return text != "" &&
+			!requestExplicitlyAsksForWebResearch(text) &&
+			requestLooksLikeLocalCodeWork(text)
+	}
+	var parts []string
+	if strings.TrimSpace(msg.ToolName) != "" {
+		parts = append(parts, msg.ToolName)
+	}
+	if strings.TrimSpace(msg.Text) != "" {
+		parts = append(parts, msg.Text)
+	}
+	for key, value := range msg.ToolMeta {
+		parts = append(parts, key, fmt.Sprint(value))
+	}
+	for _, call := range msg.ToolCalls {
+		parts = append(parts, call.Name, call.Arguments)
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join(parts, " ")))
+	if text == "" || requestExplicitlyAsksForWebResearch(text) {
+		return false
+	}
+	return requestLooksLikeLocalCodeWork(text)
 }
 
 func reviewRunLooksLikeLocalCodeWork(run *ReviewRun) bool {
@@ -3567,7 +4783,7 @@ func shouldRetryPreFixEditWithoutVisibleReviewSummary(message Message, session *
 	if assistantTextIncludesPreFixReviewSummary(message.Text, run) {
 		return false
 	}
-	return !sessionHasVisiblePreFixReviewSummary(session, run)
+	return !sessionHasVisiblePreFixReviewSummaryForCurrentRepair(session, run)
 }
 
 func toolCallsIncludeEditTool(calls []ToolCall) bool {
@@ -3585,19 +4801,32 @@ func assistantTextIncludesPreFixReviewSummary(text string, run ReviewRun) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	hasStructuredID := false
-	for _, finding := range preFixVisibleReviewSummaryObligations(run, 5) {
-		id := strings.TrimSpace(finding.ID)
-		if id == "" {
-			continue
-		}
-		hasStructuredID = true
-		if strings.Contains(trimmed, id) {
-			return true
+	obligations := preFixVisibleReviewSummaryObligations(run, 5)
+	if len(obligations) == 0 {
+		obligations = preFixVisibleReviewSummaryFindings(run, 5)
+	}
+	if len(obligations) == 0 && len(run.Findings) > 0 {
+		obligations = normalizeReviewFindingCopies(run.Findings)
+		if len(obligations) > 5 {
+			obligations = obligations[:5]
 		}
 	}
-	if hasStructuredID {
-		return false
+	hasStructuredID := false
+	for _, finding := range obligations {
+		id := strings.TrimSpace(finding.ID)
+		if id != "" {
+			hasStructuredID = true
+			if !strings.Contains(trimmed, id) {
+				return false
+			}
+			continue
+		}
+		if !reviewFindingConcreteTextVisible(trimmed, finding) {
+			return false
+		}
+	}
+	if hasStructuredID || len(obligations) > 0 {
+		return true
 	}
 	if strings.Contains(lower, "rf-") {
 		return true
@@ -3609,6 +4838,69 @@ func assistantTextIncludesPreFixReviewSummary(text string, run ReviewRun) bool {
 		return true
 	}
 	return false
+}
+
+func reviewFindingConcreteTextVisible(text string, finding ReviewFinding) bool {
+	lower := strings.ToLower(text)
+	fields := []string{
+		finding.Title,
+		finding.RequiredFix,
+		finding.Evidence,
+		finding.Category,
+		finding.Severity,
+	}
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if strings.Contains(lower, strings.ToLower(field)) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionHasVisiblePreFixReviewSummaryForCurrentRepair(session *Session, run ReviewRun) bool {
+	if session == nil {
+		return false
+	}
+	for idx := len(session.Messages) - 1; idx >= 0; idx-- {
+		message := session.Messages[idx]
+		if message.Role == "assistant" {
+			if assistantTextIncludesPreFixReviewSummary(message.Text, run) {
+				return true
+			}
+			continue
+		}
+		if message.Role != "user" {
+			continue
+		}
+		if !userMessageLooksLikePreFixReviewGuidance(message.Text) {
+			return false
+		}
+	}
+	return false
+}
+
+func userMessageLooksLikePreFixReviewGuidance(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return containsAny(trimmed,
+		"수정 전에 리뷰를 완료",
+		"파일 쓰기/패치 도구를 호출하기 전에",
+		"검토 결과",
+		"리뷰 결과",
+	) || containsAny(lower,
+		"review-first pass completed",
+		"before calling file write",
+		"before calling patch",
+		"latest review findings",
+		"review result",
+	)
 }
 
 func sessionHasVisiblePreFixReviewSummary(session *Session, run ReviewRun) bool {
@@ -3837,6 +5129,179 @@ func toolCallMutatesGitState(call ToolCall) bool {
 	return false
 }
 
+func toolCallIsVerificationRetryOrPoll(call ToolCall, session *Session) bool {
+	switch strings.TrimSpace(call.Name) {
+	case "run_shell", "run_shell_background":
+		return assessShellCommandMutation(toolCallCommandArgument(call)).Class == shellMutationVerificationArtifacts
+	case "run_shell_bundle_background":
+		for _, command := range toolCallCommandsArgument(call) {
+			if assessShellCommandMutation(command).Class == shellMutationVerificationArtifacts {
+				return true
+			}
+		}
+		return false
+	case "check_shell_job", "check_shell_bundle":
+		return toolCallTargetsVerificationBackgroundWork(call, session)
+	default:
+		return false
+	}
+}
+
+func toolCallTargetsVerificationBackgroundWork(call ToolCall, session *Session) bool {
+	if session == nil {
+		return false
+	}
+	switch strings.TrimSpace(call.Name) {
+	case "check_shell_job":
+		jobID := strings.TrimSpace(stringValue(toolCallArgumentsMap(call), "job_id"))
+		if jobID == "" || strings.EqualFold(jobID, "latest") {
+			session.normalizeBackgroundJobs()
+			if len(session.BackgroundJobs) == 0 {
+				return true
+			}
+			jobID = strings.TrimSpace(session.BackgroundJobs[0].ID)
+		}
+		job, ok := session.BackgroundJob(jobID)
+		if !ok {
+			return false
+		}
+		return backgroundJobIsVerificationLike(job)
+	case "check_shell_bundle":
+		args := toolCallArgumentsMap(call)
+		bundleID := strings.TrimSpace(stringValue(args, "bundle_id"))
+		if bundleID != "" || len(stringSliceValue(args, "job_ids")) == 0 {
+			if bundleID == "" || strings.EqualFold(bundleID, "latest") {
+				session.normalizeBackgroundBundles()
+				if len(session.BackgroundBundles) == 0 {
+					return true
+				}
+				bundleID = strings.TrimSpace(session.BackgroundBundles[0].ID)
+			}
+			bundle, ok := session.BackgroundBundle(bundleID)
+			return ok && bundle.VerificationLike
+		}
+		for _, jobID := range normalizeBackgroundCommandList(stringSliceValue(args, "job_ids"), 8) {
+			job, ok := session.BackgroundJob(jobID)
+			if ok && backgroundJobIsVerificationLike(job) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func backgroundJobIsVerificationLike(job BackgroundShellJob) bool {
+	job.Normalize()
+	return strings.EqualFold(strings.TrimSpace(job.MutationClass), string(shellMutationVerificationArtifacts))
+}
+
+func declinedVerificationFollowupBlockedResult(call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: "NOT_EXECUTED: a build, test, or verification command was already skipped or declined in this turn. Do not retry the verification command or poll background jobs unless the user explicitly approves verification; disclose that verification was not run. Do not relabel resolved code-review findings as remaining bugs only because verification is missing.",
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "verification_skipped",
+			"verification_like":        true,
+			"verification_status":      string(VerificationSkipped),
+			"verification_evidence":    false,
+			"verification_approved":    false,
+			"verification_declined":    true,
+			"command_execution_status": "declined",
+			"success":                  false,
+		},
+	}
+}
+
+func outOfScopeVerificationFollowupBlockedResult(call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: "NOT_EXECUTED: automatic verification already failed outside the current patch scope. Do not retry or probe build, test, or verification commands in this turn; disclose the external or ambient verification blocker/risk instead of broadening the repair.",
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "verification_skipped",
+			"verification_like":        true,
+			"verification_status":      string(VerificationSkipped),
+			"verification_evidence":    false,
+			"verification_approved":    false,
+			"verification_out_scope":   true,
+			"command_execution_status": "blocked_out_of_scope",
+			"success":                  false,
+		},
+	}
+}
+
+func outOfScopeVerificationFinalOnlyBlockedResult(call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: "NOT_EXECUTED: automatic verification already failed outside the current patch scope, so this turn is final-answer-only. No further tools are available; provide the final answer from the existing patch, review, and verification evidence.",
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "final_answer_only",
+			"verification_like":        toolCallIsVerificationRetryOrPoll(call, nil),
+			"verification_status":      string(VerificationSkipped),
+			"verification_evidence":    false,
+			"verification_approved":    false,
+			"verification_out_scope":   true,
+			"command_execution_status": "blocked_final_answer_only",
+			"success":                  false,
+		},
+	}
+}
+
+func toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return false
+	}
+	if isEditTool(name) {
+		return false
+	}
+	switch name {
+	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle", "update_plan":
+		return true
+	default:
+		return false
+	}
+}
+
+func readOnlyAnalysisToolBlockedResult(cfg Config, call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: localizedText(cfg,
+			fmt.Sprintf("NOT_EXECUTED: read-only analysis mode blocked tool `%s` because it is not in the read-only inspection allowlist. Use read_file, grep, list_files, git_status, git_diff, or answer from the evidence already collected.", name),
+			fmt.Sprintf("NOT_EXECUTED: 읽기 전용 분석 모드에서 `%s` 도구를 차단했습니다. 이 도구는 읽기 전용 검사 허용 목록에 없습니다. read_file, grep, list_files, git_status, git_diff를 사용하거나 이미 수집한 근거로 답하세요.", name),
+		),
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "read_only_policy_block",
+			"read_only_analysis":       true,
+			"read_only_allowed":        false,
+			"command_execution_status": "blocked",
+			"changed_workspace":        false,
+			"success":                  false,
+		},
+	}
+}
+
 func toolCallCommandArgument(call ToolCall) string {
 	args := toolCallArgumentsMap(call)
 	return stringValue(args, "command")
@@ -3898,6 +5363,9 @@ func assignFocusedOwnerNodeToToolCalls(calls []ToolCall, session *Session) []Too
 	}
 	ownerNodeID := strings.TrimSpace(session.TaskState.ExecutorFocusNode)
 	if ownerNodeID == "" {
+		return calls
+	}
+	if !sessionOwnerNodeHasConcreteEditRouting(session, ownerNodeID) {
 		return calls
 	}
 	out := make([]ToolCall, 0, len(calls))
@@ -4160,13 +5628,15 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Use run_shell for build, test, or local inspection commands when no dedicated workspace tool fits.\n")
 	b.WriteString("- Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files for code, diff, and git-state inspection. Do not use run_shell with Get-Content or PowerShell pipelines just to print line numbers or file excerpts.\n")
 	b.WriteString("- Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.\n")
+	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
 	b.WriteString("- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.\n")
 	b.WriteString("- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.\n")
 	b.WriteString("- Use check_shell_job to poll a background shell job instead of rerunning the same long command.\n")
 	b.WriteString("- Use check_shell_bundle to poll several background shell jobs together when a parallel verification bundle is running.\n")
+	b.WriteString("- If a build, test, or verification command is skipped or declined, do not retry the same verification command or poll a background job for it in this turn. Report that verification was not run unless the user explicitly approves running it.\n")
 	b.WriteString("- When a background shell bundle already exists, prefer check_shell_bundle with bundle_id=\"latest\" instead of reconstructing the job id list from memory.\n")
 	b.WriteString("- When a background job or bundle becomes obsolete after newer edits or a newer verification run, use cancel_shell_job or cancel_shell_bundle instead of leaving stale work running.\n")
-	b.WriteString("- When the current focused task-graph node owns an edit, formatter run, code generator run, or long-running verification command, include owner_node_id in the tool arguments so specialist ownership routing and worktree isolation stay attached to that node.\n")
+	b.WriteString("- Include owner_node_id only when the current focused task-graph node has explicit editable ownership or a concrete worktree lease for the exact work being done. If unsure, omit owner_node_id; the harness will keep the edit inside the active workspace root.\n")
 	b.WriteString("- For run_shell on Windows PowerShell, do not use && or ||. Use a single command or PowerShell separators and conditionals only when needed.\n")
 	b.WriteString("- For run_shell on Windows PowerShell, do not use Unix shell syntax like find ... -type, chmod, chown, ls -la, or /dev/null redirection, and do not use cmd.exe batch syntax like for /d %x. Rewrite those commands with PowerShell cmdlets, or explicitly invoke cmd /c or bash -lc only when that interpreter is intentionally required.\n")
 	b.WriteString("- For run_shell, the working directory is already set to the workspace root. Do not prepend commands with cd unless changing into a subdirectory is truly necessary.\n")
@@ -4174,7 +5644,6 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- For document or report authoring tasks, do not assume generated files already exist. Use list_files on the parent directory before read_file. If the directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools.\n")
 	b.WriteString("- For latest/current external research tasks, prefer relevant MCP web/search/browser tools before answering from memory. Gather multiple sources, compare recency and authority, then synthesize.\n")
 	b.WriteString("- For local code review or repair tasks, do not use MCP web/search/browser tools unless the user explicitly asks for external web research. Rely on local source evidence and review artifacts first.\n")
-	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
 	b.WriteString("- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.\n")
 	b.WriteString("- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.\n")
 	b.WriteString("- Local skills can be referenced by name with $skill-name.\n")
@@ -4218,7 +5687,11 @@ func compactPromptSection(text string, limit int) string {
 	if end == 0 {
 		return "..."
 	}
-	return strings.TrimSpace(text[:end]) + "..."
+	truncated := text[:end]
+	if lineEnd := strings.LastIndexAny(truncated, "\r\n"); lineEnd > 0 {
+		return strings.TrimSpace(truncated[:lineEnd]) + "\n..."
+	}
+	return strings.TrimSpace(truncated) + "..."
 }
 
 func renderEnabledSkillSummary(c SkillCatalog) string {
@@ -4298,6 +5771,17 @@ func requestLooksLikeLocalCodeWork(lowerLatestUser string) bool {
 	hasCodeAnalysisIntent := containsAny(lowerLatestUser, "code", "source code", "코드", "소스") &&
 		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "fix", "bug", "분석", "검토", "리뷰", "수정", "버그")
 	return (hasPathOrCodeToken && hasCodeIntent) || hasCodeAnalysisIntent
+}
+
+func requestLooksLikeLocalVerificationWork(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
+		return false
+	}
+	return containsAny(lowerLatestUser,
+		"verification command", "verify command", "run verification", "run tests", "run test", "run build", "build command", "test command",
+		"검증 명령", "검증 실행", "빌드 명령", "빌드 실행", "테스트 명령", "테스트 실행",
+	)
 }
 
 func requestExplicitlyAsksForWebResearch(lowerLatestUser string) bool {

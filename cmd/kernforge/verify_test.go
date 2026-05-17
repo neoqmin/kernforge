@@ -96,6 +96,66 @@ func TestBuildVerificationStepsForCMakeUsesBuildDirAndCTestInFullMode(t *testing
 	}
 }
 
+func TestBuildVerificationStepsForCppPrefersChangedProjectInAdaptiveMode(t *testing.T) {
+	root := t.TempDir()
+	workerDir := filepath.Join(root, "SampleApp", "SampleWorker")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("mkdir worker dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "SampleApp.sln"), []byte("solution"), 0o644); err != nil {
+		t.Fatalf("write sln: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workerDir, "SampleWorker.vcxproj"), []byte("<Project/>"), 0o644); err != nil {
+		t.Fatalf("write vcxproj: %v", err)
+	}
+	steps := buildVerificationSteps(root, []string{"SampleApp/SampleWorker/PathConverter.cpp"}, VerificationAdaptive)
+	if len(steps) != 1 {
+		t.Fatalf("expected a single targeted project step, got %#v", steps)
+	}
+	if steps[0].Stage != "targeted" || steps[0].Scope != "SampleApp/SampleWorker/SampleWorker.vcxproj" {
+		t.Fatalf("unexpected C++ targeted step: %#v", steps[0])
+	}
+	if !strings.Contains(steps[0].Command, "SampleApp/SampleWorker/SampleWorker.vcxproj") {
+		t.Fatalf("expected project command, got %#v", steps[0])
+	}
+}
+
+func TestBuildVerificationStepsForCppUsesProjectConfigurationPlatform(t *testing.T) {
+	root := t.TempDir()
+	workerDir := filepath.Join(root, "SampleApp", "SampleWorker")
+	if err := os.MkdirAll(workerDir, 0o755); err != nil {
+		t.Fatalf("mkdir worker dir: %v", err)
+	}
+	project := `<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+</Project>`
+	if err := os.WriteFile(filepath.Join(workerDir, "SampleWorker.vcxproj"), []byte(project), 0o644); err != nil {
+		t.Fatalf("write vcxproj: %v", err)
+	}
+
+	steps := buildVerificationSteps(root, []string{"SampleApp/SampleWorker/PathConverter.cpp"}, VerificationAdaptive)
+	if len(steps) != 1 {
+		t.Fatalf("expected a single targeted project step, got %#v", steps)
+	}
+	wantCommand := `msbuild "SampleApp/SampleWorker/SampleWorker.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`
+	if steps[0].Command != wantCommand {
+		t.Fatalf("unexpected C++ command: %q", steps[0].Command)
+	}
+	if !strings.Contains(steps[0].Label, "Debug|x64") {
+		t.Fatalf("expected selected configuration in label, got %#v", steps[0])
+	}
+}
+
 func TestNormalizeVerificationOverridePathSupportsMentions(t *testing.T) {
 	tests := map[string]string{
 		"@Common/PEreloc.cpp":       "Common/PEreloc.cpp",
@@ -305,6 +365,33 @@ func TestClassifyVerificationFailureRecognizesMissingCommand(t *testing.T) {
 	}
 }
 
+func TestClassifyVerificationFailureUsesPrimaryExecutableForMissingCommand(t *testing.T) {
+	kind, _ := classifyVerificationFailure(VerificationStep{
+		Label:           "msbuild demo.sln",
+		Command:         `msbuild "demo.sln" /m`,
+		ResolvedCommand: `& "C:\Missing Tools\MSBuild.exe" "demo.sln" /m`,
+		Output:          `& : The term 'C:\Missing Tools\MSBuild.exe' is not recognized as the name of a cmdlet, function, script file, or executable program.`,
+	})
+	if kind != "command_not_found" {
+		t.Fatalf("expected command_not_found, got %q", kind)
+	}
+}
+
+func TestClassifyVerificationFailureDoesNotTreatBuildOutputAsMissingMSBuild(t *testing.T) {
+	kind, _ := classifyVerificationFailure(VerificationStep{
+		Label:           "msbuild demo.vcxproj Debug|x64",
+		Command:         `msbuild "demo.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`,
+		ResolvedCommand: `& "C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe" "demo.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`,
+		Output: strings.Join([]string{
+			"Microsoft (R) Build Engine version 17.0.0",
+			`CL.exe : The term 'CL.exe' is not recognized as the name of a cmdlet, function, script file, or executable program. [demo.vcxproj]`,
+		}, "\n"),
+	})
+	if kind != "compile_error" {
+		t.Fatalf("expected compile_error for build output, got %q", kind)
+	}
+}
+
 func TestVerificationReportMissingCommandToolRecognizesMSBuild(t *testing.T) {
 	report := VerificationReport{
 		Steps: []VerificationStep{{
@@ -345,6 +432,21 @@ func TestVerificationReportMissingCommandToolRecognizesCTestAndNinja(t *testing.
 
 func TestResolveVerificationCommandPathUsesConfiguredMSBuildPath(t *testing.T) {
 	ws := Workspace{
+		Shell: "powershell",
+		VerificationToolPaths: map[string]string{
+			"msbuild": `C:\Tools\MSBuild\MSBuild.exe`,
+		},
+	}
+	got := resolveVerificationCommandPath(ws, `msbuild "demo.sln" /m`)
+	want := `& "C:\Tools\MSBuild\MSBuild.exe" "demo.sln" /m`
+	if got != want {
+		t.Fatalf("unexpected resolved command: got %q want %q", got, want)
+	}
+}
+
+func TestResolveVerificationCommandPathUsesConfiguredMSBuildPathForCmd(t *testing.T) {
+	ws := Workspace{
+		Shell: "cmd",
 		VerificationToolPaths: map[string]string{
 			"msbuild": `C:\Tools\MSBuild\MSBuild.exe`,
 		},
@@ -358,19 +460,20 @@ func TestResolveVerificationCommandPathUsesConfiguredMSBuildPath(t *testing.T) {
 
 func TestResolveVerificationCommandPathUsesConfiguredCTestAndNinjaPaths(t *testing.T) {
 	ws := Workspace{
+		Shell: "powershell",
 		VerificationToolPaths: map[string]string{
 			"ctest": `C:\Tools\CMake\bin\ctest.exe`,
 			"ninja": `C:\Tools\Ninja\ninja.exe`,
 		},
 	}
 	gotCTest := resolveVerificationCommandPath(ws, `ctest --test-dir "build" --output-on-failure`)
-	wantCTest := `"C:\Tools\CMake\bin\ctest.exe" --test-dir "build" --output-on-failure`
+	wantCTest := `& "C:\Tools\CMake\bin\ctest.exe" --test-dir "build" --output-on-failure`
 	if gotCTest != wantCTest {
 		t.Fatalf("unexpected resolved ctest command: got %q want %q", gotCTest, wantCTest)
 	}
 
 	gotNinja := resolveVerificationCommandPath(ws, `ninja -C "build"`)
-	wantNinja := `"C:\Tools\Ninja\ninja.exe" -C "build"`
+	wantNinja := `& "C:\Tools\Ninja\ninja.exe" -C "build"`
 	if gotNinja != wantNinja {
 		t.Fatalf("unexpected resolved ninja command: got %q want %q", gotNinja, wantNinja)
 	}
@@ -388,6 +491,26 @@ func TestVerificationReportFailureSummaryIncludesKindsAndHints(t *testing.T) {
 	summary := report.FailureSummary()
 	if !strings.Contains(summary, "lint_error") || !strings.Contains(summary, "Fix the vet warnings first.") {
 		t.Fatalf("unexpected failure summary: %q", summary)
+	}
+}
+
+func TestVerificationReportFailureSummaryIncludesResolvedCommand(t *testing.T) {
+	report := VerificationReport{
+		Steps: []VerificationStep{{
+			Label:           "msbuild demo.vcxproj Debug|x64",
+			Command:         `msbuild "demo.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`,
+			ResolvedCommand: `& "C:\Tools\MSBuild\MSBuild.exe" "demo.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`,
+			Status:          VerificationFailed,
+			FailureKind:     "compile_error",
+		}},
+	}
+	summary := report.FailureSummary()
+	if !strings.Contains(summary, `cmd: & "C:\Tools\MSBuild\MSBuild.exe"`) {
+		t.Fatalf("expected resolved command in failure summary, got %q", summary)
+	}
+	detailed := report.RenderDetailed()
+	if !strings.Contains(detailed, `Resolved command: & "C:\Tools\MSBuild\MSBuild.exe"`) {
+		t.Fatalf("expected resolved command in detailed report, got %q", detailed)
 	}
 }
 
@@ -512,6 +635,37 @@ func TestExecuteVerificationStepsStopOnFailureOverridesContinue(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(report.Decision), "stop_on_failure") {
 		t.Fatalf("expected decision to mention stop_on_failure, got %q", report.Decision)
+	}
+}
+
+func TestExecuteVerificationStepsSkipsInformationalCommands(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "should-not-exist.txt")
+	quotedMarker := strings.ReplaceAll(marker, "'", "''")
+	ws := Workspace{Root: root, Shell: "powershell"}
+	plan := VerificationPlan{
+		Mode: VerificationAdaptive,
+		Steps: []VerificationStep{
+			{
+				Label:         "manifest evidence",
+				Command:       "Write-Output executed | Set-Content -LiteralPath '" + quotedMarker + "'",
+				Informational: true,
+				Output:        "Manifest evidence only.",
+				Status:        VerificationPending,
+			},
+		},
+	}
+	report := executeVerificationSteps(context.Background(), ws, "manual", plan)
+	if len(report.Steps) != 1 {
+		t.Fatalf("unexpected report steps: %#v", report.Steps)
+	}
+	if report.Steps[0].Status != VerificationSkipped {
+		t.Fatalf("expected informational step to be skipped, got %#v", report.Steps[0])
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("informational command was executed and created %s", marker)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("stat marker: %v", err)
 	}
 }
 

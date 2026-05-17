@@ -264,7 +264,11 @@ func (l *EditLoopState) RecordEvent(event EditLoopEvent) {
 				l.RemainingRisks = appendTaskStateItem(l.RemainingRisks, "Verification failed: "+detail, 12)
 			}
 		} else if event.Status == "passed" {
-			l.RemainingRisks = removeMatchingTaskStateItem(l.RemainingRisks, "verification")
+			l.RemainingRisks = removeMatchingTaskStateItem(l.RemainingRisks, "No successful verification")
+			if detail := firstNonBlankString(event.Summary, event.Detail); detail != "" {
+				l.RemainingRisks = removeExactTaskStateItem(l.RemainingRisks, "Verification failed: "+detail)
+				l.RemainingRisks = removeVerificationFailureRiskForPassedSummary(l.RemainingRisks, detail)
+			}
 		}
 		verification := EditLoopVerificationEvidence{
 			Source:             event.Source,

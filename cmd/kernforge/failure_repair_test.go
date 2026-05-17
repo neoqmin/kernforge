@@ -78,7 +78,7 @@ func TestFailureRepairPromptIsAddedAfterVerificationFailure(t *testing.T) {
 					Command:     "go test ./...",
 					Status:      VerificationFailed,
 					FailureKind: "test_failure",
-					Output:      "FAIL: expected 1 got 0",
+					Output:      "main.go: FAIL: expected 1 got 0",
 				}},
 			}, true
 		},

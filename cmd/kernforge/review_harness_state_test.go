@@ -81,8 +81,8 @@ func TestSingleModelPreWriteRecordsRFObligationStatus(t *testing.T) {
 	if run.Gate.Verdict == reviewVerdictNeedsRevision || run.Gate.Verdict == reviewVerdictInsufficientEvidence || run.Gate.Verdict == reviewVerdictBlocked {
 		t.Fatalf("single-model pre-write review should not block after recording RF status, got %#v", run.Gate)
 	}
-	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ResolutionStatus != "resolved" {
-		t.Fatalf("expected resolved repair status to be recorded, got %#v", run.RepairFindings)
+	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ResolutionStatus != "evidence_unconfirmed" {
+		t.Fatalf("expected evidence_unconfirmed repair status to be recorded without an explicit RF reference, got %#v", run.RepairFindings)
 	}
 	if reviewFindingsContainTitle(run.Findings, "Single-model pre-write review lacks repair obligation status") {
 		t.Fatalf("did not expect RF status blocker after annotation, got %#v", run.Findings)
@@ -258,6 +258,18 @@ func TestResumeSanityDetectsConflictingLatestUserRequest(t *testing.T) {
 	check := buildReviewResumeSanityCheck(root, rt, run)
 	if check.Status != reviewResumeSanityConflict || strings.TrimSpace(check.ConflictReason) == "" {
 		t.Fatalf("expected resume conflict, got %#v", check)
+	}
+}
+
+func TestResumeRequestConflictReasonHandlesUppercaseOnlyAnswer(t *testing.T) {
+	for _, latest := range []string{
+		"Only answer yes or no",
+		"ONLY ANSWER yes or no",
+		"only answer yes or no",
+	} {
+		if reason := reviewResumeRequestConflictReason(latest, ReviewRun{}); !strings.Contains(reason, "response mode") {
+			t.Fatalf("expected response-mode conflict for %q, got %q", latest, reason)
+		}
 	}
 }
 
@@ -444,6 +456,72 @@ func TestReviewerClientSameProviderModelDoesNotCountAsDistinctCrossReviewer(t *t
 	}
 }
 
+func TestReviewerClientSameRouteInheritsMainBaseURL(t *testing.T) {
+	cfg := Config{
+		Provider:   "openai-codex",
+		Model:      "gpt-5.5",
+		BaseURL:    "https://chatgpt.example.test/backend-api/codex/",
+		AutoLocale: boolPtr(false),
+	}
+	mainClient := &namedScriptedProviderClient{scriptedProviderClient: &scriptedProviderClient{}, name: "openai-codex"}
+	reviewerClient := &namedScriptedProviderClient{scriptedProviderClient: &scriptedProviderClient{}, name: "openai-codex"}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config:         cfg,
+			Client:         mainClient,
+			ReviewerClient: reviewerClient,
+			ReviewerModel:  "gpt-5.5",
+		},
+	}
+
+	if !reviewClientMatchesMain(rt, reviewerClient, "gpt-5.5") {
+		t.Fatalf("metadata-less same provider/model reviewer should inherit main base URL")
+	}
+	if reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("metadata-less same route reviewer should not count as a distinct cross reviewer")
+	}
+}
+
+func TestAuxReviewerClientExplicitDifferentBaseURLCountsAsDistinct(t *testing.T) {
+	cfg := Config{
+		Provider:   "openai-codex",
+		Model:      "gpt-5.5",
+		BaseURL:    "https://chatgpt.example.test/backend-api/codex/",
+		AutoLocale: boolPtr(false),
+	}
+	mainClient := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider: "openai-codex",
+			BaseURL:  cfg.BaseURL,
+		},
+	}
+	auxClient := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider: "openai-codex",
+			BaseURL:  "https://other.example.test/backend-api/codex/",
+		},
+	}
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config:            cfg,
+			Client:            mainClient,
+			AuxReviewerClient: auxClient,
+			AuxReviewerModel:  "gpt-5.5",
+		},
+	}
+
+	if reviewClientMatchesMain(rt, auxClient, "gpt-5.5") {
+		t.Fatalf("explicit different base URL should remain distinct")
+	}
+	if !reviewRuntimeHasDistinctCrossReviewer(rt) {
+		t.Fatalf("explicit different base URL should count as a distinct cross reviewer")
+	}
+}
+
 func TestAuxReviewerClientSameProviderModelDoesNotCountAsDistinctCrossReviewer(t *testing.T) {
 	cfg := Config{
 		Provider:   "scripted",
@@ -566,6 +644,85 @@ func TestReviewModelPlanRecordsCapabilityProfileAndRouteHealth(t *testing.T) {
 	}
 }
 
+func TestReviewApprovalLedgerRequiresPassedVerificationStep(t *testing.T) {
+	rt := &runtimeState{
+		session: &Session{
+			LastVerification: &VerificationReport{
+				Steps: []VerificationStep{{
+					Label:  "msbuild",
+					Status: VerificationSkipped,
+				}},
+			},
+		},
+	}
+	run := ReviewRun{
+		Trigger: "post_change",
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+	ledger := buildReviewApprovalLedger(rt, run)
+	if ledger.VerificationPassed {
+		t.Fatalf("skipped-only verification must not count as passed: %#v", ledger)
+	}
+
+	rt.session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "msbuild",
+			Status: VerificationPassed,
+		}},
+	}
+	ledger = buildReviewApprovalLedger(rt, run)
+	if !ledger.VerificationPassed {
+		t.Fatalf("passed verification step should count as passed: %#v", ledger)
+	}
+
+	rt.session.LastVerification = &VerificationReport{
+		ChangedPaths: []string{"old.cpp"},
+		Steps: []VerificationStep{{
+			Label:  "msbuild",
+			Status: VerificationPassed,
+		}},
+	}
+	run.ChangeSet.ChangedPaths = []string{"new.cpp"}
+	ledger = buildReviewApprovalLedger(rt, run)
+	if ledger.VerificationPassed {
+		t.Fatalf("verification for different changed paths must not count as passed: %#v", ledger)
+	}
+}
+
+func TestUIPolishReviewRequiresPrimaryForBehavioralFormats(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cases := []struct {
+		name         string
+		path         string
+		wantPrimary  bool
+		wantDesignOK bool
+	}{
+		{name: "config", path: "src/ui/config.json", wantPrimary: true},
+		{name: "template", path: "src/views/page.html", wantPrimary: true},
+		{name: "css", path: "src/styles/page.css", wantPrimary: false, wantDesignOK: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planReviewModels(cfg, ReviewRun{
+				Mode: reviewModeUIPolish,
+				ChangeSet: ReviewChangeSet{
+					ChangedPaths: []string{tc.path},
+				},
+			})
+			hasPrimary := reviewStringSliceContainsCI(plan.RequiredRoles, "primary_reviewer")
+			if hasPrimary != tc.wantPrimary {
+				t.Fatalf("primary coverage for %s = %t, want %t; plan=%#v", tc.path, hasPrimary, tc.wantPrimary, plan)
+			}
+			if tc.wantDesignOK && !reviewStringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
+				t.Fatalf("expected design reviewer for %s, plan=%#v", tc.path, plan)
+			}
+		})
+	}
+}
+
 func TestReviewModelsStatusReportsRouteHealth(t *testing.T) {
 	root := t.TempDir()
 	rt := reviewStateTestRuntime(root, nil)
@@ -586,7 +743,9 @@ func TestReviewModelsStatusReportsRouteHealth(t *testing.T) {
 		"Route Health",
 		"cross_reviewer",
 		"timeout_rate=0.67",
+		"next_timeout=8m0s",
 		"timeout-heavy",
+		"next reviewer call auto-extends timeout",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected review models status to contain %q, got %q", want, rendered)
@@ -612,11 +771,11 @@ func TestReviewModelCapabilityProfileControlsTimeout(t *testing.T) {
 		Kind: "cross",
 		Role: "cross_reviewer",
 	})
-	if timeout != reviewLowerPerformanceCrossSoftTimeout {
-		t.Fatalf("expected lower-performance capability timeout, got %s", timeout)
+	if timeout != reviewCloudCrossSoftTimeout {
+		t.Fatalf("expected cloud capability timeout, got %s", timeout)
 	}
 	profile := reviewModelCapabilityProfile("cross_reviewer", "deepseek", "deepseek-reviewer", "")
-	if profile.CapabilityRank == 0 || profile.RecommendedTimeoutMS != reviewLowerPerformanceCrossSoftTimeout.Milliseconds() {
+	if profile.CapabilityRank == 0 || profile.RecommendedTimeoutMS != reviewCloudCrossSoftTimeout.Milliseconds() {
 		t.Fatalf("expected capability profile to drive timeout/rank, got %#v", profile)
 	}
 }
@@ -680,6 +839,113 @@ func TestReviewRouteHealthSkipsRecentlyEmptyInitialReviewerCall(t *testing.T) {
 	}
 	if !reviewRunHasRequiredReviewerFailure(run) {
 		t.Fatalf("expected skipped required reviewer to block the gate")
+	}
+}
+
+func TestReviewRouteHealthTimeoutExtendsNextCallWithoutSkipping(t *testing.T) {
+	root := t.TempDir()
+	rt := reviewStateTestRuntime(root, nil)
+	rt.cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {
+			Provider: "anthropic-claude-cli",
+			Model:    "sonnet",
+		},
+	}
+	rt.session.ReviewRouteHealth = []ReviewRouteHealth{{
+		Role:           "cross_reviewer",
+		Model:          "anthropic-claude-cli / sonnet",
+		RecentRuns:     1,
+		TimeoutRate:    1,
+		LastStatus:     "failed",
+		LastQuality:    reviewModelQualityFailed,
+		Recommendation: "route timed out recently; consider a stronger or closer reviewer route",
+	}}
+	reviewerRun := ReviewReviewerRun{
+		Role:  "cross_reviewer",
+		Kind:  "cross",
+		Model: "anthropic-claude-cli / sonnet",
+	}
+	if _, ok := reviewRouteHealthSkipsInitialModelCall(rt, reviewerRun); ok {
+		t.Fatalf("timeout-only health should retry with an extended timeout instead of skipping the reviewer call")
+	}
+	timeout := reviewModelSoftTimeoutForRun(rt.cfg, ReviewRun{}, reviewerRun, rt.session.ReviewRouteHealth)
+	if timeout != reviewAdaptiveTimeoutCrossSoftTimeout {
+		t.Fatalf("expected adaptive timeout after recent timeout, got %s", timeout)
+	}
+}
+
+func TestReviewRouteHealthTimeoutRateDoesNotDependOnRecommendationText(t *testing.T) {
+	item := ReviewRouteHealth{
+		Role:        "cross_reviewer",
+		Model:       "anthropic-claude-cli / sonnet",
+		RecentRuns:  1,
+		TimeoutRate: 1,
+		LastStatus:  "failed",
+		LastQuality: reviewModelQualityFailed,
+	}
+	if !reviewRouteHealthNeedsAdaptiveTimeout(item) {
+		t.Fatalf("timeout rate plus failed status should drive adaptive timeout without recommendation text")
+	}
+	if timeout := reviewRouteHealthNextSoftTimeout(item); timeout != reviewAdaptiveTimeoutCrossSoftTimeout {
+		t.Fatalf("expected adaptive timeout without recommendation text, got %s", timeout)
+	}
+}
+
+func TestReviewRouteHealthActionUsesRoleSpecificClearCommand(t *testing.T) {
+	item := ReviewRouteHealth{
+		Role:        "security_reviewer",
+		Model:       "anthropic-claude-cli / sonnet",
+		RecentRuns:  1,
+		TimeoutRate: 1,
+		LastStatus:  "failed",
+		LastQuality: reviewModelQualityFailed,
+	}
+	action := reviewRouteHealthActionHint(item)
+	if !strings.Contains(action, "/review models clear security") {
+		t.Fatalf("expected role-specific clear command, got %q", action)
+	}
+	crossAction := reviewRouteHealthActionHint(ReviewRouteHealth{
+		Role:        "cross_reviewer",
+		Model:       "anthropic-claude-cli / sonnet",
+		RecentRuns:  1,
+		TimeoutRate: 1,
+		LastStatus:  "failed",
+		LastQuality: reviewModelQualityFailed,
+	})
+	if !strings.Contains(crossAction, "/review models clear primary") {
+		t.Fatalf("expected synthetic cross reviewer to clear primary, got %q", crossAction)
+	}
+}
+
+func TestReviewRouteHealthAdaptiveTimeoutIsOneShotAfterSuccess(t *testing.T) {
+	previous := ReviewRouteHealth{
+		Role:           "cross_reviewer",
+		Model:          "anthropic-claude-cli / sonnet",
+		RecentRuns:     1,
+		TimeoutRate:    1,
+		LastStatus:     "failed",
+		LastQuality:    reviewModelQualityFailed,
+		LastTimeout:    true,
+		Recommendation: "route timed out recently; consider a stronger or closer reviewer route",
+	}
+	latest := ReviewRouteHealth{
+		Role:              "cross_reviewer",
+		Model:             "anthropic-claude-cli / sonnet",
+		RecentRuns:        1,
+		UsableFindingRate: 1,
+		LastStatus:        "completed",
+		LastQuality:       reviewModelQualityUsable,
+	}
+	combined := combineReviewRouteHealth(previous, latest, 8)
+	combined.Recommendation = reviewRouteHealthRecommendation(combined)
+	if combined.LastTimeout {
+		t.Fatalf("latest successful call should consume the one-shot adaptive timeout marker")
+	}
+	if reviewRouteHealthNeedsAdaptiveTimeout(combined) {
+		t.Fatalf("historical timeout rate should not keep extending every later call: %#v", combined)
+	}
+	if timeout := reviewRouteHealthNextSoftTimeout(combined); timeout != reviewCLICrossSoftTimeout {
+		t.Fatalf("expected CLI base timeout after one-shot marker is consumed, got %s", timeout)
 	}
 }
 

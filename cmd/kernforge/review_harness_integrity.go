@@ -234,6 +234,7 @@ func resolveReviewIntegrityPath(root string, path string) (string, string, bool,
 	if path == "" {
 		return "", "", false, ""
 	}
+	path = stripReviewLineRangeSuffix(path)
 	root = strings.TrimSpace(root)
 	abs := path
 	if !filepath.IsAbs(abs) {
@@ -254,6 +255,41 @@ func resolveReviewIntegrityPath(root string, path string) (string, string, bool,
 		}
 	}
 	return key, abs, true, ""
+}
+
+func stripReviewLineRangeSuffix(path string) string {
+	path = strings.TrimSpace(path)
+	colon := strings.LastIndex(path, ":")
+	if colon < 0 || colon == len(path)-1 {
+		return path
+	}
+	suffix := path[colon+1:]
+	dash := strings.Index(suffix, "-")
+	if dash >= 0 {
+		if dash == 0 || dash == len(suffix)-1 {
+			return path
+		}
+		if !allASCIIDigits(suffix[:dash]) || !allASCIIDigits(suffix[dash+1:]) {
+			return path
+		}
+		return strings.TrimSpace(path[:colon])
+	}
+	if allASCIIDigits(suffix) {
+		return strings.TrimSpace(path[:colon])
+	}
+	return path
+}
+
+func allASCIIDigits(text string) bool {
+	if text == "" {
+		return false
+	}
+	for _, ch := range text {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func reviewHashFile(path string) (string, error) {
@@ -296,7 +332,7 @@ func buildReviewLedgerConsistency(root string, rt *runtimeState, run ReviewRun) 
 			check.Warnings = append(check.Warnings, "changed files have no linked verification evidence")
 		}
 	}
-	if rt != nil && rt.session != nil {
+	if rt != nil && rt.session != nil && !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		currentPaths := runtimeGateChangedPaths(root, rt.session)
 		if missing := reviewUnreviewedChangedPaths(run.ChangeSet.ChangedPaths, currentPaths); len(missing) > 0 {
 			check.Blockers = append(check.Blockers, "changed paths are not covered by this review: "+strings.Join(limitStrings(missing, 8), ", "))
@@ -357,10 +393,11 @@ func reviewResumeRequestConflictReason(latest string, run ReviewRun) string {
 	if latest == "" {
 		return ""
 	}
-	if containsAny(latest, "stop", "pause", "cancel", "do not continue", "중단", "멈춰", "취소") {
+	normalized := strings.ToLower(latest)
+	if containsAny(normalized, "stop", "pause", "cancel", "do not continue", "중단", "멈춰", "취소") {
 		return "latest user request asks to stop or pause the previous proposal"
 	}
-	if strings.Contains(latest, "only answer") || strings.Contains(latest, "답변만") {
+	if strings.Contains(normalized, "only answer") || strings.Contains(latest, "답변만") {
 		return "latest user request narrows the response mode"
 	}
 	return ""

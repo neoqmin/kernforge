@@ -33,6 +33,17 @@ func TestNaturalLanguageReviewRoutesMentionToSelection(t *testing.T) {
 	}
 }
 
+func TestMaybeHandleNaturalLanguageReviewAllowsNilRuntime(t *testing.T) {
+	var rt *runtimeState
+	handled, err := rt.maybeHandleNaturalLanguageReview(context.Background(), "리뷰해줘", nil)
+	if err != nil {
+		t.Fatalf("maybeHandleNaturalLanguageReview nil runtime returned error: %v", err)
+	}
+	if handled {
+		t.Fatalf("nil runtime should not handle natural review")
+	}
+}
+
 func TestNaturalLanguageReviewRoutesFileMentionToFileContents(t *testing.T) {
 	root := t.TempDir()
 	rt := &runtimeState{
@@ -52,6 +63,41 @@ func TestNaturalLanguageReviewRoutesFileMentionToFileContents(t *testing.T) {
 	}
 	if len(opts.Paths) != 1 || opts.Paths[0] != wantPath {
 		t.Fatalf("expected file mention path, got %#v want %q", opts.Paths, wantPath)
+	}
+}
+
+func TestNaturalLanguageReviewRejectsMentionsOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "secret.cpp")
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	for _, request := range []string{
+		"@../secret.cpp 리뷰해줘",
+		"@../../secret.cpp:1-2 리뷰해줘",
+		"@" + outside + " 검토해줘",
+		"@" + outside + ":1-2 검토해줘",
+	} {
+		if opts, selection, ok := rt.naturalLanguageReviewOptions(request, nil); ok {
+			t.Fatalf("expected outside-workspace mention %q to be rejected, opts=%#v selection=%#v", request, opts, selection)
+		}
+	}
+}
+
+func TestNaturalLanguageReviewAllowsCleanedMentionInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	opts, _, ok := rt.naturalLanguageReviewOptions("@src/../main.cpp 검토해줘", nil)
+	if !ok {
+		t.Fatalf("expected cleaned inside-workspace mention to route")
+	}
+	wantPath := filepath.Join(root, "main.cpp")
+	if len(opts.Paths) != 1 || opts.Paths[0] != wantPath {
+		t.Fatalf("expected cleaned path %q, got %#v", wantPath, opts.Paths)
 	}
 }
 
@@ -135,6 +181,68 @@ func TestNaturalLanguageReviewRoutesGenericReviewToAuto(t *testing.T) {
 	}
 }
 
+func TestNaturalLanguageReviewRoutesReviewModePhraseToAuto(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	opts, selection, ok := rt.naturalLanguageReviewOptions("리뷰 모드로 검토해", nil)
+	if !ok {
+		t.Fatalf("expected review mode phrase to route")
+	}
+	if selection != nil {
+		t.Fatalf("did not expect selection for generic review mode request: %#v", selection)
+	}
+	if opts.Trigger != naturalReviewTrigger || opts.Target != reviewTargetAuto {
+		t.Fatalf("unexpected review mode opts: %#v", opts)
+	}
+}
+
+func TestNaturalLanguageReviewModeDoesNotSwallowReviewThenFix(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	if _, _, ok := rt.naturalLanguageReviewOptions("@main.cpp 리뷰 모드로 검토하고 수정해", nil); ok {
+		t.Fatalf("expected review mode plus fix request to continue to pre-fix repair flow")
+	}
+	if !looksLikeReviewBeforeFixIntent("@main.cpp 리뷰 모드로 검토하고 수정해") {
+		t.Fatalf("expected review mode plus fix request to be recognized as review-before-fix")
+	}
+	mode := resolveAgentRequestMode("@main.cpp 리뷰 모드로 검토하고 수정해", TurnIntentEditCode)
+	if mode.ReadOnlyAnalysis || mode.ReviewOnlyModeRequest || !mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
+		t.Fatalf("mixed review-mode and fix prompt must keep edit intent, got %#v", mode)
+	}
+	englishMode := resolveAgentRequestMode("@main.cpp reviewer stance로 보고 fix it", TurnIntentEditCode)
+	if englishMode.ReadOnlyAnalysis || englishMode.ReviewOnlyModeRequest || !englishMode.ExplicitEditRequest || englishMode.Intent != TurnIntentEditCode {
+		t.Fatalf("English mixed review/fix prompt must keep edit intent, got %#v", englishMode)
+	}
+}
+
+func TestNaturalLanguageReviewModeHonorsNoEditWording(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	opts, _, ok := rt.naturalLanguageReviewOptions("@main.cpp 수정은 하지 말고 리뷰 모드로 검토해", nil)
+	if !ok {
+		t.Fatalf("expected no-edit review mode request to route as review-only")
+	}
+	if opts.Target != reviewTargetChange || !opts.IncludeFileContents {
+		t.Fatalf("expected file-scoped review-only opts, got %#v", opts)
+	}
+	if looksLikeReviewBeforeFixIntent("@main.cpp 수정은 하지 말고 리뷰 모드로 검토해") {
+		t.Fatalf("no-edit wording must not be treated as review-before-fix")
+	}
+	mode := resolveAgentRequestMode("@main.cpp 수정은 하지 말고 리뷰 모드로 검토해", TurnIntentEditCode)
+	if !mode.ReadOnlyAnalysis || !mode.ReviewOnlyModeRequest || mode.ExplicitEditRequest || mode.Intent == TurnIntentEditCode {
+		t.Fatalf("no-edit review mode should remain read-only, got %#v", mode)
+	}
+}
+
 func TestNaturalLanguageReviewSkipsDesignDiscussion(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "", "", "", "default")
@@ -166,6 +274,135 @@ func TestNaturalLanguageReviewDoesNotSwallowReviewThenFix(t *testing.T) {
 	}
 	if _, _, ok := rt.naturalLanguageReviewOptions("이 코드 리뷰하고 버그 수정해줘", nil); ok {
 		t.Fatalf("expected review-and-fix request to continue to the agent pre-fix flow")
+	}
+}
+
+func TestAgentReplyReviewModeRunsReviewOnly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int value()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: selected function returns the wrong value",
+				"findings:",
+				"- severity: high",
+				"  category: correctness",
+				"  path: main.cpp",
+				"  symbol: value",
+				"  title: Wrong return value",
+				"  evidence: value returns 0",
+				"  impact: callers observe the wrong result",
+				"  required_fix: return 1 instead",
+				"  test_recommendation: add a focused value test",
+			}, "\n")}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.Reply(context.Background(), "@main.cpp 리뷰 모드로 검토해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("review mode should stop after one review model call, got %d", len(provider.requests))
+	}
+	if !strings.Contains(provider.requests[0].System, "structured review model") {
+		t.Fatalf("expected review harness request, got system=%q", provider.requests[0].System)
+	}
+	if !strings.Contains(provider.requests[0].Messages[0].Text, "read-only code review") {
+		t.Fatalf("expected review-mode prompt rule, got %q", provider.requests[0].Messages[0].Text)
+	}
+	if !strings.Contains(provider.requests[0].Messages[0].Text, "Request mode: analysis-only.") {
+		t.Fatalf("expected review-mode prompt to include enriched request context, got %q", provider.requests[0].Messages[0].Text)
+	}
+	if session.LastReviewRun == nil || session.LastReviewRun.Trigger != naturalReviewTrigger {
+		t.Fatalf("expected natural review run, got %#v", session.LastReviewRun)
+	}
+	for _, needle := range []string{"검토 결과:", "Wrong return value", "위치: main.cpp, 심볼 value", "요약:", "판정: needs_revision"} {
+		if !strings.Contains(reply, needle) {
+			t.Fatalf("expected review-only reply to contain %q, got %q", needle, reply)
+		}
+	}
+	if strings.Contains(strings.Join(sessionMessageTexts(session.Messages), "\n"), "수정 전에 리뷰를 완료") {
+		t.Fatalf("review-only mode must not inject implementation repair guidance, got %#v", session.Messages)
+	}
+	if session.ConversationState == nil || !strings.Contains(session.ConversationState.LastResult, "검토 결과") {
+		t.Fatalf("expected review-only reply to refresh conversation state, got %#v", session.ConversationState)
+	}
+	assistantEvents := 0
+	for _, event := range session.ConversationEvents {
+		if event.Kind == conversationEventKindAssistantReply {
+			assistantEvents++
+		}
+	}
+	if assistantEvents == 0 {
+		t.Fatalf("expected review-only reply to record assistant conversation event")
+	}
+}
+
+func TestAgentReplyReviewModeCanUseReviewerWithoutMainChatClient(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int value()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: no issues found",
+				"findings: []",
+			}, "\n")}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	agent := &Agent{
+		Config:         cfg,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "model",
+		Tools:          NewToolRegistry(),
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.Reply(context.Background(), "@main.cpp 리뷰 모드로 검토해")
+	if err != nil {
+		t.Fatalf("Reply review mode with reviewer-only client: %v", err)
+	}
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("expected reviewer-only review mode to make one review request, got %d", len(reviewer.requests))
+	}
+	if !strings.Contains(reply, "검토 결과") || !strings.Contains(reply, "판정: approved") {
+		t.Fatalf("expected review-mode reply from reviewer-only route, got %q", reply)
+	}
+
+	plainSession := NewSession(root, "scripted", "model", "", "default")
+	plainAgent := &Agent{
+		Config:    cfg,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   plainSession,
+		Store:     NewSessionStore(filepath.Join(root, "sessions-plain")),
+	}
+	if _, err := plainAgent.Reply(context.Background(), "일반 질문이야"); err == nil || !strings.Contains(err.Error(), "no model provider") {
+		t.Fatalf("expected non-review request without main client to keep provider error, got %v", err)
 	}
 }
 
@@ -700,6 +937,152 @@ func TestPreFixSecurityReviewUsesSingleFallbackRole(t *testing.T) {
 	}
 }
 
+func TestUIPolishReviewRequiresPrimaryForCorePaths(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	run := ReviewRun{
+		Mode: reviewModeUIPolish,
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"cmd/kernforge/verify.go", "cmd/kernforge/ui.go"},
+		},
+	}
+	plan := planReviewModels(cfg, run)
+	if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
+		t.Fatalf("core-path UI polish review should require primary reviewer, got %#v", plan.RequiredRoles)
+	}
+	if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
+		t.Fatalf("UI polish review should keep design reviewer, got %#v", plan.RequiredRoles)
+	}
+}
+
+func TestUIPolishReviewRequiresPrimaryForEmptyPathSet(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	run := ReviewRun{
+		Mode: reviewModeUIPolish,
+	}
+	plan := planReviewModels(cfg, run)
+	if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
+		t.Fatalf("empty-path UI polish review should require primary reviewer, got %#v", plan.RequiredRoles)
+	}
+	if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
+		t.Fatalf("empty-path UI polish review should keep design reviewer, got %#v", plan.RequiredRoles)
+	}
+}
+
+func TestUIPolishReviewAllowsDesignOnlyForUIPaths(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	run := ReviewRun{
+		Mode: reviewModeUIPolish,
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"docs/assets/review-panel.css", "docs/styles/theme.css"},
+		},
+	}
+	plan := planReviewModels(cfg, run)
+	if stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
+		t.Fatalf("UI-only polish review should not force primary reviewer, got %#v", plan.RequiredRoles)
+	}
+	if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
+		t.Fatalf("UI-only polish review should require design reviewer, got %#v", plan.RequiredRoles)
+	}
+}
+
+func TestExecuteReviewModelRunsUsesPlannedSingleRequiredRole(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: design-only review approved",
+				"findings:",
+			}, "\n")},
+		}},
+	}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "scripted", "model", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := &runtimeState{
+		cfg:       cfg,
+		agent:     agent,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   agent.Session,
+	}
+	run := ReviewRun{
+		ID:     "review-role-test",
+		Mode:   reviewModeUIPolish,
+		Target: reviewTargetChange,
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"docs/assets/review-panel.css"},
+		},
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff"},
+			Text:    "diff evidence",
+		},
+	}
+	run.ModelPlan = planReviewModels(cfg, run)
+	if role := reviewMainExecutionRole(run.ModelPlan); role != "design_reviewer" {
+		t.Fatalf("expected design reviewer main role before execution, got %q plan=%#v", role, run.ModelPlan)
+	}
+
+	_, reviewerRuns := executeReviewModelRuns(context.Background(), rt, root, &run)
+	if len(reviewerRuns) != 1 {
+		t.Fatalf("expected one reviewer run, got %#v", reviewerRuns)
+	}
+	if reviewerRuns[0].Role != "design_reviewer" {
+		t.Fatalf("expected main review run to use design role, got %#v", reviewerRuns[0])
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected one model request, got %d", len(provider.requests))
+	}
+	prompt := provider.requests[0].Messages[0].Text
+	if !strings.Contains(prompt, "Role: design_reviewer") {
+		t.Fatalf("expected planned design role in prompt, got %q", prompt)
+	}
+	if stringSliceContainsCI(run.ModelPlan.RequiredRoles, "primary_reviewer") {
+		t.Fatalf("main execution must not rewrite design-only plan to primary, got %#v", run.ModelPlan.RequiredRoles)
+	}
+	if !stringSliceContainsCI(run.ModelPlan.RequiredRoles, "design_reviewer") {
+		t.Fatalf("main execution must preserve design required role, got %#v", run.ModelPlan.RequiredRoles)
+	}
+	if _, ok := run.ModelPlan.AssignedModels["design_reviewer"]; !ok {
+		t.Fatalf("expected main model assignment on design role, got %#v", run.ModelPlan.AssignedModels)
+	}
+}
+
+func TestUIPolishReviewRequiresPrimaryForExecutableUIPaths(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	for _, changedPath := range []string{"cmd/kernforge/ui.go", "ui.ts", "components/Button.tsx"} {
+		run := ReviewRun{
+			Mode: reviewModeUIPolish,
+			ChangeSet: ReviewChangeSet{
+				ChangedPaths: []string{changedPath},
+			},
+		}
+		plan := planReviewModels(cfg, run)
+		if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
+			t.Fatalf("executable UI polish path %q should require primary reviewer, got %#v", changedPath, plan.RequiredRoles)
+		}
+		if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
+			t.Fatalf("executable UI polish path %q should keep design reviewer, got %#v", changedPath, plan.RequiredRoles)
+		}
+	}
+}
+
 func TestReviewRoleReasoningEffortDefaultsToAtLeastHigh(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai-codex-subscription"
@@ -732,6 +1115,27 @@ func TestReviewRoleReasoningEffortDefaultsToAtLeastHigh(t *testing.T) {
 	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "xhigh" {
 		t.Fatalf("review role should preserve xhigh configured effort, got %q", got)
 	}
+
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
+		Provider:        "openai-codex-subscription",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}
+	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "xhigh" {
+		t.Fatalf("same-route review role should preserve higher active main effort, got %q", got)
+	}
+
+	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
+		Provider:        "deepseek",
+		Model:           "deepseek-v4-pro",
+		ReasoningEffort: "high",
+	}
+	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "high" {
+		t.Fatalf("dedicated review route should keep its configured effort, got %q", got)
+	}
 }
 
 func TestFocusedPreFixBugHuntRaisesRoleEffortToHigh(t *testing.T) {
@@ -749,11 +1153,23 @@ func TestFocusedPreFixBugHuntRaisesRoleEffortToHigh(t *testing.T) {
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetSelection,
 		Mode:      reviewModeLiveFix,
-		Objective: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 	}
 
 	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "high" {
 		t.Fatalf("focused pre-fix bug hunt should raise low reviewer effort to high, got %q", got)
+	}
+	cfg.Review.RoleModels = nil
+	cfg.ReasoningEffort = "xhigh"
+	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "xhigh" {
+		t.Fatalf("focused pre-fix bug hunt should preserve explicit xhigh main effort, got %q", got)
+	}
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider:        "deepseek",
+			Model:           "deepseek-v4-pro",
+			ReasoningEffort: "low",
+		},
 	}
 	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
 		Provider:        "deepseek",
@@ -762,5 +1178,16 @@ func TestFocusedPreFixBugHuntRaisesRoleEffortToHigh(t *testing.T) {
 	}
 	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "xhigh" {
 		t.Fatalf("focused pre-fix bug hunt should preserve xhigh reviewer effort, got %q", got)
+	}
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
+		Provider:        "openai-codex-subscription",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}
+	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "xhigh" {
+		t.Fatalf("focused pre-fix bug hunt should not downgrade same-route xhigh main effort, got %q", got)
 	}
 }

@@ -1253,7 +1253,6 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 	for index := 0; index < len(messages); index++ {
 		msg := messages[index]
 		if msg.Role == "tool" {
-			out = append(out, orphanOpenAIToolMessageAsUser(msg))
 			continue
 		}
 		out = append(out, msg)
@@ -1303,9 +1302,6 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 				IsError:    isError,
 			})
 		}
-		for _, toolMsg := range orphanedToolMessages {
-			out = append(out, orphanOpenAIToolMessageAsUser(toolMsg))
-		}
 		index = next - 1
 	}
 	return out
@@ -1315,7 +1311,7 @@ func missingOpenAIToolResultText(messages []Message, next int) string {
 	if next >= 0 && next < len(messages) && messages[next].Role == "user" && userMessageLooksLikeRuntimeToolRedirect(messages[next].Text) {
 		return "NOTICE: tool call was superseded before execution by runtime guidance in the next user message. Do not treat this as a tool infrastructure failure; follow the next user message instead."
 	}
-	return "ERROR: tool result was missing from the saved transcript; recover by re-running the tool if the result is still needed."
+	return "aborted"
 }
 
 func userMessageLooksLikeRuntimeToolRedirect(text string) bool {
@@ -1346,26 +1342,6 @@ func userMessageLooksLikeRuntimeToolRedirect(text string) bool {
 		"리뷰어 피드백",
 		"런타임 게이트",
 	)
-}
-
-func orphanOpenAIToolMessageAsUser(msg Message) Message {
-	toolName := strings.TrimSpace(msg.ToolName)
-	toolCallID := strings.TrimSpace(msg.ToolCallID)
-	parts := []string{"Recovered transcript note: a saved tool result appeared without a matching preceding assistant tool_call, so it is provided as plain context instead of an API tool message."}
-	if toolName != "" {
-		parts = append(parts, "tool="+toolName)
-	}
-	if toolCallID != "" {
-		parts = append(parts, "tool_call_id="+toolCallID)
-	}
-	if strings.TrimSpace(msg.Text) != "" {
-		parts = append(parts, "result:\n"+msg.Text)
-	}
-	return Message{
-		Role:    "user",
-		Text:    strings.Join(parts, "\n"),
-		IsError: msg.IsError,
-	}
 }
 
 func normalizeOpenAIToolCallArguments(raw string) string {

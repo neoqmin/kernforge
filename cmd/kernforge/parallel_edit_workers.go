@@ -856,6 +856,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 		scheduler = defaultModelRouteScheduler()
 	}
 	policy = policy.normalized()
+	req = requestWithRouteReasoningEffort(cfg, client, req)
 	route := modelRouteForRequest(cfg, client, req)
 	limit := policy.LimitFor(route)
 	progress := req.OnProgressEvent

@@ -178,10 +178,20 @@ func LoadConfig(cwd string) (Config, error) {
 	applyEnv(&cfg)
 	normalizeConfigPaths(&cfg)
 	applyActiveProfileRoleModels(&cfg)
+	applyReasoningEffortEnvOverride(&cfg)
 	if err := EnsureUserConfig(cfg); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+func applyReasoningEffortEnvOverride(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if raw := strings.TrimSpace(os.Getenv("KERNFORGE_REASONING_EFFORT")); raw != "" {
+		cfg.ReasoningEffort = normalizeReasoningEffort(raw)
+	}
 }
 
 // LegacyDefaultMigration captures one config field whose stored value matched

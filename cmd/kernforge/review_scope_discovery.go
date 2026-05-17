@@ -38,7 +38,7 @@ type reviewScopeSignalRule struct {
 
 func discoverReviewScope(root string, request string, paths []string) ReviewScopeDiscovery {
 	candidateFiles := reviewScopeCandidateFiles(root, request, paths)
-	candidateSymbols := reviewScopeCandidateSymbols(request)
+	candidateSymbols := reviewScopeFilterPathDerivedSymbols(reviewScopeCandidateSymbols(request), candidateFiles)
 	searchTerms := reviewScopeSearchTerms(request, candidateFiles)
 	scopeWidth, confidence := reviewScopeWidth(request, candidateFiles, candidateSymbols)
 	discovery := ReviewScopeDiscovery{
@@ -53,6 +53,36 @@ func discoverReviewScope(root string, request string, paths []string) ReviewScop
 		discovery.Warnings = append(discovery.Warnings, "deterministic scope discovery found a broad review target; rerun with a narrower path, symbol, or search result before treating findings as complete")
 	}
 	return discovery
+}
+
+func reviewScopeFilterPathDerivedSymbols(symbols []string, candidateFiles []string) []string {
+	if len(symbols) == 0 || len(candidateFiles) == 0 {
+		return symbols
+	}
+	pathDerived := map[string]bool{}
+	for _, file := range candidateFiles {
+		base := strings.TrimSpace(filepath.Base(filepath.ToSlash(file)))
+		if base == "." || base == "/" || base == "" {
+			continue
+		}
+		pathDerived[strings.ToLower(base)] = true
+		withoutExt := strings.TrimSuffix(base, filepath.Ext(base))
+		if withoutExt != "" {
+			pathDerived[strings.ToLower(withoutExt)] = true
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, symbol := range symbols {
+		symbol = strings.TrimSpace(symbol)
+		key := strings.ToLower(strings.TrimSuffix(symbol, "()"))
+		if key == "" || seen[key] || pathDerived[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, symbol)
+	}
+	return out
 }
 
 func reviewScopeSignals(discovery ReviewScopeDiscovery, request string) ([]ReviewDomainSignal, []ReviewRiskSignal) {

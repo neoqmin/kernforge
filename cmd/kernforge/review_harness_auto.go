@@ -33,7 +33,14 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		a.Session.LastReviewRun.ReviewFingerprint != "" &&
 		a.Session.LastReviewRun.ReviewFingerprint == strings.TrimSpace(lastFingerprint) &&
 		postChangeReviewRunStillMatchesSessionEvidence(a.Session.LastReviewRun, a.Session) {
-		return false, false, "", lastFingerprint, nil
+		cachedRun := *a.Session.LastReviewRun
+		needsRevision := cachedRun.Gate.Verdict == reviewVerdictNeedsRevision ||
+			cachedRun.Gate.Verdict == reviewVerdictBlocked ||
+			cachedRun.Gate.Verdict == reviewVerdictInsufficientEvidence
+		if !needsRevision {
+			return false, false, "", lastFingerprint, nil
+		}
+		return true, true, formatPostChangeReviewFeedback(cachedRun, true), lastFingerprint, nil
 	}
 	if a.EmitProgress != nil {
 		a.EmitProgress(localizedText(a.Config, "Running automatic post-change review...", "자동 변경 후 리뷰를 실행합니다..."))
@@ -44,7 +51,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		Target:          reviewTargetChange,
 		Request:         request,
 		IncludeGitDiff:  true,
-		NoModel:         !reviewHarnessCanUseAnyModel(a),
+		NoModel:         !reviewHarnessHasConfiguredModelRoute(a),
 		AutoTriggered:   true,
 		AutoFollowUp:    reviewCfg.AutoFollowUp,
 		MaxContextChars: reviewFocusedMaxContextChars,
@@ -278,7 +285,9 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 		strings.HasPrefix(lower, "git_status 실패:")
 	hasInternalReviewPrefix := strings.HasPrefix(lower, "review-first pass completed before making edits.") ||
 		strings.HasPrefix(lower, "this is a follow-up repair request for the latest blocking review findings.") ||
+		strings.HasPrefix(lower, "show the pre-fix review findings to the user before editing.") ||
 		strings.HasPrefix(lower, "수정 전에 리뷰를 완료했습니다.") ||
+		strings.HasPrefix(lower, "수정 전 리뷰 finding을 사용자에게 먼저 보여줘야 합니다.") ||
 		strings.HasPrefix(lower, "직전 리뷰의 차단 finding을 수정하는 후속 요청입니다.")
 
 	return strings.HasPrefix(lower, "automatic pre-write review ") ||
@@ -307,6 +316,8 @@ func looksLikePreWriteInternalContextMessage(text string) bool {
 		strings.HasPrefix(lower, "your latest read_file result") ||
 		strings.HasPrefix(lower, "the same tool failure repeated") ||
 		strings.HasPrefix(lower, "recovery mode:") ||
+		strings.HasPrefix(lower, "pre-write 리뷰가 이미 수정안을 차단했고") ||
+		strings.HasPrefix(lower, "the pre-write review already blocked the edit") ||
 		strings.HasPrefix(lower, "next step requirements:") ||
 		strings.HasPrefix(lower, "use the extra turns to finish the investigation or fix") ||
 		strings.HasPrefix(lower, "the normal tool budget has been exhausted") ||
@@ -393,10 +404,20 @@ func preFixRepairObligationFindings(run ReviewRun) []ReviewFinding {
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		return nil
 	}
+	blockingIDs := reviewFindingIDSet(run.Gate.BlockingFindings)
+	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
 	out := make([]ReviewFinding, 0, len(run.Findings))
 	for _, finding := range run.Findings {
 		finding.Normalize()
 		if strings.TrimSpace(finding.ID) == "" {
+			continue
+		}
+		if blockingIDs[finding.ID] && preWritePreFixFindingIsConcreteRepairObligation(finding) {
+			out = append(out, finding)
+			continue
+		}
+		if warningIDs[finding.ID] && preWritePreFixWarningIsConcreteRepairObligation(finding) {
+			out = append(out, finding)
 			continue
 		}
 		if reviewFindingBlocksGate(run, finding) {
@@ -431,8 +452,58 @@ func preWriteCarriedRepairObligations(findings []ReviewFinding) []ReviewFinding 
 	return out
 }
 
+func formatPreWriteCarriedRepairObligationsFeedback(run ReviewRun, korean bool) string {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || len(run.RepairFindings) == 0 {
+		return ""
+	}
+	findings := preWriteCarriedRepairObligations(run.RepairFindings)
+	if len(findings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if korean {
+		b.WriteString("계속 유효한 pre-fix 필수 RF:\n")
+		b.WriteString("- 이전 edit proposal은 파일에 적용되지 않았습니다. 다음 수정안은 최신 pre-write blocker만 덧붙이는 delta가 아니라, 아래 필수 RF 전체를 현재 파일 기준 standalone patch로 다시 만족해야 합니다.\n")
+		b.WriteString("- 최신 pre-write finding은 이전 proposal이 왜 불완전했는지를 보여주는 추가 근거입니다. 원래 RF 목록에서 조용히 빠지는 항목이 있으면 안 됩니다.\n")
+		b.WriteString(renderReviewInlineFindingsLocalized(ReviewRun{Findings: findings}, true, true))
+	} else {
+		b.WriteString("Still-active required pre-fix RFs:\n")
+		b.WriteString("- The previous edit proposal was not applied to disk. The next proposal must not be a delta that only adds the latest pre-write blocker; it must again satisfy every required RF below as a standalone patch against the current file.\n")
+		b.WriteString("- Treat the latest pre-write finding as extra evidence of why the previous proposal was incomplete. Do not silently drop any original RF obligation.\n")
+		b.WriteString(renderReviewInlineFindings(ReviewRun{Findings: findings}, true))
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func preWritePreFixWarningShouldBeRepairObligation(finding ReviewFinding) bool {
 	return reviewFindingShouldBeRepairPlanWarning(finding)
+}
+
+func preWritePreFixFindingIsConcreteRepairObligation(finding ReviewFinding) bool {
+	finding.Normalize()
+	if strings.EqualFold(finding.Category, "test_gap") ||
+		strings.EqualFold(finding.Category, "evidence_gap") ||
+		reviewFindingLooksNonActionablePlaceholder(finding) {
+		return false
+	}
+	return strings.TrimSpace(finding.RequiredFix) != "" ||
+		strings.TrimSpace(finding.Path) != "" ||
+		strings.TrimSpace(finding.Symbol) != "" ||
+		strings.TrimSpace(finding.Title) != ""
+}
+
+func preWritePreFixWarningIsConcreteRepairObligation(finding ReviewFinding) bool {
+	finding.Normalize()
+	if reviewSeverityRank(finding.Severity) != reviewSeverityRank(reviewSeverityMedium) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(finding.Category)) {
+	case "correctness", "stability", "performance", "security", "operational_risk":
+	default:
+		return false
+	}
+	return reviewFindingShouldBeRepairPlanWarning(finding) &&
+		preWritePreFixFindingIsConcreteRepairObligation(finding)
 }
 
 func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request string, lastFingerprint *string, revisionCount *int, exhaustedNudge *bool) (bool, error) {
@@ -534,7 +605,16 @@ func (a *Agent) shouldSkipPostChangeReviewForKnownFinalBlocker(reply string, unr
 	if !mentionsVerificationBlocker {
 		return false
 	}
-	if unresolvedVerification || (a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures()) {
+	if a.Session.LastVerification != nil {
+		report := *a.Session.LastVerification
+		if report.WasSkipped() {
+			return false
+		}
+		if report.HasFailures() {
+			return true
+		}
+	}
+	if unresolvedVerification && a.Session.LastVerification == nil {
 		return true
 	}
 	if a.Session.AcceptanceContract != nil {
@@ -566,11 +646,49 @@ func postChangeReviewHasDedicatedModel(a *Agent) bool {
 	return false
 }
 
+func reviewHarnessHasConfiguredModelRoute(a *Agent) bool {
+	if a == nil {
+		return false
+	}
+	if a.Client != nil && reviewMainModelRouteConfigured(a.Config) {
+		return true
+	}
+	if a.ReviewerClient != nil && strings.TrimSpace(a.ReviewerModel) != "" {
+		return true
+	}
+	if a.AuxReviewerClient != nil && strings.TrimSpace(a.AuxReviewerModel) != "" {
+		return true
+	}
+	reviewCfg := configReviewHarness(a.Config)
+	for _, roleCfg := range reviewCfg.RoleModels {
+		if strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewHarnessHasPreFixModelRoute(a *Agent) bool {
+	if reviewHarnessHasConfiguredModelRoute(a) {
+		return true
+	}
+	if a == nil {
+		return false
+	}
+	if a.ReviewerClient != nil && strings.TrimSpace(a.ReviewerModel) != "" {
+		return true
+	}
+	if a.AuxReviewerClient != nil && strings.TrimSpace(a.AuxReviewerModel) != "" {
+		return true
+	}
+	return false
+}
+
 func reviewHarnessCanUseAnyModel(a *Agent) bool {
 	if a == nil {
 		return false
 	}
-	if a.Client != nil && strings.TrimSpace(a.Config.Model) != "" {
+	if a.Client != nil && reviewMainModelRouteConfigured(a.Config) {
 		return true
 	}
 	return postChangeReviewHasDedicatedModel(a)
@@ -643,10 +761,18 @@ func formatReviewerGateUnavailableToolError(cfg Config, run ReviewRun) string {
 		detail := firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), "reviewer output was too weak")
 		details = append(details, fmt.Sprintf("%s status=%s quality=%s: %s", role, status, quality, detail))
 	}
-	if korean {
-		return "필수 리뷰 단계의 모델 route가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 실패한 route 문제를 보고하세요: " + strings.Join(details, " | ")
+	hint := ""
+	if reviewRunHasReviewerTimeoutFailure(&run) {
+		if korean {
+			hint = " 다음 reviewer call은 timeout을 자동으로 한 단계 늘립니다; `/review models`, `/review models clear primary`, `/model` 중 하나로도 복구할 수 있습니다."
+		} else {
+			hint = " The next reviewer call will automatically extend the timeout once; recovery options are `/review models`, `/review models clear primary`, or `/model`."
+		}
 	}
-	return "required review route failed or returned weak output; stop editing and report the failed route issue: " + strings.Join(details, " | ")
+	if korean {
+		return "필수 리뷰 단계의 모델 route가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 실패한 route 문제를 보고하세요: " + strings.Join(details, " | ") + hint
+	}
+	return "required review route failed or returned weak output; stop editing and report the failed route issue: " + strings.Join(details, " | ") + hint
 }
 
 func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
@@ -660,6 +786,10 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 		}
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
+		}
+		if carried := formatPreWriteCarriedRepairObligationsFeedback(run, true); carried != "" {
+			b.WriteString("\n\n")
+			b.WriteString(carried)
 		}
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
 			b.WriteString("\n\n")
@@ -691,6 +821,10 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
 	}
+	if carried := formatPreWriteCarriedRepairObligationsFeedback(run, false); carried != "" {
+		b.WriteString("\n\n")
+		b.WriteString(carried)
+	}
 	if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
 		b.WriteString("\n\n")
 		b.WriteString(run.RepairPlan.Prompt)
@@ -718,12 +852,12 @@ func preWriteBlockedProposalStandaloneGuidance(korean bool) string {
 	if korean {
 		return strings.Join([]string{
 			"- 차단된 이전 patch는 파일에 적용되지 않았습니다. 다음 edit proposal은 이전 patch에 덧붙이는 delta가 아니라, 현재 파일에 바로 적용 가능한 완전한 standalone patch여야 합니다.",
-			"- 이전 patch가 대부분 맞고 include나 작은 보강만 빠졌더라도 include-only patch를 보내지 마세요. 이전 코드 hunk와 보강 hunk를 함께 다시 제출하세요.",
+			"- 이전 patch가 대부분 맞고 작은 보강만 빠졌더라도 보강 delta만 보내지 마세요. 필요한 hunk를 모두 포함한 standalone patch로 다시 제출하세요.",
 		}, "\n")
 	}
 	return strings.Join([]string{
 		"- The previously blocked patch was not applied to disk. The next edit proposal must be a complete standalone patch for the current file, not a delta on top of the blocked patch.",
-		"- If the previous patch was mostly correct but only missed an include or a small reinforcement, do not send an include-only patch. Resubmit the previous code hunks together with the reinforcement hunk.",
+		"- If the previous patch was mostly correct but only missed a small reinforcement, do not send only the reinforcement delta. Resubmit a standalone patch containing every required hunk.",
 	}, "\n")
 }
 
@@ -739,11 +873,15 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
 		}
+		if carried := formatPreWriteCarriedRepairObligationsFeedback(run, true); carried != "" {
+			b.WriteString("\n\n")
+			b.WriteString(carried)
+		}
 		b.WriteString("\n\n수정 필요한 경고 finding:\n")
 		b.WriteString(renderReviewInlineFindingsLocalized(ReviewRun{Findings: warnings}, true, true))
 		b.WriteString("\n\n구현 규칙:\n")
 		b.WriteString("- 이 pre-write 경고를 필수 수정 지침으로 취급하세요.\n")
-		b.WriteString("- 요청된 API surface와 구현 근거가 모두 보이도록 수정안을 다시 작성하세요.\n")
+		b.WriteString("- 요청된 코드 표면과 구현 근거가 모두 보이도록 수정안을 다시 작성하세요.\n")
 		b.WriteString("- 이전의 불완전한 patch를 쓰지 마세요.\n")
 		b.WriteString(preWriteBlockedProposalStandaloneGuidance(true))
 		b.WriteString("\n")
@@ -765,11 +903,15 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
 	}
+	if carried := formatPreWriteCarriedRepairObligationsFeedback(run, false); carried != "" {
+		b.WriteString("\n\n")
+		b.WriteString(carried)
+	}
 	b.WriteString("\n\nActionable warning findings:\n")
 	b.WriteString(renderReviewInlineFindings(ReviewRun{Findings: warnings}, true))
 	b.WriteString("\n\nImplementation rules:\n")
 	b.WriteString("- Treat these pre-write warnings as required repair guidance.\n")
-	b.WriteString("- Revise the proposed edit so the requested API surface and implementation evidence are both present.\n")
+	b.WriteString("- Revise the proposed edit so the requested code surface and implementation evidence are both present.\n")
 	b.WriteString("- Do not write the previous incomplete patch.\n")
 	b.WriteString("\n")
 	b.WriteString(preWriteBlockedProposalStandaloneGuidance(false))
@@ -892,8 +1034,9 @@ func reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding ReviewFinding) boo
 		"remaining cleanup",
 		"success calculation",
 		"m_volumepathmap",
-		"findnextvolume",
-		"findvolumeclose",
+		"loop continuation",
+		"cleanup path",
+		"close handle",
 		"function 후반부",
 		"함수 후반부",
 		"변경 결과를 확인할 증거",
@@ -1058,12 +1201,18 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 		action := "diff preview로 진행하지 않습니다."
 		if proceedToPreview {
 			action = "diff preview로 진행합니다."
+			if preWriteWarningsAreHarnessEvidenceOnly(run) {
+				action += " 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence 확인 부족입니다."
+			}
 		}
 		return strings.TrimSpace(fmt.Sprintf("자동 쓰기 전 리뷰가 완료되었습니다. 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s", verdict, blockerCount, warningCount, content, action, report))
 	}
 	action := "Not proceeding to diff preview."
 	if proceedToPreview {
 		action = "Proceeding to diff preview."
+		if preWriteWarningsAreHarnessEvidenceOnly(run) {
+			action += " Remaining warnings are review-evidence visibility gaps, not confirmed unresolved code blockers."
+		}
 	}
 	return strings.TrimSpace(fmt.Sprintf("Automatic pre-write review completed. Final review result: %s (blockers=%d, warnings=%d). %s %s%s", verdict, blockerCount, warningCount, content, action, report))
 }
@@ -1141,6 +1290,9 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 		} else {
 			b.WriteString("\n- 진행: diff preview로 진행하지 않습니다.")
 		}
+		if proceedToPreview && preWriteWarningsAreHarnessEvidenceOnly(run) {
+			b.WriteString("\n- 참고: 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence/after-preview 확인 부족 경고입니다.")
+		}
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n- 요약: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
@@ -1154,6 +1306,9 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 		} else {
 			b.WriteString("\n- Next: do not proceed to diff preview.")
 		}
+		if proceedToPreview && preWriteWarningsAreHarnessEvidenceOnly(run) {
+			b.WriteString("\n- Note: remaining warnings are review-evidence or after-preview visibility gaps, not confirmed unresolved code blockers.")
+		}
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n- Summary: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
@@ -1164,7 +1319,11 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 		} else {
 			b.WriteString("\n\nRepair targets checked:")
 		}
+		unresolvedRepairIDs := preWriteUnresolvedRepairIDs(run)
 		for _, finding := range limitReviewFindings(run.RepairFindings, 8) {
+			if unresolvedRepairIDs[strings.TrimSpace(finding.ID)] {
+				finding.ResolutionStatus = "unresolved"
+			}
 			writePreWriteVisibleRepairTarget(&b, finding, korean)
 		}
 	}
@@ -1201,6 +1360,45 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func preWriteUnresolvedRepairIDs(run ReviewRun) map[string]bool {
+	out := map[string]bool{}
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if !strings.Contains(strings.ToLower(finding.Title), "required repair unresolved") {
+			continue
+		}
+		if !reviewFindingBlocksGate(run, finding) && !strings.EqualFold(strings.TrimSpace(finding.Severity), reviewSeverityBlocker) {
+			continue
+		}
+		for _, ref := range finding.FixRefs {
+			ref = strings.TrimSpace(ref)
+			if ref != "" {
+				out[ref] = true
+			}
+		}
+	}
+	return out
+}
+
+func preWriteWarningsAreHarnessEvidenceOnly(run ReviewRun) bool {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") ||
+		len(run.Gate.BlockingFindings) > 0 ||
+		len(run.Gate.WarningFindings) == 0 {
+		return false
+	}
+	warnings := reviewProgressFindingsByID(run, run.Gate.WarningFindings, len(run.Gate.WarningFindings))
+	if len(warnings) == 0 {
+		return false
+	}
+	for _, finding := range warnings {
+		finding.Normalize()
+		if !strings.EqualFold(finding.Category, "evidence_gap") || !reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding) {
+			return false
+		}
+	}
+	return true
 }
 
 func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding, korean bool) {
@@ -1247,9 +1445,9 @@ func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding,
 	}
 	if strings.TrimSpace(finding.ResolutionStatus) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 해결 상태: %s", reviewVisibleInlineText(finding.ResolutionStatus))
+			fmt.Fprintf(b, "\n  - 해결 상태: %s", reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, true))
 		} else {
-			fmt.Fprintf(b, "\n  - Resolution status: %s", reviewVisibleInlineText(finding.ResolutionStatus))
+			fmt.Fprintf(b, "\n  - Resolution status: %s", reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, false))
 		}
 	}
 	if strings.TrimSpace(finding.TestRecommendation) != "" {
@@ -1258,6 +1456,19 @@ func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding,
 		} else {
 			fmt.Fprintf(b, "\n  - Verification: %s", reviewVisibleInlineText(finding.TestRecommendation))
 		}
+	}
+}
+
+func reviewRepairResolutionStatusVisibleText(status string, korean bool) string {
+	status = normalizeReviewRepairResolutionStatus(status)
+	switch status {
+	case "evidence_unconfirmed":
+		if korean {
+			return "evidence_unconfirmed (리뷰 evidence 부족으로 확인 불가, 코드 미해결로 확정된 것은 아님)"
+		}
+		return "evidence_unconfirmed (review evidence was insufficient; not a confirmed unresolved code blocker)"
+	default:
+		return reviewVisibleInlineText(status)
 	}
 }
 

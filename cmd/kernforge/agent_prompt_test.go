@@ -316,6 +316,27 @@ func TestSystemPromptIncludesNarrowPatchPayloadGuidance(t *testing.T) {
 	}
 }
 
+func TestSystemPromptDocumentsScopedMutatingShellContract(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Sample.cpp 버그를 수정해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	for _, want := range []string{
+		"allow_workspace_writes=true",
+		"write_paths",
+		"formatter, code generator, or setup command",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected scoped mutating shell contract %q in system prompt, got %q", want, prompt)
+		}
+	}
+}
+
 func TestSystemPromptForbidsGitMutationsWithoutExplicitRequest(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

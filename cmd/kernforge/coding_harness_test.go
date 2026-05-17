@@ -257,6 +257,81 @@ func TestPreFinalHarnessBlocksVerificationClaimWithoutEvidence(t *testing.T) {
 	}
 }
 
+func TestDiffAwareHarnessBlocksKoreanBuildPassClaimWithoutEvidence(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-test",
+		WorkspaceRoot: root,
+		Status:        patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-tx-test-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "create",
+				After: HarnessFileFingerprint{
+					Path:   "main.go",
+					Kind:   "file",
+					Exists: true,
+				},
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	report := agent.buildDiffAwareSelfReviewReport("검증:\n- `msbuild \"SampleApp/SampleApp.sln\" /m` 실행 및 통과 확인했습니다.", false)
+	if !codingHarnessReportHasFinding(report.Findings, "Verification claim has no recorded evidence") {
+		t.Fatalf("expected Korean verification success claim to be blocked, got %#v", report.Findings)
+	}
+}
+
+func TestDiffAwareHarnessAllowsKoreanBuildSkippedDisclosure(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-test",
+		WorkspaceRoot: root,
+		Status:        patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-tx-test-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "create",
+				After: HarnessFileFingerprint{
+					Path:   "main.go",
+					Kind:   "file",
+					Exists: true,
+				},
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	report := agent.buildDiffAwareSelfReviewReport("검증:\n- `msbuild \"SampleApp/SampleApp.sln\" /m` 빌드는 실행하지 않았습니다.", false)
+	if codingHarnessReportHasFinding(report.Findings, "Verification claim has no recorded evidence") {
+		t.Fatalf("expected skipped verification disclosure to be allowed, got %#v", report.Findings)
+	}
+}
+
+func codingHarnessReportHasFinding(findings []CodingHarnessFinding, title string) bool {
+	for _, finding := range findings {
+		if finding.Title == title {
+			return true
+		}
+	}
+	return false
+}
+
 func TestManualVerificationClearsPendingCheck(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -279,6 +354,58 @@ func TestManualVerificationClearsPendingCheck(t *testing.T) {
 
 	if hasPendingVerificationCheck(session) {
 		t.Fatalf("expected manual verification-like shell result to clear pending verification check, got %#v", session.TaskState.PendingChecks)
+	}
+}
+
+func TestDeclinedVerificationDoesNotClearPendingCheckOrCountAsEvidence(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		PendingChecks: []string{verificationPendingCheck},
+	}
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	agent.noteToolExecutionResultDetailed(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "verification command skipped because the user declined to run it",
+		Meta: map[string]any{
+			"effect":                   "execute",
+			"verification_like":        true,
+			"verification_status":      string(VerificationSkipped),
+			"verification_evidence":    false,
+			"verification_declined":    true,
+			"command_execution_status": "declined",
+			"success":                  true,
+		},
+	}, nil)
+
+	if !hasPendingVerificationCheck(session) {
+		t.Fatalf("declined verification must leave the pending verification check in place")
+	}
+	if sessionHasSuccessfulVerificationEvidence(session) {
+		t.Fatalf("declined verification must not count as successful evidence")
+	}
+}
+
+func TestSkippedVerificationReportIsNotSuccessfulEvidence(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "build",
+			Status: VerificationSkipped,
+			Output: "verification skipped because the user declined",
+		}},
+	}
+
+	if sessionHasSuccessfulVerificationEvidence(session) {
+		t.Fatalf("skipped-only verification report must not count as successful evidence")
+	}
+	session.LastVerification.Steps[0].Status = VerificationPassed
+	if !sessionHasSuccessfulVerificationEvidence(session) {
+		t.Fatalf("passed verification report should count as successful evidence")
 	}
 }
 

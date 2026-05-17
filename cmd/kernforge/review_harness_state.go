@@ -222,7 +222,7 @@ func buildSingleModelReviewPolicy(run ReviewRun, hasCrossReviewer bool) SingleMo
 		policy.VerificationObligations = append(policy.VerificationObligations, "single-model pre-write review must use the frozen diff and must not create a new patch")
 	}
 	if policy.RequiresRFObligationStatus {
-		policy.VerificationObligations = append(policy.VerificationObligations, "pre-fix repair findings require resolved, partial, unresolved, or verification-needed status")
+		policy.VerificationObligations = append(policy.VerificationObligations, "pre-fix repair findings require resolved, partial, unresolved, verification-needed, or evidence-unconfirmed status")
 	}
 	return policy
 }
@@ -258,7 +258,7 @@ func buildReviewApprovalLedger(rt *runtimeState, run ReviewRun) ReviewApprovalLe
 			strings.EqualFold(run.Gate.Verdict, reviewVerdictApprovedWithWarnings),
 	}
 	if rt != nil && rt.session != nil && rt.session.LastVerification != nil {
-		ledger.VerificationPassed = !rt.session.LastVerification.HasFailures()
+		ledger.VerificationPassed = reviewApprovalLedgerVerificationPassed(rt.session, run)
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		if ledger.ReviewGateApproved {
@@ -269,6 +269,28 @@ func buildReviewApprovalLedger(rt *runtimeState, run ReviewRun) ReviewApprovalLe
 		}
 	}
 	return ledger
+}
+
+func reviewApprovalLedgerVerificationPassed(session *Session, run ReviewRun) bool {
+	if session == nil || session.LastVerification == nil {
+		return false
+	}
+	report := *session.LastVerification
+	changedPaths := reviewApprovalLedgerChangedPaths(session, run)
+	if !verificationReportCoversCurrentPatch(session, report, time.Time{}, changedPaths) {
+		return false
+	}
+	return !report.HasFailures() && report.HasPassedStep()
+}
+
+func reviewApprovalLedgerChangedPaths(session *Session, run ReviewRun) []string {
+	var paths []string
+	paths = append(paths, run.ChangeSet.ChangedPaths...)
+	paths = append(paths, run.Evidence.ChangedPaths...)
+	if len(paths) == 0 {
+		paths = append(paths, sessionPatchTransactionChangedPaths(session)...)
+	}
+	return normalizeTaskStateList(paths, 128)
 }
 
 func buildReviewStateTransitions(run ReviewRun) []ReviewStateTransition {

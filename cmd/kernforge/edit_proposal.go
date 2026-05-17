@@ -10,6 +10,8 @@ import (
 
 type ApplyEditProposalTool struct{ ws Workspace }
 
+const editProposalExpectedPreviewLimit = 12000
+
 func NewApplyEditProposalTool(ws Workspace) ApplyEditProposalTool {
 	return ApplyEditProposalTool{ws: ws}
 }
@@ -44,7 +46,10 @@ func (t ApplyEditProposalTool) Execute(ctx context.Context, input any) (string, 
 }
 
 func (t ApplyEditProposalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	proposal := editProposalFromToolInput(args)
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	all := boolValue(args, "all", false)
@@ -55,8 +60,26 @@ func (t ApplyEditProposalTool) ExecuteDetailed(ctx context.Context, input any) (
 	}, err
 }
 
+func editProposalFingerprintTargetForPaths(paths []string) string {
+	normalized := normalizeEditProposalPathList(paths, 0)
+	if len(normalized) == 0 {
+		return ""
+	}
+	if len(normalized) == 1 {
+		return normalized[0]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "paths:%d:", len(normalized))
+	for _, path := range normalized {
+		fmt.Fprintf(&b, "%d:", len(path))
+		b.WriteString(path)
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
 func editProposalsFromPreview(preview EditPreview) []EditProposal {
-	paths := normalizeTaskStateList(preview.Paths, 64)
+	paths := normalizeEditProposalPathList(preview.Paths, 0)
 	if len(paths) == 0 {
 		paths = []string{""}
 	}
@@ -64,24 +87,59 @@ func editProposalsFromPreview(preview EditPreview) []EditProposal {
 	if operation == "" {
 		operation = inferEditProposalOperation(preview)
 	}
-	expected := compactPromptSection(preview.Preview, 12000)
-	fingerprint := computeReviewFingerprint(operation, strings.Join(paths, ","), preview.Preview)
+	expected := compactEditProposalExpectedPreview(preview.Preview)
+	expectedComplete := editProposalExpectedPreviewIsComplete(preview.Preview)
+	fingerprint := computeReviewFingerprint(operation, editProposalFingerprintTargetForPaths(paths), preview.Preview)
+	if len(paths) > 1 {
+		return normalizeEditProposals([]EditProposal{{
+			Files:                     paths,
+			Operation:                 operation,
+			Rationale:                 strings.TrimSpace(preview.Title),
+			Risk:                      editProposalRiskForOperation(operation, len(paths)),
+			ExpectedPreview:           expected,
+			ExpectedComplete:          boolPointer(expectedComplete),
+			PreviewFingerprint:        fingerprint,
+			trustedPreviewFingerprint: fingerprint,
+		}})
+	}
 	var proposals []EditProposal
-	for i, path := range paths {
-		proposalPreview := expected
-		if i > 0 && len(paths) > 1 {
-			proposalPreview = ""
-		}
+	for _, path := range paths {
 		proposals = append(proposals, EditProposal{
-			File:               filepath.ToSlash(strings.TrimSpace(path)),
-			Operation:          operation,
-			Rationale:          strings.TrimSpace(preview.Title),
-			Risk:               editProposalRiskForOperation(operation, len(paths)),
-			ExpectedPreview:    proposalPreview,
-			PreviewFingerprint: fingerprint,
+			File:                      filepath.ToSlash(strings.TrimSpace(path)),
+			Operation:                 operation,
+			Rationale:                 strings.TrimSpace(preview.Title),
+			Risk:                      editProposalRiskForOperation(operation, len(paths)),
+			ExpectedPreview:           expected,
+			ExpectedComplete:          boolPointer(expectedComplete),
+			PreviewFingerprint:        fingerprint,
+			trustedPreviewFingerprint: fingerprint,
 		})
 	}
 	return normalizeEditProposals(proposals)
+}
+
+func bindEditProposalPreview(proposal EditProposal, operation string, fingerprintTarget string, previewText string) EditProposal {
+	fingerprint := computeReviewFingerprint(operation, fingerprintTarget, previewText)
+	proposal.ExpectedPreview = compactEditProposalExpectedPreview(previewText)
+	proposal.ExpectedComplete = boolPointer(editProposalExpectedPreviewIsComplete(previewText))
+	proposal.PreviewFingerprint = fingerprint
+	proposal.trustedPreviewFingerprint = fingerprint
+	return proposal
+}
+
+func compactEditProposalExpectedPreview(previewText string) string {
+	return compactEditProposalPayloadForEvidence(previewText, editProposalExpectedPreviewLimit)
+}
+
+func editProposalExpectedPreviewIsComplete(previewText string) bool {
+	if strings.TrimSpace(previewText) == "" {
+		return true
+	}
+	return editProposalExpectedPreviewLimit <= 0 || len(previewText) <= editProposalExpectedPreviewLimit
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 func editProposalsForPreview(preview EditPreview) []EditProposal {
@@ -95,30 +153,69 @@ func normalizeEditProposals(proposals []EditProposal) []EditProposal {
 	var out []EditProposal
 	for _, proposal := range proposals {
 		proposal.File = filepath.ToSlash(strings.TrimSpace(proposal.File))
+		proposal.Files = normalizeEditProposalFiles(proposal.Files)
 		proposal.Operation = strings.TrimSpace(proposal.Operation)
-		proposal.AnchorBefore = strings.TrimSpace(proposal.AnchorBefore)
 		proposal.ReplaceRange = strings.TrimSpace(proposal.ReplaceRange)
-		proposal.ExactSearch = strings.TrimSpace(proposal.ExactSearch)
-		proposal.Replacement = strings.TrimSpace(proposal.Replacement)
 		proposal.Rationale = strings.TrimSpace(proposal.Rationale)
 		proposal.Risk = strings.TrimSpace(proposal.Risk)
-		proposal.ExpectedPreview = strings.TrimSpace(proposal.ExpectedPreview)
 		proposal.PreviewFingerprint = strings.TrimSpace(proposal.PreviewFingerprint)
-		if proposal.File == "" && proposal.Operation == "" && proposal.ExpectedPreview == "" {
+		if proposal.File == "" &&
+			proposal.Operation == "" &&
+			len(proposal.Files) == 0 &&
+			strings.TrimSpace(proposal.ExpectedPreview) == "" &&
+			strings.TrimSpace(proposal.AfterExcerpt) == "" &&
+			strings.TrimSpace(proposal.AnchorBefore) == "" &&
+			proposal.ReplaceRange == "" &&
+			proposal.ExactSearch == "" &&
+			proposal.Replacement == "" {
 			continue
 		}
 		if proposal.Operation == "" {
 			proposal.Operation = "modify"
-		}
-		if proposal.PreviewFingerprint == "" && proposal.ExpectedPreview != "" {
-			proposal.PreviewFingerprint = computeReviewFingerprint(proposal.Operation, proposal.File, proposal.ExpectedPreview)
 		}
 		out = append(out, proposal)
 	}
 	return out
 }
 
+func normalizeEditProposalFiles(files []string) []string {
+	return normalizeEditProposalPathList(files, 0)
+}
+
+func normalizeEditProposalPathList(files []string, limit int) []string {
+	normalized := make([]string, 0, len(files))
+	for _, file := range files {
+		trimmed := strings.Join(strings.Fields(filepath.ToSlash(strings.TrimSpace(file))), " ")
+		if trimmed == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range normalized {
+			if strings.EqualFold(existing, trimmed) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	if limit > 0 && len(normalized) > limit {
+		normalized = normalized[len(normalized)-limit:]
+	}
+	return normalized
+}
+
 func renderEditProposalsForEvidence(proposals []EditProposal) string {
+	return renderEditProposalsForEvidenceWithOptions(proposals, false)
+}
+
+func renderEditProposalsForEvidenceWithoutAfterExcerpt(proposals []EditProposal) string {
+	return renderEditProposalsForEvidenceWithOptions(proposals, true)
+}
+
+func renderEditProposalsForEvidenceWithOptions(proposals []EditProposal, omitAfterExcerpt bool) string {
 	proposals = normalizeEditProposals(proposals)
 	if len(proposals) == 0 {
 		return ""
@@ -127,26 +224,50 @@ func renderEditProposalsForEvidence(proposals []EditProposal) string {
 	for i, proposal := range limitEditProposalsForEvidence(proposals, 16) {
 		fmt.Fprintf(&b, "proposal_%d:\n", i+1)
 		if proposal.File != "" {
-			fmt.Fprintf(&b, "  file: %s\n", proposal.File)
+			fmt.Fprintf(&b, "  file: %s\n", reviewEvidenceScalar(proposal.File))
 		}
-		fmt.Fprintf(&b, "  operation: %s\n", proposal.Operation)
+		if len(proposal.Files) > 0 {
+			displayFiles := normalizeEditProposalPathList(proposal.Files, 64)
+			if len(proposal.Files) > len(displayFiles) {
+				displayFiles = append([]string{fmt.Sprintf("... %d older path(s) omitted", len(proposal.Files)-len(displayFiles))}, displayFiles...)
+			}
+			fmt.Fprintf(&b, "  files: %s\n", reviewEvidenceScalar(strings.Join(displayFiles, ", ")))
+		}
+		fmt.Fprintf(&b, "  operation: %s\n", reviewEvidenceScalar(proposal.Operation))
 		if proposal.Rationale != "" {
-			fmt.Fprintf(&b, "  rationale: %s\n", proposal.Rationale)
+			fmt.Fprintf(&b, "  rationale: %s\n", reviewEvidenceScalar(proposal.Rationale))
 		}
 		if proposal.Risk != "" {
-			fmt.Fprintf(&b, "  risk: %s\n", proposal.Risk)
+			fmt.Fprintf(&b, "  risk: %s\n", reviewEvidenceScalar(proposal.Risk))
+		}
+		if proposal.AnchorBefore != "" {
+			fmt.Fprintf(&b, "  anchor_before:\n%s\n", indentBlock(compactEditProposalPayloadForEvidence(proposal.AnchorBefore, 1600), "    "))
+		}
+		if proposal.ReplaceRange != "" {
+			fmt.Fprintf(&b, "  replace_range: %s\n", reviewEvidenceScalar(proposal.ReplaceRange))
 		}
 		if proposal.ExactSearch != "" {
-			fmt.Fprintf(&b, "  exact_search:\n%s\n", indentBlock(compactPromptSection(proposal.ExactSearch, 1600), "    "))
+			fmt.Fprintf(&b, "  exact_search:\n%s\n", indentBlock(compactEditProposalPayloadForEvidence(proposal.ExactSearch, 1600), "    "))
 		}
 		if proposal.Replacement != "" {
-			fmt.Fprintf(&b, "  replacement:\n%s\n", indentBlock(compactPromptSection(proposal.Replacement, 1600), "    "))
+			fmt.Fprintf(&b, "  replacement:\n%s\n", indentBlock(compactEditProposalPayloadForEvidence(proposal.Replacement, 1600), "    "))
+		}
+		if proposal.AfterExcerpt != "" && !omitAfterExcerpt {
+			fmt.Fprintf(&b, "  after_excerpt:\n%s\n", indentBlock(compactEditProposalPayloadForEvidence(proposal.AfterExcerpt, 8000), "    "))
 		}
 		if proposal.PreviewFingerprint != "" {
-			fmt.Fprintf(&b, "  preview_fingerprint: %s\n", proposal.PreviewFingerprint)
+			fmt.Fprintf(&b, "  preview_fingerprint: %s\n", reviewEvidenceScalar(proposal.PreviewFingerprint))
+		}
+		if proposal.ExpectedComplete != nil {
+			if *proposal.ExpectedComplete {
+				fmt.Fprintf(&b, "  expected_preview_status: complete\n")
+			} else {
+				fmt.Fprintf(&b, "  expected_preview_status: compacted_for_display\n")
+				fmt.Fprintf(&b, "  expected_preview_note: use provided_diff, after_excerpt, and preview_fingerprint as the authoritative edit evidence\n")
+			}
 		}
 		if proposal.ExpectedPreview != "" {
-			fmt.Fprintf(&b, "  expected_preview:\n%s\n", indentBlock(compactPromptSection(proposal.ExpectedPreview, 4000), "    "))
+			fmt.Fprintf(&b, "  expected_preview:\n%s\n", indentBlock(compactEditProposalPayloadForEvidence(proposal.ExpectedPreview, 4000), "    "))
 		} else if proposal.PreviewFingerprint != "" {
 			fmt.Fprintf(&b, "  expected_preview: shared by preview_fingerprint\n")
 		}
@@ -155,6 +276,41 @@ func renderEditProposalsForEvidence(proposals []EditProposal) string {
 		fmt.Fprintf(&b, "additional_proposals: %d\n", len(proposals)-16)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func reviewEvidenceScalar(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range text {
+		switch r {
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&b, "\\x%02X", r)
+				continue
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func compactEditProposalPayloadForEvidence(text string, limit int) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return compactPromptSectionPreserveHeadTail(text, limit)
 }
 
 func limitEditProposalsForEvidence(proposals []EditProposal, limit int) []EditProposal {
@@ -173,23 +329,23 @@ func renderReviewRepairFindingsForEvidence(findings []ReviewFinding) string {
 	for i, finding := range limitReviewFindings(findings, 12) {
 		finding.Normalize()
 		fmt.Fprintf(&b, "repair_%d:\n", i+1)
-		fmt.Fprintf(&b, "  id: %s\n", valueOrDefault(finding.ID, fmt.Sprintf("RF-%03d", i+1)))
-		fmt.Fprintf(&b, "  severity: %s\n", valueOrDefault(finding.Severity, reviewSeverityMedium))
-		fmt.Fprintf(&b, "  category: %s\n", valueOrDefault(finding.Category, "correctness"))
+		fmt.Fprintf(&b, "  id: %s\n", reviewEvidenceScalar(valueOrDefault(finding.ID, fmt.Sprintf("RF-%03d", i+1))))
+		fmt.Fprintf(&b, "  severity: %s\n", reviewEvidenceScalar(valueOrDefault(finding.Severity, reviewSeverityMedium)))
+		fmt.Fprintf(&b, "  category: %s\n", reviewEvidenceScalar(valueOrDefault(finding.Category, "correctness")))
 		if strings.TrimSpace(finding.Path) != "" {
-			fmt.Fprintf(&b, "  path: %s\n", finding.Path)
+			fmt.Fprintf(&b, "  path: %s\n", reviewEvidenceScalar(finding.Path))
 		}
 		if strings.TrimSpace(finding.Symbol) != "" {
-			fmt.Fprintf(&b, "  symbol: %s\n", finding.Symbol)
+			fmt.Fprintf(&b, "  symbol: %s\n", reviewEvidenceScalar(finding.Symbol))
 		}
 		if strings.TrimSpace(finding.Title) != "" {
-			fmt.Fprintf(&b, "  title: %s\n", compactPromptSection(finding.Title, 220))
+			fmt.Fprintf(&b, "  title: %s\n", reviewEvidenceScalar(compactPromptSection(finding.Title, 220)))
 		}
 		if strings.TrimSpace(finding.Evidence) != "" {
-			fmt.Fprintf(&b, "  evidence: %s\n", compactPromptSection(finding.Evidence, 320))
+			fmt.Fprintf(&b, "  evidence: %s\n", reviewEvidenceScalar(compactPromptSection(finding.Evidence, 320)))
 		}
 		if strings.TrimSpace(finding.RequiredFix) != "" {
-			fmt.Fprintf(&b, "  required_fix: %s\n", compactPromptSection(finding.RequiredFix, 320))
+			fmt.Fprintf(&b, "  required_fix: %s\n", reviewEvidenceScalar(compactPromptSection(finding.RequiredFix, 320)))
 		}
 	}
 	if len(findings) > 12 {
@@ -217,13 +373,13 @@ func inferEditProposalOperation(preview EditPreview) string {
 }
 
 func editProposalRiskForOperation(operation string, pathCount int) string {
-	operation = strings.ToLower(strings.TrimSpace(operation))
+	operation = canonicalEditProposalOperationAlias(operation)
 	switch {
+	case operation == "delete_file" || operation == "move":
+		return "destructive"
 	case pathCount > 8:
 		return "multi_file"
-	case operation == "delete" || operation == "move":
-		return "destructive"
-	case operation == "patch" || operation == "modify" || operation == "write" || operation == "write_file" || operation == "replace_in_file":
+	case operation == "add_file" || operation == "patch" || operation == "modify" || operation == "write_file" || operation == "replace_in_file":
 		return "previewed_change"
 	default:
 		return "unknown"
@@ -260,6 +416,11 @@ type plannedEditProposal struct {
 }
 
 func applyEditProposal(ctx context.Context, ws Workspace, proposal EditProposal, ownerNodeID string, all bool) (string, map[string]any, error) {
+	select {
+	case <-ctx.Done():
+		return "", nil, ctx.Err()
+	default:
+	}
 	planned, err := planEditProposal(ws, proposal, ownerNodeID, all)
 	meta := editProposalToolMeta(proposal, planned, false)
 	if err != nil {
@@ -346,6 +507,9 @@ func planEditProposal(ws Workspace, proposal EditProposal, ownerNodeID string, a
 	path := route.AbsolutePath
 	displayRoot := firstNonBlankString(route.DisplayRoot, route.WorktreeRoot, ws.Root)
 	displayPath := route.DisplayPath()
+	if err := ws.CheckEditBoundary(path); err != nil {
+		return plannedEditProposal{}, err
+	}
 	beforeBytes, readErr := os.ReadFile(path)
 	before := string(beforeBytes)
 	if readErr != nil && !os.IsNotExist(readErr) {
@@ -411,14 +575,16 @@ func planEditProposal(ws Workspace, proposal EditProposal, ownerNodeID string, a
 }
 
 func normalizeEditProposalOperation(raw string, proposal EditProposal) string {
-	operation := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(raw, "-", "_")))
+	operation := canonicalEditProposalOperationAlias(raw)
 	switch operation {
-	case "", "modify", "replace", "replace_in_file", "exact_replace", "search_replace":
+	case "replace", "replace_in_file", "exact_replace", "search_replace":
 		if strings.TrimSpace(proposal.ExactSearch) != "" {
 			return "replace_in_file"
 		}
-		if strings.TrimSpace(proposal.Replacement) != "" && strings.TrimSpace(raw) != "" {
-			return "write_file"
+		return "unsupported"
+	case "", "modify":
+		if strings.TrimSpace(proposal.ExactSearch) != "" {
+			return "replace_in_file"
 		}
 		return "unsupported"
 	case "write", "write_file", "overwrite":
@@ -432,15 +598,30 @@ func normalizeEditProposalOperation(raw string, proposal EditProposal) string {
 	}
 }
 
+func canonicalEditProposalOperationAlias(raw string) string {
+	operation := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(raw, "-", "_")))
+	switch operation {
+	case "write", "overwrite":
+		return "write_file"
+	case "add", "create", "create_file":
+		return "add_file"
+	case "delete", "remove":
+		return "delete_file"
+	default:
+		return operation
+	}
+}
+
 func editProposalPreview(ws Workspace, planned plannedEditProposal) EditPreview {
 	proposal := planned.Proposal
 	proposal.Operation = planned.Operation
 	proposal.File = planned.DisplayPath
-	proposal.ExpectedPreview = buildSelectionAwareEditPreview(ws, planned.DisplayPath, planned.Before, planned.After)
-	proposal.PreviewFingerprint = computeReviewFingerprint(planned.Operation, planned.DisplayPath, proposal.ExpectedPreview)
+	expectedPreview := buildSelectionAwareEditPreview(ws, planned.DisplayPath, planned.Before, planned.After)
+	proposal = bindEditProposalPreview(proposal, planned.Operation, planned.DisplayPath, expectedPreview)
+	proposal.AfterExcerpt = buildSelectionAwareAfterExcerpt(ws, planned.DisplayPath, planned.Before, planned.After, 12000)
 	return EditPreview{
 		Title:     "Apply edit proposal to " + planned.DisplayPath,
-		Preview:   proposal.ExpectedPreview,
+		Preview:   expectedPreview,
 		Paths:     []string{planned.DisplayPath},
 		Operation: "apply_edit_proposal",
 		Proposals: []EditProposal{proposal},

@@ -1,0 +1,4 @@
+.gitattributes text eol=lf
+*.go text eol=lf
+*.md text eol=lf
+*.golden text eol=lf

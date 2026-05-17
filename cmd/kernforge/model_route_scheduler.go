@@ -314,10 +314,16 @@ func (p ModelRoutePolicy) LimitFor(route ModelRoute) int {
 }
 
 func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) ModelRoute {
-	provider := strings.TrimSpace(cfg.Provider)
+	req = requestWithRouteReasoningEffort(cfg, client, req)
+	provider := ""
 	model := firstNonBlankString(req.Model, cfg.Model)
-	baseURL := strings.TrimSpace(cfg.BaseURL)
-	reasoningEffort := firstNonBlankString(req.ReasoningEffort, cfg.ReasoningEffort)
+	baseURL := ""
+	if client == nil {
+		provider = strings.TrimSpace(cfg.Provider)
+		baseURL = strings.TrimSpace(cfg.BaseURL)
+	}
+	reasoningEffort := strings.TrimSpace(req.ReasoningEffort)
+	metaEffort := ""
 	if client != nil {
 		if metaProvider, ok := client.(modelRouteMetadataProvider); ok {
 			meta := metaProvider.ModelRouteMetadata()
@@ -331,17 +337,31 @@ func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) Mo
 				baseURL = strings.TrimSpace(meta.BaseURL)
 			}
 			if strings.TrimSpace(meta.ReasoningEffort) != "" && strings.TrimSpace(req.ReasoningEffort) == "" {
-				reasoningEffort = strings.TrimSpace(meta.ReasoningEffort)
+				metaEffort = strings.TrimSpace(meta.ReasoningEffort)
 			}
 		}
 		if strings.TrimSpace(provider) == "" {
 			provider = strings.TrimSpace(client.Name())
 		}
+		if strings.TrimSpace(provider) == "" {
+			provider = strings.TrimSpace(cfg.Provider)
+		}
 	}
 	provider = normalizeProviderName(provider)
 	model = strings.TrimSpace(model)
+	if strings.TrimSpace(baseURL) == "" &&
+		provider == normalizeProviderName(cfg.Provider) &&
+		strings.EqualFold(model, strings.TrimSpace(cfg.Model)) {
+		baseURL = strings.TrimSpace(cfg.BaseURL)
+	}
 	baseURL = normalizeModelRouteBaseURL(provider, baseURL)
 	reasoningEffort = normalizeReasoningEffort(reasoningEffort)
+	if reasoningEffort == "" {
+		reasoningEffort = normalizeReasoningEffort(metaEffort)
+	}
+	if reasoningEffort == "" && reviewConfiguredRouteMatchesMain(cfg, provider, model, baseURL) {
+		reasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
+	}
 	key := modelRouteKeyFromParts(provider, model, baseURL, reasoningEffort)
 	return ModelRoute{
 		Key:             key,
@@ -351,6 +371,55 @@ func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) Mo
 		BaseURL:         baseURL,
 		ReasoningEffort: reasoningEffort,
 	}
+}
+
+func requestWithRouteReasoningEffort(cfg Config, client ProviderClient, req ChatRequest) ChatRequest {
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		req.ReasoningEffort = normalizeReasoningEffort(req.ReasoningEffort)
+		return req
+	}
+
+	provider := ""
+	model := firstNonBlankString(req.Model, cfg.Model)
+	baseURL := ""
+	if client == nil {
+		provider = strings.TrimSpace(cfg.Provider)
+		baseURL = strings.TrimSpace(cfg.BaseURL)
+	}
+	metaEffort := ""
+	if client != nil {
+		if metaProvider, ok := client.(modelRouteMetadataProvider); ok {
+			meta := metaProvider.ModelRouteMetadata()
+			if strings.TrimSpace(meta.Provider) != "" {
+				provider = strings.TrimSpace(meta.Provider)
+			}
+			if strings.TrimSpace(meta.Model) != "" && strings.TrimSpace(req.Model) == "" && strings.TrimSpace(cfg.Model) == "" {
+				model = strings.TrimSpace(meta.Model)
+			}
+			if strings.TrimSpace(meta.BaseURL) != "" {
+				baseURL = strings.TrimSpace(meta.BaseURL)
+			}
+			metaEffort = normalizeReasoningEffort(meta.ReasoningEffort)
+		}
+		if strings.TrimSpace(provider) == "" {
+			provider = strings.TrimSpace(client.Name())
+		}
+		if strings.TrimSpace(provider) == "" {
+			provider = strings.TrimSpace(cfg.Provider)
+		}
+	}
+
+	if reviewConfiguredRouteMatchesMain(cfg, provider, model, baseURL) {
+		mainEffort := normalizeReasoningEffort(cfg.ReasoningEffort)
+		if mainEffort != "" {
+			req.ReasoningEffort = reasoningEffortAtLeast(metaEffort, mainEffort)
+			return req
+		}
+	}
+	if metaEffort != "" {
+		req.ReasoningEffort = metaEffort
+	}
+	return req
 }
 
 func modelRouteKeyFromParts(provider string, model string, baseURL string, reasoningEffort string) string {

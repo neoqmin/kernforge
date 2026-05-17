@@ -891,7 +891,7 @@ func (a *Agent) buildDiffAwareSelfReviewReport(reply string, attemptedEditTool b
 			Detail:   "The final answer says no files changed, but the patch transaction recorded changes in: " + strings.Join(changed, ", "),
 		})
 	}
-	if len(changed) > 0 && containsAny(lowerReply, "verified", "tests passed", "test passed", "검증 통과", "테스트 통과") && !replyMentionsVerificationNotRun(reply) && !sessionHasSuccessfulVerificationEvidence(a.Session) {
+	if len(changed) > 0 && replyClaimsVerificationSuccess(reply) && !sessionHasSuccessfulVerificationEvidence(a.Session) {
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Verification claim has no recorded evidence",
@@ -1054,15 +1054,6 @@ func patchTransactionCandidateScopes(ws Workspace, call ToolCall) []string {
 					specs = append(specs, harnessPathSpec{Path: op.moveTo, MustExist: false})
 				}
 			}
-		}
-	case "run_shell":
-		command := strings.TrimSpace(stringValue(args, "command"))
-		assessment := assessShellCommandMutation(command)
-		if assessment.Class != shellMutationWorkspaceWrite || !boolValue(args, "allow_workspace_writes", false) {
-			return nil
-		}
-		for _, path := range stringSliceValue(args, "write_paths") {
-			specs = append(specs, harnessPathSpec{Path: path, MustExist: false})
 		}
 	default:
 		return nil
@@ -1325,17 +1316,14 @@ func sessionHasSuccessfulVerificationEvidence(sess *Session) bool {
 	if sess == nil {
 		return false
 	}
-	if sess.LastVerification != nil && !sess.LastVerification.HasFailures() {
+	if sess.LastVerification != nil && !sess.LastVerification.HasFailures() && completionAuditVerificationHasPassedStep(*sess.LastVerification) {
 		return true
 	}
 	for _, msg := range sess.Messages {
 		if msg.Role != "tool" || msg.IsError {
 			continue
 		}
-		if toolMetaBool(msg.ToolMeta, "verification_like") && toolMetaBoolDefault(msg.ToolMeta, "success", true) {
-			return true
-		}
-		if strings.EqualFold(strings.TrimSpace(msg.ToolName), "run_shell") && runShellOutputLooksLikeVerification(msg.Text) && toolMetaBoolDefault(msg.ToolMeta, "success", true) {
+		if toolResultHasSuccessfulVerificationEvidence(msg.ToolName, msg.ToolMeta, msg.Text) {
 			return true
 		}
 	}
@@ -1359,19 +1347,42 @@ func replyMentionsVerificationNotRun(reply string) bool {
 	return containsAny(lower,
 		"not run",
 		"not executed",
+		"not verified",
 		"did not run",
+		"didn't run",
+		"without verification",
+		"without running verification",
 		"was not run",
+		"was not verified",
+		"skipped",
+		"declined to run",
 		"unverified",
 		"verification was disabled",
 		"verification disabled",
 		"toolchain is unavailable",
 		"toolchain unavailable",
 		"검증하지 않았",
+		"검증하지 못",
+		"검증되지 않았",
 		"검증은 실행하지 않았",
+		"검증을 실행하지 않았",
+		"검증을 실행하지 못",
 		"검증이 비활성화",
 		"검증은 비활성화",
+		"검증 생략",
+		"검증은 생략",
+		"검증을 생략",
+		"검증 건너",
+		"검증을 건너",
 		"테스트는 실행하지 않았",
+		"테스트를 실행하지 않았",
+		"테스트를 실행하지 못",
 		"테스트하지 않았",
+		"테스트 생략",
+		"빌드는 실행하지 않았",
+		"빌드를 실행하지 않았",
+		"빌드를 실행하지 못",
+		"빌드 생략",
 		"미검증",
 	)
 }
@@ -1402,26 +1413,114 @@ func replyMentionsVerificationOutcome(reply string) bool {
 	if replyMentionsVerificationNotRun(reply) || replyMentionsVerificationBlocker(reply) {
 		return true
 	}
+	if replyClaimsVerificationSuccess(reply) {
+		return true
+	}
 	lower := strings.ToLower(strings.TrimSpace(reply))
 	return containsAny(lower,
-		"verified",
-		"verification passed",
-		"verification now passes",
-		"verification succeeded",
-		"tests passed",
-		"test passed",
-		"build passed",
-		"build succeeds",
 		"go test",
 		"npm test",
 		"cargo test",
 		"pytest",
+		"테스트를 실행",
+	)
+}
+
+func replyClaimsVerificationSuccess(reply string) bool {
+	if replyMentionsVerificationNotRun(reply) || replyMentionsVerificationBlocker(reply) {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"verified",
+		"verification passed",
+		"verification now passes",
+		"verification succeeded",
+		"verification successful",
+		"tests passed",
+		"test passed",
+		"test succeeded",
+		"tests succeeded",
+		"build passed",
+		"build succeeds",
+		"build succeeded",
+		"build successful",
+		"compile passed",
+		"compile succeeded",
 		"검증 통과",
 		"검증 완료",
-		"검증했고",
+		"검증 성공",
+		"검증했습니다",
+		"검증했으며",
 		"테스트 통과",
-		"테스트를 실행",
+		"테스트 성공",
+		"테스트 완료",
 		"빌드 통과",
+		"빌드 성공",
+		"빌드 완료",
+		"컴파일 통과",
+		"컴파일 성공",
+		"실행 및 통과",
+		"실행했고 통과",
+		"실행 후 통과",
+		"통과 확인",
+	) {
+		return true
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if verificationClaimLineHasSubject(line) && verificationClaimLineHasSuccess(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func verificationClaimLineHasSubject(line string) bool {
+	return containsAny(line,
+		"verification",
+		"verify",
+		"verified",
+		"test",
+		"tests",
+		"build",
+		"compile",
+		"msbuild",
+		"go test",
+		"npm test",
+		"pnpm test",
+		"yarn test",
+		"cargo test",
+		"pytest",
+		"ctest",
+		"검증",
+		"테스트",
+		"빌드",
+		"컴파일",
+	)
+}
+
+func verificationClaimLineHasSuccess(line string) bool {
+	return containsAny(line,
+		"passed",
+		"passes",
+		"succeeded",
+		"success",
+		"successful",
+		"complete",
+		"completed",
+		"ok ",
+		"통과",
+		"성공",
+		"완료",
+		"확인했습니다",
+		"확인했",
 	)
 }
 

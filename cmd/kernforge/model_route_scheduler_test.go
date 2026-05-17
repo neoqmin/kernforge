@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +42,45 @@ type streamingSlowProviderClient struct {
 	started     chan struct{}
 	release     chan struct{}
 	releaseOnce sync.Once
+}
+
+type reasoningCaptureProviderClient struct {
+	name string
+	meta ModelRouteMetadata
+	req  ChatRequest
+}
+
+type nameOnlyReasoningCaptureProviderClient struct {
+	name string
+	req  ChatRequest
+}
+
+func (c *reasoningCaptureProviderClient) Name() string {
+	if c.name != "" {
+		return c.name
+	}
+	return "openai-codex"
+}
+
+func (c *reasoningCaptureProviderClient) ModelRouteMetadata() ModelRouteMetadata {
+	return c.meta
+}
+
+func (c *reasoningCaptureProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.req = req
+	return ChatResponse{Message: Message{Role: "assistant", Text: "ok"}}, nil
+}
+
+func (c *nameOnlyReasoningCaptureProviderClient) Name() string {
+	if c.name != "" {
+		return c.name
+	}
+	return "reviewer-provider"
+}
+
+func (c *nameOnlyReasoningCaptureProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.req = req
+	return ChatResponse{Message: Message{Role: "assistant", Text: "ok"}}, nil
 }
 
 func (c *contextIgnoringProviderClient) Name() string {
@@ -451,5 +491,193 @@ func TestModelRouteForRequestPreservesRequestReasoningEffort(t *testing.T) {
 	})
 	if route.ReasoningEffort != "high" {
 		t.Fatalf("route reasoning effort = %q, want high", route.ReasoningEffort)
+	}
+}
+
+func TestModelRequestUsesMainEffortWhenReviewerClientSharesRoute(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider:        "openai-codex",
+			ReasoningEffort: "high",
+		},
+	}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: cfg.Model,
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ReasoningEffort != "xhigh" {
+		t.Fatalf("request reasoning effort = %q, want xhigh", client.req.ReasoningEffort)
+	}
+}
+
+func TestModelRequestKeepsDistinctReviewerClientEffort(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider:        "openai-codex",
+			ReasoningEffort: "high",
+		},
+	}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: "gpt-5.4",
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ReasoningEffort != "high" {
+		t.Fatalf("request reasoning effort = %q, want high", client.req.ReasoningEffort)
+	}
+}
+
+func TestModelRequestKeepsDistinctBaseURLReviewerClientEffort(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.BaseURL = "https://main.example.test/backend-api/codex"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider:        "openai-codex",
+			BaseURL:         "https://reviewer.example.test/backend-api/codex",
+			ReasoningEffort: "high",
+		},
+	}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: cfg.Model,
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ReasoningEffort != "high" {
+		t.Fatalf("request reasoning effort = %q, want high", client.req.ReasoningEffort)
+	}
+}
+
+func TestModelRequestDoesNotInheritMainEffortForMetadataLessDistinctClient(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &nameOnlyReasoningCaptureProviderClient{name: "anthropic-claude-cli"}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: cfg.Model,
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ReasoningEffort != "" {
+		t.Fatalf("metadata-less distinct client inherited reasoning effort %q", client.req.ReasoningEffort)
+	}
+	route := modelRouteForRequest(cfg, client, ChatRequest{Model: cfg.Model})
+	if route.Provider != "anthropic-claude-cli" {
+		t.Fatalf("route provider = %q, want anthropic-claude-cli", route.Provider)
+	}
+	if route.ReasoningEffort != "" {
+		t.Fatalf("distinct metadata-less route effort = %q, want empty", route.ReasoningEffort)
+	}
+}
+
+func TestModelRouteUsesConfiguredBaseURLForMetadataLessMainRoute(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-compatible"
+	cfg.Model = "local-model"
+	cfg.BaseURL = "http://127.0.0.1:1234/v1/"
+	cfg.ReasoningEffort = "high"
+	client := &nameOnlyReasoningCaptureProviderClient{name: "openai-compatible"}
+
+	route := modelRouteForRequest(cfg, client, ChatRequest{Model: cfg.Model})
+	if route.BaseURL != "http://127.0.0.1:1234/v1" {
+		t.Fatalf("route base URL = %q", route.BaseURL)
+	}
+	if route.ReasoningEffort != "high" {
+		t.Fatalf("main route effort = %q, want high", route.ReasoningEffort)
+	}
+	if !strings.Contains(route.Label, "http://127.0.0.1:1234/v1") {
+		t.Fatalf("route label should include base URL, got %q", route.Label)
+	}
+	if limit := modelRoutePolicyFromConfig(cfg).LimitFor(route); limit != 1 {
+		t.Fatalf("local openai-compatible route limit = %d, want 1", limit)
+	}
+}
+
+func TestModelRequestUsesMainEffortForMetadataLessMainRouteWithBaseURL(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-compatible"
+	cfg.Model = "local-model"
+	cfg.BaseURL = "http://127.0.0.1:1234/v1/"
+	cfg.ReasoningEffort = "high"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &nameOnlyReasoningCaptureProviderClient{name: "openai-compatible"}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: cfg.Model,
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ReasoningEffort != "high" {
+		t.Fatalf("request reasoning effort = %q, want high", client.req.ReasoningEffort)
+	}
+}
+
+func TestModelRouteDoesNotClaimMainEffortForNilClientDifferentModel(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	req := ChatRequest{Model: "gpt-5.4"}
+
+	adjusted := requestWithRouteReasoningEffort(cfg, nil, req)
+	if adjusted.ReasoningEffort != "" {
+		t.Fatalf("request reasoning effort = %q, want empty", adjusted.ReasoningEffort)
+	}
+	route := modelRouteForRequest(cfg, nil, req)
+	if route.ReasoningEffort != "" {
+		t.Fatalf("route reasoning effort = %q, want empty", route.ReasoningEffort)
 	}
 }

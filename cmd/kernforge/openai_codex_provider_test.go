@@ -95,7 +95,7 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
-func TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext(t *testing.T) {
+func TestBuildOpenAICodexRequestBodyDropsOrphanToolOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
 		Messages: []Message{
@@ -129,9 +129,16 @@ func TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext(t *tes
 		}
 	}
 	encoded := string(body)
-	for _, want := range []string{
+	for _, forbidden := range []string{
 		"Recovered transcript note",
 		"tool_call_id=call_orphan",
+		"call_orphan",
+	} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("orphan tool result must be dropped, found %q in request body %s", forbidden, encoded)
+		}
+	}
+	for _, want := range []string{
 		`"type":"function_call"`,
 		`"call_id":"call_read"`,
 		`"type":"function_call_output"`,

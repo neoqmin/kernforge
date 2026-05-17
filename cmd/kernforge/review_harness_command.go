@@ -79,7 +79,7 @@ func parseReviewCommandOptions(args string) ReviewHarnessOptions {
 		Target:          reviewTargetAuto,
 		Request:         args,
 		IncludeGitDiff:  true,
-		MaxContextChars: 60000,
+		MaxContextChars: reviewDefaultMaxContextChars,
 		RawArgs:         args,
 	}
 	var requestParts []string
@@ -261,7 +261,74 @@ func reviewRouteHealthStatusLine(item ReviewRouteHealth) string {
 	quality := valueOrDefault(strings.TrimSpace(item.LastQuality), "unknown")
 	model := valueOrDefault(strings.TrimSpace(item.Model), "unconfigured")
 	recommendation := valueOrDefault(strings.TrimSpace(item.Recommendation), "insufficient recent route history")
-	return fmt.Sprintf("  %-21s health  model=%s status=%s quality=%s timeout_rate=%.2f weak_rate=%.2f recommendation=%s", role, model, status, quality, item.TimeoutRate, item.WeakRate, recommendation)
+	nextTimeout := reviewRouteHealthNextSoftTimeout(item)
+	action := reviewRouteHealthActionHint(item)
+	return fmt.Sprintf("  %-21s health  model=%s status=%s quality=%s timeout_rate=%.2f weak_rate=%.2f next_timeout=%s recommendation=%s action=%s", role, model, status, quality, item.TimeoutRate, item.WeakRate, reviewSoftTimeoutProgressText(nextTimeout), recommendation, action)
+}
+
+func reviewRouteHealthNextSoftTimeout(item ReviewRouteHealth) time.Duration {
+	provider, _ := reviewProviderModelFromDisplayLabel(item.Model)
+	timeout := reviewDefaultCrossSoftTimeoutForProvider(provider)
+	if timeout <= 0 {
+		timeout = reviewCloudCrossSoftTimeout
+	}
+	if reviewRouteHealthNeedsAdaptiveTimeout(item) {
+		return reviewAdaptiveCrossSoftTimeout(timeout)
+	}
+	return timeout
+}
+
+func reviewRouteHealthActionHint(item ReviewRouteHealth) string {
+	clearCommand := reviewRouteHealthClearCommand(item)
+	if reviewRouteHealthNeedsAdaptiveTimeout(item) {
+		return "next reviewer call auto-extends timeout; alternatives: /review models, " + clearCommand + ", /model"
+	}
+	if reviewRouteHealthItemHasTimeout(item) {
+		return "route has timeout history; switch reviewer with /review models if it repeats"
+	}
+	if item.WeakRate > 0 || strings.EqualFold(strings.TrimSpace(item.LastQuality), reviewModelQualityWeak) {
+		return "switch reviewer with /review models or use single-model mode with " + clearCommand
+	}
+	if item.EmptyResponseRate > 0 {
+		return "switch reviewer with /review models or fix the provider response format"
+	}
+	return "rerun after changing reviewer or main model if the route keeps failing"
+}
+
+func reviewRouteHealthClearCommand(item ReviewRouteHealth) string {
+	role := normalizeReviewRole(item.Role)
+	if role == "cross_reviewer" || role == "" {
+		return "/review models clear primary"
+	}
+	if choice, ok := resolveReviewModelRoleChoice(role); ok {
+		return "/review models clear " + choice.Token
+	}
+	return "/review models clear primary"
+}
+
+func reviewRouteHealthItemHasTimeout(item ReviewRouteHealth) bool {
+	if item.LastTimeout || item.TimeoutRate > 0 {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(item.Recommendation + " " + item.LastStatus + " " + item.LastQuality))
+	return strings.Contains(text, "timeout")
+}
+
+func reviewRouteHealthNeedsAdaptiveTimeout(item ReviewRouteHealth) bool {
+	if item.LastTimeout {
+		return true
+	}
+	if item.TimeoutRate <= 0 {
+		return false
+	}
+	if item.EmptyResponseRate >= 0.50 || item.WeakRate >= 0.50 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(item.LastStatus), "failed") {
+		return true
+	}
+	recommendation := strings.ToLower(strings.TrimSpace(item.Recommendation))
+	return strings.Contains(recommendation, "timed out recently")
 }
 
 func reviewModelRoleDescription(role string) string {

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +31,8 @@ const (
 type VerificationStep struct {
 	Label             string             `json:"label"`
 	Command           string             `json:"command"`
+	ResolvedCommand   string             `json:"resolved_command,omitempty"`
+	Informational     bool               `json:"informational,omitempty"`
 	Scope             string             `json:"scope,omitempty"`
 	Stage             string             `json:"stage,omitempty"`
 	Tags              []string           `json:"tags,omitempty"`
@@ -77,31 +81,86 @@ func (a *Agent) autoVerifyChanges(ctx context.Context) (VerificationReport, bool
 		return VerificationReport{}, false
 	}
 	if a.VerifyChanges != nil {
+		if ok, err := a.confirmAutomaticVerification(VerificationPlan{
+			Mode:         VerificationAdaptive,
+			ChangedPaths: append([]string(nil), changed...),
+			Steps: []VerificationStep{{
+				Label:   "configured verification",
+				Command: "configured verification callback",
+				Status:  VerificationPending,
+			}},
+		}); err != nil {
+			report := skippedVerificationReportForPlan(a.Workspace.Root, "automatic", VerificationPlan{
+				Mode:         VerificationAdaptive,
+				ChangedPaths: append([]string(nil), changed...),
+				Steps: []VerificationStep{{
+					Label:   "configured verification",
+					Command: "configured verification callback",
+					Status:  VerificationPending,
+				}},
+			}, "Automatic verification confirmation failed: "+err.Error())
+			a.recordVerificationReport(report)
+			return report, true
+		} else if !ok {
+			report := skippedVerificationReportForPlan(a.Workspace.Root, "automatic", VerificationPlan{
+				Mode:         VerificationAdaptive,
+				ChangedPaths: append([]string(nil), changed...),
+				Steps: []VerificationStep{{
+					Label:   "configured verification",
+					Command: "configured verification callback",
+					Status:  VerificationPending,
+				}},
+			}, "Automatic verification was declined by the user.")
+			a.recordVerificationReport(report)
+			return report, true
+		}
 		report, ok := a.VerifyChanges(ctx)
 		if ok && a.Session != nil {
-			a.Session.LastVerification = &report
-			_ = a.Store.Save(a.Session)
-			if a.VerifyHistory != nil {
-				_ = a.VerifyHistory.Append(a.Session.ID, a.Workspace.Root, report)
+			if report.GeneratedAt.IsZero() {
+				report.GeneratedAt = time.Now()
 			}
+			if strings.TrimSpace(report.Trigger) == "" {
+				report.Trigger = "automatic"
+			}
+			if strings.TrimSpace(report.Workspace) == "" {
+				report.Workspace = a.Workspace.Root
+			}
+			if len(report.ChangedPaths) == 0 {
+				report.ChangedPaths = append([]string(nil), changed...)
+			}
+			a.recordVerificationReport(report)
 		}
 		return report, ok
 	}
-	report, ok := runRecommendedVerification(ctx, a.Workspace, a.Session, a.VerifyHistory, "automatic", changed)
+	report, ok := runRecommendedVerification(ctx, a.Workspace, a.Session, a.VerifyHistory, "automatic", changed, a.confirmAutomaticVerification)
 	if !ok {
 		return VerificationReport{}, false
 	}
-	if a.Session != nil {
-		a.Session.LastVerification = &report
-		_ = a.Store.Save(a.Session)
-		if a.VerifyHistory != nil {
-			_ = a.VerifyHistory.Append(a.Session.ID, a.Workspace.Root, report)
-		}
-	}
+	a.recordVerificationReport(report)
 	return report, true
 }
 
-func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session, history *VerificationHistoryStore, trigger string, changed []string) (VerificationReport, bool) {
+func (a *Agent) recordVerificationReport(report VerificationReport) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	a.Session.LastVerification = &report
+	if a.Store != nil {
+		_ = a.Store.Save(a.Session)
+	}
+	if a.VerifyHistory != nil {
+		_ = a.VerifyHistory.Append(a.Session.ID, a.Workspace.Root, report)
+	}
+}
+
+func (a *Agent) confirmAutomaticVerification(plan VerificationPlan) (bool, error) {
+	if a.PromptConfirmAutoVerify == nil {
+		return true, nil
+	}
+	return a.PromptConfirmAutoVerify(plan)
+}
+
+func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session, history *VerificationHistoryStore, trigger string, changed []string, confirm func(VerificationPlan) (bool, error)) (VerificationReport, bool) {
 	if len(changed) == 0 {
 		changed = collectVerificationChangedPaths(ws.Root, sess)
 	}
@@ -138,6 +197,15 @@ func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session
 			plan.PlannerNote = joinSentence(plan.PlannerNote, "Hook review context: "+strings.Join(verdict.ContextAdds, " | "))
 		}
 	}
+	if confirm != nil {
+		ok, err := confirm(plan)
+		if err != nil {
+			return skippedVerificationReportForPlan(ws.Root, trigger, plan, "Verification confirmation failed: "+err.Error()), true
+		}
+		if !ok {
+			return skippedVerificationReportForPlan(ws.Root, trigger, plan, "Verification was declined by the user."), true
+		}
+	}
 	report := executeVerificationSteps(ctx, ws, trigger, plan)
 	_, _ = ws.Hook(ctx, HookPostVerification, HookPayload{
 		"trigger":       trigger,
@@ -147,6 +215,34 @@ func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session
 		"error":         report.FailureSummary(),
 	})
 	return report, true
+}
+
+func skippedVerificationReportForPlan(root string, trigger string, plan VerificationPlan, decision string) VerificationReport {
+	report := VerificationReport{
+		GeneratedAt:  time.Now(),
+		Trigger:      trigger,
+		Mode:         plan.Mode,
+		Decision:     joinSentence(plan.PlannerNote, decision),
+		Workspace:    root,
+		ChangedPaths: append([]string(nil), plan.ChangedPaths...),
+		Steps:        append([]VerificationStep(nil), plan.Steps...),
+	}
+	if len(report.Steps) == 0 {
+		report.Steps = []VerificationStep{{
+			Label:  "verification",
+			Status: VerificationSkipped,
+		}}
+	}
+	for i := range report.Steps {
+		report.Steps[i].Status = VerificationSkipped
+		if strings.TrimSpace(report.Steps[i].Output) == "" {
+			report.Steps[i].Output = firstNonBlankString(decision, "Verification was skipped.")
+		}
+	}
+	if strings.TrimSpace(report.Decision) == "" {
+		report.Decision = "Verification was skipped."
+	}
+	return report
 }
 
 func buildVerificationPlan(root string, changed []string, mode VerificationMode) VerificationPlan {
@@ -207,32 +303,35 @@ func buildFuzzCampaignVerificationSteps(root string, changed []string) ([]Verifi
 			}
 			finding := fuzzCampaignFindingForNativeResult(campaign, result)
 			label := "fuzz evidence regression: " + strings.ToLower(firstNonBlankString(result.Target, finding.ID, result.RunID))
-			command := "echo Native fuzz evidence requires verification: campaign=" + verificationEchoSafeText(campaign.ID)
-			command += " run=" + verificationEchoSafeText(result.RunID)
+			detailParts := []string{}
+			detailParts = appendVerificationEvidencePart(detailParts, "campaign", campaign.ID)
+			detailParts = appendVerificationEvidencePart(detailParts, "run", result.RunID)
 			if strings.TrimSpace(finding.ID) != "" {
-				command += " finding=" + verificationEchoSafeText(finding.ID)
+				detailParts = appendVerificationEvidencePart(detailParts, "finding", finding.ID)
 			}
-			command += " outcome=" + verificationEchoSafeText(result.Outcome)
-			command += " crashes=" + verificationEchoSafeText(fmt.Sprintf("%d", result.CrashCount))
+			detailParts = appendVerificationEvidencePart(detailParts, "outcome", result.Outcome)
+			detailParts = appendVerificationEvidencePart(detailParts, "crashes", fmt.Sprintf("%d", result.CrashCount))
 			if strings.TrimSpace(result.ReportPath) != "" {
-				command += " report=" + verificationEchoSafeText(filepath.ToSlash(result.ReportPath))
+				detailParts = appendVerificationEvidencePart(detailParts, "report", filepath.ToSlash(result.ReportPath))
 			}
 			if strings.TrimSpace(result.CrashFingerprint) != "" {
-				command += " fingerprint=" + verificationEchoSafeText(result.CrashFingerprint)
+				detailParts = appendVerificationEvidencePart(detailParts, "fingerprint", result.CrashFingerprint)
 			}
 			if strings.TrimSpace(result.CrashDir) != "" {
-				command += " crash_dir=" + verificationEchoSafeText(filepath.ToSlash(result.CrashDir))
+				detailParts = appendVerificationEvidencePart(detailParts, "crash_dir", filepath.ToSlash(result.CrashDir))
 			}
 			if strings.TrimSpace(result.MinimizeCommand) != "" {
-				command += " minimize=" + verificationEchoSafeText(result.MinimizeCommand)
+				detailParts = appendVerificationEvidencePart(detailParts, "minimize", result.MinimizeCommand)
 			}
+			detail := "Native fuzz evidence requires verification: " + strings.Join(detailParts, " ")
 			steps = append(steps, VerificationStep{
 				Label:           label,
-				Command:         command,
+				Informational:   true,
 				Scope:           firstNonBlankString(filepath.ToSlash(result.TargetFile), finding.SourceAnchor, campaign.ID),
 				Stage:           "targeted",
 				Tags:            []string{"fuzz", "fuzz_native_result", "fuzz_finding", "evidence"},
 				Status:          VerificationPending,
+				Output:          detail,
 				PlannerPriority: 80,
 			})
 			if len(steps) >= 6 {
@@ -354,7 +453,7 @@ func buildVerificationSteps(root string, changed []string, mode VerificationMode
 	if scripts := packageScripts(filepath.Join(root, "package.json")); len(scripts) > 0 {
 		return buildNodeVerificationSteps(scripts, mode)
 	}
-	if steps := buildCppVerificationSteps(root, mode); len(steps) > 0 {
+	if steps := buildCppVerificationSteps(root, changed, mode); len(steps) > 0 {
 		return steps
 	}
 	return nil
@@ -372,9 +471,9 @@ func buildAnalysisDocsVerificationSteps(root string, changed []string) ([]Verifi
 	steps := make([]VerificationStep, 0, len(matches))
 	for _, item := range matches {
 		label := "analysis docs verification: " + strings.ToLower(strings.TrimSpace(item.ChangeArea))
-		command := "echo Generated VERIFICATION_MATRIX.md recommends: " + verificationEchoSafeText(item.RequiredVerification)
+		detail := "Generated VERIFICATION_MATRIX.md recommends: " + verificationDisplaySafeText(item.RequiredVerification)
 		if strings.TrimSpace(item.OptionalVerification) != "" {
-			command += " Optional: " + verificationEchoSafeText(item.OptionalVerification) + "."
+			detail += " Optional: " + verificationDisplaySafeText(item.OptionalVerification) + "."
 		}
 		scope := "targeted"
 		if len(item.SourceAnchors) > 0 {
@@ -382,11 +481,12 @@ func buildAnalysisDocsVerificationSteps(root string, changed []string) ([]Verifi
 		}
 		steps = append(steps, VerificationStep{
 			Label:           label,
-			Command:         command,
+			Informational:   true,
 			Scope:           scope,
 			Stage:           "targeted",
 			Tags:            []string{"analysis_docs", "verification_matrix"},
 			Status:          VerificationPending,
+			Output:          detail,
 			PlannerPriority: 35,
 		})
 	}
@@ -415,11 +515,35 @@ func loadLatestAnalysisDocsManifest(root string) (AnalysisDocsManifest, bool) {
 	return AnalysisDocsManifest{}, false
 }
 
-func verificationEchoSafeText(value string) string {
-	value = strings.ReplaceAll(strings.TrimSpace(value), "`", "'")
-	value = strings.ReplaceAll(value, "\r", " ")
-	value = strings.ReplaceAll(value, "\n", " ")
-	value = strings.ReplaceAll(value, "|", "/")
+func appendVerificationEvidencePart(parts []string, key string, value string) []string {
+	value = verificationDisplaySafeText(value)
+	if value == "" {
+		return parts
+	}
+	return append(parts, key+"="+value)
+}
+
+func verificationDisplaySafeText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r == '\r' || r == '\n' || r == '\t':
+			b.WriteRune(' ')
+		case r < 0x20:
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	value = strings.Join(strings.Fields(b.String()), " ")
+	runes := []rune(value)
+	if len(runes) > 500 {
+		value = string(runes[:500]) + "..."
+	}
 	return strings.TrimSpace(value)
 }
 
@@ -471,7 +595,35 @@ func analysisVerificationMatrixEntryMatches(item AnalysisVerificationMatrixEntry
 	return false
 }
 
-func buildCppVerificationSteps(root string, mode VerificationMode) []VerificationStep {
+func buildCppVerificationSteps(root string, changed []string, mode VerificationMode) []VerificationStep {
+	if projects := detectChangedVCXProjFiles(root, changed); len(projects) > 0 {
+		steps := make([]VerificationStep, 0, len(projects)+1)
+		for _, project := range projects {
+			command, label := msbuildProjectVerificationCommand(root, project)
+			steps = append(steps, VerificationStep{
+				Label:           label,
+				Command:         command,
+				Scope:           project,
+				Stage:           "targeted",
+				Tags:            []string{"cpp", "msbuild", "project"},
+				Status:          VerificationPending,
+				PlannerPriority: 70,
+			})
+		}
+		if mode != VerificationFull {
+			return uniqueVerificationSteps(steps)
+		}
+		if solution := detectSolutionFile(root); solution != "" {
+			steps = append(steps, VerificationStep{
+				Label:   "msbuild " + solution,
+				Command: "msbuild " + quoteVerificationCommandArg(solution) + " /m",
+				Scope:   "workspace",
+				Stage:   "workspace",
+				Status:  VerificationPending,
+			})
+		}
+		return uniqueVerificationSteps(steps)
+	}
 	if buildDir := detectCMakeBuildDir(root); buildDir != "" {
 		quotedBuildDir := quoteVerificationCommandArg(buildDir)
 		steps := []VerificationStep{{
@@ -502,15 +654,207 @@ func buildCppVerificationSteps(root string, mode VerificationMode) []Verificatio
 		}}
 	}
 	if project := detectVCXProjFile(root); project != "" {
+		command, label := msbuildProjectVerificationCommand(root, project)
 		return []VerificationStep{{
-			Label:   "msbuild " + project,
-			Command: "msbuild " + quoteVerificationCommandArg(project) + " /m",
+			Label:   label,
+			Command: command,
 			Scope:   "workspace",
 			Stage:   "workspace",
 			Status:  VerificationPending,
 		}}
 	}
 	return nil
+}
+
+type msbuildProjectConfiguration struct {
+	Configuration string
+	Platform      string
+}
+
+func msbuildProjectVerificationCommand(root string, project string) (string, string) {
+	command := "msbuild " + quoteVerificationCommandArg(project) + " /m"
+	label := "msbuild " + project
+	if cfg := selectMSBuildProjectConfiguration(root, project); cfg.Configuration != "" && cfg.Platform != "" {
+		command += " /p:Configuration=" + quoteMSBuildPropertyValue(cfg.Configuration)
+		command += " /p:Platform=" + quoteMSBuildPropertyValue(cfg.Platform)
+		label += " " + cfg.Configuration + "|" + cfg.Platform
+	}
+	return command, label
+}
+
+func selectMSBuildProjectConfiguration(root string, project string) msbuildProjectConfiguration {
+	configs := readMSBuildProjectConfigurations(root, project)
+	if len(configs) == 0 {
+		return msbuildProjectConfiguration{}
+	}
+	preferred := []msbuildProjectConfiguration{
+		{Configuration: "Debug", Platform: "x64"},
+		{Configuration: "Release", Platform: "x64"},
+		{Configuration: "Debug", Platform: "ARM64"},
+		{Configuration: "Release", Platform: "ARM64"},
+		{Configuration: "Debug", Platform: "Win32"},
+		{Configuration: "Release", Platform: "Win32"},
+	}
+	for _, want := range preferred {
+		for _, cfg := range configs {
+			if strings.EqualFold(cfg.Configuration, want.Configuration) && strings.EqualFold(cfg.Platform, want.Platform) {
+				return cfg
+			}
+		}
+	}
+	for _, cfg := range configs {
+		if strings.EqualFold(cfg.Platform, "x64") {
+			return cfg
+		}
+	}
+	return configs[0]
+}
+
+func readMSBuildProjectConfigurations(root string, project string) []msbuildProjectConfiguration {
+	projectPath := project
+	if !filepath.IsAbs(projectPath) {
+		projectPath = filepath.Join(root, filepath.FromSlash(project))
+	}
+	file, err := os.Open(projectPath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+
+	decoder := xml.NewDecoder(file)
+	var configs []msbuildProjectConfiguration
+	seen := map[string]bool{}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			break
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "ProjectConfiguration" {
+			continue
+		}
+		var item struct {
+			Include       string `xml:"Include,attr"`
+			Configuration string `xml:"Configuration"`
+			Platform      string `xml:"Platform"`
+		}
+		if err := decoder.DecodeElement(&item, &start); err != nil {
+			continue
+		}
+		configuration := strings.TrimSpace(item.Configuration)
+		platform := strings.TrimSpace(item.Platform)
+		if (configuration == "" || platform == "") && strings.Contains(item.Include, "|") {
+			parts := strings.SplitN(item.Include, "|", 2)
+			if configuration == "" {
+				configuration = strings.TrimSpace(parts[0])
+			}
+			if platform == "" {
+				platform = strings.TrimSpace(parts[1])
+			}
+		}
+		if configuration == "" || platform == "" {
+			continue
+		}
+		key := strings.ToLower(configuration + "|" + platform)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		configs = append(configs, msbuildProjectConfiguration{
+			Configuration: configuration,
+			Platform:      platform,
+		})
+	}
+	return configs
+}
+
+func quoteMSBuildPropertyValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return `""`
+	}
+	if strings.ContainsAny(value, " \t\"'") {
+		return quoteVerificationCommandArg(value)
+	}
+	return value
+}
+
+func detectChangedVCXProjFiles(root string, changed []string) []string {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range changed {
+		rel := strings.TrimSpace(raw)
+		if rel == "" || !isCppLikeSourcePath(rel) {
+			continue
+		}
+		abs := rel
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(rootAbs, rel)
+		}
+		project := nearestVCXProjForPath(rootAbs, abs)
+		if project == "" {
+			continue
+		}
+		key := strings.ToLower(filepath.ToSlash(project))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, project)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func nearestVCXProjForPath(rootAbs string, absPath string) string {
+	absPath, err := filepath.Abs(absPath)
+	if err != nil {
+		return ""
+	}
+	dir := absPath
+	if ext := filepath.Ext(dir); ext != "" {
+		dir = filepath.Dir(dir)
+	}
+	for {
+		rel, err := filepath.Rel(rootAbs, dir)
+		if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+			return ""
+		}
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.vcxproj"))
+		if len(matches) > 0 {
+			sort.Strings(matches)
+			projectRel, err := filepath.Rel(rootAbs, matches[0])
+			if err != nil {
+				return filepath.ToSlash(matches[0])
+			}
+			return filepath.ToSlash(projectRel)
+		}
+		if samePath(dir, rootAbs) {
+			return ""
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func isCppLikeSourcePath(path string) bool {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	switch ext {
+	case ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl", ".ixx":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildGoVerificationSteps(root string, changed []string, mode VerificationMode) []VerificationStep {
@@ -1002,7 +1346,17 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 	}
 	for i := range report.Steps {
 		step := &report.Steps[i]
+		if step.Informational {
+			step.Status = VerificationSkipped
+			if strings.TrimSpace(step.Output) == "" {
+				step.Output = "Informational verification evidence only; no command was executed."
+			}
+			continue
+		}
 		resolvedCommand := resolveVerificationCommandPath(ws, step.Command)
+		if strings.TrimSpace(resolvedCommand) != "" && strings.TrimSpace(resolvedCommand) != strings.TrimSpace(step.Command) {
+			step.ResolvedCommand = resolvedCommand
+		}
 		if err := ws.EnsureShell(resolvedCommand); err != nil {
 			step.Status = VerificationSkipped
 			step.Output = "Permission denied: " + err.Error()
@@ -1079,7 +1433,7 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 		} else {
 			report.Decision = "Verification completed all planned steps."
 		}
-	} else if !report.HasFailures() {
+	} else if !report.HasFailures() && report.HasPassedStep() {
 		if report.Mode == VerificationAdaptive && hasTargetedVerificationStep(report.Steps) {
 			report.Decision = joinSentence(report.Decision, "Adaptive verification expanded from targeted checks to workspace-level checks after targeted checks passed.")
 		} else {
@@ -1137,6 +1491,27 @@ func (r VerificationReport) HasFailures() bool {
 	return false
 }
 
+func (r VerificationReport) HasPassedStep() bool {
+	for _, step := range r.Steps {
+		if step.Status == VerificationPassed {
+			return true
+		}
+	}
+	return false
+}
+
+func (r VerificationReport) WasSkipped() bool {
+	if len(r.Steps) == 0 {
+		return false
+	}
+	for _, step := range r.Steps {
+		if step.Status != VerificationSkipped {
+			return false
+		}
+	}
+	return true
+}
+
 func (r VerificationReport) FirstFailure() *VerificationStep {
 	for i := range r.Steps {
 		if r.Steps[i].Status == VerificationFailed {
@@ -1153,6 +1528,9 @@ func (r VerificationReport) FailureSummary() string {
 			continue
 		}
 		line := fmt.Sprintf("- %s", step.Label)
+		if strings.TrimSpace(step.ResolvedCommand) != "" && strings.TrimSpace(step.ResolvedCommand) != strings.TrimSpace(step.Command) {
+			line += " (cmd: " + step.ResolvedCommand + ")"
+		}
 		if strings.TrimSpace(step.FailureKind) != "" {
 			line += " [" + step.FailureKind + "]"
 		}
@@ -1294,6 +1672,13 @@ func (r VerificationReport) RenderDetailed() string {
 		if step.Status == VerificationFailed && strings.TrimSpace(step.FailureKind) != "" {
 			header += " [" + step.FailureKind + "]"
 		}
+		var bodyLines []string
+		if strings.TrimSpace(step.Command) != "" {
+			bodyLines = append(bodyLines, "Command: "+step.Command)
+		}
+		if strings.TrimSpace(step.ResolvedCommand) != "" && strings.TrimSpace(step.ResolvedCommand) != strings.TrimSpace(step.Command) {
+			bodyLines = append(bodyLines, "Resolved command: "+step.ResolvedCommand)
+		}
 		body := step.Output
 		if strings.TrimSpace(body) == "" {
 			body = "(no output)"
@@ -1301,6 +1686,8 @@ func (r VerificationReport) RenderDetailed() string {
 		if step.Status == VerificationFailed && strings.TrimSpace(step.Hint) != "" {
 			body = "Hint: " + step.Hint + "\n\n" + body
 		}
+		bodyLines = append(bodyLines, body)
+		body = strings.Join(bodyLines, "\n")
 		parts = append(parts, header+"\n"+body)
 	}
 	return strings.Join(parts, "\n\n")
@@ -1352,6 +1739,9 @@ func (r VerificationReport) RenderTerminal(ui UI) string {
 		if strings.TrimSpace(step.Command) != "" {
 			lines = append(lines, ui.progressLine(ui.dim("cmd: "+step.Command)))
 		}
+		if strings.TrimSpace(step.ResolvedCommand) != "" && strings.TrimSpace(step.ResolvedCommand) != strings.TrimSpace(step.Command) {
+			lines = append(lines, ui.progressLine(ui.dim("resolved cmd: "+step.ResolvedCommand)))
+		}
 		if step.Status == VerificationFailed && strings.TrimSpace(step.Hint) != "" {
 			lines = append(lines, ui.progressLine(ui.warn("hint: "+strings.TrimSpace(step.Hint))))
 		}
@@ -1374,6 +1764,9 @@ func (r VerificationReport) RenderShort() string {
 	lines = append(lines, r.SummaryLine())
 	for _, step := range r.Steps {
 		line := fmt.Sprintf("[%s] %s", step.Status, step.Label)
+		if strings.TrimSpace(step.ResolvedCommand) != "" && strings.TrimSpace(step.ResolvedCommand) != strings.TrimSpace(step.Command) {
+			line += " (cmd: " + step.ResolvedCommand + ")"
+		}
 		if step.Status == VerificationFailed && strings.TrimSpace(step.FailureKind) != "" {
 			line += " [" + step.FailureKind + "]"
 		}
@@ -1407,11 +1800,11 @@ func indentBlock(text string, prefix string) string {
 
 func classifyVerificationFailure(step VerificationStep) (string, string) {
 	output := strings.ToLower(strings.TrimSpace(step.Output))
-	command := strings.ToLower(step.Command + " " + step.Label)
+	command := strings.ToLower(step.Command + " " + step.Label + " " + step.ResolvedCommand)
 	switch {
 	case strings.Contains(output, "timed out"):
 		return "timeout", "The verification command timed out. Reduce the scope, fix hanging behavior, or rerun after addressing long-running work."
-	case looksLikeMissingVerificationCommand(output):
+	case missingVerificationCommandName(step) != "":
 		return "command_not_found", "A required verification tool could not be started. Check PATH, install the missing build/test tool, or disable automatic verification for this workspace."
 	case strings.Contains(command, "typecheck"):
 		return "typecheck_error", "Fix the reported type errors before retrying verification."
@@ -1486,22 +1879,129 @@ func looksLikeGoCompileFailure(output string) bool {
 	return false
 }
 
-func looksLikeMissingVerificationCommand(output string) bool {
-	for _, needle := range []string{
-		"is not recognized as the name of a cmdlet",
-		"is not recognized as an internal or external command",
-		"executable file not found in %path%",
-		"exec: \"",
-		"command not found",
-		"no such file or directory",
-		"the system cannot find the file specified",
-		"createprocess failed",
-	} {
-		if strings.Contains(output, needle) {
-			return true
+func missingVerificationCommandName(step VerificationStep) string {
+	output := strings.ToLower(strings.TrimSpace(step.Output))
+	if output == "" {
+		return ""
+	}
+	primary := verificationPrimaryExecutable(step)
+	if primary == "" {
+		return ""
+	}
+	if strings.Contains(output, "exec: \"") && strings.Contains(output, "executable file not found") {
+		if quoted := firstQuotedValue(output); executableNameMatches(quoted, primary) {
+			return primary
+		}
+		return ""
+	}
+	if strings.Contains(output, "is not recognized as the name of a cmdlet") ||
+		strings.Contains(output, "is not recognized as an internal or external command") ||
+		strings.Contains(output, "command not found") ||
+		strings.Contains(output, "the system cannot find the file specified") ||
+		strings.Contains(output, "createprocess failed") {
+		if missingTerm := missingCommandTerm(output); executableNameMatches(missingTerm, primary) {
+			return primary
+		}
+		first := firstOutputToken(output)
+		if executableNameMatches(first, primary) {
+			return primary
 		}
 	}
-	return false
+	return ""
+}
+
+func verificationPrimaryExecutable(step VerificationStep) string {
+	for _, command := range []string{step.ResolvedCommand, step.Command} {
+		if token := firstCommandExecutableToken(command); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func firstCommandExecutableToken(command string) string {
+	trimmed := strings.TrimSpace(command)
+	for strings.HasPrefix(trimmed, "&") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "&"))
+	}
+	if trimmed == "" {
+		return ""
+	}
+	if trimmed[0] == '"' || trimmed[0] == '\'' {
+		quote := trimmed[0]
+		for i := 1; i < len(trimmed); i++ {
+			if trimmed[i] == quote {
+				return strings.TrimSpace(trimmed[1:i])
+			}
+		}
+		return strings.Trim(trimmed, `"'`)
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(fields[0], `"'`)
+}
+
+func missingCommandTerm(output string) string {
+	if quoted := firstQuotedValue(output); quoted != "" {
+		return quoted
+	}
+	if idx := strings.Index(output, ":"); idx > 0 {
+		return strings.TrimSpace(output[:idx])
+	}
+	return ""
+}
+
+func firstQuotedValue(text string) string {
+	for _, quote := range []byte{'"', '\''} {
+		start := strings.IndexByte(text, quote)
+		if start < 0 {
+			continue
+		}
+		end := strings.IndexByte(text[start+1:], quote)
+		if end < 0 {
+			continue
+		}
+		return strings.TrimSpace(text[start+1 : start+1+end])
+	}
+	return ""
+}
+
+func firstOutputToken(output string) string {
+	line := strings.TrimSpace(strings.ReplaceAll(output, "\r\n", "\n"))
+	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	if idx := strings.Index(line, ":"); idx > 0 {
+		line = strings.TrimSpace(line[:idx])
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(fields[0], `"'`)
+}
+
+func executableNameMatches(observed string, expected string) bool {
+	observed = normalizeExecutableName(observed)
+	expected = normalizeExecutableName(expected)
+	if observed == "" || expected == "" {
+		return false
+	}
+	return observed == expected
+}
+
+func normalizeExecutableName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(strings.Trim(value, `"'`)))
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "/", `\`)
+	if idx := strings.LastIndex(value, `\`); idx >= 0 {
+		value = value[idx+1:]
+	}
+	return strings.TrimSuffix(value, ".exe")
 }
 
 func resolveVerificationCommandPath(ws Workspace, command string) string {
@@ -1510,21 +2010,21 @@ func resolveVerificationCommandPath(ws Workspace, command string) string {
 		return command
 	}
 	if path := strings.TrimSpace(ws.VerificationToolPaths["msbuild"]); path != "" {
-		resolved = replaceLeadingVerificationTool(resolved, "msbuild", path)
+		resolved = replaceLeadingVerificationTool(resolved, "msbuild", path, ws.Shell)
 	}
 	if path := strings.TrimSpace(ws.VerificationToolPaths["cmake"]); path != "" {
-		resolved = replaceLeadingVerificationTool(resolved, "cmake", path)
+		resolved = replaceLeadingVerificationTool(resolved, "cmake", path, ws.Shell)
 	}
 	if path := strings.TrimSpace(ws.VerificationToolPaths["ctest"]); path != "" {
-		resolved = replaceLeadingVerificationTool(resolved, "ctest", path)
+		resolved = replaceLeadingVerificationTool(resolved, "ctest", path, ws.Shell)
 	}
 	if path := strings.TrimSpace(ws.VerificationToolPaths["ninja"]); path != "" {
-		resolved = replaceLeadingVerificationTool(resolved, "ninja", path)
+		resolved = replaceLeadingVerificationTool(resolved, "ninja", path, ws.Shell)
 	}
 	return resolved
 }
 
-func replaceLeadingVerificationTool(command, toolName, toolPath string) string {
+func replaceLeadingVerificationTool(command, toolName, toolPath string, shell string) string {
 	trimmed := strings.TrimSpace(command)
 	lowerTool := strings.ToLower(strings.TrimSpace(toolName))
 	lowerCommand := strings.ToLower(trimmed)
@@ -1536,10 +2036,25 @@ func replaceLeadingVerificationTool(command, toolName, toolPath string) string {
 	}
 	rest := strings.TrimSpace(trimmed[len(toolName):])
 	resolved := quoteVerificationCommandArg(strings.TrimSpace(toolPath))
+	if verificationShellRequiresCallOperatorForQuotedExe(shell) {
+		resolved = "& " + resolved
+	}
 	if rest == "" {
 		return resolved
 	}
 	return resolved + " " + rest
+}
+
+func verificationShellRequiresCallOperatorForQuotedExe(shell string) bool {
+	base := strings.ToLower(strings.TrimSpace(shell))
+	switch base {
+	case "cmd", "cmd.exe", "bash", "sh":
+		return false
+	}
+	if strings.Contains(base, "powershell") || strings.Contains(base, "pwsh") {
+		return true
+	}
+	return runtime.GOOS == "windows"
 }
 
 func exists(path string) bool {

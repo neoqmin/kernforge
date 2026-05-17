@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,7 +34,10 @@ func (t ApplyPatchTool) Execute(ctx context.Context, input any) (string, error) 
 }
 
 func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	patchText := stringValue(args, "patch")
 	if strings.TrimSpace(patchText) == "" {
 		return ToolExecutionResult{}, fmt.Errorf("patch is required")
@@ -41,10 +46,28 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if err != nil {
 		return ToolExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidPatchFormat, err)
 	}
-	text, err := applyPatchDocument(ctx, t.ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
+	text, changedWorkspace, changedPaths, err := applyPatchDocument(ctx, t.ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
+	meta := map[string]any{
+		"changed_workspace":     false,
+		"requires_verification": false,
+	}
+	if err == nil {
+		meta = buildApplyPatchMeta(t.ws.Root, doc)
+		normalizedChangedPaths := normalizeTaskStateList(changedPaths, 64)
+		meta["changed_paths"] = normalizedChangedPaths
+		meta["changed_count"] = len(normalizedChangedPaths)
+		meta["changed_workspace"] = changedWorkspace
+		meta["requires_verification"] = changedWorkspace
+	} else if changedWorkspace {
+		meta = map[string]any{
+			"changed_workspace":     true,
+			"requires_verification": true,
+			"changed_paths":         normalizeWorkspaceSignaturePathList(changedPaths),
+		}
+	}
 	return ToolExecutionResult{
 		DisplayText: text,
-		Meta:        buildApplyPatchMeta(t.ws.Root, doc),
+		Meta:        meta,
 	}, err
 }
 
@@ -68,11 +91,15 @@ func buildApplyPatchMeta(root string, doc patchDocument) map[string]any {
 			updated++
 			if strings.TrimSpace(op.moveTo) != "" {
 				moved++
+				if movePath := relOrAbs(root, op.moveTo); strings.TrimSpace(movePath) != "" {
+					changedPaths = append(changedPaths, movePath)
+				}
 			}
 		}
 	}
+	changedPaths = normalizeTaskStateList(changedPaths, 64)
 	return map[string]any{
-		"changed_paths":         normalizeTaskStateList(changedPaths, 32),
+		"changed_paths":         changedPaths,
 		"changed_count":         len(changedPaths),
 		"patch_operation_count": len(doc.ops),
 		"add_count":             added,
@@ -273,96 +300,117 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 	return op, nil
 }
 
-func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ownerNodeID string) (string, error) {
+func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ownerNodeID string) (string, bool, []string, error) {
 	planned, err := planPatchDocument(ws, doc, ownerNodeID)
 	if err != nil {
-		return "", err
+		return "", false, nil, err
 	}
 	if len(planned) == 0 {
-		return "No patch operations to apply.", nil
+		return "No patch operations to apply.", false, nil, nil
 	}
 	var previewBlocks []string
 	var previewPaths []string
+	var proposals []EditProposal
 	for _, change := range planned {
 		target := relOrAbs(change.displayRoot, change.destPath)
 		if change.kind == "delete" {
 			target = relOrAbs(change.displayRoot, change.srcPath)
 		}
+		expectedPreview := buildSelectionAwareEditPreview(ws, target, change.before, change.after)
 		previewPaths = append(previewPaths, target)
-		previewBlocks = append(previewBlocks, buildSelectionAwareEditPreview(ws, target, change.before, change.after))
+		previewBlocks = append(previewBlocks, expectedPreview)
+		proposal := EditProposal{
+			File:         filepath.ToSlash(target),
+			Operation:    "apply_patch",
+			Rationale:    change.summary,
+			Risk:         editProposalRiskForOperation("apply_patch", len(planned)),
+			AfterExcerpt: buildSelectionAwareAfterExcerpt(ws, target, change.before, change.after, 12000),
+		}
+		proposals = append(proposals, bindEditProposalPreview(proposal, "apply_patch", target, expectedPreview))
 	}
 	preview := EditPreview{
 		Title:     fmt.Sprintf("Apply patch to %d file(s)", len(planned)),
 		Preview:   strings.Join(previewBlocks, "\n\n"),
 		Paths:     normalizeTaskStateList(previewPaths, 64),
 		Operation: "apply_patch",
+		Proposals: normalizeEditProposals(proposals),
 	}
 	if err := ws.ReviewProposedEdit(ctx, preview); err != nil {
-		return "", err
+		return "", false, nil, err
 	}
 	if err := ws.ConfirmEdit(preview); err != nil {
-		return "", err
+		return "", false, nil, err
 	}
 	if err := ensurePlannedPatchWrites(ws, planned); err != nil {
-		return "", err
+		return "", false, nil, err
 	}
 	editRoot := ws.Root
 	if len(planned) > 0 {
 		editRoot = firstNonBlankString(planned[0].displayRoot, ws.Root)
 	}
 	if err := ws.BeforeEditForRoot(fmt.Sprintf("apply patch (%d file(s))", len(planned)), editRoot); err != nil {
-		return "", err
+		return "", false, nil, err
 	}
 
 	var summaries []string
 	var previews []string
+	mutated := false
+	var changedPaths []string
 	for _, change := range planned {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", mutated, changedPaths, ctx.Err()
 		default:
 		}
 		switch change.kind {
 		case "add":
 			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
-				return "", err
+				return "", mutated, changedPaths, err
 			}
 			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
-				return "", err
+				return "", mutated, changedPaths, err
 			}
+			mutated = true
+			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.destPath))
 			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), "", change.after))
 		case "delete":
 			ws.Progress("Deleting " + relOrAbs(change.displayRoot, change.srcPath) + "...")
 			if err := os.Remove(change.srcPath); err != nil {
-				return "", err
+				return "", mutated, changedPaths, err
 			}
+			mutated = true
+			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.srcPath))
 			ws.Progress("Deleted " + relOrAbs(change.displayRoot, change.srcPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.srcPath), change.before, ""))
 		case "update":
 			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
-				return "", err
+				return "", mutated, changedPaths, err
 			}
 			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
-				return "", err
+				return "", mutated, changedPaths, err
 			}
+			mutated = true
+			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.destPath))
 			if change.destPath != change.srcPath {
 				if err := os.Remove(change.srcPath); err != nil {
-					return "", err
+					return "", mutated, changedPaths, err
 				}
+				mutated = true
+				changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.srcPath))
 			}
 			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), change.before, change.after))
 		default:
-			return "", fmt.Errorf("unsupported patch operation: %s", change.kind)
+			return "", mutated, changedPaths, fmt.Errorf("unsupported patch operation: %s", change.kind)
 		}
 	}
-	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), nil
+	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), mutated, changedPaths, nil
 }
 
 func ensurePlannedPatchWrites(ws Workspace, planned []plannedPatchChange) error {
@@ -400,8 +448,13 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 				return nil, err
 			}
 			path := route.AbsolutePath
-			if _, err := os.Stat(path); err == nil {
+			if err := ws.CheckEditBoundary(path); err != nil {
+				return nil, err
+			}
+			if _, err := os.Lstat(path); err == nil {
 				return nil, fmt.Errorf("cannot add file that already exists: %s", op.path)
+			} else if !os.IsNotExist(err) {
+				return nil, err
 			}
 			content := strings.Join(op.addLines, "\n")
 			if len(op.addLines) > 0 {
@@ -415,11 +468,14 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 				summary:     "added " + route.DisplayPath(),
 			})
 		case "delete":
-			route, err := ws.ResolveEditPath(op.path, ownerNodeID, true)
+			route, err := ws.ResolveEditPath(op.path, ownerNodeID, false)
 			if err != nil {
 				return nil, err
 			}
 			path := route.AbsolutePath
+			if err := ws.CheckEditBoundary(path); err != nil {
+				return nil, err
+			}
 			original, err := os.ReadFile(path)
 			if err != nil {
 				return nil, err
@@ -432,13 +488,16 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 				summary:     "deleted " + route.DisplayPath(),
 			})
 		case "update":
-			srcRoute, err := ws.ResolveEditPath(op.path, ownerNodeID, true)
+			srcRoute, err := ws.ResolveEditPath(op.path, ownerNodeID, false)
 			if err != nil {
 				return nil, err
 			}
 			srcPath := srcRoute.AbsolutePath
 			destPath := srcPath
 			displayRoot := firstNonBlankString(srcRoute.DisplayRoot, ws.Root)
+			if err := ws.CheckEditBoundary(srcPath); err != nil {
+				return nil, err
+			}
 			if strings.TrimSpace(op.moveTo) != "" {
 				destRoute, err := ws.ResolveEditPath(op.moveTo, ownerNodeID, false)
 				if err != nil {
@@ -446,6 +505,11 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 				}
 				destPath = destRoute.AbsolutePath
 				displayRoot = firstNonBlankString(destRoute.DisplayRoot, displayRoot, ws.Root)
+				if destPath != srcPath {
+					if err := ws.CheckEditBoundary(destPath); err != nil {
+						return nil, err
+					}
+				}
 			}
 			original, err := os.ReadFile(srcPath)
 			if err != nil {
@@ -476,8 +540,9 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 }
 
 func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
+	lineEnding := detectPatchLineEnding(content)
+	content = normalizePatchLineEndings(content)
 	hasTrailingNewline := strings.HasSuffix(content, "\n")
-	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.TrimSuffix(content, "\n")
 	oldLines := []string{}
 	if content != "" {
@@ -485,6 +550,7 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	}
 
 	cursor := 0
+	lineDelta := 0
 	for _, hunk := range hunks {
 		var oldChunk []string
 		var newChunk []string
@@ -496,15 +562,13 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 				newChunk = append(newChunk, line.text)
 			}
 		}
+		if len(oldChunk) == 0 {
+			return "", fmt.Errorf("%w: update hunk has no context or deletion lines", ErrEditTargetMismatch)
+		}
 
-		applyAt, err := locatePatchChunk(oldLines, oldChunk, cursor)
+		applyAt, err := locatePatchChunk(oldLines, oldChunk, cursor, hunk.header, lineDelta)
 		if err != nil {
 			return "", fmt.Errorf("failed to apply hunk %s: %w", hunk.header, err)
-		}
-		if len(oldChunk) == 0 {
-			oldLines = append(append([]string{}, oldLines[:applyAt]...), append(newChunk, oldLines[applyAt:]...)...)
-			cursor = applyAt + len(newChunk)
-			continue
 		}
 		updated := make([]string, 0, len(oldLines)-len(oldChunk)+len(newChunk))
 		updated = append(updated, oldLines[:applyAt]...)
@@ -512,53 +576,229 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 		updated = append(updated, oldLines[applyAt+len(oldChunk):]...)
 		oldLines = updated
 		cursor = applyAt + len(newChunk)
+		lineDelta += len(newChunk) - len(oldChunk)
 	}
 
-	result := strings.Join(oldLines, "\n")
+	result := strings.Join(oldLines, lineEnding)
 	if hasTrailingNewline && result != "" {
-		result += "\n"
+		result += lineEnding
 	}
 	return result, nil
 }
 
-func locatePatchChunk(lines, oldChunk []string, cursor int) (int, error) {
+func normalizePatchLineEndings(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return content
+}
+
+func detectPatchLineEnding(content string) string {
+	if content == "" {
+		return "\n"
+	}
+	crlfCount := strings.Count(content, "\r\n")
+	withoutCRLF := strings.ReplaceAll(content, "\r\n", "")
+	lfCount := strings.Count(withoutCRLF, "\n")
+	crCount := strings.Count(withoutCRLF, "\r")
+	if crlfCount > 0 && crlfCount >= lfCount && crlfCount >= crCount {
+		return "\r\n"
+	}
+	if crCount > 0 && crCount > lfCount {
+		return "\r"
+	}
+	return "\n"
+}
+
+func locatePatchChunk(lines, oldChunk []string, cursor int, header string, lineDelta int) (int, error) {
 	if len(oldChunk) == 0 {
-		if cursor < 0 {
-			cursor = 0
-		}
-		if cursor > len(lines) {
-			cursor = len(lines)
-		}
-		return cursor, nil
+		return -1, fmt.Errorf("%w: expected context is empty", ErrEditTargetMismatch)
 	}
 	if cursor < 0 {
 		cursor = 0
 	}
-	if idx := findChunkAtOrAfter(lines, oldChunk, cursor); idx >= 0 {
-		return idx, nil
+	if oldStart, ok := parsePatchHunkOldStart(header); ok {
+		expectedIndex := oldStart - 1 + lineDelta
+		if expectedIndex >= cursor && chunkMatchesAt(lines, oldChunk, expectedIndex) {
+			return expectedIndex, nil
+		}
 	}
-	if idx := findChunkAtOrAfter(lines, oldChunk, 0); idx >= 0 {
-		return idx, nil
+	matches := findChunkMatchesAtOrAfter(lines, oldChunk, cursor)
+	if len(matches) == 1 {
+		return matches[0], nil
 	}
-	return -1, fmt.Errorf("%w: expected context not found", ErrEditTargetMismatch)
+	if len(matches) > 1 {
+		return -1, fmt.Errorf("%w: expected context is ambiguous (%d matches)%s", ErrEditTargetMismatch, len(matches), formatPatchMismatchDiagnostic(lines, oldChunk, cursor, header, lineDelta, matches))
+	}
+	return -1, fmt.Errorf("%w: expected context not found%s", ErrEditTargetMismatch, formatPatchMismatchDiagnostic(lines, oldChunk, cursor, header, lineDelta, nil))
 }
 
-func findChunkAtOrAfter(lines, chunk []string, start int) int {
-	if len(chunk) == 0 {
-		return start
+func formatPatchMismatchDiagnostic(lines, oldChunk []string, cursor int, header string, lineDelta int, matches []int) string {
+	var b strings.Builder
+	trimmedHeader := strings.TrimSpace(header)
+	if trimmedHeader != "" {
+		fmt.Fprintf(&b, "\nhunk header: %s", trimmedHeader)
 	}
-	limit := len(lines) - len(chunk)
-	for i := start; i <= limit; i++ {
-		match := true
-		for j := 0; j < len(chunk); j++ {
-			if lines[i+j] != chunk[j] {
-				match = false
-				break
+	if cursor < 0 {
+		cursor = 0
+	}
+	fmt.Fprintf(&b, "\nsearch started at current line: %d", cursor+1)
+	if oldStart, ok := parsePatchHunkOldStart(header); ok {
+		fmt.Fprintf(&b, "\nhunk header resolves to current line: %d", oldStart+lineDelta)
+	}
+	firstLine := ""
+	if first, ok := firstPatchDiagnosticLine(oldChunk); ok {
+		firstLine = first
+		fmt.Fprintf(&b, "\nexpected first line: %s", quotePatchDiagnosticLine(first))
+	}
+	if last, ok := lastPatchDiagnosticLine(oldChunk); ok && last != firstLine {
+		fmt.Fprintf(&b, "\nexpected last line: %s", quotePatchDiagnosticLine(last))
+	}
+
+	candidates := patchMismatchCandidateStarts(lines, oldChunk, cursor, header, lineDelta, matches)
+	if len(candidates) == 0 {
+		return b.String()
+	}
+	b.WriteString("\nnearest current context:")
+	contextLineCount := len(oldChunk)
+	if contextLineCount > 5 {
+		contextLineCount = 5
+	}
+	if contextLineCount < 1 {
+		contextLineCount = 1
+	}
+	for _, start := range candidates {
+		if start < 0 {
+			start = 0
+		}
+		if start >= len(lines) {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  candidate line %d:", start+1)
+		end := start + contextLineCount
+		if end > len(lines) {
+			end = len(lines)
+		}
+		for i := start; i < end; i++ {
+			fmt.Fprintf(&b, "\n    %d: %s", i+1, quotePatchDiagnosticLine(lines[i]))
+		}
+	}
+	return b.String()
+}
+
+func firstPatchDiagnosticLine(lines []string) (string, bool) {
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			return line, true
+		}
+	}
+	if len(lines) > 0 {
+		return lines[0], true
+	}
+	return "", false
+}
+
+func lastPatchDiagnosticLine(lines []string) (string, bool) {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i], true
+		}
+	}
+	if len(lines) > 0 {
+		return lines[len(lines)-1], true
+	}
+	return "", false
+}
+
+func patchMismatchCandidateStarts(lines, oldChunk []string, cursor int, header string, lineDelta int, matches []int) []int {
+	const maxCandidates = 3
+	candidates := make([]int, 0, maxCandidates)
+	addCandidate := func(index int) {
+		if index < 0 || index >= len(lines) {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == index {
+				return
 			}
 		}
-		if match {
-			return i
+		if len(candidates) < maxCandidates {
+			candidates = append(candidates, index)
 		}
 	}
-	return -1
+	for _, match := range matches {
+		addCandidate(match)
+	}
+	if len(candidates) >= maxCandidates {
+		return candidates
+	}
+	if oldStart, ok := parsePatchHunkOldStart(header); ok {
+		addCandidate(oldStart - 1 + lineDelta)
+	}
+	if len(candidates) >= maxCandidates {
+		return candidates
+	}
+	anchor, ok := firstPatchDiagnosticLine(oldChunk)
+	if !ok {
+		return candidates
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	for i := cursor; i < len(lines) && len(candidates) < maxCandidates; i++ {
+		if lines[i] == anchor {
+			addCandidate(i)
+		}
+	}
+	return candidates
+}
+
+func quotePatchDiagnosticLine(line string) string {
+	const maxLen = 160
+	if len(line) > maxLen {
+		line = line[:maxLen] + "...(truncated)"
+	}
+	return strconv.Quote(line)
+}
+
+func parsePatchHunkOldStart(header string) (int, bool) {
+	for _, field := range strings.Fields(header) {
+		if !strings.HasPrefix(field, "-") {
+			continue
+		}
+		spec := strings.TrimPrefix(field, "-")
+		if comma := strings.Index(spec, ","); comma >= 0 {
+			spec = spec[:comma]
+		}
+		start, err := strconv.Atoi(spec)
+		if err == nil && start > 0 {
+			return start, true
+		}
+	}
+	return 0, false
+}
+
+func findChunkMatchesAtOrAfter(lines, chunk []string, start int) []int {
+	if len(chunk) == 0 {
+		return []int{start}
+	}
+	limit := len(lines) - len(chunk)
+	matches := []int{}
+	for i := start; i <= limit; i++ {
+		if chunkMatchesAt(lines, chunk, i) {
+			matches = append(matches, i)
+		}
+	}
+	return matches
+}
+
+func chunkMatchesAt(lines, chunk []string, index int) bool {
+	if index < 0 || index+len(chunk) > len(lines) {
+		return false
+	}
+	for j := 0; j < len(chunk); j++ {
+		if lines[index+j] != chunk[j] {
+			return false
+		}
+	}
+	return true
 }

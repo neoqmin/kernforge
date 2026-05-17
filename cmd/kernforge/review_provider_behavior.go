@@ -45,6 +45,7 @@ type ReviewRouteHealth struct {
 	UsableFindingRate float64 `json:"usable_finding_rate,omitempty"`
 	LastStatus        string  `json:"last_status,omitempty"`
 	LastQuality       string  `json:"last_quality,omitempty"`
+	LastTimeout       bool    `json:"last_timeout,omitempty"`
 	MedianLatencyMS   int64   `json:"median_latency_ms,omitempty"`
 	Recommendation    string  `json:"recommendation,omitempty"`
 }
@@ -60,31 +61,31 @@ type reviewModelCapabilityRule struct {
 }
 
 var reviewModelCapabilityRules = []reviewModelCapabilityRule{
-	{ModelPattern: "gpt-5.5", CapabilityRank: 1000, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "gpt-5.4", CapabilityRank: 940, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "gpt-5.3", CapabilityRank: 900, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "gpt-5.2", CapabilityRank: 860, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "opus", CapabilityRank: 900, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "sonnet", CapabilityRank: 780, SchemaReliability: "high", BlockerDetectionPrior: "medium", LatencyClass: "cli", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "deepseek-v4-pro", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{ModelPattern: "deepseek v4 pro", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{ModelPattern: "deepseek", CapabilityRank: 730, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{ModelPattern: "haiku", CapabilityRank: 480, SchemaReliability: "standard", BlockerDetectionPrior: "low", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "gpt-4.1", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{ModelPattern: "gpt-4", CapabilityRank: 700, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "openai-codex", CapabilityRank: 900, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "codex-cli", CapabilityRank: 840, SchemaReliability: "high", BlockerDetectionPrior: "medium", LatencyClass: "cli", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "anthropic-claude-cli", CapabilityRank: 760, SchemaReliability: "high", BlockerDetectionPrior: "medium", LatencyClass: "cli", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "anthropic", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "deepseek", CapabilityRank: 730, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{Provider: "openai", CapabilityRank: 720, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "openrouter", CapabilityRank: 650, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "opencode", CapabilityRank: 650, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "opencode-go", CapabilityRank: 650, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewFocusedCrossSoftTimeout},
-	{Provider: "ollama", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{Provider: "lmstudio", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{Provider: "vllm", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
-	{Provider: "llama.cpp", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLowerPerformanceCrossSoftTimeout},
+	{ModelPattern: "gpt-5.5", CapabilityRank: 1000, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "gpt-5.4", CapabilityRank: 940, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "gpt-5.3", CapabilityRank: 900, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "gpt-5.2", CapabilityRank: 860, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "opus", CapabilityRank: 900, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "sonnet", CapabilityRank: 780, SchemaReliability: "high", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "deepseek-v4-pro", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "deepseek v4 pro", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "deepseek", CapabilityRank: 730, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "haiku", CapabilityRank: 480, SchemaReliability: "standard", BlockerDetectionPrior: "low", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "gpt-4.1", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{ModelPattern: "gpt-4", CapabilityRank: 700, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "openai-codex", CapabilityRank: 900, SchemaReliability: "high", BlockerDetectionPrior: "high", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "codex-cli", CapabilityRank: 840, SchemaReliability: "high", BlockerDetectionPrior: "medium", LatencyClass: "cli", RecommendedTimeout: reviewCLICrossSoftTimeout},
+	{Provider: "anthropic-claude-cli", CapabilityRank: 760, SchemaReliability: "high", BlockerDetectionPrior: "medium", LatencyClass: "cli", RecommendedTimeout: reviewCLICrossSoftTimeout},
+	{Provider: "anthropic", CapabilityRank: 760, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "deepseek", CapabilityRank: 730, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "slow", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "openai", CapabilityRank: 720, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "openrouter", CapabilityRank: 650, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "opencode", CapabilityRank: 650, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "opencode-go", CapabilityRank: 650, SchemaReliability: "standard", BlockerDetectionPrior: "medium", LatencyClass: "standard", RecommendedTimeout: reviewCloudCrossSoftTimeout},
+	{Provider: "ollama", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLocalCrossSoftTimeout},
+	{Provider: "lmstudio", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLocalCrossSoftTimeout},
+	{Provider: "vllm", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLocalCrossSoftTimeout},
+	{Provider: "llama.cpp", CapabilityRank: 520, SchemaReliability: "low", BlockerDetectionPrior: "low", LatencyClass: "variable", RecommendedTimeout: reviewLocalCrossSoftTimeout},
 }
 
 func reviewProviderBehavior(provider string) ReviewProviderBehavior {
@@ -230,9 +231,15 @@ func reviewModelCapabilityProfile(role string, provider string, model string, ef
 	rule, _ := reviewModelCapabilityRuleFor(provider, model)
 	rank := reviewModelCapabilityRank(provider, model, effort)
 	latency := valueOrDefault(rule.LatencyClass, "standard")
-	timeout := rule.RecommendedTimeout
+	switch provider {
+	case "codex-cli", "anthropic-claude-cli":
+		latency = "cli"
+	case "ollama", "lmstudio", "vllm", "llama.cpp":
+		latency = "variable"
+	}
+	timeout := reviewDefaultCrossSoftTimeoutForProvider(provider)
 	if timeout <= 0 {
-		timeout = reviewFocusedCrossSoftTimeout
+		timeout = reviewCloudCrossSoftTimeout
 	}
 	reliability := "standard"
 	if strings.TrimSpace(rule.SchemaReliability) != "" {
@@ -319,6 +326,7 @@ func reviewRouteHealthFromRun(run *ReviewRun) []ReviewRouteHealth {
 		}
 		lowerError := strings.ToLower(strings.TrimSpace(reviewerRun.Error))
 		if strings.Contains(lowerError, "timeout") {
+			health.LastTimeout = true
 			health.TimeoutRate = 1
 			health.Recommendation = "route timed out recently; consider a stronger or closer reviewer route"
 		}
@@ -429,6 +437,7 @@ func combineReviewRouteHealth(previous ReviewRouteHealth, latest ReviewRouteHeal
 		UsableFindingRate: weighted(previous.UsableFindingRate, latest.UsableFindingRate),
 		LastStatus:        firstNonBlankString(latest.LastStatus, previous.LastStatus),
 		LastQuality:       firstNonBlankString(latest.LastQuality, previous.LastQuality),
+		LastTimeout:       latest.LastTimeout,
 		MedianLatencyMS:   latency,
 	}
 }

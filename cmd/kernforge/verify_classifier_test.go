@@ -112,8 +112,14 @@ func TestBuildVerificationPlanUsesLatestAnalysisDocsMatrix(t *testing.T) {
 	plan := buildVerificationPlan(root, []string{"driver/dispatch.cpp"}, VerificationAdaptive)
 	found := false
 	for _, step := range plan.Steps {
-		if strings.Contains(step.Label, "analysis docs verification") && strings.Contains(step.Command, "driver build and symbol/signing readiness") {
+		if strings.Contains(step.Label, "analysis docs verification") && strings.Contains(step.Output, "driver build and symbol/signing readiness") {
 			found = true
+			if !step.Informational {
+				t.Fatalf("expected analysis docs verification step to be informational, got %#v", step)
+			}
+			if strings.TrimSpace(step.Command) != "" {
+				t.Fatalf("informational analysis docs evidence must not be a shell command: %#v", step.Command)
+			}
 			break
 		}
 	}
@@ -151,8 +157,14 @@ func TestBuildVerificationPlanUsesFuzzCampaignNativeResults(t *testing.T) {
 	plan := buildVerificationPlan(root, []string{"driver/packet.cpp"}, VerificationAdaptive)
 	found := false
 	for _, step := range plan.Steps {
-		if strings.Contains(step.Label, "fuzz evidence regression") && strings.Contains(step.Command, "ff-deadbeef") {
+		if strings.Contains(step.Label, "fuzz evidence regression") && strings.Contains(step.Output, "ff-deadbeef") {
 			found = true
+			if !step.Informational {
+				t.Fatalf("expected fuzz evidence step to be informational, got %#v", step)
+			}
+			if strings.TrimSpace(step.Command) != "" {
+				t.Fatalf("informational fuzz evidence must not be a shell command: %#v", step.Command)
+			}
 			if !containsString(step.Tags, "fuzz_native_result") {
 				t.Fatalf("expected fuzz_native_result tag, got %#v", step.Tags)
 			}
@@ -164,6 +176,83 @@ func TestBuildVerificationPlanUsesFuzzCampaignNativeResults(t *testing.T) {
 	}
 	if !strings.Contains(plan.PlannerNote, "Fuzz campaign native results added") {
 		t.Fatalf("expected fuzz planner note, got %q", plan.PlannerNote)
+	}
+}
+
+func TestVerificationManifestEvidenceDoesNotBecomeShellCommands(t *testing.T) {
+	root := t.TempDir()
+	analysisCfg := configProjectAnalysis(DefaultConfig(root), root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest: %v", err)
+	}
+	manifest := AnalysisDocsManifest{
+		Documents: []AnalysisGeneratedDoc{{Name: "VERIFICATION_MATRIX.md"}},
+		VerificationMatrix: []AnalysisVerificationMatrixEntry{
+			{
+				ChangeArea:           "Driver or IOCTL",
+				RequiredVerification: "driver build & Remove-Item important",
+				OptionalVerification: "$(Invoke-Expression bad) | echo quoted",
+				SourceAnchors:        []string{"driver/dispatch.cpp:42"},
+			},
+		},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "docs_manifest.json"), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	campaign, err := createFuzzCampaignFromWorkspace(root, "driver fuzz", AnalysisDocsManifest{})
+	if err != nil {
+		t.Fatalf("create campaign: %v", err)
+	}
+	campaign.NativeResults = []FuzzCampaignNativeResult{{
+		RunID:            "run-1 & bad",
+		Target:           "ValidatePacket",
+		TargetFile:       "driver/dispatch.cpp",
+		Status:           "failed",
+		Outcome:          "failed | bad",
+		CrashCount:       1,
+		CrashFingerprint: "fingerprint; bad",
+		ReportPath:       filepath.Join(campaign.ReportsDir, "report.md"),
+		CrashDir:         filepath.Join(campaign.CrashDir, "run-1"),
+		MinimizeCommand:  "fuzz-driver; Remove-Item corpus",
+	}}
+	if err := writeFuzzCampaignManifest(campaign); err != nil {
+		t.Fatalf("write campaign manifest: %v", err)
+	}
+
+	plan := buildVerificationPlan(root, []string{"driver/dispatch.cpp"}, VerificationAdaptive)
+	foundAnalysis := false
+	foundFuzz := false
+	for _, step := range plan.Steps {
+		switch {
+		case strings.Contains(step.Label, "analysis docs verification"):
+			foundAnalysis = true
+			if !step.Informational || strings.TrimSpace(step.Command) != "" {
+				t.Fatalf("analysis evidence must be informational and non-executable: %#v", step)
+			}
+			if !strings.Contains(step.Output, "Remove-Item important") {
+				t.Fatalf("expected analysis evidence in output, got %q", step.Output)
+			}
+		case strings.Contains(step.Label, "fuzz evidence regression"):
+			foundFuzz = true
+			if !step.Informational || strings.TrimSpace(step.Command) != "" {
+				t.Fatalf("fuzz evidence must be informational and non-executable: %#v", step)
+			}
+			if !strings.Contains(step.Output, "fuzz-driver; Remove-Item corpus") {
+				t.Fatalf("expected fuzz evidence in output, got %q", step.Output)
+			}
+		}
+	}
+	if !foundAnalysis {
+		t.Fatalf("expected analysis evidence step, got %#v", plan.Steps)
+	}
+	if !foundFuzz {
+		t.Fatalf("expected fuzz evidence step, got %#v", plan.Steps)
 	}
 }
 

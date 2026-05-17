@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptions) ReviewRequestAnalysis {
@@ -420,6 +421,8 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 	var evidence ReviewEvidencePack
 	focusPaths := reviewEvidenceFocusPaths(run, opts)
 	collectedSourceFirst := false
+	collectedGitEvidence := false
+	isPreWrite := strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write")
 	includePreWriteFileContext := reviewPreWriteShouldIncludeFileContext(run, opts, focusPaths)
 	evidence.Sources = []string{}
 	evidence.Warnings = append(evidence.Warnings, run.RequestAnalysis.AmbiguityWarnings...)
@@ -433,6 +436,20 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Provided diff", changeSet.DiffExcerpt)
 		evidence.Sources = append(evidence.Sources, "provided_diff")
 	}
+	preWriteProposalText := ""
+	if isPreWrite {
+		preWriteProposalText = renderEditProposalsForEvidenceWithoutAfterExcerpt(run.EditProposals)
+		if strings.TrimSpace(preWriteProposalText) != "" {
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Edit proposal", preWriteProposalText)
+			evidence.Sources = append(evidence.Sources, "edit_proposal")
+		}
+		if repairText := renderReviewRepairFindingsForEvidence(opts.RepairFindings); strings.TrimSpace(repairText) != "" {
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Required repair findings from pre-fix review", repairText)
+			evidence.Sources = append(evidence.Sources, "pre_fix_repair_findings")
+		}
+	}
+	preWriteAfterEvidenceAdded := appendPreWriteRequiredRepairAfterEvidence(run, opts, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
+	appendPreWriteRequiredRepairDiffEvidence(run, opts, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 	if strings.TrimSpace(opts.ProvidedCode) != "" {
 		if changeSet.Source == "" {
 			changeSet.Source = "provided_code"
@@ -456,13 +473,25 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 			collectedSourceFirst = true
 		}
 	}
-	if proposalText := renderEditProposalsForEvidence(run.EditProposals); strings.TrimSpace(proposalText) != "" {
-		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Edit proposal", proposalText)
-		evidence.Sources = append(evidence.Sources, "edit_proposal")
+	if !isPreWrite {
+		proposalText := renderEditProposalsForEvidence(run.EditProposals)
+		if preWriteAfterEvidenceAdded {
+			proposalText = renderEditProposalsForEvidenceWithoutAfterExcerpt(run.EditProposals)
+		}
+		if strings.TrimSpace(proposalText) != "" {
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Edit proposal", proposalText)
+			evidence.Sources = append(evidence.Sources, "edit_proposal")
+		}
+		if repairText := renderReviewRepairFindingsForEvidence(opts.RepairFindings); strings.TrimSpace(repairText) != "" {
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Required repair findings from pre-fix review", repairText)
+			evidence.Sources = append(evidence.Sources, "pre_fix_repair_findings")
+		}
 	}
-	if repairText := renderReviewRepairFindingsForEvidence(opts.RepairFindings); strings.TrimSpace(repairText) != "" {
-		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Required repair findings from pre-fix review", repairText)
-		evidence.Sources = append(evidence.Sources, "pre_fix_repair_findings")
+	if reviewShouldCollectGitEvidenceBeforeSource(run, opts, focusPaths) {
+		gitOpts := opts
+		gitOpts.MaxContextChars = reviewChangeGitEvidenceBudget(opts.MaxContextChars)
+		collectGitReviewEvidence(ctx, root, focusPaths, &changeSet, &evidence, gitOpts)
+		collectedGitEvidence = true
 	}
 	if reviewShouldCollectSourceEvidenceFirst(run, opts, focusPaths) {
 		collectFileReviewEvidence(rt, root, focusPaths, run.RequestAnalysis.ScopeDiscovery.CandidateSymbols, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
@@ -480,7 +509,7 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 	case reviewTargetAnalysis:
 		collectAnalysisReviewEvidence(rt, root, focusPaths, &changeSet, &evidence, opts)
 	default:
-		if opts.IncludeGitDiff || (changeSet.Source == "" && strings.TrimSpace(evidence.Text) == "") {
+		if !collectedGitEvidence && (opts.IncludeGitDiff || (changeSet.Source == "" && strings.TrimSpace(evidence.Text) == "")) {
 			collectGitReviewEvidence(ctx, root, focusPaths, &changeSet, &evidence, opts)
 		}
 	}
@@ -488,10 +517,10 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 		collectFileReviewEvidence(rt, root, focusPaths, run.RequestAnalysis.ScopeDiscovery.CandidateSymbols, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 	}
 	if rt != nil && rt.session != nil {
-		collectSessionReviewEvidence(rt.session, &evidence)
+		collectSessionReviewEvidence(rt.session, &evidence, reviewShouldIncludeCodingHarness(run))
 	}
-	if rt != nil && rt.verifyHistory != nil {
-		collectVerificationHistoryReviewEvidence(rt.verifyHistory, root, &evidence)
+	if rt != nil && rt.verifyHistory != nil && reviewShouldCollectVerificationHistory(run) {
+		collectVerificationHistoryReviewEvidence(rt.verifyHistory, root, rt.session, &evidence)
 	}
 	changeSet.ChangedPaths = analysisUniqueStrings(append(changeSet.ChangedPaths, evidence.ChangedPaths...))
 	sort.Strings(changeSet.ChangedPaths)
@@ -501,7 +530,19 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 		evidence.Sources = append(evidence.Sources, "scope_discovery")
 	}
 	if opts.MaxContextChars > 0 && len(evidence.Text) > opts.MaxContextChars {
-		evidence.Text = compactPromptSection(evidence.Text, opts.MaxContextChars)
+		if isPreWrite {
+			var compacted bool
+			evidence.Text, compacted = compactPreWriteEvidencePreservingPriority(evidence.Text, opts.MaxContextChars)
+			if compacted {
+				evidence.Warnings = append(evidence.Warnings, "optional pre-write review evidence compacted to preserve edit proposal and required repair findings")
+			}
+		} else {
+			evidence.Text = compactPromptSection(evidence.Text, opts.MaxContextChars)
+			evidence.Warnings = append(evidence.Warnings, "review evidence text truncated to max context budget")
+		}
+	}
+	if opts.MaxContextChars > 0 && len(evidence.Text) > opts.MaxContextChars {
+		evidence.Text = compactPromptSectionPreserveHeadTail(evidence.Text, opts.MaxContextChars)
 		evidence.Warnings = append(evidence.Warnings, "review evidence text truncated to max context budget")
 	}
 	if changeSet.Source == "" {
@@ -511,6 +552,248 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 	evidence.Sources = analysisUniqueStrings(evidence.Sources)
 	evidence.Warnings = analysisUniqueStrings(evidence.Warnings)
 	return changeSet, evidence
+}
+
+func reviewShouldCollectVerificationHistory(run ReviewRun) bool {
+	trigger := strings.TrimSpace(run.Trigger)
+	if strings.EqualFold(trigger, "pre_write") || strings.EqualFold(trigger, reviewBeforeFixTrigger) {
+		return false
+	}
+	return true
+}
+
+func reviewShouldCollectGitEvidenceBeforeSource(run ReviewRun, opts ReviewHarnessOptions, focusPaths []string) bool {
+	if len(focusPaths) == 0 ||
+		!strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetChange) ||
+		strings.TrimSpace(opts.ProvidedDiff) != "" ||
+		strings.TrimSpace(opts.ProvidedCode) != "" {
+		return false
+	}
+	return opts.IncludeGitDiff || strings.EqualFold(strings.TrimSpace(run.Flow), "change_review")
+}
+
+func reviewChangeGitEvidenceBudget(maxChars int) int {
+	if maxChars <= 0 {
+		return maxChars
+	}
+	budget := maxChars / 3
+	if budget > 60000 {
+		return 60000
+	}
+	if budget < 20000 && maxChars >= 40000 {
+		return 20000
+	}
+	if budget <= 0 {
+		return maxChars
+	}
+	return budget
+}
+
+func appendPreWriteRequiredRepairDiffEvidence(run ReviewRun, opts ReviewHarnessOptions, evidence *ReviewEvidencePack, maxChars int) bool {
+	if evidence == nil ||
+		maxChars <= 0 ||
+		!strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") ||
+		strings.TrimSpace(opts.ProvidedDiff) == "" ||
+		len(opts.RepairFindings) == 0 {
+		return false
+	}
+	tokens := reviewRepairDiffEvidenceTokens(opts.RepairFindings, opts.ProvidedDiff)
+	if len(tokens) == 0 {
+		return false
+	}
+	budget := maxChars / 3
+	if budget > reviewPreWriteDiffEvidenceMaxChars {
+		budget = reviewPreWriteDiffEvidenceMaxChars
+	}
+	if budget < 1600 && maxChars >= 1600 {
+		budget = 1600
+	}
+	if budget <= 0 {
+		return false
+	}
+	excerpt := reviewDiffTokenWindowExcerpt(opts.ProvidedDiff, tokens, budget)
+	if strings.TrimSpace(excerpt) == "" {
+		return false
+	}
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, "Pre-write required repair diff excerpts", excerpt)
+	evidence.Sources = append(evidence.Sources, "repair_diff_excerpt")
+	return true
+}
+
+func appendPreWriteRequiredRepairAfterEvidence(run ReviewRun, opts ReviewHarnessOptions, evidence *ReviewEvidencePack, maxChars int) bool {
+	if evidence == nil ||
+		maxChars <= 0 ||
+		!strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") ||
+		len(opts.RepairFindings) == 0 ||
+		len(run.EditProposals) == 0 {
+		return false
+	}
+	var sections []string
+	for _, proposal := range normalizeEditProposals(run.EditProposals) {
+		after := proposal.AfterExcerpt
+		if strings.TrimSpace(after) == "" {
+			continue
+		}
+		var b strings.Builder
+		if strings.TrimSpace(proposal.File) != "" {
+			fmt.Fprintf(&b, "file: %s\n", proposal.File)
+		}
+		if strings.TrimSpace(proposal.Operation) != "" {
+			fmt.Fprintf(&b, "operation: %s\n", proposal.Operation)
+		}
+		b.WriteString(after)
+		sections = append(sections, strings.TrimSpace(b.String()))
+	}
+	if len(sections) == 0 {
+		return false
+	}
+	budget := maxChars
+	if budget > reviewPreWriteFileContextChars {
+		budget = reviewPreWriteFileContextChars
+	}
+	if budget < 10000 && maxChars >= 10000 {
+		budget = 10000
+	}
+	if budget <= 0 {
+		return false
+	}
+	body := compactPromptSectionPreserveHeadTail(strings.Join(sections, "\n\n-- after excerpt gap --\n\n"), budget)
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, "Pre-write required repair after excerpts", body)
+	evidence.Sources = append(evidence.Sources, "after_excerpt")
+	return true
+}
+
+func reviewRepairDiffEvidenceTokens(repairs []ReviewFinding, diff string) []string {
+	diffLower := strings.ToLower(diff)
+	stop := map[string]bool{
+		"code": true, "path": true, "line": true, "lines": true, "this": true, "that": true,
+		"with": true, "from": true, "into": true, "return": true,
+		"failed": true, "failure": true, "error": true, "current": true,
+		"review": true, "finding": true, "required": true, "repair": true, "should": true,
+		"문제": true, "영향": true, "수정": true, "확인": true, "경우": true, "처리": true,
+		"현재": true, "리뷰": true, "코드": true,
+	}
+	seen := map[string]bool{}
+	var out []string
+	add := func(token string) {
+		token = strings.Trim(token, "`'\".,:;()[]{}<>")
+		if len(token) < 5 {
+			return
+		}
+		lower := strings.ToLower(token)
+		if stop[lower] || seen[lower] || !strings.Contains(diffLower, lower) {
+			return
+		}
+		seen[lower] = true
+		out = append(out, token)
+	}
+	for _, repair := range repairs {
+		text := strings.Join([]string{
+			repair.ID,
+			repair.Title,
+			repair.Evidence,
+			repair.Impact,
+			repair.RequiredFix,
+			repair.TestRecommendation,
+		}, " ")
+		for _, quoted := range reviewBacktickTokens(text) {
+			add(quoted)
+		}
+		for _, token := range strings.FieldsFunc(text, func(r rune) bool {
+			return !(r == '_' || r == ':' || r == '\\' || r == '/' || r == '-' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'))
+		}) {
+			add(token)
+		}
+	}
+	return limitStrings(out, 24)
+}
+
+func reviewBacktickTokens(text string) []string {
+	var out []string
+	inTick := false
+	var b strings.Builder
+	for _, r := range text {
+		if r == '`' {
+			if inTick {
+				if token := strings.TrimSpace(b.String()); token != "" {
+					out = append(out, token)
+				}
+				b.Reset()
+			}
+			inTick = !inTick
+			continue
+		}
+		if inTick {
+			b.WriteRune(r)
+		}
+	}
+	return out
+}
+
+func reviewDiffTokenWindowExcerpt(diff string, tokens []string, maxChars int) string {
+	if maxChars <= 0 || len(tokens) == 0 {
+		return ""
+	}
+	lines := reviewNormalizedLines(diff)
+	if len(lines) == 0 {
+		return ""
+	}
+	tokenLower := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token != "" {
+			tokenLower = append(tokenLower, token)
+		}
+	}
+	selected := map[int]bool{}
+	for i, line := range lines {
+		lower := strings.ToLower(line)
+		matched := false
+		for _, token := range tokenLower {
+			if strings.Contains(lower, token) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		start := i - 16
+		if start < 0 {
+			start = 0
+		}
+		end := i + 24
+		if end >= len(lines) {
+			end = len(lines) - 1
+		}
+		for j := start; j <= end; j++ {
+			selected[j] = true
+		}
+	}
+	if len(selected) == 0 {
+		return ""
+	}
+	var indices []int
+	for idx := range selected {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	var b strings.Builder
+	last := -2
+	for _, idx := range indices {
+		if b.Len() >= maxChars {
+			break
+		}
+		if idx != last+1 && b.Len() > 0 {
+			b.WriteString("\n-- diff excerpt gap --\n")
+		}
+		fmt.Fprintf(&b, "%5d | %s\n", idx+1, lines[idx])
+		last = idx
+	}
+	return compactPromptSectionPreserveHeadTail(b.String(), maxChars)
 }
 
 func reviewEvidenceFocusPaths(run ReviewRun, opts ReviewHarnessOptions) []string {
@@ -548,6 +831,19 @@ func reviewPreWriteFileContextPaths(run ReviewRun, opts ReviewHarnessOptions, fo
 func reviewProvidedDiffEvidenceBudget(opts ReviewHarnessOptions, includePreWriteFileContext bool) int {
 	if opts.MaxContextChars <= 0 || !includePreWriteFileContext {
 		return opts.MaxContextChars
+	}
+	if strings.EqualFold(strings.TrimSpace(opts.Trigger), "pre_write") && strings.TrimSpace(opts.ProvidedDiff) != "" {
+		reserve := reviewPreWriteFileContextChars
+		if reserve > 20000 {
+			reserve = 20000
+		}
+		if opts.MaxContextChars < reserve*2 {
+			reserve = opts.MaxContextChars / 4
+		}
+		fullDiffBudget := opts.MaxContextChars - reserve
+		if fullDiffBudget > 0 && len(opts.ProvidedDiff) <= fullDiffBudget {
+			return len(opts.ProvidedDiff)
+		}
 	}
 	budget := reviewPreWriteDiffEvidenceMaxChars
 	if opts.MaxContextChars <= reviewPreWriteFileContextChars+budget {
@@ -712,8 +1008,8 @@ func preWriteHeaderContextBudget(maxChars int) int {
 		return 0
 	}
 	budget := maxChars / 5
-	if budget > 2500 {
-		return 2500
+	if budget > 8000 {
+		return 8000
 	}
 	if budget < 800 && maxChars >= 1600 {
 		return 800
@@ -898,13 +1194,19 @@ func preWriteCurrentFileContextBudget(maxChars int) int {
 
 func preWriteFunctionBodyContextBody(content string, selection ViewerSelection, start int, end int, maxChars int) string {
 	full := sliceLines(content, start, end)
-	if maxChars <= 0 || len(full) <= maxChars {
+	if maxChars <= 0 {
+		return full
+	}
+	if len(full) <= maxChars {
+		if structured := preWriteFunctionBodyStructuredContext(content, selection, start, end, 0, 0, 0, maxChars/5, maxChars); len(structured) <= maxChars {
+			return structured
+		}
 		return full
 	}
 	beforeBudget := maxChars / 5
 	selectedBudget := maxChars / 5
-	importantBudget := maxChars / 5
-	tailBudget := maxChars - beforeBudget - selectedBudget - importantBudget - 384
+	tailExcerptBudget := maxChars / 5
+	tailBudget := maxChars - beforeBudget - selectedBudget - tailExcerptBudget - 384
 	if tailBudget < 1500 {
 		tailBudget = 1500
 		if beforeBudget > 800 {
@@ -913,30 +1215,51 @@ func preWriteFunctionBodyContextBody(content string, selection ViewerSelection, 
 		if selectedBudget > 800 {
 			selectedBudget -= 400
 		}
-		if importantBudget > 800 {
-			importantBudget -= 400
+		if tailExcerptBudget > 800 {
+			tailExcerptBudget -= 400
 		}
 	}
+	return preWriteFunctionBodyStructuredContext(content, selection, start, end, beforeBudget, selectedBudget, tailBudget, tailExcerptBudget, maxChars)
+}
+
+func preWriteFunctionBodyStructuredContext(content string, selection ViewerSelection, start int, end int, beforeBudget int, selectedBudget int, tailBudget int, tailExcerptBudget int, maxChars int) string {
 	var sections []string
 	if start < selection.StartLine {
-		before := compactPromptSection(sliceLines(content, start, selection.StartLine-1), beforeBudget)
+		before := sliceLines(content, start, selection.StartLine-1)
+		if beforeBudget > 0 {
+			before = compactPromptSection(before, beforeBudget)
+		}
 		if strings.TrimSpace(before) != "" {
 			sections = append(sections, "-- function start to selection --\n"+before)
 		}
 	}
-	selected := compactPromptSectionPreserveHeadTail(sliceLines(content, selection.StartLine, selection.EndLine), selectedBudget)
+	selected := sliceLines(content, selection.StartLine, selection.EndLine)
+	if selectedBudget > 0 {
+		selected = compactPromptSectionPreserveHeadTail(selected, selectedBudget)
+	}
 	if strings.TrimSpace(selected) != "" {
 		sections = append(sections, "-- selected range inside function --\n"+selected)
 	}
 	if selection.EndLine < end {
-		tail := compactPromptSectionPreserveHeadTail(sliceLines(content, selection.EndLine+1, end), tailBudget)
+		tail := sliceLines(content, selection.EndLine+1, end)
+		if tailBudget > 0 {
+			tail = compactPromptSectionPreserveHeadTail(tail, tailBudget)
+		}
 		if strings.TrimSpace(tail) != "" {
 			sections = append(sections, "-- selection to function end --\n"+tail)
 		}
 	}
-	important := preWriteImportantFunctionTailLines(content, selection.EndLine+1, end, importantBudget)
-	if strings.TrimSpace(important) != "" {
-		sections = append(sections, "-- important lines from selection to function end --\n"+important)
+	if tailExcerptBudget > 0 {
+		tailExcerpt := preWriteFunctionTailExcerpt(content, selection.EndLine+1, end, tailExcerptBudget)
+		if strings.TrimSpace(tailExcerpt) != "" {
+			sections = append(sections, "-- function tail from selection to function end --\n"+tailExcerpt)
+		}
+	}
+	if len(sections) == 0 {
+		return sliceLines(content, start, end)
+	}
+	if maxChars <= 0 {
+		return strings.Join(sections, "\n\n")
 	}
 	return compactPromptSectionPreserveHeadTail(strings.Join(sections, "\n\n"), maxChars)
 }
@@ -980,14 +1303,14 @@ func preWriteSelectionFileContextBody(content string, selection ViewerSelection,
 			sections = append(sections, "-- later post-selection context --\n"+later)
 		}
 	}
-	important := preWriteImportantFunctionTailLines(content, selection.EndLine+1, end, maxChars/5)
-	if strings.TrimSpace(important) != "" {
-		sections = append(sections, "-- important lines from selection to function end --\n"+important)
+	tailExcerpt := preWriteFunctionTailExcerpt(content, selection.EndLine+1, end, maxChars/5)
+	if strings.TrimSpace(tailExcerpt) != "" {
+		sections = append(sections, "-- function tail from selection to function end --\n"+tailExcerpt)
 	}
 	return compactPromptSectionPreserveHeadTail(strings.Join(sections, "\n\n"), maxChars)
 }
 
-func preWriteImportantFunctionTailLines(content string, start int, end int, maxChars int) string {
+func preWriteFunctionTailExcerpt(content string, start int, end int, maxChars int) string {
 	if maxChars <= 0 || end < start {
 		return ""
 	}
@@ -1001,39 +1324,15 @@ func preWriteImportantFunctionTailLines(content string, start int, end int, maxC
 	if end < start {
 		return ""
 	}
-	var body strings.Builder
-	for lineNumber := start; lineNumber <= end; lineNumber++ {
-		line := lines[lineNumber-1]
-		if lineNumber == end && strings.TrimSpace(line) == "}" {
-			fmt.Fprintf(&body, "%5d | %s\n", lineNumber, line)
-			continue
-		}
-		if !preWriteLineLooksImportantForFunctionTail(line) {
-			continue
-		}
-		fmt.Fprintf(&body, "%5d | %s\n", lineNumber, line)
+	if end-start <= 17 {
+		return compactPromptSectionPreserveHeadTail(sliceLines(content, start, end), maxChars)
 	}
-	return compactPromptSectionPreserveHeadTail(body.String(), maxChars)
-}
-
-func preWriteLineLooksImportantForFunctionTail(line string) bool {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	return containsAny(lower,
-		"m_volumepathmap",
-		"m_serialmap",
-		"findnextvolume",
-		"findvolumeclose",
-		"getlasterror",
-		"error_no_more_files",
-		"success",
-		"return ",
-		"querydosdevice",
-		"getvolumepathnamesforvolumename",
-	)
+	var sections []string
+	mid := start + ((end - start) / 2)
+	sections = append(sections, sliceLines(content, maxInt(start, mid-1), minInt(end, mid+1)))
+	sections = append(sections, sliceLines(content, start, minInt(end, start+2)))
+	sections = append(sections, sliceLines(content, maxInt(start, end-2), end))
+	return compactPromptSectionPreserveHeadTail(strings.Join(uniqueStrings(sections), "\n...\n"), maxChars)
 }
 
 func compactPromptSectionPreserveHeadTail(text string, limit int) string {
@@ -1399,7 +1698,14 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	if changeSet.Source == "" {
 		changeSet.Source = "git_worktree"
 	}
-	status := runGitText(root, "status", "--short", "--branch")
+	pathArgs, err := reviewGitPathArgs(root, paths)
+	if err != nil {
+		evidence.Warnings = append(evidence.Warnings, err.Error())
+		return
+	}
+	statusArgs := []string{"status", "--short", "--branch"}
+	statusArgs = append(statusArgs, pathArgs...)
+	status := runGitText(root, statusArgs...)
 	if reviewGitOutputIsUnavailable(status) {
 		evidence.Warnings = append(evidence.Warnings, "git status unavailable: "+firstNonEmptyLine(status))
 		return
@@ -1418,11 +1724,6 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	}
 	changeSet.ChangedPaths = append(changeSet.ChangedPaths, changed...)
 	changeSet.UntrackedPaths = append(changeSet.UntrackedPaths, untracked...)
-	pathArgs, err := reviewGitPathArgs(root, paths)
-	if err != nil {
-		evidence.Warnings = append(evidence.Warnings, err.Error())
-		return
-	}
 	diffStat := runGitText(root, append([]string{"diff", "--stat"}, pathArgs...)...)
 	if strings.TrimSpace(diffStat) != "" {
 		changeSet.DiffStat = diffStat
@@ -1716,7 +2017,7 @@ func reviewLineContainsAnySymbol(line string, symbols []string) bool {
 	return false
 }
 
-func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack) {
+func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack, includeCodingHarness bool) {
 	if session == nil || evidence == nil {
 		return
 	}
@@ -1734,13 +2035,15 @@ func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Acceptance contract", compactPromptSection(contract.RenderPromptSection(), 4000))
 		evidence.Sources = append(evidence.Sources, "acceptance_contract")
 	}
-	if session.LastVerification != nil {
+	if session.LastVerification != nil && verificationReportCoversCurrentPatch(session, *session.LastVerification, time.Time{}, evidence.ChangedPaths) {
 		evidence.VerificationSummary = session.LastVerification.SummaryLine()
 		evidence.VerificationFailed = session.LastVerification.HasFailures()
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Latest verification", compactPromptSection(session.LastVerification.RenderShort(), 4000))
 		evidence.Sources = append(evidence.Sources, "verification")
+	} else if session.LastVerification != nil {
+		evidence.Warnings = append(evidence.Warnings, "latest session verification was ignored because it predates or does not cover the current patch transaction")
 	}
-	if session.LastCodingHarnessReport != nil {
+	if includeCodingHarness && session.LastCodingHarnessReport != nil {
 		report := *session.LastCodingHarnessReport
 		report.Normalize()
 		evidence.CodingHarnessSummary = report.RenderPromptSection()
@@ -1749,12 +2052,31 @@ func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack
 	}
 }
 
-func collectVerificationHistoryReviewEvidence(history *VerificationHistoryStore, root string, evidence *ReviewEvidencePack) {
+func reviewShouldIncludeCodingHarness(run ReviewRun) bool {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") ||
+		strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change") {
+		return false
+	}
+	target := strings.TrimSpace(run.Target)
+	if strings.EqualFold(target, reviewTargetFinal) ||
+		strings.EqualFold(target, reviewTargetGoal) ||
+		strings.EqualFold(target, reviewTargetAnalysis) {
+		return true
+	}
+	flow := strings.ToLower(strings.TrimSpace(run.Flow))
+	return containsAny(flow, "final", "completion", "goal")
+}
+
+func collectVerificationHistoryReviewEvidence(history *VerificationHistoryStore, root string, session *Session, evidence *ReviewEvidencePack) {
 	if history == nil || evidence == nil || strings.TrimSpace(evidence.VerificationSummary) != "" {
 		return
 	}
 	latest, ok, err := history.Latest(root)
 	if err != nil || !ok {
+		return
+	}
+	if !verificationReportCoversCurrentPatch(session, latest.Report, latest.RecordedAt, evidence.ChangedPaths) {
+		evidence.Warnings = append(evidence.Warnings, "latest verification history was ignored because it predates or does not cover the current patch transaction")
 		return
 	}
 	evidence.VerificationSummary = latest.Report.SummaryLine()
@@ -1773,6 +2095,182 @@ func appendReviewEvidenceSection(text string, title string, body string) string 
 		return section
 	}
 	return strings.TrimSpace(text) + "\n\n" + section
+}
+
+type reviewEvidenceSectionBlock struct {
+	Title string
+	Body  string
+	Raw   string
+}
+
+func splitReviewEvidenceSections(text string) []reviewEvidenceSectionBlock {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.HasPrefix(text, "## ") {
+		return nil
+	}
+	parts := strings.Split(text, "\n\n## ")
+	sections := make([]reviewEvidenceSectionBlock, 0, len(parts))
+	for idx, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if idx > 0 {
+			part = "## " + part
+		}
+		title, body, ok := parseReviewEvidenceSection(part)
+		if !ok {
+			title = reviewEvidenceSectionTitle(part)
+		}
+		sections = append(sections, reviewEvidenceSectionBlock{
+			Title: title,
+			Body:  body,
+			Raw:   part,
+		})
+	}
+	return sections
+}
+
+func parseReviewEvidenceSection(section string) (string, string, bool) {
+	section = strings.TrimSpace(section)
+	if !strings.HasPrefix(section, "## ") {
+		return "", "", false
+	}
+	lineEnd := strings.IndexByte(section, '\n')
+	if lineEnd < 0 {
+		return strings.TrimSpace(strings.TrimPrefix(section, "## ")), "", false
+	}
+	title := strings.TrimSpace(strings.TrimPrefix(section[:lineEnd], "## "))
+	rest := strings.TrimSpace(section[lineEnd+1:])
+	const prefix = "```text\n"
+	const suffix = "\n```"
+	if !strings.HasPrefix(rest, prefix) || !strings.HasSuffix(rest, suffix) {
+		return title, strings.TrimSpace(rest), false
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(rest, prefix), suffix)
+	return title, body, true
+}
+
+func reviewEvidenceSectionTitle(section string) string {
+	section = strings.TrimSpace(section)
+	if !strings.HasPrefix(section, "## ") {
+		return ""
+	}
+	lineEnd := strings.IndexByte(section, '\n')
+	if lineEnd < 0 {
+		return strings.TrimSpace(strings.TrimPrefix(section, "## "))
+	}
+	return strings.TrimSpace(strings.TrimPrefix(section[:lineEnd], "## "))
+}
+
+func appendRawReviewEvidenceSection(text string, section string) string {
+	section = strings.TrimSpace(section)
+	if section == "" {
+		return text
+	}
+	if strings.TrimSpace(text) == "" {
+		return section
+	}
+	return strings.TrimSpace(text) + "\n\n" + section
+}
+
+func compactPreWriteEvidencePreservingPriority(text string, maxChars int) (string, bool) {
+	text = strings.TrimSpace(text)
+	if maxChars <= 0 || len(text) <= maxChars {
+		return text, false
+	}
+	sections := splitReviewEvidenceSections(text)
+	if len(sections) == 0 {
+		return compactPromptSection(text, maxChars), true
+	}
+	order := []string{
+		"Provided diff",
+		"Edit proposal",
+		"Required repair findings from pre-fix review",
+		"Pre-write required repair diff excerpts",
+		"Pre-write required repair after excerpts",
+		"Pre-write function body excerpt",
+		"Pre-write current file context",
+	}
+	used := make([]bool, len(sections))
+	ordered := make([]reviewEvidenceSectionBlock, 0, len(sections))
+	for _, title := range order {
+		for idx, section := range sections {
+			if used[idx] || !reviewEvidenceSectionTitleMatches(section.Title, title) {
+				continue
+			}
+			used[idx] = true
+			ordered = append(ordered, section)
+		}
+	}
+	for idx, section := range sections {
+		if used[idx] {
+			continue
+		}
+		ordered = append(ordered, section)
+	}
+	var out string
+	compacted := false
+	for _, section := range ordered {
+		candidate := appendRawReviewEvidenceSection(out, section.Raw)
+		if len(candidate) <= maxChars {
+			out = candidate
+			continue
+		}
+		if preWriteEvidenceSectionIsRequired(section.Title) {
+			remaining := maxChars - len(strings.TrimSpace(out))
+			if strings.TrimSpace(out) != "" {
+				remaining -= 2
+			}
+			if remaining > 512 {
+				out = appendRawReviewEvidenceSection(out, compactReviewEvidenceSectionBlock(section, remaining))
+			}
+		}
+		compacted = true
+	}
+	if strings.TrimSpace(out) == "" {
+		return compactPromptSection(text, maxChars), true
+	}
+	return out, compacted
+}
+
+func preWriteEvidenceSectionIsRequired(title string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(title))
+	switch normalized {
+	case "provided diff",
+		"edit proposal",
+		"required repair findings from pre-fix review":
+		return true
+	default:
+		return strings.HasPrefix(normalized, "pre-write function body excerpt") ||
+			strings.HasPrefix(normalized, "pre-write current file context")
+	}
+}
+
+func reviewEvidenceSectionTitleMatches(actual string, expected string) bool {
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if actual == expected {
+		return true
+	}
+	return expected != "" && strings.HasPrefix(actual, expected+":")
+}
+
+func compactReviewEvidenceSectionBlock(section reviewEvidenceSectionBlock, maxChars int) string {
+	if maxChars <= 0 || len(section.Raw) <= maxChars {
+		return section.Raw
+	}
+	title := strings.TrimSpace(section.Title)
+	body := strings.TrimSpace(section.Body)
+	if title == "" || body == "" {
+		return compactPromptSectionPreserveHeadTail(section.Raw, maxChars)
+	}
+	overhead := len("## "+title+"\n\n```text\n\n```") + 16
+	bodyBudget := maxChars - overhead
+	if bodyBudget < 256 {
+		return compactPromptSectionPreserveHeadTail(section.Raw, maxChars)
+	}
+	return appendReviewEvidenceSection("", title, compactPromptSectionPreserveHeadTail(body, bodyBudget))
 }
 
 func reviewGitPathArgs(root string, paths []string) ([]string, error) {
