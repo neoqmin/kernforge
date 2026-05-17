@@ -35,6 +35,14 @@ type detailedTool interface {
 	ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error)
 }
 
+func requireToolInputObject(input any, toolName string) (map[string]any, error) {
+	args, ok := input.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s input must be an object", strings.TrimSpace(toolName))
+	}
+	return args, nil
+}
+
 type sharedToolHintsAware interface {
 	setSharedToolHints(*ToolHints)
 }
@@ -228,6 +236,7 @@ type Workspace struct {
 	ReportProgress        func(string)
 	CurrentSelection      func() *ViewerSelection
 	PreviewEdit           func(EditPreview) (bool, error)
+	ConfirmVerification   func(VerificationPlan) (bool, error)
 	UpdatePlan            func([]PlanItem)
 	GetPlan               func() []PlanItem
 	RunHook               func(context.Context, HookEvent, HookPayload) (HookVerdict, error)
@@ -282,6 +291,34 @@ func (w Workspace) resolveEditFallback(req EditRoutingRequest) (EditRoutingResul
 		abs, err = w.ensureWithinBaseRoot(path, abs)
 		if err != nil {
 			return EditRoutingResult{}, err
+		}
+		if req.AllowBaseFallback && !w.pathLooksAbsoluteForLookup(path) && !sameFilePath(w.Root, w.BaseRoot) {
+			if _, err := os.Stat(abs); err == nil {
+				return EditRoutingResult{
+					AbsolutePath: abs,
+					DisplayRoot:  w.Root,
+					OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+				}, nil
+			} else if err != nil && !os.IsNotExist(err) {
+				return EditRoutingResult{}, err
+			}
+			fallback, err := w.resolveAgainstRoot(w.BaseRoot, path)
+			if err != nil {
+				return EditRoutingResult{}, err
+			}
+			fallback, err = ensurePathWithinRoot(path, w.BaseRoot, fallback)
+			if err != nil {
+				return EditRoutingResult{}, err
+			}
+			if _, err := os.Stat(fallback); err == nil {
+				return EditRoutingResult{
+					AbsolutePath: fallback,
+					DisplayRoot:  w.BaseRoot,
+					OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+				}, nil
+			} else if err != nil && !os.IsNotExist(err) {
+				return EditRoutingResult{}, err
+			}
 		}
 		return EditRoutingResult{
 			AbsolutePath: abs,
@@ -341,6 +378,13 @@ func (w Workspace) ResolveEditPath(path string, ownerNodeID string, forLookup bo
 	return w.resolveEditFallback(req)
 }
 
+func (w Workspace) ResolveEditPathWithOptions(req EditRoutingRequest) (EditRoutingResult, error) {
+	if w.ResolveEditTarget != nil {
+		return w.ResolveEditTarget(req)
+	}
+	return w.resolveEditFallback(req)
+}
+
 func (w Workspace) ResolveShellWorkingDir(ownerNodeID string) (ShellRoutingResult, error) {
 	if w.ResolveShellRoot != nil {
 		return w.ResolveShellRoot(ownerNodeID)
@@ -349,6 +393,13 @@ func (w Workspace) ResolveShellWorkingDir(ownerNodeID string) (ShellRoutingResul
 		Root:        firstNonBlankString(w.Root, w.BaseRoot),
 		OwnerNodeID: strings.TrimSpace(ownerNodeID),
 	}, nil
+}
+
+func (w Workspace) ConfirmVerificationPlan(plan VerificationPlan) (bool, error) {
+	if w.ConfirmVerification == nil {
+		return true, nil
+	}
+	return w.ConfirmVerification(plan)
 }
 
 func (w Workspace) toolHints() *ToolHints {
@@ -525,25 +576,7 @@ func (w Workspace) ensureWithinBaseRoot(originalPath, abs string) (string, error
 	if strings.TrimSpace(activeRoot) == "" {
 		activeRoot = w.BaseRoot
 	}
-	rootAbs, err := filepath.Abs(activeRoot)
-	if err != nil {
-		return "", err
-	}
-	targetAbs, err := filepath.Abs(abs)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(rootAbs, targetAbs)
-	if err != nil {
-		return "", err
-	}
-	if rel == "." {
-		return targetAbs, nil
-	}
-	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path is outside the active workspace root: %s", originalPath)
-	}
-	return targetAbs, nil
+	return ensurePathWithinRoot(originalPath, activeRoot, abs)
 }
 
 func sameFilePath(a, b string) bool {
@@ -558,11 +591,39 @@ func sameFilePath(a, b string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+	leftInfo, leftStatErr := os.Stat(left)
+	rightInfo, rightStatErr := os.Stat(right)
+	if leftStatErr == nil && rightStatErr == nil {
+		return os.SameFile(leftInfo, rightInfo)
+	}
+	return sameCleanPathForOS(left, right)
+}
+
+func sameCleanPathForOS(left string, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if workspacePathsAreCaseInsensitiveByDefault() {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func workspacePathsAreCaseInsensitiveByDefault() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+}
+
+func (w Workspace) CheckEditBoundary(path string) error {
+	if err := w.ensureProtectedEditPath(path); err != nil {
+		return err
+	}
+	if err := w.ensureResolvedWritePathWithinRoot(path); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (w Workspace) EnsureWrite(path string) error {
-	if err := w.ensureProtectedEditPath(path); err != nil {
+	if err := w.CheckEditBoundary(path); err != nil {
 		return err
 	}
 	if w.Perms == nil {
@@ -570,12 +631,81 @@ func (w Workspace) EnsureWrite(path string) error {
 	}
 	ok, err := w.Perms.Allow(ActionWrite, path)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: write approval unavailable for %s: %v", ErrWriteDenied, path, err)
 	}
 	if !ok {
 		return fmt.Errorf("%w: user denied write approval for %s", ErrWriteDenied, path)
 	}
 	return nil
+}
+
+func (w Workspace) ensureResolvedWritePathWithinRoot(path string) error {
+	roots := normalizeTaskStateList([]string{w.Root, w.BaseRoot}, 2)
+	if len(roots) == 0 {
+		return nil
+	}
+	var rootAbsList []string
+	for _, root := range roots {
+		rootAbs, err := filepath.Abs(root)
+		if err != nil {
+			return err
+		}
+		if resolvedRoot, err := filepath.EvalSymlinks(rootAbs); err == nil {
+			rootAbs = resolvedRoot
+		}
+		rootAbsList = append(rootAbsList, rootAbs)
+	}
+	targetAbs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	checkPath := targetAbs
+	for {
+		resolved, err := filepath.EvalSymlinks(checkPath)
+		if err == nil {
+			resolvedAbs, absErr := filepath.Abs(resolved)
+			if absErr != nil {
+				return absErr
+			}
+			if !pathWithinAnyRoot(rootAbsList, resolvedAbs) {
+				return fmt.Errorf("%w: refusing to write through a path that resolves outside the active workspace root: %s -> %s", ErrEditTargetMismatch, targetAbs, resolvedAbs)
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		parent := filepath.Dir(checkPath)
+		if parent == checkPath || strings.TrimSpace(parent) == "" {
+			return nil
+		}
+		checkPath = parent
+	}
+}
+
+func pathWithinAnyRoot(roots []string, path string) bool {
+	for _, root := range roots {
+		if pathWithinRoot(root, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithinRoot(root string, path string) bool {
+	rootClean := filepath.Clean(root)
+	pathClean := filepath.Clean(path)
+	rel, err := filepath.Rel(rootClean, pathClean)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }
 
 func (w Workspace) EnsureGit(detail string) error {
@@ -606,7 +736,7 @@ func (w Workspace) ensureProtectedEditPath(path string) error {
 		return nil
 	}
 	rootScope, rootProtected := protectedWorktreeScope(rootAbs)
-	if rootProtected && strings.EqualFold(rootScope, targetScope) {
+	if rootProtected && sameCleanPathForOS(rootScope, targetScope) {
 		return nil
 	}
 	return fmt.Errorf("%w: refusing to edit nested worktree-managed path outside the active workspace root: %s", ErrEditTargetMismatch, targetAbs)
@@ -622,7 +752,11 @@ func protectedWorktreeScope(path string) (string, bool) {
 		first := strings.ToLower(strings.TrimSpace(parts[i]))
 		second := strings.ToLower(strings.TrimSpace(parts[i+1]))
 		if (first == ".claude" || first == ".git") && second == "worktrees" {
-			scopeParts := parts[:i+2]
+			scopeEnd := i + 2
+			if i+2 < len(parts) {
+				scopeEnd = i + 3
+			}
+			scopeParts := parts[:scopeEnd]
 			prefix := filepath.Join(scopeParts...)
 			if volume != "" {
 				prefix = volume + string(filepath.Separator) + prefix
@@ -662,7 +796,7 @@ func (w Workspace) ConfirmEdit(preview EditPreview) error {
 	}
 	ok, err := w.PreviewEdit(preview)
 	if err != nil {
-		if errors.Is(err, ErrPromptCanceled) {
+		if errors.Is(err, ErrPromptCanceled) || errors.Is(err, io.EOF) {
 			return ErrEditCanceled
 		}
 		return err
@@ -807,7 +941,10 @@ func (t ListFilesTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	ownerNodeID := stringValue(args, "owner_node_id")
 	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
 	if err != nil {
@@ -955,7 +1092,10 @@ func (t *ReadFileTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	ownerNodeID := stringValue(args, "owner_node_id")
 	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
 	if err != nil {
@@ -1468,7 +1608,10 @@ func (t GrepTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	ownerNodeID := stringValue(args, "owner_node_id")
 	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
 	if err != nil {
@@ -1606,8 +1749,16 @@ func (t WriteFileTool) Definition() ToolDefinition {
 }
 
 func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
-	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), stringValue(args, "owner_node_id"), true)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
+	route, err := t.ws.ResolveEditPathWithOptions(EditRoutingRequest{
+		Path:              stringValue(args, "path"),
+		OwnerNodeID:       stringValue(args, "owner_node_id"),
+		ForLookup:         false,
+		AllowBaseFallback: true,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -1616,14 +1767,14 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	editRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, t.ws.Root)
 	content := stringValue(args, "content")
 	before := ""
+	if err := t.ws.CheckEditBoundary(path); err != nil {
+		return "", err
+	}
 	if existing, err := os.ReadFile(path); err == nil {
 		before = string(existing)
 	}
 	if suspiciousRewritePayload(path, before, content) {
 		return "", fmt.Errorf("%w: write_file content looks like a malformed serialized payload instead of real file contents; use apply_patch or provide the final file text", ErrInvalidEditPayload)
-	}
-	if err := ensureParentDir(path); err != nil {
-		return "", err
 	}
 	select {
 	case <-ctx.Done():
@@ -1662,6 +1813,9 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 			return "", err
 		}
 		if err := t.ws.BeforeEditForRoot(reason, editRoot); err != nil {
+			return "", err
+		}
+		if err := ensureParentDir(path); err != nil {
 			return "", err
 		}
 		t.ws.Progress("Writing " + displayPath + "...")
@@ -1705,6 +1859,9 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := t.ws.BeforeEditForRoot(reason, editRoot); err != nil {
 			return "", err
 		}
+		if err := ensureParentDir(path); err != nil {
+			return "", err
+		}
 		t.ws.Progress("Writing " + displayPath + "...")
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return "", err
@@ -1732,7 +1889,10 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	text, err := t.Execute(ctx, input)
 	path := strings.TrimSpace(stringValue(args, "path"))
 	meta := map[string]any{
@@ -1832,14 +1992,25 @@ func (t ReplaceInFileTool) Definition() ToolDefinition {
 }
 
 func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
-	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), stringValue(args, "owner_node_id"), true)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
+	route, err := t.ws.ResolveEditPathWithOptions(EditRoutingRequest{
+		Path:              stringValue(args, "path"),
+		OwnerNodeID:       stringValue(args, "owner_node_id"),
+		ForLookup:         false,
+		AllowBaseFallback: true,
+	})
 	if err != nil {
 		return "", err
 	}
 	path := route.AbsolutePath
 	displayPath := route.DisplayPath()
 	editRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, t.ws.Root)
+	if err := t.ws.CheckEditBoundary(path); err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -1925,7 +2096,10 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 }
 
 func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	text, err := t.Execute(ctx, input)
 	path := strings.TrimSpace(stringValue(args, "path"))
 	all := boolValue(args, "all", false)
@@ -2022,14 +2196,9 @@ func (t RunShellTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":                map[string]any{"type": "string"},
-				"timeout_ms":             map[string]any{"type": "integer"},
-				"allow_workspace_writes": map[string]any{"type": "boolean"},
-				"owner_node_id":          map[string]any{"type": "string"},
-				"write_paths": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string"},
-				},
+				"command":       map[string]any{"type": "string"},
+				"timeout_ms":    map[string]any{"type": "integer"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"command"},
 		},
@@ -2037,7 +2206,10 @@ func (t RunShellTool) Definition() ToolDefinition {
 }
 
 func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	command := stringValue(args, "command")
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	if strings.TrimSpace(command) == "" {
@@ -2052,74 +2224,69 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			return guidance, fmt.Errorf("run_shell command should use a dedicated workspace tool")
 		}
 	}
-	allowWorkspaceWrites := boolValue(args, "allow_workspace_writes", false)
-	writePaths := stringSliceValue(args, "write_paths")
 	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
 	if err != nil {
 		return "", err
 	}
 	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root, t.ws.BaseRoot)
-	var (
-		beforeSnapshot map[string]workspaceFileSignature
-		resolvedWrites []string
-	)
 	if assessment.Class == shellMutationWorkspaceWrite {
 		if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
 			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use apply_patch or apply_edit_proposal so edits stay reviewable (%s)", reason)
 		}
-		if !allowWorkspaceWrites {
-			return "", fmt.Errorf("run_shell cannot modify workspace files unless allow_workspace_writes=true with write_paths; use apply_patch or scoped shell mutation instead (%s)", assessment.Reason)
-		}
-		resolvedWrites, err = t.ws.EnsureScopedShellWriteForRoot(command, workDir, ownerNodeID, writePaths)
-		if err != nil {
-			return "", err
-		}
-		beforeSnapshot, err = snapshotWorkspaceFiles(workDir)
-		if err != nil {
-			return "", err
-		}
+		return "", fmt.Errorf("run_shell cannot modify workspace files because shell writes bypass the diff preview and review gate; use apply_patch or apply_edit_proposal instead (%s)", assessment.Reason)
 	}
 	if assessment.Class == shellMutationVerificationArtifacts {
 		t.ws.Progress("run_shell recognized a verification/build command that may write workspace build artifacts. Source edits are still blocked.")
+		ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
+			Mode:         VerificationAdaptive,
+			ChangedPaths: collectVerificationChangedPaths(workDir, nil),
+			Steps: []VerificationStep{{
+				Label:   "shell verification",
+				Command: command,
+				Status:  VerificationPending,
+			}},
+		})
+		if confirmErr != nil {
+			return "", confirmErr
+		}
+		if !ok {
+			return skippedVerificationCommandText(), nil
+		}
+	}
+	var workspaceBeforeShell map[string]workspaceFileSignature
+	if assessment.Class == shellMutationVerificationArtifacts {
+		snapshot, snapshotErr := snapshotWorkspaceFiles(workDir)
+		if snapshotErr != nil {
+			return "", snapshotErr
+		}
+		if externalLinks := workspaceSnapshotExternalSymlinkPaths(snapshot); len(externalLinks) > 0 {
+			return "", fmt.Errorf("run_shell verification command is blocked because the workspace contains symlinks that resolve outside the active root: %s", strings.Join(externalLinks, ", "))
+		}
+		workspaceBeforeShell = snapshot
 	}
 	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
 		"tool_name":     "run_shell",
 		"tool_kind":     "shell",
 		"command":       command,
 		"risk_tags":     hookCommandRiskTags(command),
-		"file_tags":     normalizedHookFileTagsForPaths(writePaths),
+		"file_tags":     []string{},
 		"owner_node_id": ownerNodeID,
 		"work_dir":      workDir,
 	}); err != nil {
 		return "", err
 	}
-	if assessment.Class != shellMutationWorkspaceWrite {
-		if err := t.ws.EnsureShell(command); err != nil {
-			return "", err
-		}
+	if err := t.ws.EnsureShell(command); err != nil {
+		return "", err
 	}
 	timeout := t.ws.defaultShellTimeout()
 	if timeoutMs := intValue(args, "timeout_ms", 0); timeoutMs > 0 {
 		timeout = time.Duration(timeoutMs) * time.Millisecond
 	}
 	text, err := t.runShellCommand(ctx, workDir, command, timeout)
-	if assessment.Class == shellMutationWorkspaceWrite {
-		changedPaths, verifyErr := verifyScopedShellWriteChanges(workDir, beforeSnapshot, resolvedWrites)
-		if verifyErr != nil {
-			return text, verifyErr
-		}
-		if len(changedPaths) > 0 {
-			summary := formatScopedShellWriteSummary(changedPaths)
-			if summary != "" {
-				if text == "" || text == "(no output)" {
-					text = "scoped shell write updated: " + summary
-				} else {
-					text += "\n\nscoped shell write updated: " + summary
-				}
-			}
-		}
-	}
 	if err != nil {
+		if workspaceErr := detectUnexpectedShellWorkspaceChanges(workDir, workspaceBeforeShell); workspaceErr != nil {
+			err = fmt.Errorf("%w; %v", err, workspaceErr)
+		}
 		text = appendRunShellGuidance(text, runShellFailureGuidance(t.ws.Shell, command, text, err))
 		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
 			"tool_name":     "run_shell",
@@ -2136,6 +2303,19 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	if text == "" {
 		text = "(no output)"
 	}
+	if workspaceErr := detectUnexpectedShellWorkspaceChanges(workDir, workspaceBeforeShell); workspaceErr != nil {
+		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+			"tool_name":     "run_shell",
+			"tool_kind":     "shell",
+			"command":       command,
+			"risk_tags":     hookCommandRiskTags(command),
+			"output":        text,
+			"error":         workspaceErr.Error(),
+			"owner_node_id": ownerNodeID,
+			"work_dir":      workDir,
+		})
+		return text, workspaceErr
+	}
 	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
 		"tool_name":     "run_shell",
 		"tool_kind":     "shell",
@@ -2150,22 +2330,64 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	return text, nil
 }
 
+func skippedVerificationCommandText() string {
+	return "verification command skipped because the user declined to run it. Do not retry this verification command or poll a background job for it unless the user explicitly approves verification; disclose that verification was not run. Do not relabel resolved code-review findings as remaining bugs only because verification is missing."
+}
+
+func detectUnexpectedShellWorkspaceChanges(workDir string, before map[string]workspaceFileSignature) error {
+	if len(before) == 0 || strings.TrimSpace(workDir) == "" {
+		return nil
+	}
+	current, err := snapshotWorkspaceFiles(workDir)
+	if err != nil {
+		return err
+	}
+	changed := changedWorkspaceSignaturePaths(before, current)
+	if len(changed) == 0 {
+		return nil
+	}
+	unexpected := verificationWorkspaceSourceOrConfigChanges(changed)
+	if len(unexpected) == 0 {
+		return nil
+	}
+	return fmt.Errorf("run_shell verification command modified workspace source/config files outside the edit review gate: %s", strings.Join(unexpected, ", "))
+}
+
 func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	command := stringValue(args, "command")
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	assessment := assessShellCommandMutation(command)
 	text, err := t.Execute(ctx, input)
+	verificationLike := assessment.Class == shellMutationVerificationArtifacts || runShellOutputLooksLikeVerification(text) || runShellOutputLooksLikeSkippedVerification(text)
 	meta := map[string]any{
-		"command":                command,
-		"mutation_class":         string(assessment.Class),
-		"verification_like":      assessment.Class == shellMutationVerificationArtifacts || runShellOutputLooksLikeVerification(text),
-		"allowed_write_paths":    normalizeTaskStateList(stringSliceValue(args, "write_paths"), 16),
-		"allow_workspace_writes": boolValue(args, "allow_workspace_writes", false),
-		"owner_node_id":          ownerNodeID,
-		"changed_workspace":      assessment.Class == shellMutationWorkspaceWrite && err == nil,
-		"requires_verification":  assessment.Class == shellMutationWorkspaceWrite && err == nil,
-		"effect":                 "execute",
+		"command":           command,
+		"mutation_class":    string(assessment.Class),
+		"verification_like": verificationLike,
+		"owner_node_id":     ownerNodeID,
+		"changed_workspace": false,
+		"effect":            "execute",
+	}
+	if verificationLike {
+		status := VerificationPassed
+		commandStatus := "completed"
+		if runShellOutputLooksLikeSkippedVerification(text) {
+			status = VerificationSkipped
+			commandStatus = "declined"
+		} else if err != nil {
+			status = VerificationFailed
+			commandStatus = "failed"
+		}
+		meta["verification_status"] = string(status)
+		meta["verification_evidence"] = status == VerificationPassed
+		meta["verification_approved"] = status != VerificationSkipped
+		meta["command_execution_status"] = commandStatus
+		if status == VerificationSkipped {
+			meta["verification_declined"] = true
+		}
 	}
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
@@ -2606,7 +2828,7 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: reason}
 	}
 
-	tokens := splitShellCommandWords(lower)
+	tokens := shellCommandAssessmentTokens(command)
 	if len(tokens) == 0 {
 		return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "no workspace write markers detected"}
 	}
@@ -2689,24 +2911,25 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 		return shellCommandAssessment{Class: shellMutationCacheOnly, Reason: "command is read-only or writes only to external caches"}
 	}
 
-	if shellCommandHasPrefixTokens(tokens,
-		[]string{"go", "test"},
-		[]string{"go", "build"},
-		[]string{"cargo", "test"},
-		[]string{"cargo", "check"},
-		[]string{"cargo", "build"},
-		[]string{"pytest"},
-		[]string{"ctest"},
-		[]string{"cmake", "--build"},
-		[]string{"msbuild"},
-		[]string{"ninja"},
-		[]string{"dotnet", "test"},
-		[]string{"dotnet", "build"},
-		[]string{"npm", "test"},
-		[]string{"pnpm", "test"},
-		[]string{"yarn", "test"},
-		[]string{"bun", "test"},
-	) {
+	verificationPrefixes := [][]string{
+		{"go", "test"},
+		{"go", "build"},
+		{"cargo", "test"},
+		{"cargo", "check"},
+		{"cargo", "build"},
+		{"pytest"},
+		{"ctest"},
+		{"cmake", "--build"},
+		{"msbuild"},
+		{"ninja"},
+		{"dotnet", "test"},
+		{"dotnet", "build"},
+		{"npm", "test"},
+		{"pnpm", "test"},
+		{"yarn", "test"},
+		{"bun", "test"},
+	}
+	if shellCommandInvokesVerificationCommand(tokens, verificationPrefixes...) {
 		return shellCommandAssessment{Class: shellMutationVerificationArtifacts, Reason: "command may write build or test artifacts under the workspace"}
 	}
 
@@ -2798,6 +3021,104 @@ func shellCommandInvokesNestedShell(command string) bool {
 		}
 	}
 	return false
+}
+
+func shellCommandAssessmentTokens(command string) []string {
+	unquoted := strings.ToLower(strings.TrimSpace(shellCommandWithoutQuotedLiterals(command)))
+	tokens := splitShellCommandWords(unquoted)
+	rawTokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
+	rawTokens = unwrapShellCommandWrapperTokens(rawTokens)
+	rawTokens = retokenizeNestedShellPayload(rawTokens)
+	unwrappedTokens := unwrapShellCommandWrapperTokens(tokens)
+	if len(rawTokens) > 0 && shellCommandShouldPreferRawTokens(unwrappedTokens) {
+		return rawTokens
+	}
+	return unwrappedTokens
+}
+
+func shellCommandShouldPreferRawTokens(tokens []string) bool {
+	first := ""
+	for _, token := range tokens {
+		if shellCommandTokenIsSegmentDelimiter(token) {
+			continue
+		}
+		first = strings.TrimSpace(token)
+		break
+	}
+	if first == "" {
+		return true
+	}
+	if strings.HasPrefix(first, "-") {
+		return true
+	}
+	if strings.Contains(first, ".") || strings.ContainsAny(first, `/\`) {
+		return true
+	}
+	return false
+}
+
+func unwrapShellCommandWrapperTokens(tokens []string) []string {
+unwrap:
+	for {
+		if len(tokens) >= 3 && shellTokenBaseName(tokens[0]) == "cmd" && tokens[1] == "/s" && tokens[2] == "/c" {
+			tokens = tokens[3:]
+			continue
+		}
+		if len(tokens) >= 2 && shellTokenBaseName(tokens[0]) == "cmd" && tokens[1] == "/c" {
+			tokens = tokens[2:]
+			continue
+		}
+		if len(tokens) >= 2 {
+			base := shellTokenBaseName(tokens[0])
+			if base == "powershell" || base == "pwsh" {
+				for i := 1; i < len(tokens); i++ {
+					switch tokens[i] {
+					case "-command", "-c", "-encodedcommand", "-enc":
+						if i+1 < len(tokens) {
+							tokens = tokens[i+1:]
+						} else {
+							tokens = nil
+						}
+						continue unwrap
+					}
+				}
+			}
+		}
+		return tokens
+	}
+}
+
+func retokenizeNestedShellPayload(tokens []string) []string {
+	if len(tokens) != 1 {
+		return tokens
+	}
+	payload := strings.TrimSpace(tokens[0])
+	if !strings.ContainsAny(payload, " \t;&|()") {
+		return tokens
+	}
+	return splitShellCommandWords(shellCommandSeparatorsForTokenizing(payload))
+}
+
+func shellCommandSeparatorsForTokenizing(command string) string {
+	replacer := strings.NewReplacer(
+		"&&", " && ",
+		"||", " || ",
+		"&", " & ",
+		";", " ; ",
+		"|", " | ",
+		"(", " ( ",
+		")", " ) ",
+	)
+	return replacer.Replace(command)
+}
+
+func shellTokenBaseName(token string) string {
+	base := strings.TrimSpace(strings.TrimSuffix(token, ".exe"))
+	base = strings.Trim(base, `"'`)
+	if idx := strings.LastIndexAny(base, `/\`); idx >= 0 && idx+1 < len(base) {
+		base = base[idx+1:]
+	}
+	return base
 }
 
 func compactShellMutationText(command string) string {
@@ -2915,12 +3236,115 @@ func shellCommandHasPrefixTokens(tokens []string, prefixes ...[]string) bool {
 		}
 		matched := true
 		for i := 0; i < len(prefix); i++ {
-			if tokens[i] != prefix[i] {
+			token := tokens[i]
+			if i == 0 {
+				token = shellTokenBaseName(token)
+			}
+			if token != prefix[i] {
 				matched = false
 				break
 			}
 		}
 		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandHasSegmentPrefixTokens(tokens []string, prefixes ...[]string) bool {
+	start := 0
+	for start < len(tokens) {
+		for start < len(tokens) && shellCommandTokenIsSegmentDelimiter(tokens[start]) {
+			start++
+		}
+		end := start
+		for end < len(tokens) && !shellCommandTokenIsSegmentDelimiter(tokens[end]) {
+			end++
+		}
+		if start < end && shellCommandHasPrefixTokens(tokens[start:end], prefixes...) {
+			return true
+		}
+		start = end + 1
+	}
+	return false
+}
+
+func shellCommandInvokesVerificationCommand(tokens []string, prefixes ...[]string) bool {
+	if shellCommandHasPrefixTokens(tokens, prefixes...) || shellCommandHasSegmentPrefixTokens(tokens, prefixes...) {
+		return true
+	}
+	aliases := shellCommandVerificationAliases(tokens, prefixes...)
+	if len(aliases) == 0 {
+		return false
+	}
+	for i, token := range tokens {
+		if token != "&" || i+1 >= len(tokens) {
+			continue
+		}
+		if shellCommandTokenMatchesAlias(tokens[i+1], aliases) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandVerificationAliases(tokens []string, prefixes ...[]string) map[string]bool {
+	aliases := map[string]bool{}
+	for i := 0; i+2 < len(tokens); i++ {
+		name := strings.TrimSpace(tokens[i])
+		if !strings.HasPrefix(name, "$") || tokens[i+1] != "=" || shellTokenBaseName(tokens[i+2]) != "get-command" {
+			continue
+		}
+		if shellCommandSegmentContainsVerificationExecutable(tokens[i+3:], prefixes...) {
+			aliases[name] = true
+		}
+	}
+	return aliases
+}
+
+func shellCommandSegmentContainsVerificationExecutable(tokens []string, prefixes ...[]string) bool {
+	for _, token := range tokens {
+		if shellCommandTokenIsSegmentDelimiter(token) {
+			return false
+		}
+		if shellCommandTokenMatchesVerificationExecutable(token, prefixes...) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandTokenMatchesVerificationExecutable(token string, prefixes ...[]string) bool {
+	base := shellTokenBaseName(token)
+	for _, prefix := range prefixes {
+		if len(prefix) > 0 && base == prefix[0] {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandTokenMatchesAlias(token string, aliases map[string]bool) bool {
+	token = strings.TrimSpace(strings.Trim(token, `"'`))
+	if idx := strings.IndexAny(token, ".["); idx >= 0 {
+		token = token[:idx]
+	}
+	return aliases[token]
+}
+
+func shellCommandTokenIsSegmentDelimiter(token string) bool {
+	switch strings.TrimSpace(token) {
+	case ";", "&", "&&", "||", "|", "(", ")":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandTokensHaveCommandWord(tokens []string) bool {
+	for _, token := range tokens {
+		if !shellCommandTokenIsSegmentDelimiter(token) {
 			return true
 		}
 	}
@@ -3017,7 +3441,10 @@ func (t GitAddTool) Definition() ToolDefinition {
 }
 
 func (t GitAddTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	all := boolValue(args, "all", false)
 	paths := stringSliceValue(args, "paths")
 	if all && len(paths) > 0 {
@@ -3065,7 +3492,10 @@ func (t GitAddTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t GitAddTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	all := boolValue(args, "all", false)
 	paths := normalizeTaskStateList(stringSliceValue(args, "paths"), 32)
 	text, err := t.Execute(ctx, input)
@@ -3103,7 +3533,10 @@ func (t GitCommitTool) Definition() ToolDefinition {
 }
 
 func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	message := stringValue(args, "message")
 	if strings.TrimSpace(message) == "" {
 		return "", fmt.Errorf("message is required")
@@ -3134,7 +3567,10 @@ func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t GitCommitTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	message := stringValue(args, "message")
 	allowEmpty := boolValue(args, "allow_empty", false)
 	text, err := t.Execute(ctx, input)
@@ -3180,7 +3616,10 @@ func (t GitPushTool) Definition() ToolDefinition {
 }
 
 func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	remote := stringValue(args, "remote")
 	if strings.TrimSpace(remote) == "" {
 		remote = "origin"
@@ -3244,7 +3683,10 @@ func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t GitPushTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	remote := firstNonBlankString(stringValue(args, "remote"), "origin")
 	branch := stringValue(args, "branch")
 	setUpstream := boolValue(args, "set_upstream", true)
@@ -3287,7 +3729,10 @@ func (t GitCreatePRTool) Definition() ToolDefinition {
 }
 
 func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", fmt.Errorf("gh CLI is required to create a pull request: %w", err)
 	}
@@ -3371,7 +3816,10 @@ func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error)
 }
 
 func (t GitCreatePRTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	branch := strings.TrimSpace(stringValue(args, "branch"))
 	remote := firstNonBlankString(stringValue(args, "remote"), "origin")
 	fill := boolValue(args, "fill", false)
@@ -3407,7 +3855,9 @@ func (t GitStatusTool) Definition() ToolDefinition {
 }
 
 func (t GitStatusTool) Execute(ctx context.Context, input any) (string, error) {
-	_ = input
+	if _, err := requireToolInputObject(input, t.Definition().Name); err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, "git", "status", "--short", "--branch")
 	cmd.Dir = t.ws.Root
 	out, err := cmd.CombinedOutput()
@@ -3471,7 +3921,10 @@ func (t GitDiffTool) Definition() ToolDefinition {
 }
 
 func (t GitDiffTool) Execute(ctx context.Context, input any) (string, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	cmdArgs := []string{"diff"}
 	if boolValue(args, "staged", false) {
 		cmdArgs = append(cmdArgs, "--staged")
@@ -3500,7 +3953,10 @@ func (t GitDiffTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t GitDiffTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	text, err := t.Execute(ctx, input)
 	fileCount := 0
 	for _, line := range strings.Split(strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n"), "\n") {
@@ -3642,7 +4098,10 @@ func (t UpdatePlanTool) Execute(ctx context.Context, input any) (string, error) 
 	if t.ws.UpdatePlan == nil {
 		return "", fmt.Errorf("plan updates are not configured")
 	}
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	rawItems, ok := args["items"].([]any)
 	if !ok {
 		return "", fmt.Errorf("items must be an array")
@@ -3670,7 +4129,10 @@ func (t UpdatePlanTool) Execute(ctx context.Context, input any) (string, error) 
 }
 
 func (t UpdatePlanTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, inputErr := requireToolInputObject(input, t.Definition().Name)
+	if inputErr != nil {
+		return ToolExecutionResult{}, inputErr
+	}
 	text, err := t.Execute(ctx, input)
 	rawItems, _ := args["items"].([]any)
 	pendingCount := 0

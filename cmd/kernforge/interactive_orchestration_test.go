@@ -152,6 +152,28 @@ func TestEnsureInteractiveReviewerClientKeepsDistinctReviewer(t *testing.T) {
 	}
 }
 
+func TestEnsureInteractiveReviewerClientUsesAuxReviewerFallback(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-chat"
+	auxClient := interactiveReviewerStubClient{name: "anthropic"}
+	agent := &Agent{
+		Config:            cfg,
+		Client:            interactiveReviewerStubClient{name: "deepseek"},
+		AuxReviewerClient: auxClient,
+		AuxReviewerModel:  "sonnet",
+		Session: &Session{
+			Provider: "deepseek",
+			Model:    "deepseek-chat",
+		},
+	}
+
+	client, model := agent.ensureInteractiveReviewerClient()
+	if client == nil || client.Name() != auxClient.Name() || model != "sonnet" {
+		t.Fatalf("expected auxiliary reviewer fallback, got %T %q", client, model)
+	}
+}
+
 func TestMaybePrimeInteractivePlanDoesNotEmitProgressWithoutReviewer(t *testing.T) {
 	state := &TaskState{
 		Goal: "Fix the duplicated provider retry logic and verify the result",

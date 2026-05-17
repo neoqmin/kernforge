@@ -9,9 +9,10 @@ import (
 )
 
 type EditRoutingRequest struct {
-	Path        string
-	OwnerNodeID string
-	ForLookup   bool
+	Path              string
+	OwnerNodeID       string
+	ForLookup         bool
+	AllowBaseFallback bool
 }
 
 type EditRoutingResult struct {
@@ -62,6 +63,77 @@ func (rt *runtimeState) resolveOwnerNodeID(ownerNodeID string) string {
 		return ""
 	}
 	return strings.TrimSpace(rt.session.TaskState.ExecutorFocusNode)
+}
+
+func (rt *runtimeState) resolveRoutableOwnerNodeID(ownerNodeID string) string {
+	trimmed := strings.TrimSpace(ownerNodeID)
+	if trimmed != "" {
+		if rt == nil || rt.session == nil {
+			return trimmed
+		}
+		if sessionOwnerNodeCanRouteExplicit(rt.session, trimmed) {
+			return trimmed
+		}
+		return ""
+	}
+	if rt == nil || rt.session == nil || rt.session.TaskState == nil {
+		return ""
+	}
+	focused := strings.TrimSpace(rt.session.TaskState.ExecutorFocusNode)
+	if !sessionOwnerNodeHasConcreteEditRouting(rt.session, focused) {
+		return ""
+	}
+	return focused
+}
+
+func sessionOwnerNodeCanRouteExplicit(session *Session, ownerNodeID string) bool {
+	ownerNodeID = strings.TrimSpace(ownerNodeID)
+	if session == nil || ownerNodeID == "" {
+		return false
+	}
+	if sessionOwnerNodeHasConcreteEditRouting(session, ownerNodeID) {
+		return true
+	}
+	if session.TaskGraph == nil {
+		return false
+	}
+	node, ok := session.TaskGraph.Node(ownerNodeID)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(node.Kind), "edit")
+}
+
+func sessionOwnerNodeHasConcreteEditRouting(session *Session, ownerNodeID string) bool {
+	ownerNodeID = strings.TrimSpace(ownerNodeID)
+	if session == nil || ownerNodeID == "" {
+		return false
+	}
+	if session.TaskGraph != nil {
+		if node, ok := session.TaskGraph.Node(ownerNodeID); ok {
+			if len(normalizeTaskStateList(node.EditableLeasePaths, 32)) > 0 || len(normalizeTaskStateList(node.EditableOwnershipPaths, 32)) > 0 {
+				return true
+			}
+			if taskNodeHasConcreteEditRoutingHint(node) {
+				return true
+			}
+		}
+	}
+	for _, lease := range session.SpecialistWorktrees {
+		for _, nodeID := range lease.NodeIDs {
+			if strings.EqualFold(strings.TrimSpace(nodeID), ownerNodeID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func taskNodeHasConcreteEditRoutingHint(node TaskNode) bool {
+	if !strings.EqualFold(strings.TrimSpace(node.Kind), "edit") {
+		return false
+	}
+	return len(selectEditableLeasePathHints(node, []string{"**"})) > 0
 }
 
 func (rt *runtimeState) recordEditableAssignment(nodeID string, assignment SpecialistAssignment, ownership []string, lease SpecialistWorktree) {
@@ -212,11 +284,13 @@ func (rt *runtimeState) ensureSpecialistWorktreeLease(nodeID string, assignment 
 }
 
 func (rt *runtimeState) resolveEditTarget(req EditRoutingRequest) (EditRoutingResult, error) {
-	result, err := rt.workspace.resolveEditFallback(req)
+	fallbackReq := req
+	fallbackReq.OwnerNodeID = ""
+	result, err := rt.workspace.resolveEditFallback(fallbackReq)
 	if err != nil {
 		return EditRoutingResult{}, err
 	}
-	ownerNodeID := rt.resolveOwnerNodeID(req.OwnerNodeID)
+	ownerNodeID := rt.resolveRoutableOwnerNodeID(req.OwnerNodeID)
 	if ownerNodeID == "" {
 		return result, nil
 	}
@@ -226,6 +300,22 @@ func (rt *runtimeState) resolveEditTarget(req EditRoutingRequest) (EditRoutingRe
 		return result, nil
 	}
 	leasePaths := effectiveEditableLeasePaths(node, assignment.Profile)
+	explicitLeasePaths := normalizeTaskStateList(node.EditableLeasePaths, 32)
+	if req.ForLookup && len(leasePaths) > 0 {
+		ownershipRoot := firstNonBlankString(result.DisplayRoot, rt.workspace.Root, rt.workspace.BaseRoot)
+		allowed, _, _, matchErr := editableOwnershipMatch(ownershipRoot, result.AbsolutePath, leasePaths)
+		if matchErr != nil {
+			return EditRoutingResult{}, matchErr
+		}
+		if !allowed {
+			if len(explicitLeasePaths) > 0 {
+				if err := enforceEditableOwnership(ownershipRoot, result.AbsolutePath, assignment.Profile.Name, leasePaths); err != nil {
+					return EditRoutingResult{}, err
+				}
+			}
+			return result, nil
+		}
+	}
 	lease, err := rt.ensureSpecialistWorktreeLease(node.ID, assignment, leasePaths, true, false)
 	if err != nil {
 		return EditRoutingResult{}, err
@@ -262,7 +352,7 @@ func (rt *runtimeState) resolveShellRoot(ownerNodeID string) (ShellRoutingResult
 	root := firstNonBlankString(rt.workspace.Root, rt.workspace.BaseRoot)
 	result := ShellRoutingResult{
 		Root:        root,
-		OwnerNodeID: rt.resolveOwnerNodeID(ownerNodeID),
+		OwnerNodeID: rt.resolveRoutableOwnerNodeID(ownerNodeID),
 	}
 	if strings.TrimSpace(result.OwnerNodeID) == "" {
 		return result, nil

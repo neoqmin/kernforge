@@ -34,6 +34,121 @@ func TestWorkspaceResolveAllowsActiveRootOutsideBaseRoot(t *testing.T) {
 	}
 }
 
+func TestRuntimeEditRoutingIgnoresAmbientFocusWithoutConcreteLease(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{ExecutorFocusNode: "plan-02"}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:    "plan-02",
+				Title: "Review focused code",
+			},
+		},
+	}
+	rt := &runtimeState{
+		session:   session,
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	route, err := rt.resolveEditTarget(EditRoutingRequest{Path: "main.go"})
+	if err != nil {
+		t.Fatalf("resolveEditTarget: %v", err)
+	}
+	if route.OwnerNodeID != "" || route.Specialist != "" {
+		t.Fatalf("ambient focus without concrete lease must not route edit ownership, got %#v", route)
+	}
+	if !strings.EqualFold(filepath.Clean(route.AbsolutePath), filepath.Clean(target)) {
+		t.Fatalf("expected active workspace target %s, got %s", target, route.AbsolutePath)
+	}
+}
+
+func TestRuntimeShellRoutingIgnoresAmbientFocusWithoutConcreteLease(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{ExecutorFocusNode: "plan-02"}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:    "plan-02",
+				Title: "Review focused code",
+			},
+		},
+	}
+	rt := &runtimeState{
+		session:   session,
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	route, err := rt.resolveShellRoot("")
+	if err != nil {
+		t.Fatalf("resolveShellRoot: %v", err)
+	}
+	if route.OwnerNodeID != "" || route.Specialist != "" {
+		t.Fatalf("ambient focus without concrete lease must not route shell ownership, got %#v", route)
+	}
+	if !strings.EqualFold(filepath.Clean(route.Root), filepath.Clean(root)) {
+		t.Fatalf("expected active workspace root %s, got %s", root, route.Root)
+	}
+}
+
+func TestRuntimeEditRoutingIgnoresUnknownExplicitOwnerNodeID(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:    "plan-02",
+				Title: "Review focused code",
+			},
+		},
+	}
+	rt := &runtimeState{
+		session:   session,
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	route, err := rt.resolveEditTarget(EditRoutingRequest{
+		Path:        "main.go",
+		OwnerNodeID: "RF-001/RF-002 narrow hunk",
+	})
+	if err != nil {
+		t.Fatalf("resolveEditTarget: %v", err)
+	}
+	if route.OwnerNodeID != "" || route.Specialist != "" {
+		t.Fatalf("unknown explicit owner_node_id must not route edit ownership, got %#v", route)
+	}
+	if !strings.EqualFold(filepath.Clean(route.AbsolutePath), filepath.Clean(target)) {
+		t.Fatalf("expected active workspace target %s, got %s", target, route.AbsolutePath)
+	}
+}
+
+func TestSessionOwnerNodeHasConcreteEditRoutingAcceptsEditPathHint(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:    "plan-02",
+				Title: "Fix src/main.go",
+				Kind:  "edit",
+			},
+		},
+	}
+
+	if !sessionOwnerNodeHasConcreteEditRouting(session, "plan-02") {
+		t.Fatalf("expected edit node with a concrete path hint to be routable")
+	}
+}
+
 func TestWorktreeManagerCreateAndRemove(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not available")
@@ -382,10 +497,22 @@ func TestResolveEditTargetRejectsPathOutsideSpecialistOwnership(t *testing.T) {
 		}
 	})
 
-	_, err := rt.resolveEditTarget(EditRoutingRequest{
+	lookupRoute, err := rt.resolveEditTarget(EditRoutingRequest{
 		Path:        "main.go",
 		OwnerNodeID: "plan-01",
 		ForLookup:   true,
+	})
+	if err != nil {
+		t.Fatalf("read-only lookup should not be constrained by editable ownership: %v", err)
+	}
+	if !sameFilePath(lookupRoute.AbsolutePath, filepath.Join(repoRoot, "main.go")) {
+		t.Fatalf("expected lookup to resolve in the main workspace, got %#v", lookupRoute)
+	}
+
+	_, err = rt.resolveEditTarget(EditRoutingRequest{
+		Path:        "main.go",
+		OwnerNodeID: "plan-01",
+		ForLookup:   false,
 	})
 	if err == nil {
 		t.Fatalf("expected editable ownership rejection")

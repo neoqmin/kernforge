@@ -35,7 +35,11 @@ func planReviewModels(cfg Config, run ReviewRun) ReviewModelPlan {
 	case run.Mode == reviewModeRefactor:
 		required = []string{"primary_reviewer", "regression_reviewer"}
 	case run.Mode == reviewModeUIPolish:
-		required = []string{"design_reviewer"}
+		if reviewRunUIPolishNeedsPrimaryCoverage(run) {
+			required = []string{"primary_reviewer", "design_reviewer"}
+		} else {
+			required = []string{"design_reviewer"}
+		}
 		optional = append(optional, "regression_reviewer")
 	case run.Mode == reviewModeLiveFix:
 		required = []string{"primary_reviewer", "test_reviewer"}
@@ -94,6 +98,75 @@ func planReviewModels(cfg Config, run ReviewRun) ReviewModelPlan {
 	return plan
 }
 
+func reviewRunUIPolishNeedsPrimaryCoverage(run ReviewRun) bool {
+	if len(run.ChangeSet.ChangedPaths) == 0 {
+		return true
+	}
+	for _, path := range run.ChangeSet.ChangedPaths {
+		if !reviewPathLooksUIPolishOnly(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewPathLooksUIPolishOnly(path string) bool {
+	normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	if normalized == "" {
+		return false
+	}
+	if reviewPathIsExecutableSource(normalized) {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(normalized))
+	if !reviewPathHasUIPolishAssetExtension(base) {
+		return false
+	}
+	switch {
+	case strings.Contains(normalized, "/ui/"),
+		strings.Contains(normalized, "/views/"),
+		strings.Contains(normalized, "/components/"),
+		strings.Contains(normalized, "/assets/"),
+		strings.Contains(normalized, "/branding/"),
+		strings.Contains(normalized, "/styles/"),
+		strings.Contains(normalized, "/css/"),
+		strings.Contains(normalized, "/themes/"):
+		return true
+	case strings.HasPrefix(base, "ui.") || strings.HasPrefix(base, "ui_") || strings.HasPrefix(base, "ui-"):
+		return true
+	case strings.Contains(base, "_ui.") || strings.Contains(base, "-ui.") || strings.Contains(base, ".css"):
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewPathHasUIPolishAssetExtension(base string) bool {
+	ext := strings.ToLower(filepath.Ext(base))
+	switch ext {
+	case ".css", ".scss", ".sass", ".less",
+		".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".ico",
+		".woff", ".woff2", ".ttf", ".otf", ".eot":
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewPathIsExecutableSource(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".c", ".cc", ".cpp", ".cxx",
+		".h", ".hh", ".hpp", ".hxx",
+		".go", ".rs", ".py", ".java", ".kt", ".kts",
+		".cs", ".swift", ".m", ".mm", ".php", ".rb",
+		".js", ".jsx", ".ts", ".tsx",
+		".vue", ".svelte", ".dart":
+		return true
+	default:
+		return false
+	}
+}
+
 func reviewRunSecuritySensitive(run ReviewRun) bool {
 	for _, pack := range run.PolicyPacks {
 		switch strings.ToLower(strings.TrimSpace(pack)) {
@@ -134,12 +207,12 @@ func configuredReviewRoleLabel(cfg Config, reviewCfg ReviewHarnessConfig, role s
 func reviewRoleModelLabelAndSource(cfg Config, reviewCfg ReviewHarnessConfig, role string) (string, string) {
 	role = normalizeReviewRole(role)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
-		effort, _ := reviewReasoningEffortOrDefaultForProvider(roleCfg.Provider, roleCfg.ReasoningEffort)
+		effort := reviewRoleConfiguredReasoningEffort(cfg, role, roleCfg)
 		return formatProviderModelEffortLabel(roleCfg.Provider, roleCfg.Model, effort), "role"
 	}
 	if role != "primary_reviewer" {
 		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
-			effort, _ := reviewReasoningEffortOrDefaultForProvider(roleCfg.Provider, roleCfg.ReasoningEffort)
+			effort := reviewRoleConfiguredReasoningEffort(cfg, "primary_reviewer", roleCfg)
 			return formatProviderModelEffortLabel(roleCfg.Provider, roleCfg.Model, effort), "primary_reviewer"
 		}
 	}
@@ -177,19 +250,20 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	var findings []ReviewFinding
 	var reviewerRuns []ReviewReviewerRun
 
+	mainRole := reviewMainExecutionRole(run.ModelPlan)
 	mainClient, mainModel, mainLabel, mainErr := reviewMainRoleClient(rt)
-	mainLabel = reviewModelDisplayLabel(rt.cfg, mainClient, mainModel, mainLabel, reviewRoleReasoningEffortForRun(rt.cfg, "primary_reviewer", *run))
-	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles)
+	mainLabel = reviewModelDisplayLabel(rt.cfg, mainClient, mainModel, mainLabel, reviewRoleReasoningEffortForRun(rt.cfg, mainRole, *run))
+	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles, mainClient, mainModel)
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(*run, hasCrossReviewer)
 	phaseTotal := 1
 	if hasCrossReviewer {
 		phaseTotal = 2
 	}
-	prepareMainFirstReviewModelPlan(run, mainLabel)
-	mainPrompt := buildReviewModelPrompt(rt.cfg, *run, "primary_reviewer")
-	emitReviewModelPhaseBudgetProgress(rt, *run, "main", 1, phaseTotal, "primary_reviewer", mainLabel)
+	prepareMainFirstReviewModelPlan(run, mainRole, mainLabel)
+	mainPrompt := buildReviewModelPrompt(rt.cfg, *run, mainRole)
+	emitReviewModelPhaseBudgetProgress(rt, *run, "main", 1, phaseTotal, mainRole, mainLabel)
 	emitReviewModelMainFirstPassProgress(rt)
-	mainFindings, mainRun, mainRaw := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, "primary_reviewer", "main", mainPrompt, mainErr, reviewModelRunPeerContext{})
+	mainFindings, mainRun, mainRaw := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, mainRole, "main", mainPrompt, mainErr, reviewModelRunPeerContext{})
 	reviewerRuns = append(reviewerRuns, mainRun)
 	findings = append(findings, mainFindings...)
 
@@ -285,7 +359,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	_ = os.WriteFile(promptPath, []byte(prompt), 0o644)
 	reviewerRun.PromptPath = promptPath
 	emitReviewModelRequestProgress(rt, role, label, reviewerRun.Kind)
-	softTimeout := reviewModelSoftTimeoutForRun(rt.cfg, *run, reviewerRun)
+	softTimeout := reviewModelSoftTimeoutForRun(rt.cfg, *run, reviewerRun, reviewRouteHealthForTimeout(rt, *run))
 	emitReviewModelCallBudgetProgress(rt, *run, reviewerRun, softTimeout)
 	callCtx, cancelCall := reviewModelCallContext(ctx, softTimeout)
 	resp, err := completeReviewModelTurnWithProgress(callCtx, rt, reviewerRun, func(callCtx context.Context) (ChatResponse, error) {
@@ -316,16 +390,29 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	}
 	raw := strings.TrimSpace(resp.Message.Text)
 	rawStopReason := resp.StopReason
+	reasoningRecovery := ""
 	if raw == "" {
-		if recovered := reviewStructuredOutputFromReasoningContent(rt.cfg, reviewerRun, resp.Message.ReasoningContent); recovered != "" {
-			raw = recovered
+		reasoningRecovery = reviewStructuredOutputFromReasoningContent(rt.cfg, reviewerRun, resp.Message.ReasoningContent)
+		if reasoningRecovery != "" && !reviewLocalModelReasoningOnlyRetryAllowed(rt.cfg, reviewerRun, resp.Message.ReasoningContent) {
+			raw = reasoningRecovery
+			reasoningRecovery = ""
 			emitReviewModelReasoningContentRecoveryProgress(rt, reviewerRun)
 		}
 	}
 	if raw == "" {
-		if !usedLocalCompactRecovery && reviewLocalModelEmptyResponseRetryAllowed(rt.cfg, reviewerRun) {
-			emitReviewModelEmptyResponseRetryProgress(rt, reviewerRun, label)
-			retryPrompt := buildReviewModelLocalCompactReviewPrompt(rt.cfg, *run, role, "empty_response")
+		retryReason := ""
+		if reviewLocalModelReasoningOnlyRetryAllowed(rt.cfg, reviewerRun, resp.Message.ReasoningContent) {
+			retryReason = "reasoning_only"
+		} else if !usedLocalCompactRecovery && reviewLocalModelEmptyResponseRetryAllowed(rt.cfg, reviewerRun) {
+			retryReason = "empty_response"
+		}
+		if retryReason != "" {
+			if retryReason == "reasoning_only" {
+				emitReviewModelReasoningOnlyRetryProgress(rt, reviewerRun, label)
+			} else {
+				emitReviewModelEmptyResponseRetryProgress(rt, reviewerRun, label)
+			}
+			retryPrompt := buildReviewModelLocalCompactReviewPrompt(rt.cfg, *run, role, retryReason)
 			retryPromptPath, retryRawPath := reviewRoleNamedAttemptArtifactPaths(root, run.ID, role, "empty_retry")
 			_ = os.WriteFile(retryPromptPath, []byte(retryPrompt), 0o644)
 			retryRun := reviewerRun
@@ -365,6 +452,14 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 					rawPath = retryRawPath
 				}
 			}
+		}
+		if raw == "" && reasoningRecovery != "" {
+			raw = reasoningRecovery
+			reasoningRecovery = ""
+			reviewerRun.Error = ""
+			run.Result.Degraded = true
+			run.Result.DegradedReason = "review model recovered structured output from reasoning_content after final-content retry"
+			emitReviewModelReasoningContentRecoveryProgress(rt, reviewerRun)
 		}
 		if raw == "" {
 			raw = "(empty review response)"
@@ -486,22 +581,66 @@ func reviewMainRoleClient(rt *runtimeState) (ProviderClient, string, string, err
 	if rt == nil || rt.agent == nil {
 		return nil, "", "", fmt.Errorf("no runtime")
 	}
-	if rt.agent.Client == nil || strings.TrimSpace(rt.cfg.Model) == "" {
-		return nil, "", "", fmt.Errorf("no main model configured")
+	if rt.agent.Client != nil && reviewMainModelRouteConfigured(rt.cfg) {
+		return rt.agent.Client, rt.cfg.Model, reviewMainModelLabel(rt.cfg), nil
 	}
-	return rt.agent.Client, rt.cfg.Model, reviewMainModelLabel(rt.cfg), nil
+	client, model, label, err := reviewRoleClient(rt, "primary_reviewer")
+	if err == nil && client != nil && strings.TrimSpace(model) != "" {
+		return client, model, label, nil
+	}
+	if err != nil {
+		return nil, "", "", err
+	}
+	return nil, "", "", fmt.Errorf("no main model configured")
 }
 
-func prepareMainFirstReviewModelPlan(run *ReviewRun, mainLabel string) {
+func reviewMainExecutionRole(plan ReviewModelPlan) string {
+	required := analysisUniqueStrings(plan.RequiredRoles)
+	if len(required) == 1 {
+		role := normalizeReviewRole(required[0])
+		if role != "" {
+			return role
+		}
+	}
+	if reviewStringSliceContainsCI(required, "primary_reviewer") || len(required) == 0 {
+		return "primary_reviewer"
+	}
+	for _, role := range required {
+		role = normalizeReviewRole(role)
+		if role != "" {
+			return role
+		}
+	}
+	return "primary_reviewer"
+}
+
+func reviewStringSliceContainsCI(items []string, value string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareMainFirstReviewModelPlan(run *ReviewRun, mainRole string, mainLabel string) {
 	if run == nil {
 		return
+	}
+	mainRole = normalizeReviewRole(mainRole)
+	if mainRole == "" {
+		mainRole = "primary_reviewer"
 	}
 	if run.ModelPlan.AssignedModels == nil {
 		run.ModelPlan.AssignedModels = map[string]string{}
 	}
-	run.ModelPlan.RequiredRoles = []string{"primary_reviewer"}
-	run.ModelPlan.AssignedModels["primary_reviewer"] = strings.TrimSpace(mainLabel)
-	run.ModelPlan.Strategy = "single"
+	if len(run.ModelPlan.RequiredRoles) == 0 {
+		run.ModelPlan.RequiredRoles = []string{mainRole}
+	} else if !reviewStringSliceContainsCI(run.ModelPlan.RequiredRoles, mainRole) {
+		run.ModelPlan.RequiredRoles = analysisUniqueStrings(append([]string{mainRole}, run.ModelPlan.RequiredRoles...))
+	}
+	run.ModelPlan.AssignedModels[mainRole] = strings.TrimSpace(mainLabel)
+	markReviewModelRoleSatisfied(run, mainRole)
 }
 
 func registerCrossReviewerInModelPlan(run *ReviewRun, role string, label string) {
@@ -584,13 +723,13 @@ func normalizeReviewReviewerGatePolicy(policy string) string {
 	}
 }
 
-func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles []string) (ProviderClient, string, string, string, string, bool) {
+func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles []string, mainClient ProviderClient, mainModel string) (ProviderClient, string, string, string, string, bool) {
 	routeRole := reviewPreferredCrossReviewRouteRole(run, preferredRoles)
 	client, model, label, err := reviewRoleClient(rt, routeRole)
 	if err != nil || client == nil || strings.TrimSpace(model) == "" {
 		return nil, "", "", "", "", false
 	}
-	if reviewClientMatchesMain(rt, client, model) {
+	if reviewClientMatchesRoute(rt, client, model, mainClient, mainModel) || reviewClientMatchesMain(rt, client, model) {
 		return nil, "", "", "", "", false
 	}
 	label = reviewModelDisplayLabel(rt.cfg, client, model, label, reviewRoleReasoningEffortForRun(rt.cfg, routeRole, run))
@@ -619,9 +758,40 @@ func reviewClientMatchesMain(rt *runtimeState, client ProviderClient, model stri
 	if clientRoute.Provider == "" || mainRoute.Provider == "" || clientRoute.Provider != mainRoute.Provider {
 		return false
 	}
-	clientBaseURL := normalizeProviderBaseURL(clientRoute.Provider, clientRoute.BaseURL)
-	mainBaseURL := normalizeProviderBaseURL(mainRoute.Provider, firstNonBlankString(mainRoute.BaseURL, rt.cfg.BaseURL))
+	clientBaseURL := reviewClientRouteBaseURL(rt, clientRoute, model)
+	mainBaseURL := reviewClientRouteBaseURL(rt, mainRoute, rt.cfg.Model)
 	return strings.EqualFold(clientBaseURL, mainBaseURL)
+}
+
+func reviewClientMatchesRoute(rt *runtimeState, client ProviderClient, model string, mainClient ProviderClient, mainModel string) bool {
+	if client == nil || mainClient == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(mainModel)) {
+		return false
+	}
+	if sameProviderClient(client, mainClient) {
+		return true
+	}
+	clientRoute := providerClientReviewRoute(client, "")
+	mainRoute := providerClientReviewRoute(mainClient, "")
+	if clientRoute.Provider == "" || mainRoute.Provider == "" || clientRoute.Provider != mainRoute.Provider {
+		return false
+	}
+	clientBaseURL := reviewClientRouteBaseURL(rt, clientRoute, model)
+	mainBaseURL := reviewClientRouteBaseURL(rt, mainRoute, mainModel)
+	return strings.EqualFold(clientBaseURL, mainBaseURL)
+}
+
+func reviewClientRouteBaseURL(rt *runtimeState, route ModelRouteMetadata, model string) string {
+	provider := normalizeProviderName(route.Provider)
+	baseURL := strings.TrimSpace(route.BaseURL)
+	if baseURL == "" && rt != nil &&
+		provider == normalizeProviderName(rt.cfg.Provider) &&
+		strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(rt.cfg.Model)) {
+		baseURL = strings.TrimSpace(rt.cfg.BaseURL)
+	}
+	return normalizeProviderBaseURL(provider, baseURL)
 }
 
 func sameProviderClient(left ProviderClient, right ProviderClient) bool {
@@ -826,7 +996,16 @@ func reviewRunRequiresSuccessfulReviewer(run ReviewRun) bool {
 	if strings.EqualFold(normalizeReviewReviewerGatePolicy(run.ReviewerGatePolicy), reviewReviewerGatePolicyMainOnlyFallback) {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) && preFixReviewHasActionableBugHuntFinding(run) {
+		return false
+	}
+	if preFixReviewCanContinueWithIndependentInspection(run) {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return true
+	}
+	if len(run.ReviewerRuns) > 0 {
 		return true
 	}
 	return false
@@ -886,10 +1065,14 @@ func reviewRoleClient(rt *runtimeState, role string) (ProviderClient, string, st
 	if rt.agent != nil && rt.agent.ReviewerClient != nil && strings.TrimSpace(rt.agent.ReviewerModel) != "" {
 		return rt.agent.ReviewerClient, rt.agent.ReviewerModel, formatProviderModelEffortLabel(rt.cfg.Provider, rt.agent.ReviewerModel, rt.cfg.ReasoningEffort), nil
 	}
-	if rt.agent != nil && rt.agent.Client != nil && strings.TrimSpace(rt.cfg.Model) != "" {
+	if rt.agent != nil && rt.agent.Client != nil && reviewMainModelRouteConfigured(rt.cfg) {
 		return rt.agent.Client, rt.cfg.Model, formatProviderModelEffortLabel(rt.cfg.Provider, rt.cfg.Model, rt.cfg.ReasoningEffort), nil
 	}
 	return nil, "", "", fmt.Errorf("no reviewer model configured")
+}
+
+func reviewMainModelRouteConfigured(cfg Config) bool {
+	return strings.TrimSpace(cfg.Provider) != "" && strings.TrimSpace(cfg.Model) != ""
 }
 
 func reviewModelDisplayLabel(cfg Config, client ProviderClient, model string, fallbackLabel string, effort string) string {
@@ -1074,6 +1257,19 @@ func emitReviewModelEmptyResponseRetryProgress(rt *runtimeState, reviewerRun Rev
 	rt.agent.EmitProgress(message)
 }
 
+func emitReviewModelReasoningOnlyRetryProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, label string) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Local-model review wrote only provider reasoning content; retrying once and requiring a final REVIEW_RESULT block: %s -> %s.", "로컬 모델 리뷰가 provider reasoning content에만 응답해, final REVIEW_RESULT 블록을 요구하며 한 번 재시도합니다: %s -> %s."),
+		roleName,
+		valueOrUnset(label),
+	)
+	rt.agent.EmitProgress(message)
+}
+
 func emitReviewModelLocalInitialCompactProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, evidenceLimit int) {
 	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
 		return
@@ -1107,7 +1303,7 @@ func emitReviewModelPhaseBudgetProgress(rt *runtimeState, run ReviewRun, kind st
 		Role: role,
 		Kind: strings.TrimSpace(kind),
 	}
-	softTimeout := reviewModelSoftTimeoutForRun(rt.cfg, run, reviewerRun)
+	softTimeout := reviewModelSoftTimeoutForRun(rt.cfg, run, reviewerRun, reviewRouteHealthForTimeout(rt, run))
 	retryBudget := reviewRoleOmissionRetryBudgetForReviewRun(rt.cfg, role, run, kind)
 	contextMode := "standard"
 	if reviewRunUsesFocusedFastPath(run) {
@@ -1314,41 +1510,73 @@ func emitReviewModelFlowProgress(rt *runtimeState, english string, korean string
 	rt.agent.EmitProgress(localizedText(rt.cfg, english, korean))
 }
 
-func reviewModelSoftTimeoutForRun(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun) time.Duration {
+func reviewModelSoftTimeoutForRun(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun, healthGroups ...[]ReviewRouteHealth) time.Duration {
 	if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "cross") {
 		return 0
 	}
-	timeout := time.Duration(0)
-	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
-		timeout = reviewPreWriteCrossSoftTimeout
-	} else if reviewRunUsesFocusedFastPath(run) {
-		timeout = reviewFocusedCrossSoftTimeout
-	} else if strings.EqualFold(normalizeProviderName(reviewRoleProviderForRun(cfg, reviewerRun.Role)), "deepseek") {
-		timeout = reviewDeepSeekBroadCrossSoftTimeout
+	role := normalizeReviewRole(reviewerRun.Role)
+	provider, _ := reviewRoleProviderModelForRun(cfg, role)
+	if labelProvider, _ := reviewProviderModelFromDisplayLabel(reviewerRun.Model); labelProvider != "" {
+		provider = labelProvider
 	}
-	if timeout > 0 && timeout < reviewLowerPerformanceCrossSoftTimeout && reviewCrossReviewerLooksLowerPerformanceThanMain(cfg, run, reviewerRun) {
-		return reviewLowerPerformanceCrossSoftTimeout
+	timeout := reviewDefaultCrossSoftTimeoutForProvider(provider)
+	if timeout <= 0 {
+		timeout = reviewCloudCrossSoftTimeout
+	}
+	if reviewRouteHealthHasRecentTimeout(mergeReviewRouteHealthGroups(healthGroups...), reviewerRun) {
+		timeout = reviewAdaptiveCrossSoftTimeout(timeout)
 	}
 	return timeout
 }
 
-func reviewCrossReviewerLooksLowerPerformanceThanMain(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun) bool {
-	mainRank := reviewModelCapabilityRank(cfg.Provider, cfg.Model, cfg.ReasoningEffort)
-	if mainRank <= 0 {
+func reviewDefaultCrossSoftTimeoutForProvider(provider string) time.Duration {
+	switch normalizeProviderName(provider) {
+	case "codex-cli", "anthropic-claude-cli":
+		return reviewCLICrossSoftTimeout
+	case "ollama", "lmstudio", "vllm", "llama.cpp":
+		return reviewLocalCrossSoftTimeout
+	default:
+		return reviewCloudCrossSoftTimeout
+	}
+}
+
+func reviewAdaptiveCrossSoftTimeout(base time.Duration) time.Duration {
+	if base <= 0 {
+		base = reviewCloudCrossSoftTimeout
+	}
+	if base >= reviewAdaptiveTimeoutCrossSoftTimeout {
+		return reviewAdaptiveTimeoutCrossSoftTimeout
+	}
+	extended := base + 3*time.Minute
+	if extended > reviewAdaptiveTimeoutCrossSoftTimeout {
+		return reviewAdaptiveTimeoutCrossSoftTimeout
+	}
+	return extended
+}
+
+func reviewRouteHealthForTimeout(rt *runtimeState, run ReviewRun) []ReviewRouteHealth {
+	var out []ReviewRouteHealth
+	if rt != nil && rt.session != nil {
+		out = append(out, rt.session.ReviewRouteHealth...)
+	}
+	out = append(out, run.ModelPlan.RouteHealth...)
+	return out
+}
+
+func mergeReviewRouteHealthGroups(groups ...[]ReviewRouteHealth) []ReviewRouteHealth {
+	var out []ReviewRouteHealth
+	for _, group := range groups {
+		out = append(out, group...)
+	}
+	return out
+}
+
+func reviewRouteHealthHasRecentTimeout(items []ReviewRouteHealth, reviewerRun ReviewReviewerRun) bool {
+	health, ok := reviewRouteHealthForReviewerRun(items, reviewerRun)
+	if !ok {
 		return false
 	}
-	role := normalizeReviewRole(reviewerRun.Role)
-	reviewerProvider, reviewerModel := reviewRoleProviderModelForRun(cfg, role)
-	if labelProvider, labelModel := reviewProviderModelFromDisplayLabel(reviewerRun.Model); labelProvider != "" || labelModel != "" {
-		reviewerProvider = firstNonBlankString(labelProvider, reviewerProvider)
-		reviewerModel = firstNonBlankString(labelModel, reviewerModel)
-	}
-	reviewerEffort := reviewRoleReasoningEffortForRun(cfg, role, run)
-	reviewerRank := reviewModelCapabilityRank(reviewerProvider, reviewerModel, reviewerEffort)
-	if reviewerRank <= 0 {
-		return false
-	}
-	return reviewerRank < mainRank
+	return reviewRouteHealthNeedsAdaptiveTimeout(health)
 }
 
 func reviewRoleProviderModelForRun(cfg Config, role string) (string, string) {
@@ -1588,6 +1816,11 @@ func reviewLocalModelEmptyResponseRetryAllowed(cfg Config, reviewerRun ReviewRev
 	return reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(cfg, reviewerRun))
 }
 
+func reviewLocalModelReasoningOnlyRetryAllowed(cfg Config, reviewerRun ReviewReviewerRun, reasoning string) bool {
+	return strings.TrimSpace(reasoning) != "" &&
+		reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(cfg, reviewerRun))
+}
+
 func reviewLocalModelCompactRecoveryAllowed(cfg Config, reviewerRun ReviewReviewerRun, health ReviewRouteHealth) bool {
 	if !reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(cfg, reviewerRun)) {
 		return false
@@ -1679,12 +1912,16 @@ func reviewRouteHealthSkipsInitialModelCall(rt *runtimeState, reviewerRun Review
 	if strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityWeak) {
 		return health, true
 	}
+	timeoutOnlyFailure := health.TimeoutRate >= 0.50 && health.EmptyResponseRate < 0.50 && health.WeakRate < 0.50
+	if strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityFailed) && timeoutOnlyFailure {
+		return ReviewRouteHealth{}, false
+	}
 	if strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityFailed) &&
-		(health.EmptyResponseRate >= 0.50 || health.TimeoutRate >= 0.50) {
+		(health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50) {
 		return health, true
 	}
 	if health.RecentRuns >= 2 && health.UsableFindingRate < 0.50 &&
-		(health.TimeoutRate >= 0.50 || health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50) {
+		(health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50) {
 		return health, true
 	}
 	return ReviewRouteHealth{}, false
@@ -1784,13 +2021,11 @@ func reviewRoleReasoningEffort(cfg Config, role string) string {
 	role = normalizeReviewRole(role)
 	reviewCfg := configReviewHarness(cfg)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.ReasoningEffort) != "" {
-		effort, _ := reviewReasoningEffortOrDefaultForProvider(firstNonBlankString(roleCfg.Provider, reviewRoleProviderForRun(cfg, role)), roleCfg.ReasoningEffort)
-		return effort
+		return reviewRoleConfiguredReasoningEffort(cfg, role, roleCfg)
 	}
 	if role != "primary_reviewer" {
 		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.ReasoningEffort) != "" {
-			effort, _ := reviewReasoningEffortOrDefaultForProvider(firstNonBlankString(roleCfg.Provider, reviewRoleProviderForRun(cfg, "primary_reviewer")), roleCfg.ReasoningEffort)
-			return effort
+			return reviewRoleConfiguredReasoningEffort(cfg, "primary_reviewer", roleCfg)
 		}
 	}
 	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
@@ -1809,7 +2044,7 @@ func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) str
 	role = normalizeReviewRole(role)
 	reviewCfg := configReviewHarness(cfg)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.ReasoningEffort) != "" {
-		effort, _ := reviewReasoningEffortOrDefaultForProvider(firstNonBlankString(roleCfg.Provider, reviewRoleProviderForRun(cfg, role)), roleCfg.ReasoningEffort)
+		effort := reviewRoleConfiguredReasoningEffort(cfg, role, roleCfg)
 		if needsDeepBugHunt {
 			return reasoningEffortAtLeast(effort, minimumReviewRoleReasoningEffort)
 		}
@@ -1817,7 +2052,7 @@ func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) str
 	}
 	if role != "primary_reviewer" {
 		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.ReasoningEffort) != "" {
-			effort, _ := reviewReasoningEffortOrDefaultForProvider(firstNonBlankString(roleCfg.Provider, reviewRoleProviderForRun(cfg, "primary_reviewer")), roleCfg.ReasoningEffort)
+			effort := reviewRoleConfiguredReasoningEffort(cfg, "primary_reviewer", roleCfg)
 			if needsDeepBugHunt {
 				return reasoningEffortAtLeast(effort, minimumReviewRoleReasoningEffort)
 			}
@@ -1825,9 +2060,51 @@ func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) str
 		}
 	}
 	if needsDeepBugHunt {
+		if effort := reviewRoleReasoningEffort(cfg, role); effort != "" {
+			return reasoningEffortAtLeast(effort, minimumReviewRoleReasoningEffort)
+		}
 		return minimumReviewRoleReasoningEffort
 	}
 	return reviewRoleReasoningEffort(cfg, role)
+}
+
+func reviewRoleConfiguredReasoningEffort(cfg Config, role string, roleCfg ReviewModelConfig) string {
+	role = normalizeReviewRole(role)
+	provider := firstNonBlankString(roleCfg.Provider, reviewRoleProviderForRun(cfg, role))
+	effort, _ := reviewReasoningEffortOrDefaultForProvider(provider, roleCfg.ReasoningEffort)
+	if !reviewConfiguredRouteMatchesMain(cfg, provider, roleCfg.Model, roleCfg.BaseURL) {
+		return effort
+	}
+	mainEffort := normalizeReasoningEffort(cfg.ReasoningEffort)
+	if mainEffort == "" {
+		return effort
+	}
+	return reasoningEffortAtLeast(effort, mainEffort)
+}
+
+func reviewConfiguredRouteMatchesMain(cfg Config, provider string, model string, baseURL ...string) bool {
+	if strings.TrimSpace(cfg.Provider) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return false
+	}
+	roleProvider := normalizeProviderName(provider)
+	mainProvider := normalizeProviderName(cfg.Provider)
+	if roleProvider != mainProvider {
+		return false
+	}
+	model = firstNonBlankString(model, cfg.Model)
+	if !strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(cfg.Model)) {
+		return false
+	}
+	roleBaseURLInput := ""
+	if len(baseURL) > 0 {
+		roleBaseURLInput = strings.TrimSpace(baseURL[0])
+	}
+	if roleBaseURLInput == "" {
+		roleBaseURLInput = strings.TrimSpace(cfg.BaseURL)
+	}
+	roleBaseURL := normalizeProviderBaseURL(roleProvider, roleBaseURLInput)
+	mainBaseURL := normalizeProviderBaseURL(mainProvider, cfg.BaseURL)
+	return strings.EqualFold(roleBaseURL, mainBaseURL)
 }
 
 func reasoningEffortAtLeast(effort string, minimum string) string {
@@ -2048,6 +2325,7 @@ func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	b.WriteString("- severity: blocker|high|medium|low|info\n")
 	b.WriteString("  category: correctness|security|stability|performance|test_gap|maintainability|false_positive|bypass_surface|operational_risk|evidence_gap\n")
 	b.WriteString("  path: <path or empty>\n")
+	b.WriteString("  line: <1-based line number or 0>\n")
 	b.WriteString("  symbol: <symbol or surface>\n")
 	b.WriteString("  title: <complete short finding title under 120 characters>\n")
 	b.WriteString("  evidence: <specific evidence from supplied context>\n")
@@ -2105,12 +2383,19 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	b.WriteString("\n\nRequired review rules:\n")
 	b.WriteString("- Findings must be concrete and tied to supplied evidence.\n")
 	b.WriteString("- Every finding must include a title field. Do not copy a long evidence or impact sentence into title.\n")
+	b.WriteString("- For code findings, include the narrowest supplied path and 1-based line when the evidence provides one. Do not invent line numbers; use 0 or leave line empty when unknown.\n")
 	b.WriteString("- A blocker/high finding must include evidence, impact, required_fix, and test_recommendation when applicable.\n")
+	b.WriteString("- Use category test_gap only when the required action is to add/run tests or provide verification evidence. If evidence describes a production behavior defect and required_fix changes production code, control flow, data handling, or error handling, use correctness, stability, security, performance, or operational_risk instead even when tests are also recommended.\n")
 	b.WriteString("- If evidence is insufficient, emit insufficient_evidence or evidence_gap findings.\n")
 	b.WriteString("- Do not invent files, tests, or code not present in the evidence.\n")
 	b.WriteString("- Do not use ellipses or omission markers in summary, title, evidence, impact, required_fix, or test_recommendation. This includes three consecutive periods, Unicode ellipsis, truncation labels, and omitted-content labels. Every field must be a complete sentence or phrase.\n")
 	if run.Target == reviewTargetSourceAnalysis {
 		b.WriteString("- This is a source analysis review, not a proposed code-change review. Findings should describe risks in the supplied source evidence, not missing implementation work unless the user explicitly asked for a fix.\n")
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), naturalReviewTrigger) {
+		b.WriteString("- This is a Codex App-style review-mode request. Treat it as read-only code review: do not propose patches, do not ask to edit files, and do not describe any fix as already applied.\n")
+		b.WriteString("- Prioritize actionable bugs, behavioral regressions, stability/security risks, and missing tests. Put concrete findings ahead of summary-level commentary.\n")
+		b.WriteString("- If no issue is found, return approved with no findings and state the remaining test or evidence risk only in the summary.\n")
 	}
 	if run.Mode == reviewModePerformanceAnalysis {
 		b.WriteString("- For performance or hitch analysis, calibrate severity carefully: use high/blocker only for evidence-backed data races, deadlocks, main-thread blocking, unbounded growth, or hot-path work that is clearly frequent. Use medium for plausible lock contention, repeated allocation, or broad-copy overhead when call frequency or profiling data is not supplied.\n")
@@ -2128,6 +2413,8 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		b.WriteString("- This is a pre-write review. If evidence includes required repair findings from a pre-fix review, verify the proposed edit addresses every blocking finding and every medium-or-higher actionable warning listed there.\n")
+		b.WriteString("- Evidence sections can overlap. Treat the Provided diff section as the authoritative proposed edit when present; use after_excerpt and expected_preview only as supporting excerpts. Do not report an evidence_gap just because a supporting excerpt is compacted if the same code appears anywhere else in the supplied evidence.\n")
+		b.WriteString("- Latest verification evidence is supporting context only. Do not create a blocking pre-write finding solely because verification failed, was skipped, or is missing. Block only when the proposed diff itself is wrong, incomplete, or demonstrably responsible for the verification failure. Treat unrelated build, test, or verification-environment failures as non-blocking test_gap evidence.\n")
 		b.WriteString("- Do not approve a proposed edit that only fixes a blocker while leaving a listed actionable warning unresolved, unless the diff itself contains a clear reason that the warning is intentionally out of scope.\n")
 		b.WriteString("- If a required repair finding is still unresolved, emit needs_revision with a concrete finding that names the original repair id.\n")
 		b.WriteString("- If the proposed diff tries to satisfy multiple RFs with a whole-file rewrite, a large whole-function replacement, duplicated function endings/braces, or code outside the intended function, treat that as a patch correctness blocker even if the idea of the fix is sound.\n")
@@ -2143,6 +2430,8 @@ func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role st
 			b.WriteString("이 review route는 최근 빈 응답이나 약한 구조화 출력이 있었습니다. 긴 재시도 대신 더 작은 형식으로 한 번만 복구 리뷰를 수행하세요.\n")
 		case "empty_response":
 			b.WriteString("이전 리뷰 응답이 비어 있었습니다. 같은 증거를 더 작은 형식으로 한 번만 다시 검토하세요.\n")
+		case "reasoning_only":
+			b.WriteString("이전 리뷰 응답이 provider reasoning channel에만 작성되고 final content가 비어 있었습니다. 같은 증거를 다시 검토하되 final content에는 REVIEW_RESULT 블록만 출력하세요.\n")
 		case "large_local_context":
 			b.WriteString("이 로컬/degraded review route에는 전체 리뷰 프롬프트가 너무 크므로 처음부터 작은 형식으로 검토하세요.\n")
 		default:
@@ -2156,6 +2445,8 @@ func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role st
 			b.WriteString("This review route recently returned empty or weak structured output. Run one compact recovery review instead of repeating the long prompt.\n")
 		case "empty_response":
 			b.WriteString("The previous review response was empty. Retry once with this smaller review format.\n")
+		case "reasoning_only":
+			b.WriteString("The previous review wrote only provider reasoning content and left final content empty. Review the same evidence again and put only the REVIEW_RESULT block in final content.\n")
 		case "large_local_context":
 			b.WriteString("This local/degraded review route is using the compact format up front because the full review prompt is too large.\n")
 		default:
@@ -2178,6 +2469,9 @@ func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role st
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		b.WriteString("\nPre-fix rule: report only concrete bugs or boundary risks tied to the supplied code. Do not claim fixes are already applied.\n")
 	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), naturalReviewTrigger) {
+		b.WriteString("\nReview-mode rule: this is read-only code review. Report concrete findings only; do not write patch text, tool requests, or implementation steps.\n")
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		b.WriteString("\nPre-write rule: review the proposed diff only. If the patch is not clearly safe, return needs_revision.\n")
 	}
@@ -2189,6 +2483,7 @@ func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role st
 	b.WriteString("- severity: blocker|high|medium|low|info\n")
 	b.WriteString("  category: correctness|security|stability|performance|test_gap|maintainability|false_positive|bypass_surface|operational_risk|evidence_gap\n")
 	b.WriteString("  path: <path or empty>\n")
+	b.WriteString("  line: <1-based line number or 0>\n")
 	b.WriteString("  symbol: <symbol or surface>\n")
 	b.WriteString("  title: <complete short title>\n")
 	b.WriteString("  evidence: <specific evidence>\n")
@@ -2235,9 +2530,14 @@ func buildReviewModelCrossCheckPrompt(cfg Config, run ReviewRun, role string, pr
 		b.WriteString("\n")
 	}
 	b.WriteString("\nRequired second-pass rules:\n")
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), naturalReviewTrigger) {
+		b.WriteString("- This is read-only review mode. Do not request edits, output patches, or describe fixes as already applied.\n")
+	}
 	b.WriteString("- Findings must be concrete and tied to supplied evidence.\n")
+	b.WriteString("- For code findings, include the narrowest supplied path and 1-based line when the evidence provides one. Do not invent line numbers; use 0 or leave line empty when unknown.\n")
 	b.WriteString("- Do not repeat a primary finding unless you are confirming it with clearer evidence or correcting its severity/fix.\n")
 	b.WriteString("- If you reject or downgrade a primary finding, emit a finding that clearly names the disputed primary issue in evidence.\n")
+	b.WriteString("- Use category test_gap only when the required action is to add/run tests or provide verification evidence. If evidence describes a production behavior defect and required_fix changes production code, control flow, data handling, or error handling, use correctness, stability, security, performance, or operational_risk instead even when tests are also recommended.\n")
 	b.WriteString("- Do not invent files, tests, or code not present in the evidence.\n")
 	b.WriteString("- Do not use ellipses or omission markers in any narrative field.\n")
 	if reviewRunPrefersKorean(cfg, run) {
@@ -2251,6 +2551,7 @@ func buildReviewModelCrossCheckPrompt(cfg Config, run ReviewRun, role string, pr
 	b.WriteString("- severity: blocker|high|medium|low|info\n")
 	b.WriteString("  category: correctness|security|stability|performance|test_gap|maintainability|false_positive|bypass_surface|operational_risk|evidence_gap\n")
 	b.WriteString("  path: <path or empty>\n")
+	b.WriteString("  line: <1-based line number or 0>\n")
 	b.WriteString("  symbol: <symbol or surface>\n")
 	b.WriteString("  title: <complete short finding title under 120 characters>\n")
 	b.WriteString("  evidence: <specific evidence from supplied context>\n")
@@ -2269,9 +2570,12 @@ func reviewModelPromptEvidenceLimit(run ReviewRun) int {
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		if reviewBeforeFixNeedsDeepBugHunt(run) {
-			return 30000
+			return reviewSourceAnalysisMaxContextChars
 		}
-		return 12000
+		return reviewFocusedPromptEvidenceLimit
+	}
+	if reviewRunNeedsMultiFileEvidencePrompt(run) {
+		return reviewDefaultMaxContextChars
 	}
 	if reviewRunUsesFocusedFastPath(run) {
 		return reviewFocusedPromptEvidenceLimit
@@ -2281,25 +2585,40 @@ func reviewModelPromptEvidenceLimit(run ReviewRun) int {
 
 func reviewLocalCompactReviewEvidenceLimit(run ReviewRun) int {
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
-		return 10000
+		return reviewPreWritePromptEvidenceLimit
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) && reviewBeforeFixNeedsDeepBugHunt(run) {
-		return 14000
+		return reviewSourceAnalysisMaxContextChars / 2
 	}
-	return 12000
+	return reviewFocusedPromptEvidenceLimit
 }
 
 func reviewModelCrossEvidenceLimit(run ReviewRun) int {
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		return reviewPreWriteCrossEvidenceLimit
 	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) && reviewBeforeFixNeedsDeepBugHunt(run) {
+		return reviewSourceAnalysisMaxContextChars / 2
+	}
+	if reviewRunNeedsMultiFileEvidencePrompt(run) {
+		return reviewDefaultMaxContextChars / 2
+	}
 	if reviewRunUsesFocusedFastPath(run) {
 		return reviewFocusedCrossEvidenceLimit
 	}
 	if run.Target == reviewTargetSourceAnalysis {
-		return 40000
+		return reviewSourceAnalysisMaxContextChars / 2
 	}
 	return 24000
+}
+
+func reviewRunNeedsMultiFileEvidencePrompt(run ReviewRun) bool {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return false
+	}
+	paths := append([]string(nil), run.ChangeSet.ChangedPaths...)
+	paths = append(paths, run.RequestAnalysis.ScopeDiscovery.CandidateFiles...)
+	return len(mcpReviewCleanPaths(paths)) > 3
 }
 
 func reviewPrimaryFindingsCrossPromptLimit(run ReviewRun) int {
@@ -2380,6 +2699,7 @@ func buildReviewModelOmissionRetryPrompt(cfg Config, run ReviewRun, role string)
 	b.WriteString("- severity: blocker|high|medium|low|info\n")
 	b.WriteString("  category: correctness|security|stability|performance|test_gap|maintainability|false_positive|bypass_surface|operational_risk|evidence_gap\n")
 	b.WriteString("  path: <path or empty>\n")
+	b.WriteString("  line: <1-based line number or 0>\n")
 	b.WriteString("  symbol: <symbol or surface>\n")
 	b.WriteString("  title: <complete short title>\n")
 	b.WriteString("  evidence: <specific evidence>\n")
@@ -2401,6 +2721,9 @@ func compactReviewPromptSection(text string, limit int) string {
 	if budget <= 0 {
 		return strings.TrimSpace(marker)
 	}
+	if compacted := compactReviewPromptMarkdownSections(text, budget); compacted != "" {
+		return strings.TrimSpace(compacted) + marker
+	}
 	var b strings.Builder
 	for _, r := range text {
 		if b.Len()+len(string(r)) > budget {
@@ -2409,6 +2732,71 @@ func compactReviewPromptSection(text string, limit int) string {
 		b.WriteRune(r)
 	}
 	return strings.TrimSpace(b.String()) + marker
+}
+
+func compactReviewPromptMarkdownSections(text string, budget int) string {
+	sections := reviewPromptMarkdownSections(text)
+	if budget <= 0 || len(sections) <= 1 {
+		return ""
+	}
+	separator := "\n\n"
+	remaining := budget
+	remainingSections := len(sections)
+	var rendered []string
+	for _, section := range sections {
+		if remainingSections <= 0 {
+			break
+		}
+		share := remaining / remainingSections
+		if share <= 0 {
+			break
+		}
+		if len(rendered) > 0 {
+			remaining -= len(separator)
+			if remaining <= 0 {
+				break
+			}
+			share = remaining / remainingSections
+			if share <= 0 {
+				break
+			}
+		}
+		renderedSection := compactPromptSectionPreserveHeadTail(section, share)
+		if strings.TrimSpace(renderedSection) == "" {
+			break
+		}
+		rendered = append(rendered, renderedSection)
+		remaining -= len(renderedSection)
+		remainingSections--
+	}
+	if len(rendered) <= 1 {
+		return ""
+	}
+	return strings.Join(rendered, separator)
+}
+
+func reviewPromptMarkdownSections(text string) []string {
+	lines := reviewNormalizedLines(text)
+	var sections []string
+	var current []string
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		section := strings.TrimSpace(strings.Join(current, "\n"))
+		if section != "" {
+			sections = append(sections, section)
+		}
+		current = nil
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			flush()
+		}
+		current = append(current, line)
+	}
+	flush()
+	return sections
 }
 
 func reviewModelQualityRank(quality string) int {

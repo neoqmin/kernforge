@@ -49,6 +49,41 @@ func TestRecentErrorQuestionAnswersFromConversationEventWithoutModelCall(t *test
 			t.Fatalf("expected reply to contain %q, got %q", want, reply)
 		}
 	}
+	if len(session.Messages) == 0 || session.Messages[len(session.Messages)-1].Role != "assistant" {
+		t.Fatalf("expected recent error resolver to persist assistant reply, got %#v", session.Messages)
+	}
+	if session.ConversationState == nil {
+		t.Fatalf("expected recent error resolver to refresh conversation state")
+	}
+	if len(session.ConversationEvents) == 0 || session.ConversationEvents[len(session.ConversationEvents)-1].Kind != conversationEventKindAssistantReply {
+		t.Fatalf("expected recent error resolver to record assistant event, got %#v", session.ConversationEvents)
+	}
+}
+
+func TestReplyWithNilLongMemDoesNotPanic(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "ok"},
+		}},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.Reply(context.Background(), "간단히 답해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "ok") {
+		t.Fatalf("expected scripted reply, got %q", reply)
+	}
 }
 
 func TestRecentErrorAnswerListsAlternateCandidates(t *testing.T) {

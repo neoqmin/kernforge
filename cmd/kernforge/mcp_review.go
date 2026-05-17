@@ -139,7 +139,12 @@ func shouldSkipMCPReviewFile(path string) bool {
 	}
 	if strings.HasPrefix(normalized, ".git/") ||
 		strings.HasPrefix(normalized, ".kernforge/") ||
+		strings.HasPrefix(normalized, "sessions/") ||
 		strings.HasPrefix(normalized, "release/") {
+		return true
+	}
+	switch normalized {
+	case "verification-history.json", "verify-history.json":
 		return true
 	}
 	switch filepath.Ext(normalized) {

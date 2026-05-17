@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -79,6 +80,107 @@ func TestRuntimeStateWithRequestCancelSuspendedSupportsNesting(t *testing.T) {
 
 	if !rt.shouldHonorRequestCancel() {
 		t.Fatalf("expected request cancel to be restored after nested suspensions")
+	}
+}
+
+func TestRuntimeStateRequestCancelWatcherIsInteractiveOnly(t *testing.T) {
+	rt := &runtimeState{interactive: false}
+	if rt.shouldInstallRequestCancelWatcher() {
+		t.Fatalf("non-interactive single-shot runs must not install the ambient request-cancel watcher")
+	}
+	if rt.confirmRequestCancel() {
+		t.Fatalf("non-interactive request cancel must not be implicitly confirmed by ambient input")
+	}
+
+	rt.interactive = true
+	if !rt.shouldInstallRequestCancelWatcher() {
+		t.Fatalf("interactive runs should keep the request-cancel watcher available")
+	}
+}
+
+func TestRuntimeShouldUseInteractiveLoopOnlyForSessionMode(t *testing.T) {
+	tests := []struct {
+		name         string
+		promptFlag   string
+		commandFlag  string
+		goalFlag     string
+		goalFileFlag string
+		want         bool
+	}{
+		{name: "plain session", want: true},
+		{name: "prompt", promptFlag: "fix this", want: false},
+		{name: "command", commandFlag: "/status", want: false},
+		{name: "goal", goalFlag: "finish this", want: false},
+		{name: "goal file", goalFileFlag: "goal.md", want: false},
+		{name: "trimmed goal file", goalFileFlag: "  goal.md  ", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := runtimeShouldUseInteractiveLoop(tt.promptFlag, tt.commandFlag, tt.goalFlag, tt.goalFileFlag)
+			if got != tt.want {
+				t.Fatalf("runtimeShouldUseInteractiveLoop()=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunSinglePromptTreatsUnavailableWriteApprovalAsCanceled(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := "package main\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	var out bytes.Buffer
+	rt := &runtimeState{
+		cfg:         Config{},
+		writer:      &out,
+		ui:          NewUI(),
+		store:       store,
+		session:     session,
+		interactive: false,
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Perms:    NewPermissionManager(ModeDefault, rt.confirm),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "this response must not be requested"}},
+		},
+	}
+	rt.agent = &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if err := rt.runSinglePrompt("update main.go", nil); err != nil {
+		t.Fatalf("runSinglePrompt should treat unavailable write approval as canceled, got %v", err)
+	}
+	if !strings.Contains(out.String(), "Write canceled.") {
+		t.Fatalf("expected user-facing write canceled output, got %q", out.String())
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("write approval failure must not request another model turn, got %d", len(provider.requests))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("write approval failure must not change files, got %q", string(data))
 	}
 }
 
@@ -3518,6 +3620,190 @@ func TestRuntimeStatePreviewEditAutoAcceptsCurrentDiffPreviewAlwaysAnswer(t *tes
 	}
 	if rt.autoAcceptPreviewOnce {
 		t.Fatalf("expected one-shot auto-accept flag to be consumed")
+	}
+}
+
+func TestRuntimeStatePreviewEditConsumesPreArmedAutoAcceptOnceWithoutPrompt(t *testing.T) {
+	rt := &runtimeState{
+		reader:                bufio.NewReader(strings.NewReader("")),
+		writer:                &bytes.Buffer{},
+		ui:                    UI{},
+		cfg:                   Config{AutoLocale: boolPtr(false)},
+		interactive:           false,
+		autoAcceptPreviewOnce: true,
+	}
+
+	ok, err := rt.previewEdit(EditPreview{
+		Title:   "Apply patch",
+		Preview: "Preview for main.go\n+ change",
+	})
+	if err != nil {
+		t.Fatalf("previewEdit returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected pre-armed one-shot preview approval to allow the edit")
+	}
+	if rt.autoAcceptPreviewOnce {
+		t.Fatalf("expected one-shot auto-accept flag to be consumed")
+	}
+}
+
+func TestRuntimeStatePreviewEditNonInteractiveReadsPipedAnswer(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+	}
+
+	ok, err := rt.previewEdit(EditPreview{
+		Title:   "Apply patch",
+		Preview: "Preview for main.go\n+ change",
+	})
+	if err != nil {
+		t.Fatalf("previewEdit returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected piped diff preview answer to allow the edit")
+	}
+}
+
+func TestRuntimeStatePreviewEditNonInteractiveEOFDoesNotAutoAccept(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+	}
+
+	ok, err := rt.previewEdit(EditPreview{
+		Title:   "Apply patch",
+		Preview: "Preview for main.go\n+ change",
+	})
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF instead of implicit diff preview approval, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveBypassApproves(t *testing.T) {
+	rt := &runtimeState{
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		interactive: false,
+		perms:       NewPermissionManager(ModeBypass, nil),
+	}
+
+	ok, err := rt.promptConfirmAutoVerify(VerificationPlan{
+		Mode: VerificationAdaptive,
+		Steps: []VerificationStep{{
+			Label:   "focused verification",
+			Command: "go test ./...",
+			Status:  VerificationPending,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptConfirmAutoVerify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("noninteractive bypass mode should auto-approve verification")
+	}
+}
+
+func TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveDefaultDeclines(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	ok, err := rt.promptConfirmAutoVerify(VerificationPlan{
+		Mode: VerificationAdaptive,
+		Steps: []VerificationStep{{
+			Label:   "focused verification",
+			Command: "go test ./...",
+			Status:  VerificationPending,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptConfirmAutoVerify returned error: %v", err)
+	}
+	if ok {
+		t.Fatalf("noninteractive default mode should not run verification without approval")
+	}
+	output := out.String()
+	for _, want := range []string{"Automatic verification plan:", "focused verification", "Run automatic verification now?", "a=auto-run"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected noninteractive verification prompt output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveReadsPipedAnswer(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("y\n")),
+		writer:      &out,
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	ok, err := rt.promptConfirmAutoVerify(VerificationPlan{
+		Mode: VerificationAdaptive,
+		Steps: []VerificationStep{{
+			Label:   "focused verification",
+			Command: "go test ./...",
+			Status:  VerificationPending,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptConfirmAutoVerify returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected piped verification answer to allow verification")
+	}
+	output := out.String()
+	for _, want := range []string{"Automatic verification plan:", "Run automatic verification now?", "a=auto-run"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected piped verification prompt output to contain %q, got %q", want, output)
+		}
+	}
+}
+
+func TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveEOFDeclinesAfterPrompt(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("")),
+		writer:      &out,
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	ok, err := rt.promptConfirmAutoVerify(VerificationPlan{
+		Mode: VerificationAdaptive,
+		Steps: []VerificationStep{{
+			Label:   "focused verification",
+			Command: "go test ./...",
+			Status:  VerificationPending,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptConfirmAutoVerify returned error: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected EOF verification prompt to decline verification")
+	}
+	output := out.String()
+	if !strings.Contains(output, "Run automatic verification now?") {
+		t.Fatalf("expected EOF verification prompt to be visible, got %q", output)
 	}
 }
 

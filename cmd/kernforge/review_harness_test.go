@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -275,6 +276,143 @@ func TestPostChangeReviewRunsAfterEditWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestPostChangeReviewCachedBlockerStillBlocksGate(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify file: %v", err)
+	}
+	session := NewSession(root, "", "", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-cached-blocker",
+		Trigger:           "post_change",
+		AutoTriggered:     true,
+		ReviewFingerprint: "fingerprint-cached-blocker",
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+		},
+		Result: ReviewResult{
+			Verdict: reviewVerdictNeedsRevision,
+			Summary: "cached blocker",
+		},
+		RepairPlan: ReviewRepairPlan{
+			Prompt: "Fix the cached blocker.",
+		},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), "implement the change", "fingerprint-cached-blocker")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if !reviewed || !needsRevision || fingerprint != "fingerprint-cached-blocker" {
+		t.Fatalf("cached blocker must be enforced, reviewed=%t needs=%t fingerprint=%q", reviewed, needsRevision, fingerprint)
+	}
+	if !strings.Contains(feedback, "Fix the cached blocker") {
+		t.Fatalf("expected cached blocker feedback, got %q", feedback)
+	}
+}
+
+func TestPostChangeReviewUsesConfiguredReviewerClient(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify file: %v", err)
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: reviewer approved post-change diff",
+				"findings:",
+			}, "\n")},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	agent := &Agent{
+		Config:         cfg,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+	}
+
+	reviewed, needsRevision, _, _, err := agent.maybeRunPostChangeReview(context.Background(), "implement the change", "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if !reviewed || needsRevision {
+		t.Fatalf("expected reviewer-backed post-change approval, reviewed=%t needs=%t", reviewed, needsRevision)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected configured reviewer client to be called")
+	}
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("single configured reviewer route must not be counted as cross-review coverage, got %d requests", len(reviewer.requests))
+	}
+	if session.LastReviewRun == nil || !session.LastReviewRun.SingleModelPolicy.Enabled {
+		t.Fatalf("reviewer-only route should use single-model policy, got %#v", session.LastReviewRun)
+	}
+}
+
+func TestPreFixRepairObligationsDoNotPromoteStyleWarnings(t *testing.T) {
+	run := ReviewRun{
+		Trigger: reviewBeforeFixTrigger,
+		Findings: []ReviewFinding{
+			{
+				ID:          "RF-STYLE",
+				Severity:    reviewSeverityLow,
+				Category:    "style",
+				Title:       "Formatting issue",
+				RequiredFix: "Reformat the file.",
+			},
+			{
+				ID:          "RF-MAINT",
+				Severity:    reviewSeverityMedium,
+				Category:    "maintainability",
+				Title:       "Minor cleanup",
+				RequiredFix: "Rename a helper.",
+			},
+			{
+				ID:          "RF-CORRECT",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Real bug",
+				RequiredFix: "Fix the control flow.",
+				Path:        "main.cpp",
+			},
+		},
+		Gate: GateDecision{
+			WarningFindings: []string{"RF-STYLE", "RF-MAINT", "RF-CORRECT"},
+		},
+	}
+
+	findings := preFixRepairObligationFindings(run)
+	if len(findings) != 1 || findings[0].ID != "RF-CORRECT" {
+		t.Fatalf("expected only medium correctness warning to become an RF obligation, got %#v", findings)
+	}
+}
+
 func TestPostChangeReviewSkipsAfterFailedEditAttemptWithoutSuccessfulChange(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")
@@ -385,7 +523,7 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 	}
 	post := formatPostChangeReviewFeedback(run, true)
 	preWrite := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run)
-	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents", "must directly touch code tokens", "complete standalone patch", "include-only patch"} {
+	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents", "traceably connected", "complete standalone patch", "standalone patch containing every required hunk"} {
 		if !strings.Contains(preWrite, want) {
 			t.Fatalf("expected pre-write feedback to contain narrow patch guidance %q, got %q", want, preWrite)
 		}
@@ -407,7 +545,7 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 	}
 }
 
-func TestLatestEditProposalForUserDecisionSkipsIncludeOnlyDeltaForCodeBlocker(t *testing.T) {
+func TestLatestEditProposalForUserDecisionRestoresCodePatchWhenReviewNeedsCode(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
 		Trigger: "pre_write",
@@ -415,30 +553,30 @@ func TestLatestEditProposalForUserDecisionSkipsIncludeOnlyDeltaForCodeBlocker(t 
 			ID:          "RF-001",
 			Severity:    reviewSeverityMedium,
 			Category:    "correctness",
-			Title:       "QueryDosDevice failure still exits the volume loop",
-			Evidence:    "`QueryDosDevice` failure still uses `break` before `FindNextVolume` can run.",
-			RequiredFix: "Change the `QueryDosDevice` failure path so the current volume is skipped and `FindNextVolume` continues.",
+			Title:       "OpenResourceInfo failure still exits the volume loop",
+			Evidence:    "`OpenResourceInfo` failure still uses `break` before `NextResource` can run.",
+			RequiredFix: "Change the `OpenResourceInfo` failure path so the current volume is skipped and `NextResource` continues.",
 			BlocksGate:  true,
 		}},
 	}
 	codePatch := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Update File: Tavern/TavernWorker/PathConverter.cpp",
+		"*** Update File: Project/Worker/SampleReview.cpp",
 		"@@",
-		"-\t\t\tif (!QueryDosDevice(&volumeName[4], deviceName, MAX_PATH))",
+		"-\t\t\tif (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
 		"-\t\t\t{",
 		"-\t\t\t\tbreak;",
 		"-\t\t\t}",
-		"+\t\t\tif (!QueryDosDevice(&volumeName[4], deviceName, MAX_PATH))",
+		"+\t\t\tif (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
 		"+\t\t\t{",
 		"+\t\t\t\tcontinue;",
 		"+\t\t\t}",
-		" \t\t} while (FindNextVolume(findHandle, volumeName, MAX_PATH));",
+		" \t\t} while (NextResource(findHandle, resourceName, FIXED_CAPACITY));",
 		"*** End Patch",
 	}, "\n")
 	includePatch := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Update File: Tavern/TavernWorker/PathConverter.cpp",
+		"*** Update File: Project/Worker/SampleReview.cpp",
 		"@@",
 		"+#include <vector>",
 		"*** End Patch",
@@ -454,13 +592,13 @@ func TestLatestEditProposalForUserDecisionSkipsIncludeOnlyDeltaForCodeBlocker(t 
 		}}},
 	)
 	rendered := formatLatestEditProposalForUserDecision(Config{AutoLocale: boolPtr(false)}, session)
-	for _, want := range []string{"include-only delta", "QueryDosDevice", "FindNextVolume"} {
+	for _, want := range []string{"Latest edit proposal", "NextResource", "continue"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected rendered proposal to contain %q, got:\n%s", want, rendered)
 		}
 	}
 	if strings.Contains(rendered, "#include <vector>") {
-		t.Fatalf("expected include-only delta to be skipped in favor of previous code proposal, got:\n%s", rendered)
+		t.Fatalf("include-only follow-up should not hide the code patch required by the latest review, got:\n%s", rendered)
 	}
 }
 
@@ -558,7 +696,7 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 
 func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	var source strings.Builder
 	for i := 0; i < 2000; i++ {
 		fmt.Fprintf(&source, "int line_%04d = %d; // UNIQUE_REVIEW_CONTEXT_%04d\n", i, i, i)
@@ -583,7 +721,7 @@ func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
 	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetAuto,
-		Request:             "@PathConverter.cpp:132-221 review and fix bugs",
+		Request:             "@SampleReview.cpp:132-221 review and fix bugs",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 		NoModel:             true,
@@ -591,22 +729,22 @@ func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runReviewHarness: %v", err)
 	}
-	if len(run.Evidence.Text) > reviewFocusedMaxContextChars {
-		t.Fatalf("focused evidence should be capped, got %d > %d", len(run.Evidence.Text), reviewFocusedMaxContextChars)
+	if len(run.Evidence.Text) > reviewSourceAnalysisMaxContextChars {
+		t.Fatalf("focused evidence should be capped, got %d > %d", len(run.Evidence.Text), reviewSourceAnalysisMaxContextChars)
 	}
-	if indexStringContaining(progress, "max_context=20000") < 0 {
+	if indexStringContaining(progress, fmt.Sprintf("max_context=%d", reviewSourceAnalysisMaxContextChars)) < 0 {
 		t.Fatalf("expected focused max_context progress, got %#v", progress)
 	}
 }
 
 func TestPreFixLineRangeKeepsExplicitLargeEvidenceBudget(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	var source strings.Builder
 	for i := 1; i <= 1800; i++ {
 		switch i {
 		case 130:
-			source.WriteString("bool PathConverter::_InitiateVolumePath()\n")
+			source.WriteString("bool Worker::BuildIndex()\n")
 		case 131:
 			source.WriteString("{\n")
 		case 132:
@@ -638,7 +776,7 @@ func TestPreFixLineRangeKeepsExplicitLargeEvidenceBudget(t *testing.T) {
 			},
 		},
 	}
-	opts, selection, ok := rt.reviewBeforeFixOptions("@PathConverter.cpp:132-221 review and fix bugs", nil)
+	opts, selection, ok := rt.reviewBeforeFixOptions("@SampleReview.cpp:132-221 review and fix bugs", nil)
 	if !ok || selection == nil {
 		t.Fatalf("expected pre-fix line-range options, opts=%#v selection=%#v", opts, selection)
 	}
@@ -648,15 +786,18 @@ func TestPreFixLineRangeKeepsExplicitLargeEvidenceBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runReviewHarness: %v", err)
 	}
-	if len(run.Evidence.Text) <= reviewFocusedMaxContextChars {
+	if reviewFocusedMaxContextChars < reviewSourceAnalysisMaxContextChars && len(run.Evidence.Text) <= reviewFocusedMaxContextChars {
 		t.Fatalf("explicit pre-fix line-range evidence should not be capped to focused budget: chars=%d", len(run.Evidence.Text))
 	}
-	if indexStringContaining(progress, "max_context=60000") < 0 {
-		t.Fatalf("expected explicit pre-fix max_context=60000 progress, got %#v", progress)
+	if len(run.Evidence.Text) < reviewSourceAnalysisMaxContextChars-8192 {
+		t.Fatalf("explicit pre-fix line-range evidence should use the source-analysis budget: chars=%d max=%d", len(run.Evidence.Text), reviewSourceAnalysisMaxContextChars)
+	}
+	if indexStringContaining(progress, fmt.Sprintf("max_context=%d", reviewSourceAnalysisMaxContextChars)) < 0 {
+		t.Fatalf("expected explicit pre-fix max_context=%d progress, got %#v", reviewSourceAnalysisMaxContextChars, progress)
 	}
 	for _, want := range []string{
-		"Pre-fix function body excerpt: PathConverter.cpp:130-521",
-		"Pre-fix current file context: PathConverter.cpp:132-521",
+		"Pre-fix function body excerpt: SampleReview.cpp:130-521",
+		"Pre-fix current file context: SampleReview.cpp:132-521",
 		"POST_SELECTION_SENTINEL",
 	} {
 		if !strings.Contains(run.Evidence.Text, want) {
@@ -672,9 +813,9 @@ func TestPreFixDeepBugHuntPromptUsesExpandedEvidenceLimit(t *testing.T) {
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetSelection,
 		Mode:      reviewModeLiveFix,
-		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		Objective: "@SampleReview.cpp:132-221 review and fix bugs",
 		ChangeSet: ReviewChangeSet{
-			ChangedPaths: []string{"PathConverter.cpp"},
+			ChangedPaths: []string{"SampleReview.cpp"},
 		},
 		Evidence: ReviewEvidencePack{
 			Text: "HEAD_SENTINEL\n" + strings.Repeat("x", 18000) + "\nTAIL_SENTINEL",
@@ -686,14 +827,166 @@ func TestPreFixDeepBugHuntPromptUsesExpandedEvidenceLimit(t *testing.T) {
 	}
 }
 
+func TestCompactReviewPromptSectionBalancesMarkdownSections(t *testing.T) {
+	evidence := strings.Join([]string{
+		"Evidence warnings:\n- evidence is intentionally long",
+		"## File excerpt: a.go\n" + strings.Repeat("a body line\n", 200) + "A_TAIL_SENTINEL",
+		"## File excerpt: b.go\n" + strings.Repeat("b body line\n", 200) + "B_TAIL_SENTINEL",
+		"## File excerpt: c.go\n" + strings.Repeat("c body line\n", 200) + "C_TAIL_SENTINEL",
+	}, "\n\n")
+	compact := compactReviewPromptSection(evidence, 2400)
+	for _, want := range []string{
+		"Evidence warnings:",
+		"## File excerpt: a.go",
+		"## File excerpt: b.go",
+		"## File excerpt: c.go",
+		"A_TAIL_SENTINEL",
+		"B_TAIL_SENTINEL",
+		"C_TAIL_SENTINEL",
+		"Evidence shortened to fit review prompt budget",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Fatalf("balanced review prompt evidence lost %q:\n%s", want, compact)
+		}
+	}
+	if len(compact) > 2400 {
+		t.Fatalf("compact evidence exceeded budget: got %d", len(compact))
+	}
+}
+
+func TestMultiFileLineRangeReviewUsesExpandedPromptEvidenceLimit(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   naturalReviewTrigger,
+		Target:    reviewTargetChange,
+		Mode:      reviewModeGeneralChange,
+		Objective: "@a.go:1-10 @b.go:1-10 @c.go:1-10 @d.go:1-10",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"a.go", "b.go", "c.go", "d.go"},
+		},
+		RequestAnalysis: ReviewRequestAnalysis{
+			ScopeDiscovery: ReviewScopeDiscovery{
+				CandidateFiles: []string{"a.go", "b.go", "c.go", "d.go"},
+				ScopeWidth:     "bounded",
+			},
+		},
+	}
+	if got := reviewModelPromptEvidenceLimit(run); got <= reviewFocusedPromptEvidenceLimit {
+		t.Fatalf("multi-file line-range review should expand beyond focused prompt limit, got %d", got)
+	}
+}
+
+func TestPreWriteVerificationOnlyModelFindingDoesNotBlockGate(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Findings: []ReviewFinding{
+			{
+				ID:           "RF-BUILD",
+				Source:       "model",
+				ReviewerRole: "primary_reviewer",
+				Severity:     reviewSeverityBlocker,
+				Category:     "stability",
+				Confidence:   "high",
+				Quality:      reviewFindingQualityComplete,
+				Title:        "Build verification failed with a compile error",
+				Evidence:     "The latest verification reports `[failed] msbuild SampleApp/SampleApp.sln [compile_error]`.",
+				Impact:       "The reviewed tree is not demonstrated to build.",
+				RequiredFix:  "Inspect the msbuild diagnostics and fix the compile error.",
+			},
+		},
+	}
+
+	normalizePreWriteVerificationOnlyFindings(&run)
+	gate := evaluateReviewGate(run)
+	if len(gate.BlockingFindings) != 0 {
+		t.Fatalf("pre-write verification-only finding must not block the diff gate, got %#v", gate)
+	}
+	if len(gate.WarningFindings) != 1 {
+		t.Fatalf("expected verification-only finding to remain as a warning, got %#v", gate)
+	}
+	if run.Findings[0].Category != "test_gap" || run.Findings[0].Severity != reviewSeverityMedium {
+		t.Fatalf("expected finding to be downgraded to medium test_gap, got %#v", run.Findings[0])
+	}
+}
+
+func TestPreWriteVerificationOnlyCodingHarnessFindingDoesNotBlockGate(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Findings: []ReviewFinding{
+			{
+				ID:           "RF-VERIFY",
+				Source:       "deterministic",
+				ReviewerRole: "coding_harness",
+				Severity:     reviewSeverityMedium,
+				Category:     "operational_risk",
+				Confidence:   "high",
+				Quality:      reviewFindingQualityComplete,
+				Title:        "Recommended verification not recorded",
+				Evidence:     "Recommended command(s): go test ./cmd/kernforge",
+				Impact:       "Existing coding harness state is part of the review gate.",
+				RequiredFix:  "Resolve the coding harness finding or record a scoped waiver.",
+			},
+		},
+	}
+
+	normalizePreWriteVerificationOnlyFindings(&run)
+	gate := evaluateReviewGate(run)
+	if len(gate.BlockingFindings) != 0 {
+		t.Fatalf("pre-write coding-harness verification gap must not block the diff gate, got %#v", gate)
+	}
+	if len(gate.WarningFindings) != 1 {
+		t.Fatalf("expected verification gap to remain as a warning, got %#v", gate)
+	}
+	if run.Findings[0].Category != "test_gap" || run.Findings[0].Severity != reviewSeverityMedium {
+		t.Fatalf("expected finding to be normalized to medium test_gap, got %#v", run.Findings[0])
+	}
+}
+
+func TestPreFixVerificationOnlyFindingDoesNotBecomeRepairBlocker(t *testing.T) {
+	run := ReviewRun{
+		Trigger: reviewBeforeFixTrigger,
+		Target:  reviewTargetSelection,
+		Mode:    reviewModeLiveFix,
+		Findings: []ReviewFinding{
+			{
+				ID:           "RF-BUILD",
+				Source:       "deterministic",
+				ReviewerRole: "verification_reviewer",
+				Severity:     reviewSeverityBlocker,
+				Category:     "test_gap",
+				Confidence:   "high",
+				Quality:      reviewFindingQualityComplete,
+				Title:        "Latest verification has failures",
+				Evidence:     "Verification: passed=0 failed=1 skipped=0; [failed] msbuild demo.sln [compile_error]",
+				Impact:       "The review gate cannot approve a change while the latest verification is failing.",
+				RequiredFix:  "Fix the failing verification or record a narrow waiver.",
+				BlocksGate:   true,
+			},
+		},
+	}
+
+	normalizeNonBlockingVerificationOnlyFindings(&run)
+	gate := evaluateReviewGate(run)
+	if len(gate.BlockingFindings) != 0 {
+		t.Fatalf("pre-fix verification-only finding must not become a repair blocker, got %#v", gate)
+	}
+	if len(gate.WarningFindings) != 1 {
+		t.Fatalf("expected verification-only finding to remain visible as a warning, got %#v", gate)
+	}
+	if run.Findings[0].BlocksGate || run.Findings[0].Severity != reviewSeverityMedium {
+		t.Fatalf("expected non-blocking medium test_gap finding, got %#v", run.Findings[0])
+	}
+}
+
 func TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetSelection,
 		Mode:      reviewModeLiveFix,
-		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		Objective: "@SampleReview.cpp:132-221 review and fix bugs",
 		ChangeSet: ReviewChangeSet{
-			ChangedPaths: []string{"PathConverter.cpp"},
+			ChangedPaths: []string{"SampleReview.cpp"},
 		},
 		ReviewerRuns: []ReviewReviewerRun{{
 			Role:         "primary_reviewer",
@@ -738,9 +1031,9 @@ func TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap(t *testing.T) {
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetSelection,
 		Mode:      reviewModeLiveFix,
-		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		Objective: "@SampleReview.cpp:132-221 review and fix bugs",
 		ChangeSet: ReviewChangeSet{
-			ChangedPaths: []string{"PathConverter.cpp"},
+			ChangedPaths: []string{"SampleReview.cpp"},
 		},
 		ReviewerRuns: []ReviewReviewerRun{{
 			Role:         "primary_reviewer",
@@ -757,6 +1050,38 @@ func TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap(t *testing.T) {
 	findings := preFixNonConclusiveBugHuntFindings(run)
 	if len(findings) != 1 || !findings[0].BlocksGate || !strings.EqualFold(findings[0].Severity, reviewSeverityBlocker) {
 		t.Fatalf("expected non-local unreliable review to remain a blocking evidence gap, got %#v", findings)
+	}
+}
+
+func TestReviewChangeMainReviewerFailureFailsClosedAsInsufficientEvidence(t *testing.T) {
+	run := ReviewRun{
+		Trigger: naturalReviewTrigger,
+		Target:  reviewTargetChange,
+		Mode:    reviewModeGeneralChange,
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Model:        "openai-codex-subscription / gpt-5.5 / effort=high",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "openai-codex API error (429 Too Many Requests): usage_limit_reached",
+		}},
+	}
+
+	run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
+	run.Gate = evaluateReviewGate(run)
+
+	if run.Gate.Verdict != reviewVerdictInsufficientEvidence {
+		t.Fatalf("main reviewer failure must fail closed as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if !reviewRunHasFindingTitle(run, "Required review route failed or returned weak output") {
+		t.Fatalf("expected required reviewer failure finding, got %#v", run.Findings)
+	}
+	if !reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("expected required reviewer failure status")
 	}
 }
 
@@ -804,16 +1129,16 @@ func TestFocusedCrossReviewerUsesSoftTimeoutBudget(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetChange,
-		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		Objective: "@SampleReview.cpp:132-221 review and fix bugs",
 		RequestAnalysis: ReviewRequestAnalysis{
 			ScopeDiscovery: ReviewScopeDiscovery{
 				ScopeWidth:     "focused",
-				CandidateFiles: []string{"PathConverter.cpp"},
+				CandidateFiles: []string{"SampleReview.cpp"},
 			},
 		},
 	}
-	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewLowerPerformanceCrossSoftTimeout {
-		t.Fatalf("expected lower-performance focused cross soft timeout, got %s", got)
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewCloudCrossSoftTimeout {
+		t.Fatalf("expected cloud focused cross soft timeout, got %s", got)
 	}
 	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "primary_reviewer", Kind: "main"}); got != 0 {
 		t.Fatalf("main review should not use a soft timeout, got %s", got)
@@ -835,11 +1160,11 @@ func TestFocusedCrossReviewerKeepsDefaultSoftTimeoutWhenNotLowerPerformance(t *t
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetChange,
-		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		Objective: "@SampleReview.cpp:132-221 review and fix bugs",
 		RequestAnalysis: ReviewRequestAnalysis{
 			ScopeDiscovery: ReviewScopeDiscovery{
 				ScopeWidth:     "focused",
-				CandidateFiles: []string{"PathConverter.cpp"},
+				CandidateFiles: []string{"SampleReview.cpp"},
 			},
 		},
 	}
@@ -848,23 +1173,23 @@ func TestFocusedCrossReviewerKeepsDefaultSoftTimeoutWhenNotLowerPerformance(t *t
 	}
 }
 
-func TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLowerPerformanceModel(t *testing.T) {
+func TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLocalModel(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai-codex-subscription"
 	cfg.Model = "gpt-5.5"
 	cfg.ReasoningEffort = "xhigh"
 	cfg.Review.RoleModels = map[string]ReviewModelConfig{
 		"primary_reviewer": {
-			Provider: "deepseek",
-			Model:    "deepseek-v4-pro",
+			Provider: "lmstudio",
+			Model:    "qwen/qwen3.6-27b",
 		},
 	}
 	run := ReviewRun{
 		Trigger: "pre_write",
 		Target:  reviewTargetChange,
 	}
-	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewLowerPerformanceCrossSoftTimeout {
-		t.Fatalf("expected lower-performance pre-write cross soft timeout, got %s", got)
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewLocalCrossSoftTimeout {
+		t.Fatalf("expected local pre-write cross soft timeout, got %s", got)
 	}
 }
 
@@ -1072,7 +1397,7 @@ func TestMainFirstCrossReviewerSatisfiesDedicatedSecurityRole(t *testing.T) {
 
 func TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1092,7 +1417,7 @@ func TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate(t *testing.
 					"- severity: high",
 					"  title: Missing guard",
 					"  category: correctness",
-					"  path: PathConverter.cpp",
+					"  path: SampleReview.cpp",
 					"  evidence: Fix returns true without checking input",
 					"  impact: invalid inputs can be accepted",
 					"  required_fix: validate the input before returning success",
@@ -1112,7 +1437,7 @@ func TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate(t *testing.
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-1 검토하고 버그를 수정해",
+		Request:             "@SampleReview.cpp:1-1 검토하고 버그를 수정해",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
@@ -1138,7 +1463,7 @@ func TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate(t *testing.
 
 func TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1174,7 +1499,7 @@ func TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair(t *t
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-1 검토하고 버그를 수정해",
+		Request:             "@SampleReview.cpp:1-1 검토하고 버그를 수정해",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
@@ -1197,7 +1522,7 @@ func TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair(t *t
 
 func TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1233,7 +1558,7 @@ func TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair(t 
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-1 검토하고 버그를 수정해",
+		Request:             "@SampleReview.cpp:1-1 검토하고 버그를 수정해",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
@@ -1260,7 +1585,7 @@ func TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair(t 
 
 func TestLocalReviewEmptyResponseRetriesWithCompactPrompt(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1292,7 +1617,7 @@ func TestLocalReviewEmptyResponseRetriesWithCompactPrompt(t *testing.T) {
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-1 review and fix bugs",
+		Request:             "@SampleReview.cpp:1-1 review and fix bugs",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
@@ -1321,7 +1646,7 @@ func TestLocalReviewEmptyResponseRetriesWithCompactPrompt(t *testing.T) {
 
 func TestLocalRouteHealthUsesCompactRecoveryInsteadOfInitialSkip(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1362,7 +1687,7 @@ func TestLocalRouteHealthUsesCompactRecoveryInsteadOfInitialSkip(t *testing.T) {
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-1 review and fix bugs",
+		Request:             "@SampleReview.cpp:1-1 review and fix bugs",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
@@ -1388,13 +1713,15 @@ func TestLocalRouteHealthUsesCompactRecoveryInsteadOfInitialSkip(t *testing.T) {
 
 func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
-	source := "bool Fix(){\n"
-	for i := 0; i < 1800; i++ {
-		source += fmt.Sprintf("    // line %d keeps the focused evidence large enough for local compact mode\n", i)
+	path := filepath.Join(root, "SampleReview.cpp")
+	var source strings.Builder
+	source.WriteString("bool Fix(){\n")
+	payload := strings.Repeat("x", 512)
+	for i := 0; i < 20000; i++ {
+		fmt.Fprintf(&source, "    // line %d keeps the focused evidence large enough for local compact mode %s\n", i, payload)
 	}
-	source += "    return true;\n}\n"
-	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+	source.WriteString("    return true;\n}\n")
+	if err := os.WriteFile(path, []byte(source.String()), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 	localClient := &namedScriptedProviderClient{
@@ -1424,9 +1751,11 @@ func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-40 review and fix bugs",
+		Request:             "@SampleReview.cpp:1-10000 review and fix bugs",
 		Paths:               []string{path},
+		ProvidedDiff:        strings.Repeat("+ changed context for local compact mode\n", 6000),
 		IncludeFileContents: true,
+		MaxContextChars:     reviewSourceAnalysisMaxContextChars,
 	})
 	if err != nil {
 		t.Fatalf("runReviewHarness: %v", err)
@@ -1435,7 +1764,7 @@ func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
 		t.Fatalf("expected one compact initial request, got %d", len(localClient.requests))
 	}
 	if !strings.Contains(localClient.requests[0].System, "local-model review recovery") {
-		t.Fatalf("expected local compact system prompt, got %q", localClient.requests[0].System)
+		t.Fatalf("expected local compact system prompt, evidence_len=%d compact_limit=%d, got %q", len(run.Evidence.Text), reviewLocalCompactReviewEvidenceLimit(run), localClient.requests[0].System)
 	}
 	if !strings.Contains(localClient.requests[0].Messages[0].Text, "compact format up front") {
 		t.Fatalf("expected compact initial prompt text, got %q", localClient.requests[0].Messages[0].Text)
@@ -1450,9 +1779,9 @@ func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
 
 func TestHighQualityReviewKeepsFullInitialPrompt(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	source := "bool Fix(){\n"
-	for i := 0; i < 1800; i++ {
+	for i := 0; i < 6000; i++ {
 		source += fmt.Sprintf("    // line %d keeps the focused evidence large enough to prove strict routes stay full size\n", i)
 	}
 	source += "    return true;\n}\n"
@@ -1482,7 +1811,7 @@ func TestHighQualityReviewKeepsFullInitialPrompt(t *testing.T) {
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-40 review and fix bugs",
+		Request:             "@SampleReview.cpp:1-40 review and fix bugs",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
@@ -1505,24 +1834,27 @@ func TestHighQualityReviewKeepsFullInitialPrompt(t *testing.T) {
 
 func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 	localClient := &namedScriptedProviderClient{
 		name: "lmstudio",
-		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{{
-			Message: Message{
-				Role: "assistant",
-				ReasoningContent: strings.Join([]string{
-					"thinking about the code",
-					"REVIEW_RESULT",
-					"verdict: approved",
-					"summary: recovered structured local review",
-				}, "\n"),
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ReasoningContent: strings.Join([]string{
+						"thinking about the code",
+						"REVIEW_RESULT",
+						"verdict: approved",
+						"summary: recovered structured local review",
+					}, "\n"),
+				},
+				RawBody: `{"choices":[{"message":{"content":"","reasoning_content":"REVIEW_RESULT\nverdict: approved\nsummary: recovered structured local review"},"finish_reason":"stop"}]}`,
 			},
-			RawBody: `{"choices":[{"message":{"content":"","reasoning_content":"REVIEW_RESULT\nverdict: approved\nsummary: recovered structured local review"},"finish_reason":"stop"}]}`,
-		}}},
+			approvedReviewResponse("compact retry emitted final structured local review"),
+		}},
 	}
 	cfg := DefaultConfig(root)
 	cfg.Provider = "lmstudio"
@@ -1545,12 +1877,18 @@ func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
 		Trigger:             reviewBeforeFixTrigger,
 		Target:              reviewTargetSelection,
 		Mode:                reviewModeLiveFix,
-		Request:             "@PathConverter.cpp:1-1 review and fix bugs",
+		Request:             "@SampleReview.cpp:1-1 review and fix bugs",
 		Paths:               []string{path},
 		IncludeFileContents: true,
 	})
 	if err != nil {
 		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(localClient.requests) != 2 {
+		t.Fatalf("expected reasoning-only final-block retry, got %d requests", len(localClient.requests))
+	}
+	if !strings.Contains(localClient.requests[1].Messages[0].Text, "provider reasoning content") {
+		t.Fatalf("expected reasoning-channel retry prompt, got %q", localClient.requests[1].Messages[0].Text)
 	}
 	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
 		t.Fatalf("expected reasoning_content recovery to complete the local review run, got %#v", run.ReviewerRuns)
@@ -1565,8 +1903,73 @@ func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
 	if !strings.Contains(rendered, "provider_raw=") {
 		t.Fatalf("expected CLI review output to expose provider raw artifact path, got %q", rendered)
 	}
+	if indexStringContaining(progress, "reasoning content") < 0 && indexStringContaining(progress, "reasoning channel") < 0 {
+		t.Fatalf("expected reasoning-channel retry progress, got %#v", progress)
+	}
+}
+
+func TestLocalReviewUsesReasoningRecoveryOnlyAfterFinalBlockRetryFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SampleReview.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	localClient := &namedScriptedProviderClient{
+		name: "lmstudio",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ReasoningContent: strings.Join([]string{
+						"internal reasoning",
+						"REVIEW_RESULT",
+						"verdict: approved",
+						"summary: fallback recovered structured local review",
+					}, "\n"),
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "   "}},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen-local"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    localClient,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "lmstudio", "qwen-local", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	var progress []string
+	agent.EmitProgress = func(msg string) {
+		progress = append(progress, msg)
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@SampleReview.cpp:1-1 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(localClient.requests) != 2 {
+		t.Fatalf("expected final-block retry before reasoning fallback, got %d requests", len(localClient.requests))
+	}
+	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
+		t.Fatalf("expected fallback reasoning recovery to complete the local review run, got %#v", run.ReviewerRuns)
+	}
+	if !run.Result.Degraded || !strings.Contains(run.Result.DegradedReason, "reasoning_content") {
+		t.Fatalf("expected degraded reasoning fallback marker, got %#v", run.Result)
+	}
 	if indexStringContaining(progress, "reasoning channel") < 0 {
-		t.Fatalf("expected reasoning-channel recovery progress, got %#v", progress)
+		t.Fatalf("expected reasoning recovery progress, got %#v", progress)
 	}
 }
 
@@ -1586,9 +1989,98 @@ func TestLocalReasoningRecoveryRequiresExplicitMarkerLine(t *testing.T) {
 	}
 }
 
+func TestLocalReasoningOnlyCompactInitialPromptRetriesForFinalBlock(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SampleReview.cpp")
+	var source strings.Builder
+	source.WriteString("bool Worker::BuildIndex()\n{\n")
+	for i := 0; i < 900; i++ {
+		fmt.Fprintf(&source, "\t// filler line %03d %s\n", i, strings.Repeat("context ", 4))
+	}
+	source.WriteString("\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases, FIXED_CAPACITY, &requiredCount))\n\t{\n\t\tbreak;\n\t}\n")
+	source.WriteString("\treturn true;\n}\n")
+	if err := os.WriteFile(path, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	provider := &namedScriptedProviderClient{
+		name: "lmstudio",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			{
+				Message: Message{
+					Role:             "assistant",
+					Text:             "",
+					ReasoningContent: "The code appears to need NEEDS_MORE_DATA handling, but I forgot to emit the final block.",
+				},
+				RawBody: `{"choices":[{"message":{"content":"","reasoning_content":"internal only"}}]}`,
+			},
+			{
+				Message: Message{Role: "assistant", Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: needs_revision",
+					"summary: fixed-size mount point buffer must retry.",
+					"findings:",
+					"- severity: medium",
+					"  category: correctness",
+					"  path: SampleReview.cpp",
+					"  symbol: Worker::BuildIndex",
+					"  title: EnumerateResourceAliases needs NEEDS_MORE_DATA retry",
+					"  evidence: EnumerateResourceAliases is called with FIXED_CAPACITY and requiredCount is not used for retry.",
+					"  impact: Long mount point lists can be skipped.",
+					"  required_fix: Retry with a dynamic buffer sized by requiredCount.",
+					"  test_recommendation: Simulate NEEDS_MORE_DATA and confirm the retry path succeeds.",
+				}, "\n")},
+			},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen/qwen3.6-27b"
+	var progress []string
+	rt := &runtimeState{
+		cfg:       cfg,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "lmstudio", cfg.Model, "", "default"),
+		agent: &Agent{
+			Config: cfg,
+			Client: provider,
+			EmitProgress: func(message string) {
+				progress = append(progress, message)
+			},
+		},
+	}
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@SampleReview.cpp:1-920 검토하고 버그를 수정해",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+		IncludeGitDiff:      false,
+		MaxContextChars:     60000,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(provider.scriptedProviderClient.requests) != 2 {
+		t.Fatalf("expected reasoning-only retry, got %d requests", len(provider.scriptedProviderClient.requests))
+	}
+	if run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
+		t.Fatalf("expected usable review after retry, got %#v", run.ReviewerRuns)
+	}
+	if !reviewRunHasFindingTitle(run, "EnumerateResourceAliases needs NEEDS_MORE_DATA retry") {
+		t.Fatalf("expected retry finding, got %#v", run.Findings)
+	}
+	if !strings.Contains(provider.scriptedProviderClient.requests[1].Messages[0].Text, "provider reasoning channel") {
+		t.Fatalf("expected reasoning-only retry prompt, got %q", provider.scriptedProviderClient.requests[1].Messages[0].Text)
+	}
+	if indexStringContaining(progress, "reasoning content") < 0 && indexStringContaining(progress, "reasoning channel") < 0 {
+		t.Fatalf("expected reasoning-only retry progress, got %#v", progress)
+	}
+}
+
 func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1615,7 +2107,7 @@ func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
 		Paths:        []string{path},
 		ProvidedDiff: "- break;\n+ continue;\n",
 		EditProposals: []EditProposal{{
-			File:            "PathConverter.cpp",
+			File:            "SampleReview.cpp",
 			Operation:       "apply_patch",
 			ExpectedPreview: "- break;\n+ continue;\n",
 		}},
@@ -1634,14 +2126,14 @@ func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
 	}
 }
 
-func TestPreWriteDeterministicBlocksUnrelatedRepairProposal(t *testing.T) {
+func TestPreWriteDeterministicDoesNotJudgeUnrelatedRepairProposal(t *testing.T) {
 	run := ReviewRun{
 		Trigger: "pre_write",
 		ChangeSet: ReviewChangeSet{
 			DiffExcerpt: strings.Join([]string{
-				"diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp",
-				"--- a/Tavern/TavernWorker/PathConverter.cpp",
-				"+++ b/Tavern/TavernWorker/PathConverter.cpp",
+				"diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp",
+				"--- a/Project/Worker/SampleReview.cpp",
+				"+++ b/Project/Worker/SampleReview.cpp",
 				"@@ -1,3 +1,4 @@",
 				" #include <memory>",
 				"+#include <vector>",
@@ -1653,7 +2145,7 @@ func TestPreWriteDeterministicBlocksUnrelatedRepairProposal(t *testing.T) {
 			Text:    "pre-write evidence",
 		},
 		EditProposals: []EditProposal{{
-			File:            "Tavern/TavernWorker/PathConverter.cpp",
+			File:            "Project/Worker/SampleReview.cpp",
 			Operation:       "apply_patch",
 			ExpectedPreview: "#include <memory>\n+#include <vector>\n#include <ShlObj.h>\n",
 		}},
@@ -1661,34 +2153,257 @@ func TestPreWriteDeterministicBlocksUnrelatedRepairProposal(t *testing.T) {
 			ID:          "RF-001",
 			Severity:    reviewSeverityHigh,
 			Category:    "correctness",
-			Path:        "Tavern/TavernWorker/PathConverter.cpp",
-			Symbol:      "PathConverter::_InitiateVolumePath",
-			Title:       "QueryDosDevice failure stops volume enumeration",
-			Evidence:    "`QueryDosDevice(&volumeName[4], deviceName, MAX_PATH)` failure still executes `break`, so `FindNextVolume` is never reached.",
-			RequiredFix: "Restore `volumeName[lastIndex]`, replace the per-volume failure `break` with `continue`, and keep `FindNextVolume` enumeration alive.",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo failure stops volume enumeration",
+			Evidence:    "`OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY)` failure still executes `break`, so `NextResource` is never reached.",
+			RequiredFix: "Restore `resourceName[lastIndex]`, replace the per-volume failure `break` with `continue`, and keep `NextResource` enumeration alive.",
 			BlocksGate:  true,
 		}},
 	}
 	findings := deterministicReviewFindings(nil, run)
-	if !reviewFindingsContainTitle(findings, "Proposed edit does not address a required repair finding") {
-		t.Fatalf("expected unrelated include-only proposal to be blocked, got %#v", findings)
+	if reviewFindingsContainTitle(findings, "Proposed edit does not address a required repair finding") {
+		t.Fatalf("deterministic pre-write checks must not judge proposal/source alignment, got %#v", findings)
 	}
 	run.Findings = findings
 	run.Gate = evaluateReviewGate(run)
 	if run.Gate.Verdict != reviewVerdictNeedsRevision {
-		t.Fatalf("expected unrelated proposal to block pre-write gate, got %#v findings=%#v", run.Gate, findings)
+		return
+	}
+	t.Fatalf("unrelated proposal should be left to model review, got %#v findings=%#v", run.Gate, findings)
+}
+
+func TestSingleModelPreWriteFrozenDiffRejectsBareReplacementProposal(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"edit_proposal"},
+			Text:    "edit proposal with replacement but no captured preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{{
+			File:        "Project/Worker/SampleReview.cpp",
+			Operation:   "replace_in_file",
+			ExactSearch: "return false;",
+			Replacement: "return true;",
+		}},
+	}
+
+	findings := deterministicReviewFindings(nil, run)
+	if !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("bare replacement proposal must not satisfy frozen diff policy, got %#v", findings)
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffAcceptsCapturedPreviewProposal(t *testing.T) {
+	expectedPreview := "- return false;\n+ return true;"
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "edit_proposal"},
+			Text:    "captured edit proposal preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{{
+			File:               "Project/Worker/SampleReview.cpp",
+			Operation:          "apply_patch",
+			ExpectedPreview:    expectedPreview,
+			PreviewFingerprint: computeReviewFingerprint("apply_patch", "Project/Worker/SampleReview.cpp", expectedPreview),
+		}},
+	}
+
+	findings := deterministicReviewFindings(nil, run)
+	if reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("captured preview proposal should satisfy frozen diff policy, got %#v", findings)
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffRejectsMismatchedPreviewFingerprint(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "edit_proposal"},
+			Text:    "captured edit proposal preview with mismatched fingerprint",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{{
+			File:               "Project/Worker/SampleReview.cpp",
+			Operation:          "apply_patch",
+			ExpectedPreview:    "- return false;\n+ return true;",
+			PreviewFingerprint: "caller-supplied-marker",
+		}},
+	}
+
+	findings := deterministicReviewFindings(nil, run)
+	if !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("mismatched preview fingerprint must not satisfy frozen diff policy, got %#v", findings)
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffAllowsLiteralEllipsisLineWhenComplete(t *testing.T) {
+	expectedPreview := "- before\n...\n+ after"
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "edit_proposal"},
+			Text:    "captured edit proposal preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{{
+			File:               "Project/Worker/SampleReview.cpp",
+			Operation:          "apply_patch",
+			ExpectedPreview:    expectedPreview,
+			ExpectedComplete:   boolPointer(true),
+			PreviewFingerprint: computeReviewFingerprint("apply_patch", "Project/Worker/SampleReview.cpp", expectedPreview),
+		}},
+	}
+	if findings := deterministicReviewFindings(nil, run); reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("literal ellipsis source line should not be treated as compaction, got %#v", findings)
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffRejectsIncompletePreviewMetadata(t *testing.T) {
+	for _, expectedPreview := range []string{
+		"...\n+ tail",
+		"- head\n...",
+	} {
+		run := ReviewRun{
+			Trigger: "pre_write",
+			Evidence: ReviewEvidencePack{
+				Sources: []string{"provided_diff", "edit_proposal"},
+				Text:    "captured edit proposal preview",
+			},
+			SingleModelPolicy: SingleModelReviewPolicy{
+				Enabled: true,
+			},
+			EditProposals: []EditProposal{{
+				File:               "Project/Worker/SampleReview.cpp",
+				Operation:          "apply_patch",
+				ExpectedPreview:    expectedPreview,
+				ExpectedComplete:   boolPointer(false),
+				PreviewFingerprint: computeReviewFingerprint("apply_patch", "Project/Worker/SampleReview.cpp", expectedPreview),
+			}},
+		}
+		if findings := deterministicReviewFindings(nil, run); !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+			t.Fatalf("incomplete preview metadata should be rejected for %q, got %#v", expectedPreview, findings)
+		}
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffAcceptsSingleFilesProposal(t *testing.T) {
+	expectedPreview := "- return false;\n+ return true;"
+	proposal := EditProposal{
+		Files:              []string{"Project/Worker/SampleReview.cpp"},
+		Operation:          "apply_patch",
+		ExpectedPreview:    expectedPreview,
+		PreviewFingerprint: computeReviewFingerprint("apply_patch", editProposalFingerprintTargetForPaths([]string{"Project/Worker/SampleReview.cpp"}), expectedPreview),
+	}
+	proposalFiles := singleModelPreWriteProposalFiles([]EditProposal{proposal})
+	if !singleModelPreWriteProposalHasBoundPreview(proposal, proposalFiles) {
+		t.Fatalf("single Files proposal should satisfy frozen diff binding")
+	}
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "edit_proposal"},
+			Text:    "captured edit proposal preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{proposal},
+	}
+	if findings := deterministicReviewFindings(nil, run); reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("single Files proposal should satisfy deterministic frozen diff policy, got %#v", findings)
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffRejectsDiffExcerptWithoutBoundProposal(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			DiffExcerpt: "- return false;\n+ return true;",
+		},
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff"},
+			Text:    "partial diff excerpt",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+	}
+
+	findings := deterministicReviewFindings(nil, run)
+	if !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("diff excerpt alone must not satisfy frozen diff policy, got %#v", findings)
+	}
+}
+
+func TestReviewFindingReferencesRepairFindingUsesIdentifierBoundaries(t *testing.T) {
+	finding := ReviewFinding{
+		Source:      "model",
+		Title:       "RF-10 remains unresolved",
+		Evidence:    "The proposed edit still leaves RF-10 active.",
+		RequiredFix: "Resolve RF-10 before approving.",
+	}
+	if reviewFindingReferencesRepairFinding(finding, ReviewFinding{ID: "RF-1", Title: "Short generic"}) {
+		t.Fatalf("RF-1 must not match RF-10 as a substring")
+	}
+	if !reviewFindingReferencesRepairFinding(finding, ReviewFinding{ID: "RF-10", Title: "Long enough exact repair title"}) {
+		t.Fatalf("RF-10 should match as an exact identifier token")
+	}
+}
+
+func TestSingleModelPreWriteFrozenDiffRejectsUncoveredProposal(t *testing.T) {
+	expectedPreview := "- return false;\n+ return true;"
+	fingerprint := computeReviewFingerprint("apply_patch", "Project/Worker/SampleReview.cpp", expectedPreview)
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"edit_proposal"},
+			Text:    "captured edit proposal preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{
+			{
+				File:               "Project/Worker/SampleReview.cpp",
+				Operation:          "apply_patch",
+				ExpectedPreview:    expectedPreview,
+				PreviewFingerprint: fingerprint,
+			},
+			{
+				File:               "Project/Worker/Other.cpp",
+				Operation:          "apply_patch",
+				PreviewFingerprint: fingerprint,
+			},
+		},
+	}
+
+	findings := deterministicReviewFindings(nil, run)
+	if !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("uncovered proposal must not satisfy frozen diff policy, got %#v", findings)
 	}
 }
 
 func TestPreWriteDeterministicAllowsAlignedRepairProposal(t *testing.T) {
 	alignedDiff := strings.Join([]string{
-		"diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp",
-		"--- a/Tavern/TavernWorker/PathConverter.cpp",
-		"+++ b/Tavern/TavernWorker/PathConverter.cpp",
+		"diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp",
+		"--- a/Project/Worker/SampleReview.cpp",
+		"+++ b/Project/Worker/SampleReview.cpp",
 		"@@ -160,8 +160,9 @@",
-		" if (!QueryDosDevice(&volumeName[4], deviceName, MAX_PATH))",
+		" if (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
 		" {",
-		"+    volumeName[lastIndex] = L'\\\\';",
+		"+    resourceName[lastIndex] = L'\\\\';",
 		"     WRITELOG(...);",
 		"-    break;",
 		"+    continue;",
@@ -1704,7 +2419,7 @@ func TestPreWriteDeterministicAllowsAlignedRepairProposal(t *testing.T) {
 			Text:    "pre-write evidence",
 		},
 		EditProposals: []EditProposal{{
-			File:            "Tavern/TavernWorker/PathConverter.cpp",
+			File:            "Project/Worker/SampleReview.cpp",
 			Operation:       "apply_patch",
 			ExpectedPreview: alignedDiff,
 		}},
@@ -1712,11 +2427,11 @@ func TestPreWriteDeterministicAllowsAlignedRepairProposal(t *testing.T) {
 			ID:          "RF-001",
 			Severity:    reviewSeverityHigh,
 			Category:    "correctness",
-			Path:        "Tavern/TavernWorker/PathConverter.cpp",
-			Symbol:      "PathConverter::_InitiateVolumePath",
-			Title:       "QueryDosDevice failure stops volume enumeration",
-			Evidence:    "`QueryDosDevice(&volumeName[4], deviceName, MAX_PATH)` failure still executes `break`, so `FindNextVolume` is never reached.",
-			RequiredFix: "Restore `volumeName[lastIndex]`, replace the per-volume failure `break` with `continue`, and keep `FindNextVolume` enumeration alive.",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo failure stops volume enumeration",
+			Evidence:    "`OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY)` failure still executes `break`, so `NextResource` is never reached.",
+			RequiredFix: "Restore `resourceName[lastIndex]`, replace the per-volume failure `break` with `continue`, and keep `NextResource` enumeration alive.",
 			BlocksGate:  true,
 		}},
 	}
@@ -1728,7 +2443,7 @@ func TestPreWriteDeterministicAllowsAlignedRepairProposal(t *testing.T) {
 
 func TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1758,7 +2473,7 @@ func TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate(t *tes
 		ProvidedDiff:       "- break;\n+ continue;\n",
 		ReviewerGatePolicy: reviewReviewerGatePolicyMainOnlyFallback,
 		EditProposals: []EditProposal{{
-			File:            "PathConverter.cpp",
+			File:            "SampleReview.cpp",
 			Operation:       "apply_patch",
 			ExpectedPreview: "- break;\n+ continue;\n",
 		}},
@@ -1799,6 +2514,39 @@ func TestReviewerGateUnavailableReplyOffersMainModelFallback(t *testing.T) {
 	}
 }
 
+func TestReviewerGateUnavailableReplyUsesGenericReviewGateForPreFix(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	session := NewSession(t.TempDir(), "openai-codex-subscription", "gpt-5.5", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Role:         "primary_reviewer",
+			Model:        "openai-codex-subscription / gpt-5.5 / effort=high",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "usage_limit_reached",
+		}},
+	}
+
+	reply := formatReviewerGateUnavailableUserDecisionReply(cfg, session)
+	if !strings.Contains(reply, "리뷰어 게이트: 통과하지 못함") {
+		t.Fatalf("expected generic reviewer gate header, got %q", reply)
+	}
+	if strings.Contains(reply, "쓰기 전 리뷰어 게이트: 통과하지 못함") {
+		t.Fatalf("pre-fix reviewer failure should not be labeled as pre-write gate: %q", reply)
+	}
+	if strings.Contains(reply, "LM Studio/Qwen") {
+		t.Fatalf("provider recovery text should be generic, got %q", reply)
+	}
+}
+
 func TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "main-model", "", "default")
@@ -1824,7 +2572,7 @@ func TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview(t *testi
 
 func TestPreWriteWeakReviewModelQualityBlocksEditGate(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, "PathConverter.cpp")
+	path := filepath.Join(root, "SampleReview.cpp")
 	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -1855,7 +2603,7 @@ func TestPreWriteWeakReviewModelQualityBlocksEditGate(t *testing.T) {
 		Paths:        []string{path},
 		ProvidedDiff: "- break;\n+ continue;\n",
 		EditProposals: []EditProposal{{
-			File:            "PathConverter.cpp",
+			File:            "SampleReview.cpp",
 			Operation:       "apply_patch",
 			ExpectedPreview: "- break;\n+ continue;\n",
 		}},
@@ -2587,9 +3335,9 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 			ID:                 "RF-101",
 			Severity:           reviewSeverityHigh,
 			Category:           "correctness",
-			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
+			Path:               "SampleApp/SampleWorker/SampleReview.cpp",
 			Symbol:             "_InitiateVolumePath",
-			Title:              "QueryDosDevice failure stops volume enumeration",
+			Title:              "OpenResourceInfo failure stops volume enumeration",
 			Evidence:           "The old code used break inside the per-volume processing block.",
 			Impact:             "One bad volume can stop later valid volumes from being mapped.",
 			RequiredFix:        "Skip only the failed volume and continue enumerating.",
@@ -2627,8 +3375,8 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 		"- Verdict: approved_with_warnings",
 		"- Next: proceed to diff preview.",
 		"Repair targets checked:",
-		"- RF-101 [high/correctness]: QueryDosDevice failure stops volume enumeration",
-		"Code location: SampleApp/SampleWorker/PathConverter.cpp",
+		"- RF-101 [high/correctness]: OpenResourceInfo failure stops volume enumeration",
+		"Code location: SampleApp/SampleWorker/SampleReview.cpp",
 		"Symbol: _InitiateVolumePath",
 		"Problem: The old code used break inside the per-volume processing block.",
 		"Required fix: Skip only the failed volume and continue enumerating.",
@@ -2649,7 +3397,7 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 func TestPreWriteReviewUserRequestSkipsInternalReviewFeedback(t *testing.T) {
 	session := &Session{
 		Messages: []Message{
-			{Role: "user", Text: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"},
+			{Role: "user", Text: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"},
 			{Role: "assistant", Text: "검토 결과를 바탕으로 수정하겠습니다."},
 			{Role: "user", Text: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nReview gate: approved_with_warnings\n\nImplementation rules:\n- Do not write the previous incomplete patch."},
 		},
@@ -2664,7 +3412,7 @@ func TestPreWriteReviewUserRequestSkipsInternalReviewFeedback(t *testing.T) {
 }
 
 func TestPreWriteReviewUserRequestSkipsWrappedInternalReviewFeedback(t *testing.T) {
-	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	wrappers := []string{
 		"apply_patch 실패: 자동 쓰기 전 리뷰가 수정 필요한 경고 때문에 파일 쓰기를 차단했습니다:\n\n자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.\n\n검토 게이트: approved_with_warnings\n\n구현 규칙:\n- 이전의 불완전한 patch를 쓰지 마세요.",
 		"apply_patch failed: automatic pre-write review blocked this edit on actionable warnings before writing:\n\nAutomatic pre-write review found actionable warnings. Revise the proposed edit before writing files.\n\nReview gate: approved_with_warnings\n\nImplementation rules:\n- Do not write the previous incomplete patch.",
@@ -2688,11 +3436,11 @@ func TestPreWriteReviewUserRequestSkipsWrappedInternalReviewFeedback(t *testing.
 }
 
 func TestPreWriteReviewUserRequestFallsBackAfterBareToolFailure(t *testing.T) {
-	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	session := &Session{
 		Messages: []Message{{
 			Role: "user",
-			Text: "apply_patch 실패: SampleApp/SampleWorker/PathConverter.cpp: failed to apply hunk @@: edit target mismatch",
+			Text: "apply_patch 실패: SampleApp/SampleWorker/SampleReview.cpp: failed to apply hunk @@: edit target mismatch",
 		}},
 		LastReviewRun: &ReviewRun{
 			RequestAnalysis: ReviewRequestAnalysis{
@@ -2710,11 +3458,11 @@ func TestPreWriteReviewUserRequestFallsBackAfterBareToolFailure(t *testing.T) {
 }
 
 func TestPreWriteReviewUserRequestPrefersLastReviewKoreanOverEnglishInternalContext(t *testing.T) {
-	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	internalMessages := []string{
-		"Your latest read_file result for SampleApp/SampleWorker/PathConverter.cpp came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again.",
+		"Your latest read_file result for SampleApp/SampleWorker/SampleReview.cpp came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again.",
 		"Recovery mode: the tool loop is still stuck on the same tool call sequence. Do not repeat that sequence again immediately.",
-		"Recovered transcript note: a saved tool result appeared without a matching preceding assistant tool_call, so it is provided as plain context instead of an API tool message.\ntool=read_file\nresult:\nPathConverter.cpp",
+		"Recovered transcript note: a saved tool result appeared without a matching preceding assistant tool_call, so it is provided as plain context instead of an API tool message.\ntool=read_file\nresult:\nSampleReview.cpp",
 		"Final review result:\n\n- Verdict: insufficient_evidence\n- Blockers: 1\n- Warnings: 0",
 		"This is a local code review or repair request. Do not use MCP web/search/browser tools unless the user explicitly asks for external web research.",
 	}
@@ -2750,7 +3498,7 @@ func TestPreWriteReviewUserRequestPrefersLastReviewKoreanOverEnglishInternalCont
 }
 
 func TestPreWriteReviewUserRequestKeepsExplicitEnglishRequestOverLastKoreanReview(t *testing.T) {
-	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	latest := "Please review this patch and answer in English."
 	session := &Session{
 		Messages: []Message{
@@ -2775,7 +3523,7 @@ func TestPreWriteReviewUserRequestKeepsExplicitEnglishRequestOverLastKoreanRevie
 }
 
 func TestPreWriteReviewUserRequestSkipsPreFixFeedback(t *testing.T) {
-	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Mode:      reviewModeLiveFix,
@@ -2788,7 +3536,7 @@ func TestPreWriteReviewUserRequestSkipsPreFixFeedback(t *testing.T) {
 			ID:          "RF-001",
 			Severity:    reviewSeverityMedium,
 			Category:    "correctness",
-			Title:       "QueryDosDevice failure stops volume enumeration",
+			Title:       "OpenResourceInfo failure stops volume enumeration",
 			RequiredFix: "Continue to the next volume after a per-volume failure.",
 			BlocksGate:  true,
 		}},
@@ -2818,8 +3566,44 @@ func TestPreWriteReviewUserRequestSkipsPreFixFeedback(t *testing.T) {
 	}
 }
 
+func TestPreWriteReviewUserRequestSkipsPreFixVisibleSummaryGuidance(t *testing.T) {
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: original,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Per-item failure aborts the whole loop",
+			RequiredFix: "Keep iterating after a recoverable per-item failure.",
+			BlocksGate:  true,
+		}},
+	}
+	guidance := preFixVisibleReviewSummaryGuidance(run)
+	session := &Session{
+		Messages: []Message{
+			{Role: "user", Text: original},
+			{Role: "user", Text: guidance},
+		},
+		LastReviewRun: &run,
+	}
+	got := preWriteReviewUserRequest(session)
+	if got != original {
+		t.Fatalf("expected pre-fix visible summary guidance to be skipped, got %q", got)
+	}
+	if !looksLikeInternalReviewFeedbackUserMessage(guidance) {
+		t.Fatalf("expected pre-fix visible summary guidance to be classified as internal feedback")
+	}
+}
+
 func TestPreWriteReviewUserRequestSkipsMainModelFallbackApproval(t *testing.T) {
-	original := "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	original := "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	session := &Session{
 		Messages: []Message{
 			{Role: "user", Text: original},
@@ -2863,7 +3647,7 @@ func TestPreWriteReviewUserRequestFallsBackToLastReviewOriginalRequestWhenOnlyIn
 		}},
 		LastReviewRun: &ReviewRun{
 			RequestAnalysis: ReviewRequestAnalysis{
-				OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+				OriginalRequest: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 			},
 		},
 	}
@@ -2906,7 +3690,7 @@ func TestPreWriteKoreanRequestSurvivesInternalEnglishFeedback(t *testing.T) {
 	run := ReviewRun{
 		Objective: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.",
 		RequestAnalysis: ReviewRequestAnalysis{
-			OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+			OriginalRequest: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		},
 		Gate: GateDecision{
 			Verdict:         reviewVerdictApprovedWithWarnings,
@@ -2973,7 +3757,7 @@ func TestReviewResultSummaryUsesOriginalKoreanRequest(t *testing.T) {
 	run := ReviewRun{
 		Objective: "Automatic pre-write review found actionable warnings. Revise the proposed edit before writing files.",
 		RequestAnalysis: ReviewRequestAnalysis{
-			OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+			OriginalRequest: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		},
 		Gate: GateDecision{
 			Verdict:         reviewVerdictApprovedWithWarnings,
@@ -3035,7 +3819,7 @@ func TestReviewResultSummaryKeepsEnglishRequestOverKoreanDisplayLocale(t *testin
 func TestPreWriteKoreanWarningFeedbackIsLocalized(t *testing.T) {
 	run := ReviewRun{
 		RequestAnalysis: ReviewRequestAnalysis{
-			OriginalRequest: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+			OriginalRequest: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		},
 		Gate: GateDecision{
 			Verdict: reviewVerdictApprovedWithWarnings,
@@ -3048,7 +3832,7 @@ func TestPreWriteKoreanWarningFeedbackIsLocalized(t *testing.T) {
 		Severity:    reviewSeverityMedium,
 		Category:    "evidence_gap",
 		Title:       "전체 구현 증거가 부족합니다",
-		Path:        "SampleApp/SampleWorker/PathConverter.cpp",
+		Path:        "SampleApp/SampleWorker/SampleReview.cpp",
 		Evidence:    "diff에 일부 hunk만 포함되어 있습니다.",
 		Impact:      "컴파일 가능성을 확인할 수 없습니다.",
 		RequiredFix: "전체 수정 hunk를 포함하십시오.",
@@ -3058,7 +3842,7 @@ func TestPreWriteKoreanWarningFeedbackIsLocalized(t *testing.T) {
 		"자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.",
 		"검토 게이트:",
 		"수정 필요한 경고 finding:",
-		"경로: SampleApp/SampleWorker/PathConverter.cpp",
+		"경로: SampleApp/SampleWorker/SampleReview.cpp",
 		"근거: diff에 일부 hunk만 포함되어 있습니다.",
 		"구현 규칙:",
 		"이전의 불완전한 patch를 쓰지 마세요.",
@@ -3103,7 +3887,7 @@ func TestReviewProposedEditUsesKoreanBlockFeedbackFromOriginalRequest(t *testing
 				"severity: medium",
 				"category: correctness",
 				"path: main.cpp",
-				"title: QueryDosDevice failure still stops enumeration",
+				"title: OpenResourceInfo failure still stops enumeration",
 				"evidence: The proposed diff leaves break in the per-item failure path.",
 				"required_fix: Use continue for per-item failure.",
 			}, "\n")},
@@ -3252,8 +4036,8 @@ func TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails(t *testing.T) 
 			ID:                 "RF-777",
 			Severity:           reviewSeverityHigh,
 			Category:           "correctness",
-			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
-			Symbol:             "PathConverter::GetDosPathFromNtPath",
+			Path:               "SampleApp/SampleWorker/SampleReview.cpp",
+			Symbol:             "Worker::ConvertPath",
 			Title:              "NT device path prefix matching can choose the wrong volume",
 			Evidence:           longEvidence,
 			Impact:             longImpact,
@@ -3298,7 +4082,7 @@ func TestPreWriteFinalVisibleReviewSummaryGolden(t *testing.T) {
 			ID:                 "RF-010",
 			Severity:           reviewSeverityHigh,
 			Category:           "correctness",
-			Path:               "PathConverter.cpp",
+			Path:               "SampleReview.cpp",
 			Symbol:             "Convert",
 			Title:              "Prefix match can select the wrong volume",
 			Evidence:           "The old code accepted a prefix without requiring a path boundary.",
@@ -3314,7 +4098,7 @@ func TestPreWriteFinalVisibleReviewSummaryGolden(t *testing.T) {
 			Title:              "Focused verification was not run",
 			Evidence:           "The review has no focused test output for the proposed patch.",
 			RequiredFix:        "Run focused verification before merging.",
-			TestRecommendation: "go test ./cmd/kernforge -run TestPathConverter",
+			TestRecommendation: "go test ./cmd/kernforge -run TestSampleReview",
 		}},
 		ArtifactRefs: []string{"C:/tmp/review.md"},
 	}
@@ -3326,6 +4110,42 @@ func TestPreWriteFinalVisibleReviewSummaryGolden(t *testing.T) {
 	want := normalizeGoldenText(string(wantData))
 	if got != want {
 		t.Fatalf("visible summary golden mismatch\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestPreWriteVisibleSummaryOverridesRepairStatusForUnresolvedBlocker(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-REPAIR-001"},
+		},
+		Result: ReviewResult{
+			Summary: "A reviewer repair check still blocks the edit.",
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:               "RF-001",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Title:            "OpenResourceInfo failure stops volume enumeration",
+			ResolutionStatus: "resolved",
+		}},
+		Findings: []ReviewFinding{{
+			ID:         "RF-REPAIR-001",
+			Source:     "deterministic",
+			Severity:   reviewSeverityBlocker,
+			Category:   "correctness",
+			Title:      "Proposed edit leaves a required repair unresolved",
+			BlocksGate: true,
+			FixRefs:    []string{"RF-001"},
+		}},
+	}
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, false)
+	if !strings.Contains(visible, "Resolution status: unresolved") {
+		t.Fatalf("unresolved blocker should override stale model resolved status, got:\n%s", visible)
+	}
+	if strings.Contains(visible, "Resolution status: resolved") {
+		t.Fatalf("visible summary must not show a contradictory resolved status, got:\n%s", visible)
 	}
 }
 
@@ -3539,12 +4359,12 @@ func TestPreWriteReviewBlocksLowActionableCorrectnessWarning(t *testing.T) {
 			Source:      "model",
 			Severity:    reviewSeverityLow,
 			Category:    "correctness",
-			Title:       "volumeName prefix validation does not match QueryDosDevice slicing",
-			Path:        "SampleApp/SampleWorker/PathConverter.cpp",
-			Symbol:      "PathConverter::_InitiateVolumePath",
-			Evidence:    "The code validates volumeName[0..2] and lastIndex, then calls QueryDosDevice(&volumeName[4]).",
-			Impact:      "A malformed name can pass the guard and call QueryDosDevice with a wrongly sliced device name.",
-			RequiredFix: "Require volumeName[3] == L'\\\\' and a non-empty device name before calling QueryDosDevice.",
+			Title:       "resourceName prefix validation does not match OpenResourceInfo slicing",
+			Path:        "SampleApp/SampleWorker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Evidence:    "The code validates resourceName[0..2] and lastIndex, then calls OpenResourceInfo(&resourceName[4]).",
+			Impact:      "A malformed name can pass the guard and call OpenResourceInfo with a wrongly sliced device name.",
+			RequiredFix: "Require resourceName[3] == L'\\\\' and a non-empty device name before calling OpenResourceInfo.",
 		}},
 	}
 	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
@@ -3563,12 +4383,12 @@ func TestPreWriteReviewBlocksLowActionableStabilityWarningWithKoreanValidationTe
 			Source:             "model",
 			Severity:           reviewSeverityLow,
 			Category:           "stability",
-			Title:              "짧은 volumeName에 대한 고정 인덱스 접근 방어가 부족함",
-			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
-			Symbol:             "PathConverter::_InitiateVolumePath",
-			Evidence:           "변경 후 코드에서 volumeNameLength == 0만 검사한 뒤 volumeName[0], volumeName[1], volumeName[2]를 읽습니다.",
+			Title:              "짧은 resourceName에 대한 고정 인덱스 접근 방어가 부족함",
+			Path:               "SampleApp/SampleWorker/SampleReview.cpp",
+			Symbol:             "Worker::BuildIndex",
+			Evidence:           "변경 후 코드에서 resourceNameLength == 0만 검사한 뒤 resourceName[0], resourceName[1], resourceName[2]를 읽습니다.",
 			Impact:             "비정상 값이나 테스트 더블이 짧은 문자열을 제공하면 경계 밖 읽기가 발생할 수 있습니다.",
-			RequiredFix:        "volumeNameLength < 4 또는 필요한 최소 형식 길이를 먼저 검사한 뒤 고정 인덱스에 접근하도록 조건을 재구성하십시오.",
+			RequiredFix:        "resourceNameLength < 4 또는 필요한 최소 형식 길이를 먼저 검사한 뒤 고정 인덱스에 접근하도록 조건을 재구성하십시오.",
 			TestRecommendation: "볼륨 이름 검증 로직을 분리하고 길이 1, 2, 3인 문자열이 안전하게 거부되는 단위 테스트를 추가하십시오.",
 		}},
 	}
@@ -3589,8 +4409,8 @@ func TestPreWriteReviewBlocksLowActionableMaintainabilityIncludeWarning(t *testi
 			Severity:           reviewSeverityLow,
 			Category:           "maintainability",
 			Title:              "std::vector use relies on an indirect include",
-			Path:               "SampleApp/SampleWorker/PathConverter.cpp",
-			Symbol:             "PathConverter::_InitiateVolumePath",
+			Path:               "SampleApp/SampleWorker/SampleReview.cpp",
+			Symbol:             "Worker::BuildIndex",
 			Evidence:           "The proposed diff uses std::vector<WCHAR> but does not add a direct #include <vector>.",
 			Impact:             "A header cleanup or different compiler setup can break this translation unit.",
 			RequiredFix:        "Add #include <vector> in the file that uses std::vector.",
@@ -3637,8 +4457,8 @@ func TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning(t *testing.T) {
 			Severity:           reviewSeverityLow,
 			Category:           "evidence_gap",
 			Title:              "함수 후반부 변경 결과를 확인할 증거가 부족함",
-			Path:               "Tavern/TavernWorker/PathConverter.cpp",
-			Evidence:           "The supplied selection-focused preview stops at auto drivePath = _getDrivePath(volumeName); and does not show the remaining m_volumePathMap update, FindNextVolume, FindVolumeClose, or success calculation.",
+			Path:               "Project/Worker/SampleReview.cpp",
+			Evidence:           "The supplied selection-focused preview stops at auto drivePath = _getDrivePath(resourceName); and does not show the remaining resourceAliasMap update, NextResource, ReleaseResourceEnumerator, or success calculation.",
 			Impact:             "The review cannot confirm the function footer from the supplied evidence alone.",
 			RequiredFix:        "Provide the complete current contents or include the full function body in review evidence.",
 			TestRecommendation: "After the complete function body evidence is available, run the focused build or targeted review again.",
@@ -3693,11 +4513,47 @@ func TestPreWriteReviewBlocksLowStyleWarning(t *testing.T) {
 	}
 }
 
+func TestPreWriteGatePromotesActionableWarningsToNeedsRevision(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "correctness",
+			Title:       "proposed edit leaves a repair incomplete",
+			Path:        "SampleApp/SampleWorker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Evidence:    "The after-state still contains the old failure branch.",
+			Impact:      "The bug can remain after the edit.",
+			RequiredFix: "Update the proposed edit so the failure branch is repaired.",
+		}},
+	}
+
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected actionable pre-write warning to become needs_revision, got %#v", gate)
+	}
+	if len(gate.BlockingFindings) != 1 || gate.BlockingFindings[0] != "RF-001" {
+		t.Fatalf("expected promoted blocking finding, got %#v", gate.BlockingFindings)
+	}
+	if len(gate.WarningFindings) != 0 {
+		t.Fatalf("expected promoted finding to leave warning list, got %#v", gate.WarningFindings)
+	}
+	if !containsString(gate.RequiredActions, "Update the proposed edit so the failure branch is repaired.") {
+		t.Fatalf("expected required action to carry promoted warning fix, got %#v", gate.RequiredActions)
+	}
+	if gate.Action != reviewGateActionRepairRequired {
+		t.Fatalf("expected repair-required action, got %#v", gate)
+	}
+}
+
 func TestHighModelFindingBlocksWhenUserAskedToFix(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Mode:      reviewModeLiveFix,
-		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@Sample/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		Findings: []ReviewFinding{{
 			ID:          "RF-001",
 			Source:      "model",
@@ -3719,16 +4575,16 @@ func TestMediumModelFindingBlocksWhenUserAskedToFix(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Mode:      reviewModeLiveFix,
-		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@Sample/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		Findings: []ReviewFinding{{
 			ID:          "RF-001",
 			Source:      "model",
 			Severity:    reviewSeverityMedium,
 			Category:    "stability",
 			Title:       "wcslen underflows on empty input",
-			Evidence:    "The code subtracts one from wcslen(volumeName) before validating the length.",
+			Evidence:    "The code subtracts one from wcslen(resourceName) before validating the length.",
 			Impact:      "A malformed or empty volume name can wrap size_t and index outside the buffer.",
-			RequiredFix: "Validate the volumeName length before computing lastIndex.",
+			RequiredFix: "Validate the resourceName length before computing lastIndex.",
 			Quality:     reviewFindingQualityComplete,
 		}},
 	}
@@ -3742,7 +4598,7 @@ func TestLowStyleFindingDoesNotBlockPreFixGate(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Mode:      reviewModeLiveFix,
-		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@Sample/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		Findings: []ReviewFinding{{
 			ID:          "RF-001",
 			Source:      "model",
@@ -3764,7 +4620,7 @@ func TestHighStyleFindingDoesNotBlockPreFixGateUnlessExplicitBlocker(t *testing.
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
 		Mode:      reviewModeLiveFix,
-		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@Sample/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		Findings: []ReviewFinding{{
 			ID:          "RF-001",
 			Source:      "model",
@@ -3808,12 +4664,12 @@ func TestPreFixReviewerFailureWithoutActionableFindingBlocksRepairHandoff(t *tes
 		Trigger:   reviewBeforeFixTrigger,
 		Target:    reviewTargetSelection,
 		Mode:      reviewModeLiveFix,
-		Objective: "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		ChangeSet: ReviewChangeSet{
-			ChangedPaths: []string{"Tavern/TavernWorker/PathConverter.cpp"},
+			ChangedPaths: []string{"Project/Worker/SampleReview.cpp"},
 		},
 		Evidence: ReviewEvidencePack{
-			ChangedPaths: []string{"Tavern/TavernWorker/PathConverter.cpp"},
+			ChangedPaths: []string{"Project/Worker/SampleReview.cpp"},
 		},
 		ReviewerRuns: []ReviewReviewerRun{
 			{Kind: "main", Role: "primary_reviewer", Status: "failed", ModelQuality: reviewModelQualityFailed, Error: "review model returned empty response"},
@@ -3898,7 +4754,10 @@ func TestPreWriteRepairObligationsIncludeBlockingAndActionableWarnings(t *testin
 				ID:          "RF-002",
 				Severity:    reviewSeverityMedium,
 				Category:    "stability",
-				Title:       "Mount point buffer is fixed to MAX_PATH",
+				Title:       "Mount point buffer is fixed to FIXED_CAPACITY",
+				Path:        "Worker/Sample.cpp",
+				Evidence:    "The collected mount points are read into a fixed-size buffer without retrying when the API reports a larger required size.",
+				Impact:      "Valid mount points after the fixed buffer boundary can be omitted from the map.",
 				RequiredFix: "Retry with the required dynamic buffer size.",
 			},
 			{
@@ -3937,7 +4796,7 @@ func TestPreWriteRepairObligationsCarryAcrossPreWriteReview(t *testing.T) {
 				ID:               "RF-002",
 				Severity:         reviewSeverityMedium,
 				Category:         "stability",
-				Title:            "Mount point buffer is fixed to MAX_PATH",
+				Title:            "Mount point buffer is fixed to FIXED_CAPACITY",
 				RequiredFix:      "Retry with the required dynamic buffer size.",
 				ResolutionStatus: "verification_needed",
 			},
@@ -3955,6 +4814,98 @@ func TestPreWriteRepairObligationsCarryAcrossPreWriteReview(t *testing.T) {
 	}
 }
 
+func TestPreWriteFeedbackCarriesAllOriginalRepairObligations(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-PW-001"},
+		},
+		Result: ReviewResult{Summary: "The proposed edit still misses part of the repair."},
+		RepairFindings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "First required branch is not repaired",
+				RequiredFix: "Repair the first branch without broadening scope.",
+			},
+			{
+				ID:          "RF-002",
+				Severity:    reviewSeverityMedium,
+				Category:    "stability",
+				Title:       "Second required boundary is not repaired",
+				RequiredFix: "Repair the second boundary without broadening scope.",
+			},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-PW-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Latest pre-write blocker",
+			RequiredFix: "Revise the proposal before writing.",
+			BlocksGate:  true,
+		}},
+	}
+
+	feedback := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run)
+	for _, want := range []string{
+		"Still-active required pre-fix RFs",
+		"RF-001",
+		"RF-002",
+		"must not be a delta that only adds the latest pre-write blocker",
+		"Do not silently drop any original RF obligation",
+		"complete standalone patch",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected pre-write feedback to contain %q, got:\n%s", want, feedback)
+		}
+	}
+}
+
+func TestPreWriteForceEditGuidanceCarriesAllOriginalRepairObligations(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-PW-001"},
+		},
+		RepairFindings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "First required repair target",
+				RequiredFix: "Repair the first target.",
+			},
+			{
+				ID:          "RF-002",
+				Severity:    reviewSeverityMedium,
+				Category:    "stability",
+				Title:       "Second required repair target",
+				RequiredFix: "Repair the second target.",
+			},
+		},
+	}
+
+	guidance := formatPreWriteReviewRepairForceEditGuidance(Config{AutoLocale: boolPtr(false)}, session, "read_file main.cpp")
+	for _, want := range []string{
+		"Keep every original required pre-fix RF in force",
+		"complete standalone patch",
+		"include every required RF hunk",
+		"RF-001",
+		"RF-002",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("expected force-edit guidance to contain %q, got:\n%s", want, guidance)
+		}
+	}
+	if strings.Contains(guidance, "Fix only the latest unresolved blocking pre-write finding") {
+		t.Fatalf("force-edit guidance must not narrow repair to only the latest blocker:\n%s", guidance)
+	}
+}
+
 func TestPreWriteRepairObligationsRecomputeStatusAfterRetry(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
@@ -3964,7 +4915,7 @@ func TestPreWriteRepairObligationsRecomputeStatusAfterRetry(t *testing.T) {
 			ID:               "RF-001",
 			Severity:         reviewSeverityMedium,
 			Category:         "correctness",
-			Title:            "QueryDosDevice failure stops enumeration",
+			Title:            "OpenResourceInfo failure stops enumeration",
 			RequiredFix:      "Continue to the next volume after a per-volume failure.",
 			ResolutionStatus: "partial",
 		}},
@@ -3999,11 +4950,123 @@ func TestPreWriteRepairObligationsRecomputeStatusAfterRetry(t *testing.T) {
 	}
 }
 
+func TestSingleModelPreWriteRepairStatusDefaultsToEvidenceUnconfirmed(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Status:       "completed",
+			ModelQuality: reviewModelQualityUsable,
+		}},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:                    true,
+			RequiresRFObligationStatus: true,
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Required repair must be checked",
+			RequiredFix: "Verify the proposal satisfies the required repair.",
+		}},
+		Findings: []ReviewFinding{{
+			ID:       "RF-900",
+			Source:   "model",
+			Severity: reviewSeverityLow,
+			Category: "test_gap",
+			Title:    "Unrelated verification was not run",
+		}},
+	}
+
+	annotateSingleModelPreWriteRepairStatuses(&run)
+	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ResolutionStatus != "evidence_unconfirmed" {
+		t.Fatalf("expected unreferenced repair obligation to remain evidence_unconfirmed, got %#v", run.RepairFindings)
+	}
+}
+
+func TestPreWriteHarnessEvidenceGapMarksRepairEvidenceUnconfirmed(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Status:       "completed",
+			ModelQuality: reviewModelQualityUsable,
+		}},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:                    true,
+			RequiresRFObligationStatus: true,
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-003",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "EnumerateResourceAliases uses a fixed FIXED_CAPACITY buffer",
+			RequiredFix: "Retry with requiredCount.",
+		}},
+		Findings: []ReviewFinding{{
+			ID:          "RF-900",
+			Source:      "model",
+			Severity:    reviewSeverityMedium,
+			Category:    "evidence_gap",
+			Title:       "RF-003 수정 여부를 확인할 수 없음",
+			Evidence:    "The provided after-preview does not show the rest of the EnumerateResourceAliases retry body for RF-003.",
+			RequiredFix: "Provide the complete current contents for the function body.",
+		}},
+	}
+
+	annotateSingleModelPreWriteRepairStatuses(&run)
+	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ResolutionStatus != "evidence_unconfirmed" {
+		t.Fatalf("expected harness evidence gap to mark evidence_unconfirmed, got %#v", run.RepairFindings)
+	}
+}
+
+func TestPreWriteVisibleSummaryExplainsHarnessEvidenceGapPreviewAllowed(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-900"},
+		},
+		Result: ReviewResult{Summary: "Review approved with an evidence visibility warning."},
+		RepairFindings: []ReviewFinding{{
+			ID:               "RF-003",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Title:            "EnumerateResourceAliases uses a fixed FIXED_CAPACITY buffer",
+			ResolutionStatus: "evidence_unconfirmed",
+		}},
+		Findings: []ReviewFinding{{
+			ID:          "RF-900",
+			Source:      "model",
+			Severity:    reviewSeverityMedium,
+			Category:    "evidence_gap",
+			Title:       "RF-003 수정 여부를 확인할 수 없음",
+			Evidence:    "제공된 after-preview가 RF-003의 함수 후반부 변경 결과를 확인할 증거가 부족합니다.",
+			RequiredFix: "함수 후반부 전체 after-preview를 제공하십시오.",
+		}},
+	}
+
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(true)}, run, true)
+	for _, want := range []string{
+		"코드 미해결 blocker가 아니라",
+		"evidence_unconfirmed",
+		"코드 미해결로 확정된 것은 아님",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected visible summary to explain harness evidence gap %q, got:\n%s", want, visible)
+		}
+	}
+	progress := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(true)}, run, true)
+	if !strings.Contains(progress, "코드 미해결 blocker가 아니라") {
+		t.Fatalf("expected progress to explain preview allowance, got:\n%s", progress)
+	}
+}
+
 func TestReviewRepairPlanIncludesActionableWarningsWithBlockers(t *testing.T) {
 	run := ReviewRun{
 		ID:        "review-prefix",
 		Trigger:   reviewBeforeFixTrigger,
-		Objective: "@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Objective: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
 		Gate: GateDecision{
 			Verdict:          reviewVerdictNeedsRevision,
 			BlockingFindings: []string{"RF-001"},
@@ -4023,7 +5086,7 @@ func TestReviewRepairPlanIncludesActionableWarningsWithBlockers(t *testing.T) {
 				ID:          "RF-002",
 				Severity:    reviewSeverityMedium,
 				Category:    "stability",
-				Title:       "Mount point buffer is fixed to MAX_PATH",
+				Title:       "Mount point buffer is fixed to FIXED_CAPACITY",
 				RequiredFix: "Retry with the required dynamic buffer size.",
 				Quality:     reviewFindingQualityComplete,
 			},
@@ -4075,6 +5138,566 @@ func TestReviewRepairPlanIncludesActionableWarningsWithBlockers(t *testing.T) {
 	}
 }
 
+func TestReviewRepairPlanIncludesMislabeledTestGapImplementationWarning(t *testing.T) {
+	run := ReviewRun{
+		ID:        "review-prefix",
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@SampleApp/SampleWorker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+			WarningFindings:  []string{"RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Fixed buffer misses long results",
+				Path:        "SampleApp/SampleWorker/SampleReview.cpp",
+				Symbol:      "Worker::BuildMap",
+				RequiredFix: "Retry with a dynamic buffer.",
+				BlocksGate:  true,
+				Quality:     reviewFindingQualityComplete,
+			},
+			{
+				ID:          "RF-002",
+				Severity:    reviewSeverityMedium,
+				Category:    "test_gap",
+				Title:       "Single item failure stops the whole enumeration",
+				Path:        "SampleApp/SampleWorker/SampleReview.cpp",
+				Symbol:      "Worker::BuildMap",
+				Evidence:    "A failure branch breaks the outer enumeration loop.",
+				RequiredFix: "Change the failure branch to skip only the current item and continue the enumeration.",
+				Quality:     reviewFindingQualityComplete,
+			},
+		},
+	}
+
+	if !reviewFindingBlocksGate(run, run.Findings[1]) {
+		t.Fatalf("expected implementation repair mislabeled as test_gap to remain blocking for repair intent")
+	}
+	run.RepairPlan = buildReviewRepairPlan(run)
+	if !strings.Contains(run.RepairPlan.Prompt, "RF-002") {
+		t.Fatalf("expected mislabeled implementation warning to stay in repair plan, got:\n%s", run.RepairPlan.Prompt)
+	}
+	if len(run.RepairPlan.Findings) != 2 || run.RepairPlan.Findings[0] != "RF-001" || run.RepairPlan.Findings[1] != "RF-002" {
+		t.Fatalf("expected blocker plus mislabeled implementation warning IDs, got %#v", run.RepairPlan.Findings)
+	}
+}
+
+func TestReviewMergeDeduplicatesGenericRepairContractFindings(t *testing.T) {
+	findings, merge := mergeReviewFindings([]ReviewFinding{
+		{
+			ID:          "RF-006",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Quality:     reviewFindingQualityComplete,
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo 반환 resourceInfo 미사용 및 실패 시 유효 볼륨 누락",
+			Evidence:    "resourceInfo is assigned by OpenResourceInfo but never used.",
+			RequiredFix: "Remove the resourceInfo buffer and OpenResourceInfo gate.",
+		},
+		{
+			ID:          "RF-002",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Quality:     reviewFindingQualityComplete,
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo 호출 결과 미사용 및 불필요한 실패 처리로 인한 유효 볼륨 누락",
+			Evidence:    "OpenResourceInfo failure skips valid volumes even though resourceInfo is not consumed.",
+			RequiredFix: "Delete the OpenResourceInfo call or use the returned resourceInfo in real NT path mapping.",
+		},
+	})
+	if len(findings) != 1 {
+		t.Fatalf("expected duplicate repair subjects to merge, got %#v", findings)
+	}
+	if len(merge.SuppressedDuplicates) != 1 {
+		t.Fatalf("expected one suppressed duplicate, got %#v", merge.SuppressedDuplicates)
+	}
+	if !strings.Contains(strings.ToLower(findings[0].Title+" "+findings[0].Evidence+" "+findings[0].RequiredFix), "openresourceinfo") {
+		t.Fatalf("merged finding lost OpenResourceInfo repair subject: %#v", findings[0])
+	}
+}
+
+func TestVagueReviewerFindingDoesNotBecomeRepairBlocker(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: "review and fix bugs",
+		Findings: []ReviewFinding{{
+			ID:          "RF-005",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Quality:     reviewFindingQualityComplete,
+			Title:       "stability issue.",
+			RequiredFix: "Inspect and address this reviewer finding.",
+		}},
+	}
+	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	run.Gate = evaluateReviewGate(run)
+	run.RepairPlan = buildReviewRepairPlan(run)
+	if len(run.Gate.BlockingFindings) != 0 {
+		t.Fatalf("vague placeholder finding should not block repair gate, got %#v", run.Gate.BlockingFindings)
+	}
+	if run.RepairPlan.Required {
+		t.Fatalf("vague placeholder finding should not create a repair plan: %#v", run.RepairPlan)
+	}
+}
+
+func TestLocalRepairPlanKeepsModelFindingsAndDropsOnlyPlaceholders(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Model:        "LM Studio / qwen/qwen3.6-27b",
+			Status:       "completed",
+			ModelQuality: reviewModelQualityUsable,
+		}},
+		Findings: []ReviewFinding{
+			{
+				ID:          "RF-006",
+				Source:      "model",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Quality:     reviewFindingQualityComplete,
+				Path:        "Project/Worker/SampleReview.cpp",
+				Symbol:      "Worker::BuildIndex",
+				Title:       "OpenResourceInfo 반환 resourceInfo 미사용 및 실패 시 유효 볼륨 누락",
+				Evidence:    "OpenResourceInfo fills resourceInfo, but resourceInfo is never read.",
+				RequiredFix: "Remove resourceInfo and OpenResourceInfo from the volume path map flow.",
+			},
+			{
+				ID:          "RF-002",
+				Source:      "model",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Quality:     reviewFindingQualityComplete,
+				Path:        "Project/Worker/SampleReview.cpp",
+				Symbol:      "Worker::BuildIndex",
+				Title:       "OpenResourceInfo 호출 결과 미사용 및 불필요한 실패 처리로 인한 유효 볼륨 누락",
+				Evidence:    "OpenResourceInfo failure skips valid volumes, and resourceInfo is unused.",
+				RequiredFix: "Remove the OpenResourceInfo gate.",
+			},
+			{
+				ID:          "RF-008",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "stability",
+				Quality:     reviewFindingQualityComplete,
+				Path:        "Project/Worker/SampleReview.cpp",
+				Symbol:      "Worker::BuildIndex",
+				Title:       "_getDrivePath 람다 내 aliases 고정 FIXED_CAPACITY 버퍼로 인한 다중 마운트 포인트 볼륨 누락",
+				Evidence:    "EnumerateResourceAliases uses aliases[FIXED_CAPACITY] and does not retry with requiredCount on NEEDS_MORE_DATA.",
+				RequiredFix: "Use std::vector<WCHAR> and retry EnumerateResourceAliases with requiredCount.",
+			},
+			{
+				ID:          "RF-003",
+				Source:      "model",
+				Severity:    reviewSeverityHigh,
+				Category:    "stability",
+				Quality:     reviewFindingQualityComplete,
+				Path:        "Project/Worker/SampleReview.cpp",
+				Symbol:      "Worker::BuildIndex",
+				Title:       "FIXED_CAPACITY buffer size limit in FirstResource and NextResource for long volume names",
+				Evidence:    "FirstResource and NextResource use resourceName[FIXED_CAPACITY].",
+				RequiredFix: "Dynamically resize the resourceName buffer for long volume names.",
+			},
+			{
+				ID:          "RF-005",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Quality:     reviewFindingQualityComplete,
+				Title:       "stability issue.",
+				RequiredFix: "Inspect and address this reviewer finding.",
+			},
+		},
+	}
+	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	run.Gate = evaluateReviewGate(run)
+	run.RepairPlan = buildReviewRepairPlan(run)
+	if len(run.Gate.BlockingFindings) != 3 {
+		t.Fatalf("expected concrete model findings while dropping only vague placeholders, got %#v\nfindings=%#v", run.Gate.BlockingFindings, run.Findings)
+	}
+	if !run.RepairPlan.Required {
+		t.Fatalf("expected repair plan")
+	}
+	for _, banned := range []string{"stability issue", "RF-005"} {
+		if strings.Contains(run.RepairPlan.Prompt, banned) {
+			t.Fatalf("repair plan should not include vague placeholder %q:\n%s", banned, run.RepairPlan.Prompt)
+		}
+	}
+	for _, want := range []string{"OpenResourceInfo", "EnumerateResourceAliases", "FirstResource", "로컬/degraded 모델용 수리 축약 규칙"} {
+		if !strings.Contains(run.RepairPlan.Prompt, want) {
+			t.Fatalf("expected repair plan to contain %q:\n%s", want, run.RepairPlan.Prompt)
+		}
+	}
+}
+
+func TestPreFixLocalIndependentInspectionKeepsOriginalRequestWithoutGeneratedChecklist(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		Result: ReviewResult{
+			Verdict: reviewVerdictApprovedWithWarnings,
+		},
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-PREFIX-001"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Role:         "primary_reviewer",
+			Model:        "LM Studio / qwen/qwen3.6-27b",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty content while reasoning_content was present",
+		}},
+		Evidence: ReviewEvidencePack{Text: strings.Join([]string{
+			"if (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
+			"EnumerateResourceAliases(resourceName.c_str(), aliases, FIXED_CAPACITY, &requiredCount)",
+			"do { ... } while (NextResource(findHandle, resourceName, FIXED_CAPACITY));",
+			"auto lastIndex = wcslen(resourceName) - 1;",
+		}, "\n")},
+		Findings: []ReviewFinding{{
+			ID:          "RF-PREFIX-001",
+			Source:      "deterministic",
+			Severity:    reviewSeverityMedium,
+			Category:    "evidence_gap",
+			Title:       "수정 전 로컬 리뷰 route가 실행 가능한 버그 finding을 만들지 못했습니다",
+			RequiredFix: "참조된 소스를 독립적으로 확인한 뒤 명확히 필요한 수정만 적용하세요.",
+		}},
+	}
+	feedback := formatReviewBeforeFixFeedback(run)
+	for _, want := range []string{
+		"원래 요청",
+		"원래 사용자 요청",
+		"하네스가 대체 버그 목록을 만들지 않습니다",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected local fallback feedback to contain %q, got:\n%s", want, feedback)
+		}
+	}
+	for _, banned := range []string{
+		"독립 점검 체크리스트",
+		"반환값이나 out-parameter",
+		"caller-owned buffer",
+		"문자열 길이",
+	} {
+		if strings.Contains(feedback, banned) {
+			t.Fatalf("local fallback feedback should not contain generated checklist item %q, got:\n%s", banned, feedback)
+		}
+	}
+}
+
+func TestPreWriteRepairObligationsDoNotInventLocalIndependentContracts(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:        "review-prefix-local",
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		RequestAnalysis: ReviewRequestAnalysis{
+			OriginalRequest: "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+			ScopeDiscovery: ReviewScopeDiscovery{
+				CandidateFiles:   []string{"Project/Worker/SampleReview.cpp"},
+				CandidateSymbols: []string{"Worker::BuildIndex"},
+			},
+		},
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-PREFIX-001"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Role:         "primary_reviewer",
+			Model:        "LM Studio / qwen/qwen3.6-27b",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty content while reasoning_content was present",
+		}},
+		Evidence: ReviewEvidencePack{
+			ChangedPaths: []string{"Project/Worker/SampleReview.cpp"},
+			Text: strings.Join([]string{
+				"WCHAR resourceInfo[FIXED_CAPACITY] = { 0 };",
+				"if (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
+				"{",
+				"    continue;",
+				"}",
+				"WCHAR aliases[FIXED_CAPACITY] = { 0 };",
+				"DWORD requiredCount = 0;",
+				"EnumerateResourceAliases(resourceName.c_str(), aliases, FIXED_CAPACITY, &requiredCount)",
+				"auto lastIndex = wcslen(resourceName) - 1;",
+			}, "\n"),
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-PREFIX-001",
+			Source:      "deterministic",
+			Severity:    reviewSeverityMedium,
+			Category:    "evidence_gap",
+			Title:       "수정 전 로컬 리뷰 route가 실행 가능한 버그 finding을 만들지 못했습니다",
+			RequiredFix: "참조된 소스를 독립적으로 확인한 뒤 명확히 필요한 수정만 적용하세요.",
+		}},
+	}
+
+	got := preWriteRepairObligationsFromLastReview(session)
+	if len(got) != 0 {
+		t.Fatalf("evidence-gap local fallback must not synthesize deterministic repair obligations, got %#v", got)
+	}
+}
+
+func TestPreWriteDeterministicGateDoesNotPerformSourceRepairJudgement(t *testing.T) {
+	repairFindings := []ReviewFinding{
+		{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo/resourceInfo gate remains a required repair target",
+			Evidence:    "resourceInfo is assigned by OpenResourceInfo but never used.",
+			RequiredFix: "Remove the unused OpenResourceInfo/resourceInfo gate.",
+			BlocksGate:  true,
+		},
+		{
+			ID:          "RF-002",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "EnumerateResourceAliases must handle required buffer size",
+			Evidence:    "EnumerateResourceAliases uses aliases[FIXED_CAPACITY] and ignores requiredCount.",
+			RequiredFix: "Retry with NEEDS_MORE_DATA and requiredCount using a dynamic buffer.",
+			BlocksGate:  true,
+		},
+		{
+			ID:          "RF-003",
+			Severity:    reviewSeverityMedium,
+			Category:    "stability",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "resourceName length must be checked before indexing",
+			Evidence:    "lastIndex is computed after wcslen.",
+			RequiredFix: "Check length before indexing.",
+			BlocksGate:  true,
+		},
+	}
+	afterExcerpt := strings.Join([]string{
+		"bool Worker::BuildIndex()",
+		"{",
+		"\tauto len = wcslen(resourceName);",
+		"\tif (len < 4)",
+		"\t{",
+		"\t\tcontinue;",
+		"\t}",
+		"\tauto lastIndex = len - 1;",
+		"\tresourceName[lastIndex] = L'\\0';",
+		"\tWCHAR resourceInfo[FIXED_CAPACITY] = { 0 };",
+		"\tif (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
+		"\t{",
+		"\t\t(void)resourceInfo;",
+		"\t\tresourceName[lastIndex] = L'\\\\';",
+		"\t\tcontinue;",
+		"\t}",
+		"\tresourceName[lastIndex] = L'\\\\';",
+		"\tWCHAR aliases[FIXED_CAPACITY] = { 0 };",
+		"\tDWORD requiredCount = 0;",
+		"\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases, FIXED_CAPACITY, &requiredCount))",
+		"\t{",
+		"\t\tbreak;",
+		"\t}",
+		"}",
+	}, "\n")
+	run := ReviewRun{
+		Trigger: "pre_write",
+		EditProposals: []EditProposal{{
+			File:         "Project/Worker/SampleReview.cpp",
+			Operation:    "apply_patch",
+			AfterExcerpt: afterExcerpt,
+		}},
+		RepairFindings: repairFindings,
+	}
+
+	assertNoProposalAlignmentFinding(t, deterministicReviewFindings(nil, run))
+}
+
+func TestPreWriteDeterministicGateLeavesBodyJudgementToReviewer(t *testing.T) {
+	afterExcerpt := strings.Join([]string{
+		"bool Worker::BuildIndex()",
+		"{",
+		"\tauto len = wcslen(resourceName);",
+		"\tif (len < 4)",
+		"\t{",
+		"\t\tcontinue;",
+		"\t}",
+		"\tauto lastIndex = len - 1;",
+		"\tresourceName[lastIndex] = L'\\0';",
+		"\tWCHAR resourceInfo[FIXED_CAPACITY] = { 0 };",
+		"\tif (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
+		"\t{",
+		"\t\tresourceName[lastIndex] = L'\\\\';",
+		"\t\tWRITELOG(STROBFW(L\"failed\\n\"));",
+		"\t\tcontinue;",
+		"\t}",
+		"\tresourceName[lastIndex] = L'\\\\';",
+		"}",
+	}, "\n")
+	run := ReviewRun{
+		Trigger: "pre_write",
+		EditProposals: []EditProposal{{
+			File:         "Project/Worker/SampleReview.cpp",
+			Operation:    "apply_patch",
+			AfterExcerpt: afterExcerpt,
+		}},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo failure stops volume enumeration",
+			Evidence:    "`OpenResourceInfo` failure uses `break`, so `NextResource` is never reached.",
+			RequiredFix: "Restore `resourceName` and continue to the next volume instead of breaking the enumeration.",
+			BlocksGate:  true,
+		}},
+	}
+	assertNoProposalAlignmentFinding(t, deterministicReviewFindings(nil, run))
+}
+
+func TestPreWriteDeterministicGateDoesNotBlockBodyControlFlowJudgement(t *testing.T) {
+	afterExcerpt := strings.Join([]string{
+		"bool Worker::BuildIndex()",
+		"{",
+		"\tWCHAR resourceInfo[FIXED_CAPACITY] = { 0 };",
+		"\tif (!OpenResourceInfo(&resourceName[4], resourceInfo, FIXED_CAPACITY))",
+		"\t{",
+		"\t\tresourceName[lastIndex] = L'\\\\';",
+		"\t\tbreak;",
+		"\t}",
+		"}",
+	}, "\n")
+	run := ReviewRun{
+		Trigger: "pre_write",
+		EditProposals: []EditProposal{{
+			File:         "Project/Worker/SampleReview.cpp",
+			Operation:    "apply_patch",
+			AfterExcerpt: afterExcerpt,
+		}},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        "Project/Worker/SampleReview.cpp",
+			Symbol:      "Worker::BuildIndex",
+			Title:       "OpenResourceInfo failure stops volume enumeration",
+			Evidence:    "`OpenResourceInfo` failure still executes `break` before `NextResource`.",
+			RequiredFix: "Restore `resourceName` and continue to the next volume instead of breaking the enumeration.",
+			BlocksGate:  true,
+		}},
+	}
+	assertNoProposalAlignmentFinding(t, deterministicReviewFindings(nil, run))
+}
+
+func TestPreWriteDeterministicGateAllowsNonIncludeRepairProposal(t *testing.T) {
+	afterExcerpt := strings.Join([]string{
+		"bool Worker::BuildIndex()",
+		"{",
+		"\tauto len = wcslen(resourceName);",
+		"\tif (len < 4)",
+		"\t{",
+		"\t\tcontinue;",
+		"\t}",
+		"\tauto lastIndex = len - 1;",
+		"\tif (resourceName[0] != L'\\\\' || resourceName[1] != L'\\\\' || resourceName[2] != L'?' || resourceName[lastIndex] != L'\\\\')",
+		"\t{",
+		"\t\tcontinue;",
+		"\t}",
+		"\tauto _getDrivePath = [](wstring resourceName) {",
+		"\t\tstd::vector<WCHAR> aliases(FIXED_CAPACITY, L'\\0');",
+		"\t\tDWORD requiredCount = 0;",
+		"\t\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases.data(), static_cast<DWORD>(aliases.size()), &requiredCount))",
+		"\t\t{",
+		"\t\t\tDWORD gle = GetLastError();",
+		"\t\t\tif (gle == NEEDS_MORE_DATA && requiredCount > aliases.size())",
+		"\t\t\t{",
+		"\t\t\t\taliases.assign(requiredCount, L'\\0');",
+		"\t\t\t\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases.data(), requiredCount, &requiredCount))",
+		"\t\t\t\t{",
+		"\t\t\t\t\treturn wstring();",
+		"\t\t\t\t}",
+		"\t\t\t}",
+		"\t\t}",
+		"\t\tfor (PWSTR p = aliases.data(); p[0] != L'\\0'; p += wcslen(p) + 1)",
+		"\t\t{",
+		"\t\t\tif (wcslen(p) == 3 && p[1] == L':' && p[2] == L'\\\\')",
+		"\t\t\t{",
+		"\t\t\t\treturn wstring(p);",
+		"\t\t\t}",
+		"\t\t}",
+		"\t\treturn wstring();",
+		"\t};",
+		"}",
+	}, "\n")
+	run := ReviewRun{
+		Trigger: "pre_write",
+		EditProposals: []EditProposal{{
+			File:         "Project/Worker/SampleReview.cpp",
+			Operation:    "apply_patch",
+			AfterExcerpt: afterExcerpt,
+		}},
+		RepairFindings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "OpenResourceInfo/resourceInfo gate remains a required repair target",
+				Evidence:    "resourceInfo is assigned by OpenResourceInfo but never used.",
+				RequiredFix: "Remove the unused OpenResourceInfo/resourceInfo gate.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-002",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "EnumerateResourceAliases must handle required buffer size",
+				Evidence:    "EnumerateResourceAliases uses aliases[FIXED_CAPACITY] and ignores requiredCount.",
+				RequiredFix: "Retry with NEEDS_MORE_DATA and requiredCount using a dynamic buffer.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-003",
+				Severity:    reviewSeverityMedium,
+				Category:    "stability",
+				Title:       "resourceName length must be checked before indexing",
+				Evidence:    "lastIndex is computed after wcslen.",
+				RequiredFix: "Check length before indexing.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	assertNoProposalAlignmentFinding(t, deterministicReviewFindings(nil, run))
+}
+
+func assertNoProposalAlignmentFinding(t *testing.T, findings []ReviewFinding) {
+	t.Helper()
+	for _, finding := range findings {
+		if strings.Contains(strings.ToLower(finding.Title), "proposed edit does not address") {
+			t.Fatalf("deterministic pre-write gate must not judge source repair alignment, got %#v", findings)
+		}
+	}
+}
+
 func TestPreWriteRepairObligationsIncludeApprovedActionableWarnings(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
@@ -4090,6 +5713,9 @@ func TestPreWriteRepairObligationsIncludeApprovedActionableWarnings(t *testing.T
 				Severity:    reviewSeverityMedium,
 				Category:    "correctness",
 				Title:       "Single volume failure stops enumeration",
+				Path:        "Worker/Sample.cpp",
+				Evidence:    "A recoverable per-volume failure exits the surrounding enumeration instead of skipping the current item.",
+				Impact:      "Later valid volumes are not processed.",
 				RequiredFix: "Skip only the failed volume and continue enumerating.",
 			},
 			{
@@ -4109,7 +5735,7 @@ func TestPreWriteRepairObligationsIncludeApprovedActionableWarnings(t *testing.T
 
 func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testing.T) {
 	root := t.TempDir()
-	rel := filepath.ToSlash("Tavern/TavernWorker/PathConverter.cpp")
+	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
 	resolved := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -4118,17 +5744,17 @@ func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testi
 	for line := 1; line <= 280; line++ {
 		switch line {
 		case 120:
-			source.WriteString("bool PathConverter::_InitiateVolumePath()\n")
+			source.WriteString("bool Worker::BuildIndex()\n")
 		case 121:
 			source.WriteString("{\n")
 		case 132:
-			source.WriteString("void PathConverter::_InitiateVolumePath_marker_begin()\n")
+			source.WriteString("void Worker::BuildIndex_marker_begin()\n")
 		case 221:
-			source.WriteString("\tauto drivePath = _getDrivePath(volumeName);\n")
+			source.WriteString("\tauto drivePath = _getDrivePath(resourceName);\n")
 		case 238:
-			source.WriteString("\tm_volumePathMap[volumeName] = drivePath;\n")
+			source.WriteString("\tresourceAliasMap[resourceName] = drivePath;\n")
 		case 240:
-			source.WriteString("\tFindVolumeClose(findHandle);\n")
+			source.WriteString("\tReleaseResourceEnumerator(findHandle);\n")
 		case 246:
 			source.WriteString("\tsuccess = true;\n")
 		case 260:
@@ -4136,7 +5762,7 @@ func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testi
 		case 261:
 			source.WriteString("}\n")
 		default:
-			fmt.Fprintf(&source, "\tint path_converter_line_%03d = %d; // %s\n", line, line, strings.Repeat("context_", 18))
+			fmt.Fprintf(&source, "\tint sample_review_line_%03d = %d; // %s\n", line, line, strings.Repeat("context_", 18))
 		}
 	}
 	if err := os.WriteFile(resolved, []byte(source.String()), 0o644); err != nil {
@@ -4146,8 +5772,8 @@ func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testi
 		workspace: Workspace{BaseRoot: root, Root: root},
 		session:   NewSession(root, "scripted", "model", "", "default"),
 	}
-	request := "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
-	diff := "diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp\n"
+	request := "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
+	diff := "diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp\n"
 	diff += strings.Repeat("+int changed_line = 42; // DIFF_FIRST_CONTEXT\n", 500)
 	run := ReviewRun{
 		ID:      "review-prewrite-context",
@@ -4165,11 +5791,10 @@ func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testi
 	for _, want := range []string{
 		"Provided diff",
 		"DIFF_FIRST_CONTEXT",
-		"Pre-write function body excerpt: Tavern/TavernWorker/PathConverter.cpp:120-261",
-		"Pre-write current file context: Tavern/TavernWorker/PathConverter.cpp",
-		"m_volumePathMap[volumeName] = drivePath;",
-		"FindVolumeClose(findHandle);",
-		"success = true;",
+		"Pre-write function body excerpt: Project/Worker/SampleReview.cpp:120-261",
+		"Pre-write current file context: Project/Worker/SampleReview.cpp",
+		"function tail from selection to function end",
+		"sample_review_line_242",
 		"return success;",
 	} {
 		if !strings.Contains(evidence.Text, want) {
@@ -4190,9 +5815,287 @@ func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testi
 	}
 }
 
+func TestPreWriteEvidenceKeepsModerateProvidedDiffComplete(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
+	resolved := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	source := "bool Worker::BuildIndex()\n{\n\treturn true;\n}\n"
+	if err := os.WriteFile(resolved, []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	var diff strings.Builder
+	diff.WriteString("diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp\n")
+	diff.WriteString("@@\n")
+	for i := 0; i < 180; i++ {
+		fmt.Fprintf(&diff, "+int changed_line_%03d = %d;\n", i, i)
+	}
+	diff.WriteString("+int final_marker_for_complete_prewrite_diff = 1;\n")
+	run := ReviewRun{
+		ID:      "review-prewrite-full-diff",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Trigger:         "pre_write",
+		Request:         "@Project/Worker/SampleReview.cpp:1-4 검토하고 버그를 수정해",
+		Paths:           []string{rel},
+		ProvidedDiff:    diff.String(),
+		IncludeGitDiff:  false,
+		MaxContextChars: reviewPreWriteMaxContextChars,
+	})
+	if !strings.Contains(evidence.Text, "final_marker_for_complete_prewrite_diff") {
+		t.Fatalf("moderate pre-write diff should be preserved complete, sources=%#v text=%s", evidence.Sources, evidence.Text)
+	}
+	if len(evidence.Text) > reviewPreWriteMaxContextChars {
+		t.Fatalf("pre-write evidence should be capped, got %d > %d", len(evidence.Text), reviewPreWriteMaxContextChars)
+	}
+}
+
+func TestPreWritePromptTreatsProvidedDiffAsAuthoritative(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-prewrite-prompt",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+	}
+	prompt := buildReviewModelPrompt(Config{}, run, "primary_reviewer")
+	for _, want := range []string{
+		"Treat the Provided diff section as the authoritative proposed edit",
+		"Do not report an evidence_gap just because a supporting excerpt is compacted",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected pre-write prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestPreWriteLedgerConsistencyIgnoresUnrelatedDirtyGitPaths(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	target := filepath.Join(root, "src", "target.go")
+	unrelated := filepath.Join(root, "src", "unrelated.go")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("package src\n"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(unrelated, []byte("package src\n"), 0o644); err != nil {
+		t.Fatalf("write unrelated: %v", err)
+	}
+	runTestGit(t, root, "add", ".")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(unrelated, []byte("package src\n\nfunc changed() {}\n"), 0o644); err != nil {
+		t.Fatalf("modify unrelated: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	run := ReviewRun{
+		ID:      "review-prewrite-ledger",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"src/target.go"},
+		},
+	}
+	check := buildReviewLedgerConsistency(root, rt, run)
+	for _, blocker := range check.Blockers {
+		if strings.Contains(blocker, "changed paths are not covered") {
+			t.Fatalf("pre-write review should not be blocked by unrelated dirty git paths, got %#v", check.Blockers)
+		}
+	}
+}
+
+func TestPreWriteEvidenceIncludesRequiredRepairDiffExcerpts(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
+	resolved := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	var source strings.Builder
+	source.WriteString("bool Worker::BuildIndex()\n{\n")
+	for line := 1; line <= 260; line++ {
+		fmt.Fprintf(&source, "\tint line_%03d = %d;\n", line, line)
+	}
+	source.WriteString("}\n")
+	if err := os.WriteFile(resolved, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	var diff strings.Builder
+	diff.WriteString("diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp\n")
+	diff.WriteString("@@ -132,90 +132,120 @@\n")
+	for i := 0; i < 260; i++ {
+		fmt.Fprintf(&diff, "+\tint unrelated_diff_line_%03d = %d; // padding before target\n", i, i)
+	}
+	diff.WriteString("+\tstd::vector<WCHAR> aliases(FIXED_CAPACITY, L'\\0');\n")
+	diff.WriteString("+\tDWORD requiredCount = 0;\n")
+	diff.WriteString("+\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases.data(), static_cast<DWORD>(aliases.size()), &requiredCount))\n")
+	diff.WriteString("+\t{\n")
+	diff.WriteString("+\t\tif (GetLastError() == NEEDS_MORE_DATA && requiredCount > aliases.size())\n")
+	diff.WriteString("+\t\t{\n")
+	diff.WriteString("+\t\t\taliases.assign(requiredCount, L'\\0');\n")
+	diff.WriteString("+\t\t\tEnumerateResourceAliases(resourceName.c_str(), aliases.data(), requiredCount, &requiredCount);\n")
+	diff.WriteString("+\t\t}\n")
+	diff.WriteString("+\t}\n")
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	run := ReviewRun{
+		ID:      "review-prewrite-repair-diff-excerpts",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Request:         "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		Paths:           []string{rel},
+		ProvidedDiff:    diff.String(),
+		IncludeGitDiff:  false,
+		MaxContextChars: reviewPreWriteMaxContextChars,
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-003",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "EnumerateResourceAliases uses a fixed FIXED_CAPACITY buffer",
+			Evidence:    "`EnumerateResourceAliases` does not retry with `requiredCount`.",
+			RequiredFix: "Use `std::vector<WCHAR>` and retry with the required `requiredCount` size.",
+		}},
+	})
+	if !containsString(evidence.Sources, "repair_diff_excerpt") {
+		t.Fatalf("expected repair_diff_excerpt source, got %#v", evidence.Sources)
+	}
+	for _, want := range []string{
+		"Pre-write required repair diff excerpts",
+		"EnumerateResourceAliases",
+		"requiredCount",
+		"std::vector<WCHAR>",
+		"aliases.assign",
+	} {
+		if !strings.Contains(evidence.Text, want) {
+			t.Fatalf("expected repair-focused diff evidence to contain %q, got:\n%s", want, evidence.Text)
+		}
+	}
+}
+
+func TestPreWriteEvidenceIncludesRequiredRepairAfterExcerpt(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
+	resolved := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	source := strings.Join([]string{
+		"bool Worker::BuildIndex()",
+		"{",
+		"\treturn false;",
+		"}",
+	}, "\n")
+	if err := os.WriteFile(resolved, []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	afterExcerpt := strings.Join([]string{
+		"After function body excerpt: Project/Worker/SampleReview.cpp:120-260",
+		"auto _getDrivePath = [](wstring resourceName) {",
+		"\tstd::vector<WCHAR> aliases(FIXED_CAPACITY, L'\\0');",
+		"\tDWORD requiredCount = 0;",
+		"\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases.data(), static_cast<DWORD>(aliases.size()), &requiredCount))",
+		"\t{",
+		"\t\tDWORD gle = GetLastError();",
+		"\t\tif (gle == NEEDS_MORE_DATA && requiredCount > aliases.size())",
+		"\t\t{",
+		"\t\t\taliases.assign(requiredCount, L'\\0');",
+		"\t\t\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases.data(), requiredCount, &requiredCount))",
+		"\t\t\t{",
+		"\t\t\t\tWRITELOG(STROBFW(L\"retry failed gle : 0x%X\\n\"), GetLastError());",
+		"\t\t\t\treturn L\"\";",
+		"\t\t\t}",
+		"\t\t}",
+		"\t}",
+		"\tfor (PWSTR p = aliases.data(); p[0] != L'\\0'; p += wcslen(p) + 1)",
+		"\t{",
+		"\t\tif (wcslen(p) == 3 && p[1] == L':' && p[2] == L'\\\\')",
+		"\t\t{",
+		"\t\t\treturn p;",
+		"\t\t}",
+		"\t}",
+		"\treturn L\"\";",
+		"};",
+		"} while (NextResource(findHandle, resourceName.data(), static_cast<DWORD>(resourceName.size())));",
+	}, "\n")
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	diff := strings.Join([]string{
+		"diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp",
+		"@@ -174,8 +174,20 @@",
+		"+\tstd::vector<WCHAR> aliases(FIXED_CAPACITY, L'\\0');",
+		"+\tif (!EnumerateResourceAliases(resourceName.c_str(), aliases.data(), static_cast<DWORD>(aliases.size()), &requiredCount))",
+		"+\t{",
+		"+\t\tDWORD gle = GetLas",
+	}, "\n")
+	run := ReviewRun{
+		ID:      "review-prewrite-after-excerpt",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+		EditProposals: []EditProposal{{
+			File:            rel,
+			Operation:       "apply_patch",
+			ExpectedPreview: diff,
+			AfterExcerpt:    afterExcerpt,
+		}},
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Request:         "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		Paths:           []string{rel},
+		ProvidedDiff:    diff,
+		IncludeGitDiff:  false,
+		MaxContextChars: reviewPreWriteMaxContextChars,
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-002",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "EnumerateResourceAliases does not retry after NEEDS_MORE_DATA",
+			Evidence:    "`EnumerateResourceAliases` uses `FIXED_CAPACITY` and ignores `requiredCount`.",
+			RequiredFix: "Retry with `std::vector<WCHAR>` sized by `requiredCount`, then continue the multi-string scan.",
+		}},
+	})
+	if !containsString(evidence.Sources, "after_excerpt") {
+		t.Fatalf("expected after_excerpt source, got %#v", evidence.Sources)
+	}
+	for _, want := range []string{
+		"Pre-write required repair after excerpts",
+		"NEEDS_MORE_DATA",
+		"aliases.assign",
+		"retry failed gle",
+		"for (PWSTR p = aliases.data();",
+		"NextResource",
+	} {
+		if !strings.Contains(evidence.Text, want) {
+			t.Fatalf("expected after repair evidence to contain %q, got:\n%s", want, evidence.Text)
+		}
+	}
+	if idxAfter, idxFile := strings.Index(evidence.Text, "Pre-write required repair after excerpts"), strings.Index(evidence.Text, "Pre-write current file context"); idxAfter < 0 || (idxFile >= 0 && idxAfter > idxFile) {
+		t.Fatalf("expected after repair evidence before generic file context, got:\n%s", evidence.Text)
+	}
+}
+
 func TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal(t *testing.T) {
 	root := t.TempDir()
-	rel := filepath.ToSlash("Tavern/TavernWorker/PathConverter.cpp")
+	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
 	resolved := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -4201,23 +6104,23 @@ func TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal(t *tes
 	for line := 1; line <= 260; line++ {
 		switch line {
 		case 1:
-			source.WriteString("#include \"PathConverter.h\"\n")
+			source.WriteString("#include \"SampleReview.h\"\n")
 		case 2:
 			source.WriteString("#include <memory>\n")
 		case 3:
 			source.WriteString("#include <ShlObj.h>\n")
 		case 120:
-			source.WriteString("bool PathConverter::_InitiateVolumePath()\n")
+			source.WriteString("bool Worker::BuildIndex()\n")
 		case 121:
 			source.WriteString("{\n")
 		case 150:
-			source.WriteString("\tunique_ptr<WCHAR[]> dynamicMountPoints;\n")
+			source.WriteString("\tunique_ptr<WCHAR[]> dynamicAliases;\n")
 		case 221:
-			source.WriteString("\tauto drivePath = _getDrivePath(volumeName);\n")
+			source.WriteString("\tauto drivePath = _getDrivePath(resourceName);\n")
 		case 260:
 			source.WriteString("}\n")
 		default:
-			fmt.Fprintf(&source, "\tint path_converter_line_%03d = %d;\n", line, line)
+			fmt.Fprintf(&source, "\tint sample_review_line_%03d = %d;\n", line, line)
 		}
 	}
 	if err := os.WriteFile(resolved, []byte(source.String()), 0o644); err != nil {
@@ -4227,11 +6130,11 @@ func TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal(t *tes
 		workspace: Workspace{BaseRoot: root, Root: root},
 		session:   NewSession(root, "scripted", "model", "", "default"),
 	}
-	request := "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	request := "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해"
 	diff := strings.Join([]string{
-		"diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp",
+		"diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp",
 		"@@ -150,6 +150,7 @@",
-		"+unique_ptr<WCHAR[]> dynamicMountPoints;",
+		"+unique_ptr<WCHAR[]> dynamicAliases;",
 	}, "\n")
 	run := ReviewRun{
 		ID:      "review-prewrite-header-context",
@@ -4252,10 +6155,10 @@ func TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal(t *tes
 		}},
 	})
 	for _, want := range []string{
-		"Pre-write include/header context: Tavern/TavernWorker/PathConverter.cpp:1-3",
+		"Pre-write include/header context: Project/Worker/SampleReview.cpp:1-3",
 		"#include <memory>",
 		"#include <ShlObj.h>",
-		"unique_ptr<WCHAR[]> dynamicMountPoints;",
+		"unique_ptr<WCHAR[]> dynamicAliases;",
 	} {
 		if !strings.Contains(evidence.Text, want) {
 			t.Fatalf("expected pre-write include-sensitive evidence to contain %q, got:\n%s", want, evidence.Text)
@@ -4300,7 +6203,7 @@ func TestReviewFunctionSpanForSelectionAcceptsDoubleReturnType(t *testing.T) {
 		{
 			name: "constructor initializer list",
 			content: strings.Join([]string{
-				"PathConverter::PathConverter()",
+				"Worker::Worker()",
 				"\t: m_ready(false)",
 				"{",
 				"\tif (!m_ready)",
@@ -4313,11 +6216,11 @@ func TestReviewFunctionSpanForSelectionAcceptsDoubleReturnType(t *testing.T) {
 		{
 			name: "selection inside c++ lambda prefers outer function",
 			content: strings.Join([]string{
-				"bool PathConverter::_InitiateVolumePath()",
+				"bool Worker::BuildIndex()",
 				"{",
-				"\tauto getDrive = [](const wstring& volumeName)",
+				"\tauto getDrive = [](const wstring& resourceName)",
 				"\t{",
-				"\t\treturn volumeName.empty();",
+				"\t\treturn resourceName.empty();",
 				"\t};",
 				"\tif (getDrive(L\"x\"))",
 				"\t{",
@@ -4368,7 +6271,7 @@ func TestPreWriteEvidenceIncludesPreFixRepairObligations(t *testing.T) {
 				Severity:    reviewSeverityMedium,
 				Category:    "stability",
 				Path:        "main.cpp",
-				Title:       "Mount point buffer is fixed to MAX_PATH",
+				Title:       "Mount point buffer is fixed to FIXED_CAPACITY",
 				RequiredFix: "Retry with the required dynamic buffer size.",
 			},
 		},
@@ -4377,12 +6280,116 @@ func TestPreWriteEvidenceIncludesPreFixRepairObligations(t *testing.T) {
 	for _, want := range []string{
 		"Required repair findings from pre-fix review",
 		"RF-002",
-		"Mount point buffer is fixed to MAX_PATH",
+		"Mount point buffer is fixed to FIXED_CAPACITY",
 		"Retry with the required dynamic buffer size.",
 	} {
 		if !strings.Contains(evidence.Text, want) {
 			t.Fatalf("expected pre-write evidence to contain %q, got:\n%s", want, evidence.Text)
 		}
+	}
+}
+
+func TestPreWriteEvidencePreservesProposalAndRepairFindingsWhenContextIsTight(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
+	resolved := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	var source strings.Builder
+	for line := 1; line <= 480; line++ {
+		fmt.Fprintf(&source, "int sample_line_%03d = %d;\n", line, line)
+	}
+	if err := os.WriteFile(resolved, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var diff strings.Builder
+	diff.WriteString("diff --git a/Project/Worker/SampleReview.cpp b/Project/Worker/SampleReview.cpp\n")
+	diff.WriteString("@@ -132,90 +132,180 @@\n")
+	for i := 0; i < 520; i++ {
+		fmt.Fprintf(&diff, "+int broad_preview_padding_%03d = %d;\n", i, i)
+	}
+	diff.WriteString("+int proposal_tail_marker_that_must_survive = 1;\n")
+
+	repairFindings := []ReviewFinding{
+		{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        rel,
+			Title:       "First required repair obligation must remain visible",
+			Evidence:    "The reviewer must see this first obligation even when optional file context is long.",
+			RequiredFix: "Preserve the first required repair item in the pre-write evidence pack.",
+		},
+		{
+			ID:          "RF-002",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        rel,
+			Title:       "Second required repair obligation must remain visible",
+			Evidence:    "The reviewer must see this second obligation instead of a truncated continuation.",
+			RequiredFix: "Preserve the second required repair item in the pre-write evidence pack.",
+		},
+		{
+			ID:          "RF-003",
+			Severity:    reviewSeverityLow,
+			Category:    "stability",
+			Path:        rel,
+			Title:       "Third required repair obligation must remain visible",
+			Evidence:    "The reviewer must see this third obligation and not only the first item.",
+			RequiredFix: "Preserve the third required repair item in the pre-write evidence pack.",
+		},
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	run := ReviewRun{
+		ID:      "review-prewrite-priority",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+		RequestAnalysis: ReviewRequestAnalysis{
+			ScopeDiscovery: ReviewScopeDiscovery{
+				CandidateFiles: []string{rel},
+			},
+		},
+		EditProposals: []EditProposal{{
+			File:            rel,
+			Operation:       "apply_patch",
+			ExpectedPreview: diff.String(),
+		}},
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Trigger:         "pre_write",
+		Request:         "@Project/Worker/SampleReview.cpp:132-221 검토하고 버그를 수정해",
+		Paths:           []string{rel},
+		ProvidedDiff:    diff.String(),
+		IncludeGitDiff:  false,
+		MaxContextChars: 20000,
+		RepairFindings:  repairFindings,
+	})
+	if len(evidence.Text) > 20000 {
+		t.Fatalf("pre-write evidence should stay within its explicit budget, got %d", len(evidence.Text))
+	}
+	for _, want := range []string{
+		"Provided diff",
+		"Edit proposal",
+		"Required repair findings from pre-fix review",
+		"proposal_1:",
+		"proposal_tail_marker_that_must_survive",
+		"RF-001",
+		"RF-002",
+		"RF-003",
+		"Third required repair obligation must remain visible",
+	} {
+		if !strings.Contains(evidence.Text, want) {
+			t.Fatalf("expected priority pre-write evidence to contain %q, warnings=%#v text=\n%s", want, evidence.Warnings, evidence.Text)
+		}
+	}
+	if strings.Contains(strings.Join(evidence.Warnings, "\n"), "review evidence text truncated to max context budget") {
+		t.Fatalf("priority compaction should not fall back to whole-pack truncation when required sections fit, warnings=%#v", evidence.Warnings)
 	}
 }
 
@@ -4393,21 +6400,357 @@ func TestEditProposalsFromPreviewAvoidsDuplicatingMultiFilePreview(t *testing.T)
 		Paths:     []string{"a.go", "b.go"},
 		Operation: "apply_patch",
 	})
-	if len(proposals) != 2 {
-		t.Fatalf("expected two proposals, got %#v", proposals)
+	if len(proposals) != 1 {
+		t.Fatalf("expected one aggregate proposal, got %#v", proposals)
 	}
-	if proposals[0].ExpectedPreview == "" {
-		t.Fatalf("first proposal should keep the shared preview body")
+	if !reflect.DeepEqual(proposals[0].Files, []string{"a.go", "b.go"}) {
+		t.Fatalf("expected aggregate proposal to preserve file list, got %#v", proposals[0])
 	}
-	if proposals[1].ExpectedPreview != "" {
-		t.Fatalf("subsequent proposals should not duplicate preview body: %#v", proposals[1])
-	}
-	if proposals[0].PreviewFingerprint == "" || proposals[0].PreviewFingerprint != proposals[1].PreviewFingerprint {
-		t.Fatalf("expected shared preview fingerprint, got %#v", proposals)
+	if proposals[0].ExpectedPreview == "" || proposals[0].PreviewFingerprint == "" {
+		t.Fatalf("aggregate proposal should keep bounded preview and fingerprint, got %#v", proposals[0])
 	}
 	rendered := renderEditProposalsForEvidence(proposals)
-	if !strings.Contains(rendered, "shared by preview_fingerprint") {
-		t.Fatalf("expected shared preview marker, got %q", rendered)
+	if strings.Contains(rendered, "shared by preview_fingerprint") {
+		t.Fatalf("aggregate proposal should not need shared preview marker, got %q", rendered)
+	}
+}
+
+func TestSingleModelPreWriteProposalFilesExpandsMultiFileProposal(t *testing.T) {
+	proposals := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   "- old\n+ new\n",
+		Paths:     []string{"a.go", "dir\\b.go"},
+		Operation: "apply_patch",
+	})
+	files := singleModelPreWriteProposalFiles(proposals)
+	if !reflect.DeepEqual(files, []string{"a.go", "dir/b.go"}) {
+		t.Fatalf("expected expanded normalized file list, got %#v", files)
+	}
+}
+
+func TestReviewArtifactIntegrityStripsLineRangePseudoPath(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "Project", "Worker", "SampleReview.cpp")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("int f()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	run := ReviewRun{
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"Project/Worker/SampleReview.cpp:132-221"},
+		},
+	}
+	integrity := buildReviewArtifactIntegrity(root, run)
+	if _, ok := integrity.CurrentFileHashes["Project/Worker/SampleReview.cpp"]; !ok {
+		t.Fatalf("expected line-range pseudo path to hash base file, got %#v", integrity.CurrentFileHashes)
+	}
+	for _, warning := range integrity.Warnings {
+		if strings.Contains(warning, "SampleReview.cpp:132-221") {
+			t.Fatalf("line-range pseudo path should not be hashed literally, got warning %q", warning)
+		}
+	}
+}
+
+func TestEditProposalEvidenceRendersAnchorsAndRanges(t *testing.T) {
+	rendered := renderEditProposalsForEvidence([]EditProposal{{
+		File:         "Project/Worker/SampleReview.cpp",
+		Operation:    "replace_in_file",
+		AnchorBefore: "\tif (ready)\n\t{\n",
+		ReplaceRange: "120-140",
+		ExactSearch:  "\treturn false;\n",
+		Replacement:  "\treturn true;\n",
+	}})
+	for _, want := range []string{
+		"anchor_before:",
+		"\tif (ready)",
+		"replace_range: 120-140",
+		"exact_search:",
+		"replacement:",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered proposal evidence to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
+func TestEditProposalEvidenceEscapesScalarNewlines(t *testing.T) {
+	rendered := renderEditProposalsForEvidence([]EditProposal{{
+		File:               "Project/Worker/SampleReview.cpp\nproposal_2:",
+		Operation:          "replace_in_file",
+		Rationale:          "safe\n  risk: forged",
+		Risk:               "low\n  expected_preview: forged",
+		ReplaceRange:       "120-140\nproposal_3:",
+		PreviewFingerprint: "fingerprint\nproposal_4:",
+		ExactSearch:        "\treturn false;\n",
+		Replacement:        "\treturn true;\n",
+	}})
+	for _, forbidden := range []string{
+		"\nproposal_2:",
+		"\nproposal_3:",
+		"\nproposal_4:",
+		"\n  risk: forged",
+		"\n  expected_preview: forged",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("rendered scalar field injected %q into evidence:\n%s", forbidden, rendered)
+		}
+	}
+	for _, want := range []string{
+		`Project/Worker/SampleReview.cpp\nproposal_2:`,
+		`safe\n  risk: forged`,
+		`low\n  expected_preview: forged`,
+		`120-140\nproposal_3:`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected escaped scalar %q in rendered evidence:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRepairFindingEvidenceEscapesScalarNewlines(t *testing.T) {
+	rendered := renderReviewRepairFindingsForEvidence([]ReviewFinding{{
+		ID:          "RF-001\nrepair_2:",
+		Severity:    "medium\ncategory: forged",
+		Category:    "correctness\npath: forged",
+		Path:        "Project/Worker/SampleReview.cpp\nrequired_fix: forged",
+		Symbol:      "Worker::BuildIndex\nrepair_3:",
+		Title:       "title\npath: forged",
+		Evidence:    "evidence\nrequired_fix: forged",
+		RequiredFix: "fix\nrepair_4:",
+	}})
+	for _, forbidden := range []string{
+		"\nrepair_2:",
+		"\nrepair_3:",
+		"\nrepair_4:",
+		"\nrequired_fix: forged",
+		"\npath: forged",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("rendered repair scalar injected %q into evidence:\n%s", forbidden, rendered)
+		}
+	}
+	for _, want := range []string{
+		`RF-001\nrepair_2:`,
+		`Project/Worker/SampleReview.cpp\nrequired_fix: forged`,
+		`Worker::BuildIndex\nrepair_3:`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected escaped repair scalar %q in rendered evidence:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestEditProposalsFromPreviewKeepsBoundedPreviewWithTrustedFingerprint(t *testing.T) {
+	preview := strings.Repeat("diff line\n", 2000)
+	proposals := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   preview,
+		Paths:     []string{"a.go", "b.go"},
+		Operation: "apply_patch",
+	})
+	if len(proposals) == 0 || proposals[0].ExpectedPreview == "" {
+		t.Fatalf("expected stored preview proposal, got %#v", proposals)
+	}
+	if proposals[0].ExpectedPreview == preview {
+		t.Fatalf("expected proposal preview to be bounded instead of retaining the full preview")
+	}
+	if len(proposals[0].ExpectedPreview) > editProposalExpectedPreviewLimit+256 {
+		t.Fatalf("expected proposal preview to stay bounded, got %d bytes", len(proposals[0].ExpectedPreview))
+	}
+	want := computeReviewFingerprint("apply_patch", editProposalFingerprintTargetForPaths([]string{"a.go", "b.go"}), preview)
+	if proposals[0].PreviewFingerprint != want {
+		t.Fatalf("fingerprint should match full preview, got %q want %q", proposals[0].PreviewFingerprint, want)
+	}
+	if proposals[0].trustedPreviewFingerprint != want {
+		t.Fatalf("trusted fingerprint should be bound by the runtime preview, got %q want %q", proposals[0].trustedPreviewFingerprint, want)
+	}
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"edit_proposal"},
+			Text:    "captured multi-file preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: proposals,
+	}
+	if findings := deterministicReviewFindings(nil, run); reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("trusted bounded preview should satisfy frozen diff policy, got %#v", findings)
+	}
+}
+
+func TestEditProposalsFromPreviewFingerprintDisambiguatesCommaPaths(t *testing.T) {
+	preview := "- old\n+ new\n"
+	proposalsA := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   preview,
+		Paths:     []string{"a,b.go", "c.go"},
+		Operation: "apply_patch",
+	})
+	proposalsB := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   preview,
+		Paths:     []string{"a.go", "b,c.go"},
+		Operation: "apply_patch",
+	})
+	if len(proposalsA) == 0 || len(proposalsB) == 0 {
+		t.Fatalf("expected proposals for both previews")
+	}
+	if proposalsA[0].PreviewFingerprint == proposalsB[0].PreviewFingerprint {
+		t.Fatalf("path-list fingerprints must differ for comma-ambiguous path sets")
+	}
+
+	stale := proposalsA[0]
+	stale.PreviewFingerprint = proposalsB[0].PreviewFingerprint
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"edit_proposal"},
+			Text:    "captured multi-file preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{stale},
+	}
+	if findings := deterministicReviewFindings(nil, run); !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("stale comma-ambiguous proposal must be rejected, got %#v", findings)
+	}
+}
+
+func TestEditProposalsFromPreviewFingerprintIncludesPathsBeyondDisplayCap(t *testing.T) {
+	preview := "- old\n+ new\n"
+	pathsA := make([]string, 0, 65)
+	pathsB := make([]string, 0, 65)
+	for index := 0; index < 65; index++ {
+		path := fmt.Sprintf("file-%02d.go", index)
+		pathsA = append(pathsA, path)
+		pathsB = append(pathsB, path)
+	}
+	pathsB[0] = "changed-before-display-cap.go"
+	proposalsA := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   preview,
+		Paths:     pathsA,
+		Operation: "apply_patch",
+	})
+	proposalsB := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   preview,
+		Paths:     pathsB,
+		Operation: "apply_patch",
+	})
+	if len(proposalsA) == 0 || len(proposalsB) == 0 {
+		t.Fatalf("expected proposals for both previews")
+	}
+	if proposalsA[0].PreviewFingerprint == proposalsB[0].PreviewFingerprint {
+		t.Fatalf("fingerprint must include paths outside evidence display cap")
+	}
+
+	stale := proposalsA[0]
+	stale.PreviewFingerprint = proposalsB[0].PreviewFingerprint
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"edit_proposal"},
+			Text:    "captured multi-file preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{stale},
+	}
+	if findings := deterministicReviewFindings(nil, run); !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("stale capped-path proposal must be rejected, got %#v", findings)
+	}
+}
+
+func TestEditProposalsFromPreviewFingerprintCoversOmittedPreviewBody(t *testing.T) {
+	head := strings.Repeat("same-head\n", 900)
+	tail := strings.Repeat("same-tail\n", 900)
+	previewA := head + strings.Repeat("middle-A\n", 500) + tail
+	previewB := head + strings.Repeat("middle-B\n", 500) + tail
+
+	proposalsA := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   previewA,
+		Paths:     []string{"a.go", "b.go"},
+		Operation: "apply_patch",
+	})
+	proposalsB := editProposalsFromPreview(EditPreview{
+		Title:     "Apply patch",
+		Preview:   previewB,
+		Paths:     []string{"a.go", "b.go"},
+		Operation: "apply_patch",
+	})
+	if len(proposalsA) == 0 || len(proposalsB) == 0 {
+		t.Fatalf("expected proposals for both previews")
+	}
+	if proposalsA[0].ExpectedPreview != proposalsB[0].ExpectedPreview {
+		t.Fatalf("test setup expected the compacted display preview to match")
+	}
+	if proposalsA[0].PreviewFingerprint == proposalsB[0].PreviewFingerprint {
+		t.Fatalf("full-preview fingerprints must differ when omitted body differs")
+	}
+
+	stale := proposalsA[0]
+	stale.PreviewFingerprint = proposalsB[0].PreviewFingerprint
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"edit_proposal"},
+			Text:    "captured multi-file preview",
+		},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled: true,
+		},
+		EditProposals: []EditProposal{stale},
+	}
+	if findings := deterministicReviewFindings(nil, run); !reviewFindingsContainTitle(findings, "Single-model pre-write review lacks a frozen diff") {
+		t.Fatalf("stale compacted proposal must be rejected, got %#v", findings)
+	}
+}
+
+func TestEditProposalOperationAliasesNormalizeAndClassifyRisk(t *testing.T) {
+	cases := []struct {
+		raw       string
+		wantOp    string
+		wantRisk  string
+		proposal  EditProposal
+		pathCount int
+	}{
+		{raw: "add", wantOp: "add_file", wantRisk: "previewed_change", proposal: EditProposal{Replacement: "content"}, pathCount: 1},
+		{raw: "add_file", wantOp: "add_file", wantRisk: "previewed_change", proposal: EditProposal{Replacement: "content"}, pathCount: 1},
+		{raw: "delete", wantOp: "delete_file", wantRisk: "destructive", pathCount: 1},
+		{raw: "delete_file", wantOp: "delete_file", wantRisk: "destructive", pathCount: 1},
+		{raw: "write", wantOp: "write_file", wantRisk: "previewed_change", proposal: EditProposal{Replacement: "content"}, pathCount: 1},
+		{raw: "write_file", wantOp: "write_file", wantRisk: "previewed_change", proposal: EditProposal{Replacement: "content"}, pathCount: 1},
+		{raw: "replace_in_file", wantOp: "replace_in_file", wantRisk: "previewed_change", proposal: EditProposal{ExactSearch: "old", Replacement: "new"}, pathCount: 1},
+		{raw: "modify", wantOp: "replace_in_file", wantRisk: "previewed_change", proposal: EditProposal{ExactSearch: "old", Replacement: "new"}, pathCount: 1},
+		{raw: "move", wantOp: "move", wantRisk: "destructive", pathCount: 1},
+		{raw: "patch", wantOp: "patch", wantRisk: "previewed_change", pathCount: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			if got := normalizeEditProposalOperation(tc.raw, tc.proposal); got != tc.wantOp {
+				t.Fatalf("normalizeEditProposalOperation(%q)=%q want %q", tc.raw, got, tc.wantOp)
+			}
+			if got := editProposalRiskForOperation(tc.raw, tc.pathCount); got != tc.wantRisk {
+				t.Fatalf("editProposalRiskForOperation(%q)=%q want %q", tc.raw, got, tc.wantRisk)
+			}
+		})
+	}
+	if got := editProposalRiskForOperation("write_file", 9); got != "multi_file" {
+		t.Fatalf("many-path operation should classify as multi_file, got %q", got)
+	}
+	if got := editProposalRiskForOperation("delete_file", 9); got != "destructive" {
+		t.Fatalf("many-path delete should preserve destructive risk, got %q", got)
+	}
+	if got := editProposalRiskForOperation("move", 9); got != "destructive" {
+		t.Fatalf("many-path move should preserve destructive risk, got %q", got)
 	}
 }
 
@@ -4491,6 +6834,35 @@ func TestReviewModelParserKeepsMultipleStructuredFindings(t *testing.T) {
 	}
 	if findings[0].TestRecommendation != "add short-buffer IOCTL test" {
 		t.Fatalf("test recommendation was not parsed: %#v", findings[0])
+	}
+}
+
+func TestReviewModelParserKeepsFindingLineAnchors(t *testing.T) {
+	raw := strings.Join([]string{
+		"REVIEW_RESULT",
+		"findings:",
+		"- severity: medium",
+		"  title: Null terminator can be skipped",
+		"  category: correctness",
+		"  path: F:\\IM\\sample-client\\SampleApp\\SampleWorker\\PathConverter.cpp:176",
+		"  evidence: line 176 calls the API with a fixed buffer.",
+		"  required_fix: use the returned size before retrying.",
+		"- severity: low",
+		"  title: Missing focused test",
+		"  category: test_gap",
+		"  path: SampleApp/SampleWorker/PathConverter.cpp",
+		"  line: 204-205",
+		"  evidence: no verification evidence covers loop termination.",
+	}, "\n")
+	findings, quality := parseModelReviewFindings(raw, "primary_reviewer")
+	if quality != reviewModelQualityUsable || len(findings) != 2 {
+		t.Fatalf("expected usable findings with line anchors, quality=%s findings=%#v", quality, findings)
+	}
+	if findings[0].Path != "F:/IM/sample-client/SampleApp/SampleWorker/PathConverter.cpp" || findings[0].Line != 176 {
+		t.Fatalf("expected path:line split for first finding, got %#v", findings[0])
+	}
+	if findings[1].Path != "SampleApp/SampleWorker/PathConverter.cpp" || findings[1].Line != 204 {
+		t.Fatalf("expected explicit line field for second finding, got %#v", findings[1])
 	}
 }
 
@@ -4698,6 +7070,18 @@ func TestCompactPromptSectionDoesNotSplitKoreanRune(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "...") {
 		t.Fatalf("expected truncated string to keep ellipsis, got %q", got)
+	}
+}
+
+func TestCompactPromptSectionAvoidsPartialLineWhenPossible(t *testing.T) {
+	text := "func example() {\n\tdefer s.mu.Unlock()\n\treturn nil\n}\n"
+	limit := strings.Index(text, "Unlock()") + len("Unlock") + 3
+	got := compactPromptSection(text, limit)
+	if strings.Contains(got, "defer s.mu.Unlock") {
+		t.Fatalf("compactPromptSection emitted a misleading partial code line: %q", got)
+	}
+	if !strings.HasSuffix(got, "\n...") {
+		t.Fatalf("expected line-boundary truncation marker, got %q", got)
 	}
 }
 
@@ -4934,8 +7318,70 @@ func TestReviewScopeDiscoverySearchesServiceFilesBeforeDirtyGit(t *testing.T) {
 	if strings.Contains(evidence.Text, "DirtyCapture() { return 2; }") {
 		t.Fatalf("review evidence should not be dominated by unrelated dirty git diff: %s", evidence.Text)
 	}
+	if strings.Contains(evidence.Text, "DirectCapture.cpp") {
+		t.Fatalf("review evidence should use path-scoped git status, got unrelated dirty path: %s", evidence.Text)
+	}
 	if !stringSliceContainsCI(changeSet.ChangedPaths, "SampleApp/SampleWorker/ServiceInstaller.cpp") {
 		t.Fatalf("focused service file should be part of reviewed scope, got %#v", changeSet.ChangedPaths)
+	}
+}
+
+func TestChangeReviewEvidenceKeepsDiffAndFocusedSourceUnderBudget(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	sourcePath := filepath.Join(root, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	var before strings.Builder
+	before.WriteString("package main\n\nfunc main() {\n")
+	for i := 0; i < 4000; i++ {
+		fmt.Fprintf(&before, "\tprintln(\"line-%04d\")\n", i)
+	}
+	before.WriteString("}\n")
+	if err := os.WriteFile(sourcePath, []byte(before.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	runTestGit(t, root, "add", ".")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	after := strings.Replace(before.String(), "line-0001", "changed-line-0001", 1)
+	if err := os.WriteFile(sourcePath, []byte(after), 0o644); err != nil {
+		t.Fatalf("modify source: %v", err)
+	}
+
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	request := "@src/main.go:1-20 review current change"
+	analysis := analyzeReviewRequest(rt, root, ReviewHarnessOptions{
+		Target:  reviewTargetChange,
+		Request: request,
+		Paths:   []string{"src/main.go"},
+	})
+	run := ReviewRun{
+		Target:          reviewTargetChange,
+		Mode:            analysis.InferredMode,
+		Flow:            "change_review",
+		Objective:       request,
+		RequestAnalysis: analysis,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Target:          reviewTargetChange,
+		Request:         request,
+		Paths:           []string{"src/main.go"},
+		IncludeGitDiff:  true,
+		MaxContextChars: 20000,
+	})
+	for _, source := range []string{"git_diff", "file_excerpt"} {
+		if !containsString(evidence.Sources, source) {
+			t.Fatalf("expected evidence source %q, got %#v\n%s", source, evidence.Sources, evidence.Text)
+		}
+	}
+	for _, want := range []string{"Git diff excerpt", "changed-line-0001", "File excerpt: src/main.go"} {
+		if !strings.Contains(evidence.Text, want) {
+			t.Fatalf("expected evidence to contain %q, sources=%#v text=%s", want, evidence.Sources, evidence.Text)
+		}
 	}
 }
 
@@ -5624,7 +8070,7 @@ func TestReviewScopeDiscoveryUsesProvidedDiffPaths(t *testing.T) {
 
 func TestPreWriteScopeDiscoveryLocksToProvidedEditPaths(t *testing.T) {
 	root := t.TempDir()
-	sourcePath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	sourcePath := filepath.Join(root, "SampleApp", "SampleWorker", "SampleReview.cpp")
 	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
 		t.Fatalf("mkdir source dir: %v", err)
 	}
@@ -5641,13 +8087,13 @@ func TestPreWriteScopeDiscoveryLocksToProvidedEditPaths(t *testing.T) {
 		Request: "automatic pre-write review %d/n /Conversation 0x%X)/n +4",
 		Paths:   []string{sourcePath},
 		EditProposals: []EditProposal{{
-			File:      "SampleApp/SampleWorker/PathConverter.cpp",
+			File:      "SampleApp/SampleWorker/SampleReview.cpp",
 			Operation: "apply_patch",
 		}},
 		ProvidedDiff: strings.Join([]string{
-			"diff --git a/SampleApp/SampleWorker/PathConverter.cpp b/SampleApp/SampleWorker/PathConverter.cpp",
-			"--- a/SampleApp/SampleWorker/PathConverter.cpp",
-			"+++ b/SampleApp/SampleWorker/PathConverter.cpp",
+			"diff --git a/SampleApp/SampleWorker/SampleReview.cpp b/SampleApp/SampleWorker/SampleReview.cpp",
+			"--- a/SampleApp/SampleWorker/SampleReview.cpp",
+			"+++ b/SampleApp/SampleWorker/SampleReview.cpp",
 			"@@ -1 +1 @@",
 			"+return false;",
 		}, "\n"),
@@ -5655,7 +8101,7 @@ func TestPreWriteScopeDiscoveryLocksToProvidedEditPaths(t *testing.T) {
 	if analysis.ScopeDiscovery.ScopeWidth != "focused" {
 		t.Fatalf("pre-write edit paths should keep focused scope, got %#v", analysis.ScopeDiscovery)
 	}
-	if len(analysis.ScopeDiscovery.CandidateFiles) != 1 || analysis.ScopeDiscovery.CandidateFiles[0] != "SampleApp/SampleWorker/PathConverter.cpp" {
+	if len(analysis.ScopeDiscovery.CandidateFiles) != 1 || analysis.ScopeDiscovery.CandidateFiles[0] != "SampleApp/SampleWorker/SampleReview.cpp" {
 		t.Fatalf("expected only the edited source path, got %#v", analysis.ScopeDiscovery.CandidateFiles)
 	}
 	joined := strings.Join(analysis.ScopeDiscovery.CandidateFiles, " ")
@@ -5666,16 +8112,381 @@ func TestPreWriteScopeDiscoveryLocksToProvidedEditPaths(t *testing.T) {
 	}
 }
 
+func TestPreWriteReviewDoesNotBlockOnFinalCodingHarnessState(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	rt.session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: false,
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Claimed artifact is missing",
+			Detail:   "docs/missing.md does not exist.",
+		}},
+	}
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"src/main.cpp"},
+		},
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "edit_proposal"},
+			Text:    "diff --git a/src/main.cpp b/src/main.cpp\n+return true;",
+		},
+	}
+
+	findings := deterministicReviewFindings(rt, run)
+	for _, finding := range findings {
+		if finding.ReviewerRole != "coding_harness" {
+			continue
+		}
+		if finding.BlocksGate || finding.Severity == reviewSeverityBlocker {
+			t.Fatalf("pre-write diff review must not be blocked by final coding harness state: %#v", finding)
+		}
+	}
+	gate := evaluateReviewGate(ReviewRun{
+		Trigger:   run.Trigger,
+		Target:    run.Target,
+		ChangeSet: run.ChangeSet,
+		Evidence:  run.Evidence,
+		Findings:  findings,
+	})
+	if gate.Verdict == reviewVerdictNeedsRevision || gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("pre-write coding harness state should not block the gate, got %#v findings=%#v", gate, findings)
+	}
+}
+
+func TestPreWriteEvidenceExcludesFinalCodingHarnessSummary(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "src", "main.cpp")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("bool ok() { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	rt.session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: false,
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Claimed artifact is missing",
+			Detail:   "docs/missing.md does not exist.",
+		}},
+	}
+	opts := ReviewHarnessOptions{
+		Trigger:             "pre_write",
+		Target:              reviewTargetChange,
+		Paths:               []string{sourcePath},
+		IncludeFileContents: true,
+		ProvidedDiff:        "diff --git a/src/main.cpp b/src/main.cpp\n+return false;",
+		EditProposals: []EditProposal{{
+			File:      "src/main.cpp",
+			Operation: "apply_patch",
+		}},
+		MaxContextChars: 60000,
+	}
+	analysis := analyzeReviewRequest(rt, root, opts)
+	run := ReviewRun{
+		Trigger:         opts.Trigger,
+		Target:          analysis.InferredTarget,
+		Mode:            analysis.InferredMode,
+		Flow:            analysis.SelectedFlow,
+		RequestAnalysis: analysis,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, opts)
+	if stringSliceContainsCI(evidence.Sources, "coding_harness") {
+		t.Fatalf("pre-write evidence should not include final coding harness source: %#v", evidence.Sources)
+	}
+	if strings.Contains(evidence.Text, "Claimed artifact is missing") || strings.TrimSpace(evidence.CodingHarnessSummary) != "" {
+		t.Fatalf("pre-write evidence leaked final coding harness state: %s", evidence.Text)
+	}
+}
+
+func TestPostChangeReviewDoesNotBlockOnFinalCodingHarnessState(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	rt.session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: false,
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "No worker evidence validates symptom causality",
+			Detail:   "The final answer claims a root cause, but worker evidence is missing.",
+		}},
+	}
+	run := ReviewRun{
+		Trigger: "post_change",
+		Target:  reviewTargetChange,
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"src/main.cpp"},
+		},
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"git_diff", "file_excerpt", "patch_transaction"},
+			Text:    "diff --git a/src/main.cpp b/src/main.cpp\n+return true;",
+		},
+	}
+
+	findings := deterministicReviewFindings(rt, run)
+	for _, finding := range findings {
+		if finding.ReviewerRole == "coding_harness" {
+			t.Fatalf("post-change diff review must not import final coding harness findings: %#v", finding)
+		}
+	}
+	gate := evaluateReviewGate(ReviewRun{
+		Trigger:   run.Trigger,
+		Target:    run.Target,
+		ChangeSet: run.ChangeSet,
+		Evidence:  run.Evidence,
+		Findings:  findings,
+	})
+	if gate.Verdict == reviewVerdictNeedsRevision || gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("post-change diff review should not be blocked by final coding harness state, got %#v findings=%#v", gate, findings)
+	}
+}
+
+func TestSkippedVerificationDoesNotSuppressPostChangeReview(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "build",
+			Status: VerificationSkipped,
+		}},
+	}
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	if agent.shouldSkipPostChangeReviewForKnownFinalBlocker("검증은 실행하지 않았습니다.", true) {
+		t.Fatalf("skipped or declined verification must not suppress post-change review")
+	}
+
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "build",
+			Status: VerificationFailed,
+		}},
+	}
+	if !agent.shouldSkipPostChangeReviewForKnownFinalBlocker("검증 실패가 남아 있습니다.", true) {
+		t.Fatalf("real verification failure should remain a known final blocker")
+	}
+}
+
+func TestPostChangeEvidenceExcludesFinalCodingHarnessSummary(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "src", "main.cpp")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("bool ok() { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	rt.session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: false,
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "No worker evidence validates symptom causality",
+			Detail:   "The final answer claims a root cause, but worker evidence is missing.",
+		}},
+	}
+	opts := ReviewHarnessOptions{
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Paths:               []string{sourcePath},
+		IncludeFileContents: true,
+		IncludeGitDiff:      true,
+		MaxContextChars:     60000,
+	}
+	analysis := analyzeReviewRequest(rt, root, opts)
+	run := ReviewRun{
+		Trigger:         opts.Trigger,
+		Target:          analysis.InferredTarget,
+		Mode:            analysis.InferredMode,
+		Flow:            analysis.SelectedFlow,
+		RequestAnalysis: analysis,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, opts)
+	if stringSliceContainsCI(evidence.Sources, "coding_harness") {
+		t.Fatalf("post-change evidence should not include final coding harness source: %#v", evidence.Sources)
+	}
+	if strings.Contains(evidence.Text, "worker evidence is missing") || strings.TrimSpace(evidence.CodingHarnessSummary) != "" {
+		t.Fatalf("post-change evidence leaked final coding harness state: %s", evidence.Text)
+	}
+}
+
+func TestPreFixEvidenceExcludesStaleVerificationHistory(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "src", "main.cpp")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("bool ok() { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	history := &VerificationHistoryStore{
+		Path:       filepath.Join(root, ".kernforge", "verification-history.json"),
+		MaxEntries: 10,
+	}
+	report := VerificationReport{
+		Workspace:    root,
+		ChangedPaths: []string{"src/main.cpp"},
+		Steps: []VerificationStep{{
+			Label:   "msbuild app.sln",
+			Command: "msbuild app.sln",
+			Status:  VerificationFailed,
+			Output:  "compile failed",
+		}},
+	}
+	if err := history.Append("session-test", root, report); err != nil {
+		t.Fatalf("append verification history: %v", err)
+	}
+	rt := &runtimeState{
+		workspace:     Workspace{BaseRoot: root, Root: root},
+		session:       NewSession(root, "", "", "", "default"),
+		verifyHistory: history,
+	}
+	opts := ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Paths:               []string{sourcePath},
+		IncludeFileContents: true,
+		MaxContextChars:     60000,
+	}
+	analysis := analyzeReviewRequest(rt, root, opts)
+	run := ReviewRun{
+		Trigger:         opts.Trigger,
+		Target:          analysis.InferredTarget,
+		Mode:            analysis.InferredMode,
+		Flow:            analysis.SelectedFlow,
+		RequestAnalysis: analysis,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, opts)
+	if stringSliceContainsCI(evidence.Sources, "verification_history") {
+		t.Fatalf("pre-fix bug review should not inherit stale verification history: %#v", evidence.Sources)
+	}
+	if strings.Contains(evidence.Text, "compile failed") || strings.TrimSpace(evidence.VerificationSummary) != "" || evidence.VerificationFailed {
+		t.Fatalf("pre-fix evidence leaked stale verification state: %#v text=%s", evidence, evidence.Text)
+	}
+}
+
+func TestPostChangeEvidenceExcludesVerificationHistoryPredatingCurrentPatch(t *testing.T) {
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "src", "main.cpp")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source dir: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("bool ok() { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	history := &VerificationHistoryStore{
+		Path:       filepath.Join(root, ".kernforge", "verification-history.json"),
+		MaxEntries: 10,
+	}
+	oldReport := VerificationReport{
+		GeneratedAt:  time.Now().Add(-2 * time.Hour),
+		Workspace:    root,
+		ChangedPaths: []string{"src/main.cpp"},
+		Steps: []VerificationStep{{
+			Label:   "msbuild app.sln",
+			Command: "msbuild app.sln",
+			Status:  VerificationFailed,
+			Output:  "compile failed",
+		}},
+	}
+	if err := history.Append("session-test", root, oldReport); err != nil {
+		t.Fatalf("append verification history: %v", err)
+	}
+	session := NewSession(root, "", "", "", "default")
+	now := time.Now()
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-current",
+		Status:        patchTransactionStatusCommitted,
+		WorkspaceRoot: root,
+		StartedAt:     now.Add(-time.Minute),
+		UpdatedAt:     now,
+		CompletedAt:   now,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-current-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "src/main.cpp",
+				Operation: "modify",
+			}},
+		}},
+	}}
+	rt := &runtimeState{
+		workspace:     Workspace{BaseRoot: root, Root: root},
+		session:       session,
+		verifyHistory: history,
+	}
+	opts := ReviewHarnessOptions{
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Paths:               []string{sourcePath},
+		IncludeFileContents: true,
+		MaxContextChars:     60000,
+	}
+	analysis := analyzeReviewRequest(rt, root, opts)
+	run := ReviewRun{
+		Trigger:         opts.Trigger,
+		Target:          analysis.InferredTarget,
+		Mode:            analysis.InferredMode,
+		Flow:            analysis.SelectedFlow,
+		RequestAnalysis: analysis,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, opts)
+	if stringSliceContainsCI(evidence.Sources, "verification_history") {
+		t.Fatalf("post-change evidence should not inherit stale verification history: %#v", evidence.Sources)
+	}
+	if strings.Contains(evidence.Text, "compile failed") || strings.TrimSpace(evidence.VerificationSummary) != "" || evidence.VerificationFailed {
+		t.Fatalf("post-change evidence leaked stale verification state: %#v text=%s", evidence, evidence.Text)
+	}
+}
+
+func TestReviewScopeDiscoveryDoesNotTreatPathStemsAsSymbols(t *testing.T) {
+	discovery := discoverReviewScope(
+		"",
+		"@cmd/kernforge/edit_proposal.go @cmd/kernforge/review_harness_gate.go ReviewThing",
+		[]string{
+			"cmd/kernforge/edit_proposal.go",
+			"cmd/kernforge/review_harness_gate.go",
+		},
+	)
+	symbols := strings.Join(discovery.CandidateSymbols, ",")
+	for _, unwanted := range []string{"edit_proposal", "review_harness_gate"} {
+		if strings.Contains(strings.ToLower(symbols), unwanted) {
+			t.Fatalf("path-derived symbol %q should be filtered, got %#v", unwanted, discovery.CandidateSymbols)
+		}
+	}
+	if !containsString(discovery.CandidateSymbols, "ReviewThing") {
+		t.Fatalf("explicit non-path symbol should remain, got %#v", discovery.CandidateSymbols)
+	}
+}
+
 func TestReviewScopeDiscoveryNormalizesBeforeAfterDiffPaths(t *testing.T) {
 	diff := strings.Join([]string{
-		"--- before/Source/PathConverter.cpp",
-		"+++ after/Source/PathConverter.cpp",
+		"--- before/Source/SampleReview.cpp",
+		"+++ after/Source/SampleReview.cpp",
 		"@@ -1 +1 @@",
 		"-break;",
 		"+continue;",
 	}, "\n")
 	paths := reviewScopeCandidateFilesFromDiff(diff)
-	if len(paths) != 1 || paths[0] != "Source/PathConverter.cpp" {
+	if len(paths) != 1 || paths[0] != "Source/SampleReview.cpp" {
 		t.Fatalf("expected before/after diff paths to normalize to one source path, got %#v", paths)
 	}
 	for _, path := range paths {
@@ -5687,7 +8498,7 @@ func TestReviewScopeDiscoveryNormalizesBeforeAfterDiffPaths(t *testing.T) {
 
 func TestReviewScopeDiscoveryRejectsSyntheticToolPaths(t *testing.T) {
 	root := t.TempDir()
-	sourcePath := filepath.Join(root, "Source", "PathConverter.cpp")
+	sourcePath := filepath.Join(root, "Source", "SampleReview.cpp")
 	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
 		t.Fatalf("mkdir source dir: %v", err)
 	}
@@ -5697,10 +8508,10 @@ func TestReviewScopeDiscoveryRejectsSyntheticToolPaths(t *testing.T) {
 
 	discovery := discoverReviewScope(
 		root,
-		"@Source/PathConverter.cpp:1-1 ConvertPath 검토하고 버그를 수정해 web/research web/search/browser code/change C:/Win C:// low/correctness medium/stability +/- L'// %d/n /Conversation 0x%X)/n +4",
+		"@Source/SampleReview.cpp:1-1 ConvertPath 검토하고 버그를 수정해 web/research web/search/browser code/change C:/Win C:// low/correctness medium/stability +/- L'// %d/n /Conversation 0x%X)/n +4",
 		nil,
 	)
-	if len(discovery.CandidateFiles) != 1 || discovery.CandidateFiles[0] != "Source/PathConverter.cpp" {
+	if len(discovery.CandidateFiles) != 1 || discovery.CandidateFiles[0] != "Source/SampleReview.cpp" {
 		t.Fatalf("expected only the real source path, got %#v", discovery.CandidateFiles)
 	}
 	for _, rel := range discovery.CandidateFiles {

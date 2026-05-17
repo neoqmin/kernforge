@@ -156,6 +156,276 @@ func TestFinalizeEditLoopKeepsFailedApplyRisk(t *testing.T) {
 	}
 }
 
+func TestFinalizeEditLoopRecordsMissingVerificationRiskWhenDisclosed(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.RecordEditLoopEvent("fix file", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "wrote main.go",
+		Status:       "ok",
+		ChangedPaths: []string{"main.go"},
+	})
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	agent.finalizeEditLoopOnReturn("Updated main.go. Verification was not run.", false)
+
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected finalized edit loop")
+	}
+	loop := session.EditLoops[0]
+	if loop.Status != editLoopStatusRiskAccepted {
+		t.Fatalf("missing verification evidence must leave risk-accepted status, got %#v", loop)
+	}
+	if !containsStringMatching(loop.RemainingRisks, "No successful verification") {
+		t.Fatalf("expected missing verification risk, got %#v", loop.RemainingRisks)
+	}
+}
+
+func TestFinalizeEditLoopKeepsSkippedShellVerificationRisk(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	session.RecordEditLoopEvent("fix file", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "wrote main.go",
+		Status:       "ok",
+		ChangedPaths: []string{"main.go"},
+	})
+
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "Verification skipped by user.",
+		Meta: map[string]any{
+			"verification_like":        true,
+			"verification_status":      string(VerificationSkipped),
+			"command_execution_status": "declined",
+			"command":                  "go test ./...",
+			"success":                  false,
+		},
+	}, nil)
+
+	if session.ActiveEditLoop == nil {
+		t.Fatalf("expected active edit loop")
+	}
+	if session.ActiveEditLoop.VerificationStatus != "skipped" {
+		t.Fatalf("expected skipped verification status, got %#v", session.ActiveEditLoop)
+	}
+	if !containsStringMatching(session.ActiveEditLoop.RemainingRisks, "skipped") {
+		t.Fatalf("expected skipped verification risk, got %#v", session.ActiveEditLoop.RemainingRisks)
+	}
+
+	agent.finalizeEditLoopOnReturn("Updated main.go. Verification was skipped.", false)
+
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected finalized edit loop")
+	}
+	loop := session.EditLoops[0]
+	if loop.Status != editLoopStatusRiskAccepted {
+		t.Fatalf("skipped verification must leave risk-accepted status, got %#v", loop)
+	}
+	if !containsStringMatching(loop.RemainingRisks, "No successful verification") {
+		t.Fatalf("expected missing successful verification risk, got %#v", loop.RemainingRisks)
+	}
+}
+
+func TestEditLoopCommandExecutionDeclinedDoesNotPassVerification(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	session.RecordEditLoopEvent("fix file", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "wrote main.go",
+		Status:       "ok",
+		ChangedPaths: []string{"main.go"},
+	})
+
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "Build verification was declined.",
+		Meta: map[string]any{
+			"verification_like":        true,
+			"command_execution_status": "declined",
+			"command":                  "go test ./...",
+		},
+	}, nil)
+
+	if session.ActiveEditLoop == nil {
+		t.Fatalf("expected active edit loop")
+	}
+	if session.ActiveEditLoop.VerificationStatus != "skipped" {
+		t.Fatalf("declined verification command must be skipped, got %#v", session.ActiveEditLoop)
+	}
+	if !containsStringMatching(session.ActiveEditLoop.RemainingRisks, "skipped") {
+		t.Fatalf("expected skipped verification risk, got %#v", session.ActiveEditLoop.RemainingRisks)
+	}
+}
+
+func TestEditLoopPassedVerificationClearsPriorVerificationRisk(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	session.RecordEditLoopEvent("fix file", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "wrote main.go",
+		Status:       "ok",
+		ChangedPaths: []string{"main.go"},
+	})
+
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "go test ./... failed",
+		Meta: map[string]any{
+			"verification_like":   true,
+			"verification_status": string(VerificationFailed),
+			"command":             "go test ./...",
+			"success":             false,
+		},
+	}, nil)
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "go test ./... passed",
+		Meta: map[string]any{
+			"verification_like":   true,
+			"verification_status": string(VerificationPassed),
+			"command":             "go test ./...",
+			"success":             true,
+		},
+	}, nil)
+
+	if session.ActiveEditLoop == nil {
+		t.Fatalf("expected active edit loop")
+	}
+	if session.ActiveEditLoop.VerificationStatus != "passed" {
+		t.Fatalf("expected passed verification status, got %#v", session.ActiveEditLoop)
+	}
+	if containsStringMatching(session.ActiveEditLoop.RemainingRisks, "verification") {
+		t.Fatalf("passed verification should clear prior verification risks, got %#v", session.ActiveEditLoop.RemainingRisks)
+	}
+
+	agent.finalizeEditLoopOnReturn("Updated main.go. go test ./... passed.", false)
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected finalized edit loop")
+	}
+	if session.EditLoops[0].Status != editLoopStatusCompleted {
+		t.Fatalf("expected completed edit loop after successful verification, got %#v", session.EditLoops[0])
+	}
+}
+
+func TestEditLoopPassedVerificationDoesNotClearDifferentFailureRisk(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	session.RecordEditLoopEvent("fix file", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "wrote main.go",
+		Status:       "ok",
+		ChangedPaths: []string{"main.go"},
+	})
+
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "go test ./... failed",
+		Meta: map[string]any{
+			"verification_like":   true,
+			"verification_status": string(VerificationFailed),
+			"command":             "go test ./...",
+			"success":             false,
+		},
+	}, nil)
+	agent.recordEditLoopToolResult(ToolCall{Name: "run_shell"}, ToolExecutionResult{
+		DisplayText: "go test ./cmd/kernforge passed",
+		Meta: map[string]any{
+			"verification_like":   true,
+			"verification_status": string(VerificationPassed),
+			"command":             "go test ./cmd/kernforge",
+			"success":             true,
+		},
+	}, nil)
+
+	if session.ActiveEditLoop == nil {
+		t.Fatalf("expected active edit loop")
+	}
+	if !containsStringMatching(session.ActiveEditLoop.RemainingRisks, "go test ./...") {
+		t.Fatalf("different passed command must not clear prior failure risk, got %#v", session.ActiveEditLoop.RemainingRisks)
+	}
+
+	agent.finalizeEditLoopOnReturn("Updated main.go. go test ./cmd/kernforge passed.", false)
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected finalized edit loop")
+	}
+	if session.EditLoops[0].Status != editLoopStatusRiskAccepted {
+		t.Fatalf("expected risk accepted while prior verification failure remains, got %#v", session.EditLoops[0])
+	}
+}
+
+func TestEditLoopExplicitPassedVerificationFailsClosedOnConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]any
+	}{
+		{
+			name: "success false",
+			meta: map[string]any{
+				"verification_status": string(VerificationPassed),
+				"success":             false,
+			},
+		},
+		{
+			name: "failed bundle",
+			meta: map[string]any{
+				"verification_status": string(VerificationPassed),
+				"bundle_status":       "failed",
+			},
+		},
+		{
+			name: "failed job",
+			meta: map[string]any{
+				"verification_status": string(VerificationPassed),
+				"job_status":          "failed",
+			},
+		},
+		{
+			name: "failed command",
+			meta: map[string]any{
+				"verification_status":      string(VerificationPassed),
+				"command_execution_status": "failed",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := editLoopToolEventStatus(ToolCall{Name: "run_shell"}, tc.meta, nil, true); got != "failed" {
+				t.Fatalf("expected conflicting passed verification metadata to fail closed, got %q", got)
+			}
+		})
+	}
+}
+
 func TestEditLoopRecordsBlockedWorkspaceShellWriteAsFailedApply(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -228,7 +498,7 @@ func TestEditLoopRecordsBackgroundVerificationBundleEvidence(t *testing.T) {
 			"bundle_status":            "running",
 			"bundle_job_ids":           []string{"job-1"},
 			"bundle_command_summaries": []string{"go test ./..."},
-			"job_status": []map[string]any{{
+			"job_entries": []map[string]any{{
 				"id":              "job-1",
 				"status":          "running",
 				"command_summary": "go test ./...",
@@ -257,7 +527,7 @@ func TestEditLoopRecordsBackgroundVerificationBundleEvidence(t *testing.T) {
 			"completed":         1,
 			"running":           0,
 			"failed":            0,
-			"job_status": []map[string]any{{
+			"job_entries": []map[string]any{{
 				"id":              "job-1",
 				"status":          "completed",
 				"command_summary": "go test ./...",
@@ -270,6 +540,36 @@ func TestEditLoopRecordsBackgroundVerificationBundleEvidence(t *testing.T) {
 	}
 	if len(loop.VerificationEvidence) != 1 {
 		t.Fatalf("expected bundle evidence to be updated in place, got %#v", loop.VerificationEvidence)
+	}
+}
+
+func TestEditLoopLogPathsFromMetaSupportsScalarAndListContracts(t *testing.T) {
+	scalar := editLoopLogPathsFromMeta(map[string]any{
+		"job_status": "completed",
+		"log_path":   "logs/single.log",
+	})
+	if len(scalar) != 1 || scalar[0] != "logs/single.log" {
+		t.Fatalf("expected scalar job_status to use top-level log_path only, got %#v", scalar)
+	}
+
+	list := editLoopLogPathsFromMeta(map[string]any{
+		"job_status": "completed",
+		"job_entries": []map[string]any{{
+			"status":   "completed",
+			"log_path": "logs/job-1.log",
+		}},
+	})
+	if len(list) != 1 || list[0] != "logs/job-1.log" {
+		t.Fatalf("expected job_entries list log path, got %#v", list)
+	}
+
+	legacy := editLoopLogPathsFromMeta(map[string]any{
+		"job_status": []any{
+			map[string]any{"status": "completed", "log_path": "logs/legacy.log"},
+		},
+	})
+	if len(legacy) != 1 || legacy[0] != "logs/legacy.log" {
+		t.Fatalf("expected legacy job_status list log path, got %#v", legacy)
 	}
 }
 

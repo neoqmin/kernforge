@@ -689,7 +689,10 @@ func (t RunShellBundleBackgroundTool) Execute(ctx context.Context, input any) (s
 }
 
 func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	commands := normalizeBackgroundCommandList(stringSliceValue(args, "commands"), 4)
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	verificationLike := boolValue(args, "verification_like", false)
@@ -711,6 +714,24 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		assessment := assessShellCommandMutation(command)
 		if assessment.Class == shellMutationWorkspaceWrite {
 			return ToolExecutionResult{}, fmt.Errorf("run_shell_bundle_background only supports read-only, verification/build, cache-only, or external-install commands")
+		}
+		if assessment.Class == shellMutationVerificationArtifacts {
+			ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
+				Mode:         VerificationAdaptive,
+				ChangedPaths: collectVerificationChangedPaths(workDir, nil),
+				Steps: []VerificationStep{{
+					Label:   "background shell verification",
+					Command: command,
+					Status:  VerificationPending,
+				}},
+			})
+			if confirmErr != nil {
+				return ToolExecutionResult{}, confirmErr
+			}
+			if !ok {
+				lines = append(lines, "- skipped verification command because the user declined: "+compactPromptSection(command, 160))
+				continue
+			}
 		}
 		if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
 			"tool_name": "run_shell_bundle_background",
@@ -758,6 +779,24 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		bundleJobs = append(bundleJobs, job)
 		lines = append(lines, fmt.Sprintf("- started %s [%s] %s", job.ID, job.Status, job.CommandSummary))
 	}
+	if len(bundleJobs) == 0 {
+		lines = append(lines, "no background jobs started")
+		lines = append(lines, "Do not retry these verification commands or poll background jobs for them unless the user explicitly approves verification; disclose that verification was not run.")
+		return ToolExecutionResult{
+			DisplayText: strings.Join(lines, "\n"),
+			Meta: map[string]any{
+				"tool_name":                "run_shell_bundle_background",
+				"plan_effect":              "none",
+				"result_class":             "verification_skipped",
+				"verification_like":        true,
+				"verification_status":      string(VerificationSkipped),
+				"verification_evidence":    false,
+				"verification_approved":    false,
+				"verification_declined":    true,
+				"command_execution_status": "declined",
+			},
+		}, nil
+	}
 	bundle, err := t.ws.BackgroundJobs.RecordShellBundle(bundleJobs, ownerNodeID, BackgroundShellBundleOptions{
 		VerificationLike: verificationLike,
 	})
@@ -800,7 +839,10 @@ func (t RunBackgroundShellTool) Execute(ctx context.Context, input any) (string,
 }
 
 func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	command := strings.TrimSpace(stringValue(args, "command"))
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	verificationLike := boolValue(args, "verification_like", false)
@@ -819,6 +861,36 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		return ToolExecutionResult{}, err
 	}
 	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root)
+	if assessment.Class == shellMutationVerificationArtifacts {
+		ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
+			Mode:         VerificationAdaptive,
+			ChangedPaths: collectVerificationChangedPaths(workDir, nil),
+			Steps: []VerificationStep{{
+				Label:   "background shell verification",
+				Command: command,
+				Status:  VerificationPending,
+			}},
+		})
+		if confirmErr != nil {
+			return ToolExecutionResult{}, confirmErr
+		}
+		if !ok {
+			return ToolExecutionResult{
+				DisplayText: skippedVerificationCommandText(),
+				Meta: map[string]any{
+					"tool_name":                "run_shell_background",
+					"plan_effect":              "none",
+					"result_class":             "verification_skipped",
+					"verification_like":        true,
+					"verification_status":      string(VerificationSkipped),
+					"verification_evidence":    false,
+					"verification_approved":    false,
+					"verification_declined":    true,
+					"command_execution_status": "declined",
+				},
+			}, nil
+		}
+	}
 	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
 		"tool_name": "run_shell_background",
 		"tool_kind": "shell",
@@ -942,10 +1014,13 @@ func (t CheckShellBundleTool) Execute(ctx context.Context, input any) (string, e
 
 func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	_ = ctx
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	if t.ws.BackgroundJobs == nil {
 		return ToolExecutionResult{}, fmt.Errorf("background jobs are not configured")
 	}
-	args := input.(map[string]any)
 	bundleID := strings.TrimSpace(stringValue(args, "bundle_id"))
 	jobIDs := normalizeBackgroundCommandList(stringSliceValue(args, "job_ids"), 8)
 	if bundleID != "" || len(jobIDs) == 0 {
@@ -953,7 +1028,7 @@ func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (T
 			bundleID = t.ws.BackgroundJobs.LatestBundleID()
 		}
 		if bundleID == "" {
-			return ToolExecutionResult{}, fmt.Errorf("bundle_id or job_ids is required")
+			return noBackgroundWorkAvailableResult("check_shell_bundle", "bundle"), nil
 		}
 		bundle, jobs, err := t.ws.BackgroundJobs.SyncBundle(bundleID)
 		if err != nil {
@@ -1018,8 +1093,8 @@ func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (T
 			"failed":       failed,
 			"canceled":     canceled,
 			"total":        len(jobIDs),
+			"job_entries":  buildBackgroundJobStatusList(jobs),
 			"job_ids":      jobIDs,
-			"job_status":   buildBackgroundJobStatusList(jobs),
 		},
 	}, nil
 }
@@ -1044,16 +1119,19 @@ func (t CheckShellJobTool) Execute(ctx context.Context, input any) (string, erro
 
 func (t CheckShellJobTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	_ = ctx
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	if t.ws.BackgroundJobs == nil {
 		return ToolExecutionResult{}, fmt.Errorf("background jobs are not configured")
 	}
-	args := input.(map[string]any)
 	jobID := strings.TrimSpace(stringValue(args, "job_id"))
 	if jobID == "" || strings.EqualFold(jobID, "latest") {
 		jobID = t.ws.BackgroundJobs.LatestJobID()
 	}
 	if jobID == "" {
-		return ToolExecutionResult{}, fmt.Errorf("job_id is required")
+		return noBackgroundWorkAvailableResult("check_shell_job", "job"), nil
 	}
 	job, err := t.ws.BackgroundJobs.SyncJob(jobID)
 	if err != nil {
@@ -1093,6 +1171,23 @@ func (t CheckShellJobTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 	}, nil
 }
 
+func noBackgroundWorkAvailableResult(toolName string, kind string) ToolExecutionResult {
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "" {
+		kind = "job"
+	}
+	return ToolExecutionResult{
+		DisplayText: fmt.Sprintf("no background shell %s is available; the previous command may have been skipped or declined, so there is nothing to poll. Do not poll again unless a new background command actually starts.", kind),
+		Meta: map[string]any{
+			"tool_name":            strings.TrimSpace(toolName),
+			"plan_effect":          "none",
+			"result_class":         "background_unavailable",
+			"background_available": false,
+			"command_status":       "unavailable",
+		},
+	}
+}
+
 func (t CancelShellJobTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "cancel_shell_job",
@@ -1114,10 +1209,13 @@ func (t CancelShellJobTool) Execute(ctx context.Context, input any) (string, err
 
 func (t CancelShellJobTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	_ = ctx
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	if t.ws.BackgroundJobs == nil {
 		return ToolExecutionResult{}, fmt.Errorf("background jobs are not configured")
 	}
-	args := input.(map[string]any)
 	jobID := strings.TrimSpace(stringValue(args, "job_id"))
 	if jobID == "" || strings.EqualFold(jobID, "latest") {
 		jobID = t.ws.BackgroundJobs.LatestJobID()
@@ -1166,10 +1264,13 @@ func (t CancelShellBundleTool) Execute(ctx context.Context, input any) (string, 
 
 func (t CancelShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	_ = ctx
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	if t.ws.BackgroundJobs == nil {
 		return ToolExecutionResult{}, fmt.Errorf("background jobs are not configured")
 	}
-	args := input.(map[string]any)
 	bundleID := strings.TrimSpace(stringValue(args, "bundle_id"))
 	if bundleID == "" || strings.EqualFold(bundleID, "latest") {
 		bundleID = t.ws.BackgroundJobs.LatestBundleID()
@@ -1216,6 +1317,11 @@ func buildBackgroundBundleMeta(bundle BackgroundShellBundle, jobs []BackgroundSh
 	}
 	if bundle.VerificationLike {
 		meta["verification_like"] = true
+		status, evidence, commandStatus := backgroundBundleVerificationMeta(jobs)
+		meta["verification_status"] = string(status)
+		meta["verification_evidence"] = evidence
+		meta["verification_approved"] = true
+		meta["command_execution_status"] = commandStatus
 	}
 	if bundle.SupersededBy != "" {
 		meta["superseded_by"] = bundle.SupersededBy
@@ -1250,7 +1356,8 @@ func buildBackgroundBundleMeta(bundle BackgroundShellBundle, jobs []BackgroundSh
 	meta["failed"] = failed
 	meta["canceled"] = canceled
 	meta["total"] = len(jobs)
-	meta["job_status"] = buildBackgroundJobStatusList(jobs)
+	jobEntries := buildBackgroundJobStatusList(jobs)
+	meta["job_entries"] = jobEntries
 	return meta
 }
 
@@ -1261,6 +1368,17 @@ func buildBackgroundJobMeta(job BackgroundShellJob, bundle *BackgroundShellBundl
 	meta["job_status"] = job.Status
 	meta["command_summary"] = job.CommandSummary
 	meta["log_path"] = job.LogPath
+	if job.MutationClass != "" {
+		meta["mutation_class"] = job.MutationClass
+	}
+	if backgroundJobIsVerificationLike(job) {
+		meta["verification_like"] = true
+		status, evidence, commandStatus := backgroundJobVerificationMeta(job)
+		meta["verification_status"] = string(status)
+		meta["verification_evidence"] = evidence
+		meta["verification_approved"] = true
+		meta["command_execution_status"] = commandStatus
+	}
 	if job.OwnerNodeID != "" {
 		meta["owner_node_id"] = job.OwnerNodeID
 	}
@@ -1288,9 +1406,72 @@ func buildBackgroundJobMeta(job BackgroundShellJob, bundle *BackgroundShellBundl
 		}
 		if bundle.VerificationLike {
 			meta["verification_like"] = true
+			status, evidence, commandStatus := backgroundBundleVerificationMeta([]BackgroundShellJob{job})
+			meta["verification_status"] = string(status)
+			meta["verification_evidence"] = evidence
+			meta["verification_approved"] = true
+			meta["command_execution_status"] = commandStatus
 		}
 	}
 	return meta
+}
+
+func backgroundJobVerificationMeta(job BackgroundShellJob) (VerificationStatus, bool, string) {
+	status := strings.TrimSpace(strings.ToLower(job.Status))
+	switch status {
+	case "completed":
+		if job.ExitCode != nil && *job.ExitCode != 0 {
+			return VerificationFailed, false, "failed"
+		}
+		return VerificationPassed, true, "completed"
+	case "failed":
+		return VerificationFailed, false, "failed"
+	case "canceled", "cancelled", "preempted":
+		return VerificationSkipped, false, status
+	default:
+		return VerificationPending, false, firstNonBlankString(status, "running")
+	}
+}
+
+func backgroundBundleVerificationMeta(jobs []BackgroundShellJob) (VerificationStatus, bool, string) {
+	if len(jobs) == 0 {
+		return VerificationPending, false, "pending"
+	}
+	anyPending := false
+	anyFailed := false
+	anySkipped := false
+	allPassed := true
+	for _, job := range jobs {
+		status, evidence, _ := backgroundJobVerificationMeta(job)
+		switch status {
+		case VerificationPassed:
+			if !evidence {
+				allPassed = false
+			}
+		case VerificationFailed:
+			anyFailed = true
+			allPassed = false
+		case VerificationSkipped:
+			anySkipped = true
+			allPassed = false
+		default:
+			anyPending = true
+			allPassed = false
+		}
+	}
+	if anyFailed {
+		return VerificationFailed, false, "failed"
+	}
+	if anyPending {
+		return VerificationPending, false, "running"
+	}
+	if anySkipped {
+		return VerificationSkipped, false, "skipped"
+	}
+	if allPassed {
+		return VerificationPassed, true, "completed"
+	}
+	return VerificationPending, false, "pending"
 }
 
 func mergeBackgroundPolicyMeta(meta map[string]any, ownerNodeID string) map[string]any {

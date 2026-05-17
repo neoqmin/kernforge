@@ -395,8 +395,8 @@ func TestOpenAICompatibleClientSynthesizesMissingToolResponses(t *testing.T) {
 	if tool["role"] != "tool" || tool["tool_call_id"] != "call_read" {
 		t.Fatalf("unexpected synthesized tool message: %#v", tool)
 	}
-	if !strings.Contains(fmt.Sprint(tool["content"]), "tool result was missing") {
-		t.Fatalf("expected synthetic missing-result content, got %#v", tool["content"])
+	if fmt.Sprint(tool["content"]) != "aborted" {
+		t.Fatalf("expected Codex-style aborted synthetic missing-result content, got %#v", tool["content"])
 	}
 	user, ok := messages[4].(map[string]any)
 	if !ok || user["role"] != "user" {
@@ -451,7 +451,7 @@ func TestOpenAICompatibleClientMarksRuntimeSupersededToolResponses(t *testing.T)
 	}
 }
 
-func TestOpenAICompatibleClientConvertsOrphanToolMessagesToUserContext(t *testing.T) {
+func TestOpenAICompatibleClientDropsOrphanToolMessages(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -486,19 +486,19 @@ func TestOpenAICompatibleClientConvertsOrphanToolMessagesToUserContext(t *testin
 			t.Fatalf("expected message map, got %#v", item)
 		}
 		if message["role"] == "tool" {
-			t.Fatalf("expected orphan tool message to be converted, got %#v", messages)
+			t.Fatalf("expected orphan tool message to be dropped, got %#v", messages)
+		}
+		if strings.Contains(fmt.Sprint(message["content"]), "call_orphan") ||
+			strings.Contains(fmt.Sprint(message["content"]), "saved tool result appeared without a matching preceding assistant tool_call") {
+			t.Fatalf("expected orphan tool context to be dropped, got %#v", messages)
 		}
 	}
-	recovered, ok := messages[1].(map[string]any)
-	if !ok || recovered["role"] != "user" {
-		t.Fatalf("expected recovered orphan tool context as user message, got %#v", messages[1])
-	}
-	if !strings.Contains(fmt.Sprint(recovered["content"]), "saved tool result appeared without a matching preceding assistant tool_call") {
-		t.Fatalf("expected recovered transcript note, got %#v", recovered["content"])
+	if len(messages) != 2 {
+		t.Fatalf("expected only user messages after dropping orphan tool result, got %#v", messages)
 	}
 }
 
-func TestOpenAICompatibleClientConvertsUnexpectedToolResponseAfterAssistant(t *testing.T) {
+func TestOpenAICompatibleClientDropsUnexpectedToolResponseAfterAssistant(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -529,16 +529,17 @@ func TestOpenAICompatibleClientConvertsUnexpectedToolResponseAfterAssistant(t *t
 	if !ok {
 		t.Fatalf("expected messages array, got %#v", captured["messages"])
 	}
-	if len(messages) < 4 {
-		t.Fatalf("expected assistant, recovered unexpected tool, and synthesized missing tool, got %#v", messages)
+	if len(messages) != 3 {
+		t.Fatalf("expected assistant and synthesized missing tool only, got %#v", messages)
 	}
 	synthetic, ok := messages[2].(map[string]any)
 	if !ok || synthetic["role"] != "tool" || synthetic["tool_call_id"] != "call_expected" {
 		t.Fatalf("expected missing expected tool response to be synthesized before other messages, got %#v", messages[2])
 	}
-	recovered, ok := messages[3].(map[string]any)
-	if !ok || recovered["role"] != "user" {
-		t.Fatalf("expected unexpected tool response to be converted to user context after required tool responses, got %#v", messages[3])
+	for _, item := range messages {
+		if strings.Contains(fmt.Sprint(item), "call_other") || strings.Contains(fmt.Sprint(item), "wrote other.md") {
+			t.Fatalf("unexpected orphan tool response should be dropped, got %#v", messages)
+		}
 	}
 }
 

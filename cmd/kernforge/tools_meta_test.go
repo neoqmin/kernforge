@@ -37,6 +37,50 @@ func TestReadFileExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	}
 }
 
+func TestSkippedVerificationPollDoesNotAdvancePlan(t *testing.T) {
+	tests := []struct {
+		name string
+		call ToolCall
+		meta map[string]any
+	}{
+		{
+			name: "job",
+			call: ToolCall{Name: "check_shell_job"},
+			meta: map[string]any{
+				"verification_like":           true,
+				"verification_status":         string(VerificationSkipped),
+				"command_execution_status":    "declined",
+				"job_status":                  "completed",
+				"verification_command_source": "automatic",
+			},
+		},
+		{
+			name: "bundle",
+			call: ToolCall{Name: "check_shell_bundle"},
+			meta: map[string]any{
+				"verification_like":           true,
+				"verification_status":         string(VerificationSkipped),
+				"command_execution_status":    "declined",
+				"bundle_status":               "failed",
+				"verification_command_source": "automatic",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ToolExecutionResult{Meta: tt.meta}
+			outcome := buildToolExecutionPolicy(tt.call, result, nil)
+			if outcome.ResultClass != "verification_skipped" {
+				t.Fatalf("expected skipped verification result class, got %#v", outcome)
+			}
+			if outcome.PlanEffect != "none" {
+				t.Fatalf("skipped verification poll must not advance the plan, got %#v", outcome)
+			}
+		})
+	}
+}
+
 func TestReadFileExecuteDetailedReturnsMissingPathHint(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "analysis"), 0o755); err != nil {
@@ -86,6 +130,56 @@ func TestRunShellExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	}
 	if toolMetaString(result.Meta, "command") == "" {
 		t.Fatalf("expected command metadata, got %#v", result.Meta)
+	}
+}
+
+func TestBackgroundVerificationStartIsPendingNotEvidence(t *testing.T) {
+	job := BackgroundShellJob{
+		ID:             "job-1",
+		Command:        "go test ./...",
+		CommandSummary: "go test ./...",
+		Status:         "running",
+		MutationClass:  string(shellMutationVerificationArtifacts),
+	}
+
+	meta := buildBackgroundJobMeta(job, nil, map[string]any{
+		"tool_name":    "run_shell_background",
+		"result_class": "background_start",
+	})
+	if got := toolMetaExplicitVerificationStatus(meta); got != VerificationPending {
+		t.Fatalf("expected pending verification status, got %q meta=%#v", got, meta)
+	}
+	if toolMetaBool(meta, "verification_evidence") {
+		t.Fatalf("background verification start must not be successful evidence: %#v", meta)
+	}
+	if toolResultHasSuccessfulVerificationEvidence("run_shell_background", meta, "started background shell job job-1 [running]") {
+		t.Fatalf("background verification start must not satisfy verification evidence")
+	}
+}
+
+func TestCompletedBackgroundVerificationCanBeEvidence(t *testing.T) {
+	exitCode := 0
+	job := BackgroundShellJob{
+		ID:             "job-1",
+		Command:        "go test ./...",
+		CommandSummary: "go test ./...",
+		Status:         "completed",
+		MutationClass:  string(shellMutationVerificationArtifacts),
+		ExitCode:       &exitCode,
+	}
+
+	meta := buildBackgroundJobMeta(job, nil, map[string]any{
+		"tool_name":    "check_shell_job",
+		"result_class": "background_status",
+	})
+	if got := toolMetaExplicitVerificationStatus(meta); got != VerificationPassed {
+		t.Fatalf("expected passed verification status, got %q meta=%#v", got, meta)
+	}
+	if !toolMetaBool(meta, "verification_evidence") {
+		t.Fatalf("completed zero-exit verification should be evidence: %#v", meta)
+	}
+	if !toolResultHasSuccessfulVerificationEvidence("check_shell_job", meta, "exit_code: 0") {
+		t.Fatalf("completed zero-exit background verification should satisfy evidence")
 	}
 }
 

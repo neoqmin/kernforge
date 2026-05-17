@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -188,6 +190,7 @@ type sequenceTool struct {
 	name    string
 	outputs []string
 	errs    []error
+	before  []func()
 	calls   int
 }
 
@@ -279,6 +282,9 @@ func (t *sequenceTool) Execute(ctx context.Context, input any) (string, error) {
 	_ = input
 	t.calls++
 	index := t.calls - 1
+	if index >= 0 && index < len(t.before) && t.before[index] != nil {
+		t.before[index]()
+	}
 	var output string
 	if index >= 0 && index < len(t.outputs) {
 		output = t.outputs[index]
@@ -350,6 +356,30 @@ func scriptedRequestsContainText(requests []ChatRequest, needle string) bool {
 			if strings.Contains(msg.Text, needle) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func sessionContainsText(session *Session, needle string) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		if strings.Contains(msg.Text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionContainsToolResultText(session *Session, toolCallID string, needle string) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolCallID == toolCallID && strings.Contains(msg.Text, needle) {
+			return true
 		}
 	}
 	return false
@@ -434,6 +464,211 @@ func TestAgentAddsAllToolPlaceholdersBeforeNextModelTurn(t *testing.T) {
 	}
 }
 
+func TestAgentDefersEditToolWhenMixedWithReadOnlyTool(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "fresh source"}
+	patchTool := &staticTool{name: "apply_patch", output: "patched"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{
+					ID:        "call-patch-first",
+					Name:      "apply_patch",
+					Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+				},
+				ToolCall{
+					ID:        "call-read-second",
+					Name:      "read_file",
+					Arguments: `{"path":"sample.txt"}`,
+				},
+			),
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-patch-alone",
+						Name:      "apply_patch",
+						Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+					}},
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool, patchTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect and fix"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if readTool.calls != 1 {
+		t.Fatalf("expected read_file to execute once before the deferred edit retry, got %d", readTool.calls)
+	}
+	if patchTool.calls != 1 {
+		t.Fatalf("expected mixed apply_patch to be deferred and only the standalone retry to execute, got %d", patchTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a second request after mixed tool-call deferral, got %d", len(provider.requests))
+	}
+	messages := provider.requests[1].Messages
+	var deferredPatch Message
+	var readResult Message
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID == "call-patch-first" {
+			deferredPatch = msg
+		}
+		if msg.Role == "tool" && msg.ToolCallID == "call-read-second" {
+			readResult = msg
+		}
+	}
+	if !deferredPatch.IsError || !strings.Contains(deferredPatch.Text, "NOT_EXECUTED") {
+		t.Fatalf("expected synthetic deferred edit tool result, got %#v", deferredPatch)
+	}
+	if !toolMetaBool(deferredPatch.ToolMeta, "deferred") || toolMetaBool(deferredPatch.ToolMeta, "changed_workspace") {
+		t.Fatalf("expected deferred edit metadata without workspace change, got %#v", deferredPatch.ToolMeta)
+	}
+	if readResult.Text != "fresh source" {
+		t.Fatalf("expected read_file result to be executed in the same turn, got %#v", readResult)
+	}
+	lastMessage := messages[len(messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "edit tool") ||
+		!(strings.Contains(lastMessage.Text, "only tool call") || strings.Contains(lastMessage.Text, "단독")) {
+		t.Fatalf("expected guidance to reissue edit tool by itself, got %#v", lastMessage)
+	}
+}
+
+func TestAgentDefersNonReadOnlyToolWhenMixedWithEditTool(t *testing.T) {
+	root := t.TempDir()
+	patchTool := &staticTool{name: "apply_patch", output: "patched"}
+	shellTool := &staticTool{name: "run_shell", output: "mutated"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{
+					ID:        "call-patch",
+					Name:      "apply_patch",
+					Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+				},
+				ToolCall{
+					ID:        "call-shell",
+					Name:      "run_shell",
+					Arguments: `{"command":"Set-Content -Path sample.txt -Value changed"}`,
+				},
+			),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, shellTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect and fix"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if patchTool.calls != 0 {
+		t.Fatalf("expected mixed apply_patch to be deferred, got %d calls", patchTool.calls)
+	}
+	if shellTool.calls != 0 {
+		t.Fatalf("expected non-read-only run_shell to be deferred with the edit, got %d calls", shellTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a second request after mixed tool-call deferral, got %d", len(provider.requests))
+	}
+	messages := provider.requests[1].Messages
+	var deferredShell Message
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID == "call-shell" {
+			deferredShell = msg
+			break
+		}
+	}
+	if !deferredShell.IsError || !strings.Contains(deferredShell.Text, "NOT_EXECUTED") {
+		t.Fatalf("expected synthetic deferred shell tool result, got %#v", deferredShell)
+	}
+	if strings.Contains(deferredShell.Text, "skipped edit") {
+		t.Fatalf("deferred non-read-only tool should not be described as a skipped edit: %q", deferredShell.Text)
+	}
+	if reason := toolMetaString(deferredShell.ToolMeta, "reason"); reason != "non_read_only_tool_deferred_until_edit_is_isolated" {
+		t.Fatalf("expected non-read-only deferral reason, got %#v", deferredShell.ToolMeta)
+	}
+}
+
+func TestAgentDefersCacheOnlyShellWhenMixedWithEditTool(t *testing.T) {
+	root := t.TempDir()
+	patchTool := &staticTool{name: "apply_patch", output: "patched"}
+	shellTool := &staticTool{name: "run_shell", output: "go list output"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{
+					ID:        "call-patch",
+					Name:      "apply_patch",
+					Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+				},
+				ToolCall{
+					ID:        "call-cache-shell",
+					Name:      "run_shell",
+					Arguments: `{"command":"go list ./..."}`,
+				},
+			),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, shellTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect and fix"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if patchTool.calls != 0 {
+		t.Fatalf("expected mixed apply_patch to be deferred, got %d calls", patchTool.calls)
+	}
+	if shellTool.calls != 0 {
+		t.Fatalf("expected cache-only run_shell to be deferred with the edit, got %d calls", shellTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a second request after mixed tool-call deferral, got %d", len(provider.requests))
+	}
+	messages := provider.requests[1].Messages
+	var deferredShell Message
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID == "call-cache-shell" {
+			deferredShell = msg
+			break
+		}
+	}
+	if !deferredShell.IsError || !strings.Contains(deferredShell.Text, "NOT_EXECUTED") {
+		t.Fatalf("expected synthetic deferred cache-only shell result, got %#v", deferredShell)
+	}
+	if reason := toolMetaString(deferredShell.ToolMeta, "reason"); reason != "non_read_only_tool_deferred_until_edit_is_isolated" {
+		t.Fatalf("expected cache-only shell to use non-read-only deferral reason, got %#v", deferredShell.ToolMeta)
+	}
+}
+
 func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -456,10 +691,12 @@ func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.
 		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
 			_ = ctx
 			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
 				Steps: []VerificationStep{{
 					Label:  "go test ./...",
+					Stage:  "targeted",
 					Status: VerificationFailed,
-					Output: "failing test",
+					Output: "main.go: error: failing test",
 				}},
 			}, true
 		},
@@ -480,6 +717,577 @@ func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.
 	}
 	if !strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Text, "Suggested repair strategy") {
 		t.Fatalf("expected repair strategy in retry prompt, got %#v", provider.requests[1].Messages)
+	}
+}
+
+func TestVerificationRepairScopeDoesNotTreatProjectBuildSiblingFailureAsPatchScoped(t *testing.T) {
+	agent := &Agent{}
+	report := VerificationReport{
+		ChangedPaths: []string{"SampleApp/SampleWorker/PathConverter.cpp"},
+		Steps: []VerificationStep{{
+			Label:   "msbuild SampleApp/SampleWorker/SampleWorker.vcxproj",
+			Command: `msbuild "SampleApp/SampleWorker/SampleWorker.vcxproj" /m`,
+			Scope:   "SampleApp/SampleWorker/SampleWorker.vcxproj",
+			Stage:   "targeted",
+			Status:  VerificationFailed,
+			Output: strings.Join([]string{
+				`F:\repo\SampleApp\Common\Util.h(42,55): error C2039: 'string_view': is not a member of std`,
+				`F:\repo\SampleApp\SampleWorker\HandleBreaker.cpp(135,20): error C2039: 'starts_with': is not a member`,
+			}, "\n"),
+		}},
+	}
+
+	decision := agent.verificationFailureRepairScope(report)
+	if decision.ShouldRepair {
+		t.Fatalf("project build sibling failures must not trigger current patch repair: %#v", decision)
+	}
+	if !strings.Contains(decision.Reason, "does not reference") {
+		t.Fatalf("unexpected decision reason: %#v", decision)
+	}
+}
+
+func TestAgentDoesNotBroadenRepairForOutOfScopeVerificationFailure(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification failed in an unrelated project, so that blocker remains disclosed."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				GeneratedAt:  time.Now(),
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Scope:  "workspace",
+					Stage:  "workspace",
+					Status: VerificationFailed,
+					Output: "other/package_test.go: failing pre-existing test",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "unrelated project") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected no repair turn beyond disclosure, got %d requests", len(provider.requests))
+	}
+	lastPrompt := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Text
+	if !strings.Contains(lastPrompt, "outside the current patch scope") && !strings.Contains(lastPrompt, "patch scope") {
+		t.Fatalf("expected out-of-scope verification guidance, got:\n%s", lastPrompt)
+	}
+	if strings.Contains(lastPrompt, "continue repairing only the current patch scope") {
+		t.Fatalf("out-of-scope failure must not use in-scope repair prompt:\n%s", lastPrompt)
+	}
+}
+
+func TestAgentBlocksVerificationRetryAfterOutOfScopeAutomaticFailure(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			toolCallResponse("run_shell", map[string]any{"command": "go test ./..."}),
+			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification failed outside the patch scope, so I am reporting that blocker instead of rerunning verification."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	confirmCount := 0
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			confirmCount++
+			return true, nil
+		},
+	}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewWriteFileTool(ws),
+			NewRunShellTool(ws),
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				GeneratedAt:  time.Now(),
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Scope:  "workspace",
+					Stage:  "workspace",
+					Status: VerificationFailed,
+					Output: "other/package_test.go: error: pre-existing failure",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "outside the patch scope") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a final-answer-only retry request")
+	}
+	if got := len(provider.requests[1].Tools); got != 0 {
+		t.Fatalf("expected tools to be disabled after out-of-scope automatic verification failure, got %d tool definitions", got)
+	}
+	if confirmCount != 0 {
+		t.Fatalf("out-of-scope verification retry must be blocked before shell confirmation, got %d prompts", confirmCount)
+	}
+	blocked := 0
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "run_shell" && strings.Contains(msg.Text, "NOT_EXECUTED: automatic verification already failed outside the current patch scope") {
+			blocked++
+			if !msg.IsError {
+				t.Fatalf("blocked verification retry must be an error tool result: %#v", msg)
+			}
+			if toolMetaBool(msg.ToolMeta, "success") {
+				t.Fatalf("blocked verification retry must not be successful evidence: %#v", msg.ToolMeta)
+			}
+			if toolMetaBool(msg.ToolMeta, "verification_evidence") {
+				t.Fatalf("blocked verification retry must not count as verification evidence: %#v", msg.ToolMeta)
+			}
+			if !toolMetaBool(msg.ToolMeta, "verification_out_scope") {
+				t.Fatalf("blocked verification retry should carry out-of-scope metadata: %#v", msg.ToolMeta)
+			}
+		}
+	}
+	if blocked != 1 {
+		t.Fatalf("expected one blocked out-of-scope verification retry, got %d", blocked)
+	}
+	if !sessionContainsText(session, "Do not call run_shell") &&
+		!sessionContainsText(session, "final-answer-only") &&
+		!sessionContainsText(session, "최종 답변 전용") {
+		t.Fatalf("expected follow-up guidance to tell the model not to rerun verification")
+	}
+}
+
+func TestAgentBlocksAllToolsAfterOutOfScopeAutomaticFailure(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "source"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification failed outside the patch scope, so no further tools were used."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewWriteFileTool(ws),
+			readTool,
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Scope:  "workspace",
+					Stage:  "workspace",
+					Status: VerificationFailed,
+					Output: "other/package_test.go: error: pre-existing failure",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "outside the patch scope") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("post out-of-scope read_file must be blocked, got %d calls", readTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a retry request")
+	}
+	if got := len(provider.requests[1].Tools); got != 0 {
+		t.Fatalf("expected all tools to be disabled in the post out-of-scope retry request, got %d", got)
+	}
+	var blockedRead Message
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "read_file" {
+			blockedRead = msg
+			break
+		}
+	}
+	if !blockedRead.IsError || !strings.Contains(blockedRead.Text, "final-answer-only") {
+		t.Fatalf("expected read_file to be blocked as final-answer-only, got %#v", blockedRead)
+	}
+	if !toolMetaBool(blockedRead.ToolMeta, "verification_out_scope") {
+		t.Fatalf("expected out-of-scope metadata on blocked read_file, got %#v", blockedRead.ToolMeta)
+	}
+}
+
+func TestAgentReturnsFinalWithoutPostChangeReviewAfterOutOfScopeAutomaticFailure(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Updated main.go."}},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: strings.Join([]string{
+						"REVIEW_RESULT",
+						"verdict: needs_revision",
+						"summary: this post-change review should not run after terminal out-of-scope verification",
+						"findings:",
+						"- id: RF-POST",
+						"  severity: high",
+						"  category: correctness",
+						"  title: should not be consumed",
+						"  evidence: post-change review ran unexpectedly",
+						"  required_fix: do not re-open the repair loop",
+					}, "\n"),
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Scope:  "workspace",
+					Stage:  "workspace",
+					Status: VerificationFailed,
+					Output: "other/package_test.go: error: pre-existing failure",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Verification note") && !strings.Contains(reply, "검증 참고") {
+		t.Fatalf("expected out-of-scope verification disclosure to be appended, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("terminal out-of-scope state must not run post-change review or final review turns, got %d requests", len(provider.requests))
+	}
+	if got := len(provider.requests[1].Tools); got != 0 {
+		t.Fatalf("expected all tools to be disabled in terminal out-of-scope final request, got %d", got)
+	}
+	if session.LastReviewRun != nil && strings.EqualFold(session.LastReviewRun.Trigger, "post_change") {
+		t.Fatalf("post-change review must not run after terminal out-of-scope verification, got %#v", session.LastReviewRun)
+	}
+}
+
+func TestAgentOutOfScopeFinalDisclosureHandlesEmptyReply(t *testing.T) {
+	agent := &Agent{
+		Config: Config{},
+		Session: &Session{
+			LastVerification: &VerificationReport{
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Scope:  "workspace",
+					Stage:  "workspace",
+					Status: VerificationFailed,
+					Output: "other/package_test.go: pre-existing failure",
+				}},
+			},
+		},
+	}
+
+	reply := agent.ensureOutOfScopeVerificationFinalDisclosure("")
+	if strings.TrimSpace(reply) == "" {
+		t.Fatalf("expected non-empty verification disclosure for empty final reply")
+	}
+	if !strings.Contains(reply, "Verification note") && !strings.Contains(reply, "검증 참고") {
+		t.Fatalf("expected verification disclosure, got %q", reply)
+	}
+}
+
+func TestAgentAsksBeforeAutomaticVerificationAndSkipsOnNo(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Implemented without running verification."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	history := &VerificationHistoryStore{Path: filepath.Join(root, "verification-history.json")}
+	ws := Workspace{BaseRoot: root, Root: root}
+	promptCount := 0
+	verifyCount := 0
+	var progress []string
+	agent := &Agent{
+		Config:        Config{},
+		Client:        provider,
+		Tools:         NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:     ws,
+		Session:       session,
+		Store:         store,
+		VerifyHistory: history,
+		EmitProgress: func(line string) {
+			progress = append(progress, line)
+		},
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			promptCount++
+			if len(plan.ChangedPaths) == 0 {
+				t.Fatalf("expected changed paths in verification prompt plan")
+			}
+			return false, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Implemented without running verification." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected one verification confirmation prompt, got %d", promptCount)
+	}
+	if verifyCount != 0 {
+		t.Fatalf("verification must not run after user declines, got %d runs", verifyCount)
+	}
+	if session.LastVerification == nil {
+		t.Fatalf("declined verification should record a skipped verification report")
+	}
+	if session.LastVerification.Steps[0].Status != VerificationSkipped {
+		t.Fatalf("declined verification should be skipped, got %#v", session.LastVerification)
+	}
+	if !strings.Contains(session.LastVerification.Decision, "declined") {
+		t.Fatalf("declined verification should preserve the decision, got %#v", session.LastVerification)
+	}
+	if session.TaskState == nil || !slices.Contains(session.TaskState.PendingChecks, verificationPendingCheck) {
+		t.Fatalf("declined verification should leave verification pending, got %#v", session.TaskState)
+	}
+	if !containsStringMatching(progress, "skipped") && !containsStringMatching(progress, "생략") {
+		t.Fatalf("declined verification should emit skipped progress, got %#v", progress)
+	}
+	if containsStringMatching(progress, "finished") {
+		t.Fatalf("declined verification must not use completed progress, got %#v", progress)
+	}
+	latest, ok, err := history.Latest(root)
+	if err != nil {
+		t.Fatalf("load latest verification history: %v", err)
+	}
+	if !ok || latest.Report.Steps[0].Status != VerificationSkipped {
+		t.Fatalf("verification history should record skipped report, got ok=%v latest=%#v", ok, latest)
+	}
+}
+
+func TestAgentBlocksVerificationRetryAfterSkippedAutomaticVerification(t *testing.T) {
+	root := t.TempDir()
+	shellTool := &staticTool{name: "run_shell", output: "go test passed"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			toolCallResponse("run_shell", map[string]any{"command": "go test ./..."}),
+			{Message: Message{Role: "assistant", Text: "Verification was not run because the user declined it, so I am reporting the unverified change."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	promptCount := 0
+	verifyCount := 0
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), shellTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			promptCount++
+			return false, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "not run") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if promptCount != 1 {
+		t.Fatalf("declined automatic verification should prompt once, got %d", promptCount)
+	}
+	if verifyCount != 0 {
+		t.Fatalf("verification callback must not run after decline, got %d runs", verifyCount)
+	}
+	if shellTool.calls != 0 {
+		t.Fatalf("verification retry must be blocked before tool execution, got %d calls", shellTool.calls)
+	}
+	if !sessionContainsText(session, "NOT_EXECUTED: a build, test, or verification command was already skipped") {
+		t.Fatalf("expected skipped-verification retry to be returned as NOT_EXECUTED")
+	}
+}
+
+func TestAgentRecordsAutomaticVerificationPromptErrorAsSkipped(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Implemented without verification."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	verifyCount := 0
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			if len(plan.ChangedPaths) == 0 {
+				t.Fatalf("expected changed paths in verification prompt plan")
+			}
+			return false, fmt.Errorf("prompt closed")
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Implemented without verification." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if verifyCount != 0 {
+		t.Fatalf("verification must not run after prompt error, got %d runs", verifyCount)
+	}
+	if session.LastVerification == nil || session.LastVerification.Steps[0].Status != VerificationSkipped {
+		t.Fatalf("prompt error should record skipped verification, got %#v", session.LastVerification)
+	}
+	if !strings.Contains(session.LastVerification.Decision, "prompt closed") {
+		t.Fatalf("prompt error should be visible in decision, got %#v", session.LastVerification)
+	}
+}
+
+func TestAgentRunsAutomaticVerificationAfterConfirmation(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Implemented and verified."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	promptCount := 0
+	verifyCount := 0
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			promptCount++
+			if len(plan.ChangedPaths) == 0 {
+				t.Fatalf("expected changed paths in verification prompt plan")
+			}
+			return true, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Status: VerificationPassed,
+					Output: "ok",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix and verify")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Implemented and verified." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if promptCount != 1 || verifyCount != 1 {
+		t.Fatalf("expected one prompt and one verification run, got prompts=%d verify=%d", promptCount, verifyCount)
+	}
+	if session.LastVerification == nil || session.LastVerification.HasFailures() {
+		t.Fatalf("expected passing verification report, got %#v", session.LastVerification)
 	}
 }
 
@@ -508,14 +1316,17 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 			verifyCount++
 			if verifyCount == 1 {
 				return VerificationReport{
+					ChangedPaths: []string{"main.go"},
 					Steps: []VerificationStep{{
 						Label:  "go test ./...",
+						Stage:  "targeted",
 						Status: VerificationFailed,
-						Output: "failing test",
+						Output: "main.go: failing test",
 					}},
 				}, true
 			}
 			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
 				Steps: []VerificationStep{{
 					Label:  "go test ./...",
 					Status: VerificationPassed,
@@ -759,6 +1570,62 @@ func TestSummarizeToolInvocationRunShellIncludesCommand(t *testing.T) {
 	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
 	if !strings.Contains(got, "Running shell: rg -n") {
 		t.Fatalf("unexpected shell summary: %q", got)
+	}
+}
+
+func TestSummarizeToolInvocationVerificationRequestsApprovalNotExecution(t *testing.T) {
+	shellCall := ToolCall{
+		Name:      "run_shell",
+		Arguments: `{"command":"go test ./cmd/kernforge"}`,
+	}
+	shellSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, shellCall)
+	if !strings.Contains(shellSummary, "Requesting verification command approval") {
+		t.Fatalf("expected verification approval summary, got %q", shellSummary)
+	}
+	if strings.Contains(shellSummary, "Running shell") {
+		t.Fatalf("verification summary must not claim execution before approval: %q", shellSummary)
+	}
+
+	backgroundCall := ToolCall{
+		Name:      "run_shell_background",
+		Arguments: `{"command":"msbuild SampleApp.sln /m"}`,
+	}
+	backgroundSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, backgroundCall)
+	if !strings.Contains(backgroundSummary, "Requesting background verification approval") {
+		t.Fatalf("expected background verification approval summary, got %q", backgroundSummary)
+	}
+	if strings.Contains(backgroundSummary, "Starting background shell") {
+		t.Fatalf("background verification summary must not claim job start before approval: %q", backgroundSummary)
+	}
+
+	bundleCall := ToolCall{
+		Name:      "run_shell_bundle_background",
+		Arguments: `{"commands":["go test ./cmd/kernforge","rg -n \"foo\" cmd/kernforge"]}`,
+	}
+	bundleSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, bundleCall)
+	if !strings.Contains(bundleSummary, "Requesting background verification bundle approval") {
+		t.Fatalf("expected bundle verification approval summary, got %q", bundleSummary)
+	}
+	if strings.Contains(bundleSummary, "Starting") {
+		t.Fatalf("bundle verification summary must not claim job start before approval: %q", bundleSummary)
+	}
+}
+
+func TestSummarizeToolCompletionVerificationDeclineIsSkippedNotStarted(t *testing.T) {
+	out := "verification command skipped because the user declined to run it. Do not retry this verification command or poll a background job for it unless the user explicitly approves verification; disclose that verification was not run."
+	call := ToolCall{
+		Name:      "run_shell_background",
+		Arguments: `{"command":"go test ./cmd/kernforge"}`,
+	}
+	got := summarizeToolCompletion(Config{AutoLocale: boolPtr(false)}, call, out)
+	if !strings.Contains(got, "Background verification skipped") {
+		t.Fatalf("expected skipped background verification completion, got %q", got)
+	}
+	if strings.Contains(got, "started") {
+		t.Fatalf("declined background verification must not be summarized as started: %q", got)
+	}
+	if !strings.Contains(skippedVerificationCommandText(), "Do not relabel resolved code-review findings") {
+		t.Fatalf("skipped verification guidance should separate verification gaps from code findings: %q", skippedVerificationCommandText())
 	}
 }
 
@@ -1978,6 +2845,9 @@ func TestAgentRetriesEditToolWithoutPreFixReviewSummary(t *testing.T) {
 				Severity:    reviewSeverityMedium,
 				Category:    "correctness",
 				Title:       "단일 처리 실패가 전체 열거를 중단합니다",
+				Path:        "Source/Sample.cpp",
+				Evidence:    "A recoverable item failure exits the surrounding enumeration loop.",
+				Impact:      "Later valid items are skipped.",
 				RequiredFix: "현재 항목만 건너뛰고 다음 항목을 계속 처리하세요.",
 			},
 			{
@@ -1986,6 +2856,9 @@ func TestAgentRetriesEditToolWithoutPreFixReviewSummary(t *testing.T) {
 				Severity:    reviewSeverityMedium,
 				Category:    "correctness",
 				Title:       "고정 버퍼가 정상 결과를 누락할 수 있습니다",
+				Path:        "Source/Sample.cpp",
+				Evidence:    "The result is read once into a fixed-size buffer.",
+				Impact:      "Long results can be dropped.",
 				RequiredFix: "필요한 버퍼 크기를 확인한 뒤 재시도하세요.",
 			},
 		},
@@ -2036,23 +2909,97 @@ func TestPreFixVisibleReviewSummaryRequiresStructuredFindingID(t *testing.T) {
 		Objective: "샘플 코드를 검토하고 버그를 수정해",
 		Gate: GateDecision{
 			Verdict:         reviewVerdictApprovedWithWarnings,
-			WarningFindings: []string{"RF-001"},
+			WarningFindings: []string{"RF-001", "RF-002"},
 		},
-		Findings: []ReviewFinding{{
-			ID:          "RF-001",
-			Source:      "model",
-			Severity:    reviewSeverityMedium,
-			Category:    "correctness",
-			Title:       "경계 조건 누락",
-			RequiredFix: "경계 조건을 검사하세요.",
-		}},
+		Findings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "경계 조건 누락",
+				RequiredFix: "경계 조건을 검사하세요.",
+			},
+			{
+				ID:          "RF-002",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "stability",
+				Title:       "재시도 누락",
+				RequiredFix: "재시도 경로를 검사하세요.",
+			},
+		},
 	}
 
 	if assistantTextIncludesPreFixReviewSummary("검토 결과를 바탕으로 수정하겠습니다.", run) {
 		t.Fatalf("generic review wording should not satisfy visible RF summary")
 	}
-	if !assistantTextIncludesPreFixReviewSummary("검토 결과:\n- RF-001: 경계 조건을 보강합니다.", run) {
+	if assistantTextIncludesPreFixReviewSummary("검토 결과:\n- RF-001: 경계 조건을 보강합니다.", run) {
+		t.Fatalf("partial RF list should not satisfy visible review summary")
+	}
+	if !assistantTextIncludesPreFixReviewSummary("검토 결과:\n- RF-001: 경계 조건을 보강합니다.\n- RF-002: 재시도 경로를 보강합니다.", run) {
 		t.Fatalf("expected explicit RF item to satisfy visible review summary")
+	}
+}
+
+func TestPreFixVisibleReviewSummaryRequiresConcreteTextForIDLessFinding(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "샘플 코드를 검토하고 버그를 수정해",
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{""},
+		},
+		Findings: []ReviewFinding{{
+			Source:      "model",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Missing bounds check",
+			RequiredFix: "Validate the buffer length before indexing.",
+		}},
+	}
+
+	if assistantTextIncludesPreFixReviewSummary("검토 결과:\n- 경고 1개가 있습니다.", run) {
+		t.Fatalf("generic review wording should not satisfy an id-less finding")
+	}
+	if !assistantTextIncludesPreFixReviewSummary("검토 결과:\n- Missing bounds check: Validate the buffer length before indexing.", run) {
+		t.Fatalf("expected concrete title/fix text to satisfy an id-less finding")
+	}
+}
+
+func TestPreFixVisibleReviewSummaryIgnoresStalePreviousTurnSummary(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Source/Sample.cpp:10-40 검토하고 버그를 수정해",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Title:       "Old issue",
+			RequiredFix: "Show this issue before editing.",
+		}},
+	}
+	session.LastReviewRun = &run
+	session.AddMessage(Message{Role: "user", Text: "@Source/Sample.cpp:10-40 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "assistant", Text: "검토 결과:\n- RF-001: Show this issue before editing."})
+	session.AddMessage(Message{Role: "user", Text: "이제 다른 질문이야"})
+	message := Message{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			ID:        "call-patch",
+			Name:      "apply_patch",
+			Arguments: `{"patch":"*** Begin Patch\n*** Update File: Source/Sample.cpp\n@@\n-old\n+new\n*** End Patch"}`,
+		}},
+	}
+
+	if !shouldRetryPreFixEditWithoutVisibleReviewSummary(message, session) {
+		t.Fatalf("stale previous-turn summary must not satisfy the current edit turn")
 	}
 }
 
@@ -2289,6 +3236,27 @@ func TestAgentUsesRecoveryTurnWhenToolBudgetIsExhausted(t *testing.T) {
 				},
 				StopReason: "stop",
 			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Updated main.go, go test ./... passed, and no remaining blockers were recorded.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Updated main.go, go test ./... passed, and no remaining blockers were recorded.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Updated main.go, go test ./... passed, and no remaining blockers were recorded.",
+				},
+				StopReason: "stop",
+			},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -2515,6 +3483,117 @@ func TestAgentPromptsRereadAfterEditTargetMismatch(t *testing.T) {
 	lastMessage := lastTurn.Messages[len(lastTurn.Messages)-1]
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "First read the exact file again from the same path") {
 		t.Fatalf("expected reread guidance, got %#v", lastMessage)
+	}
+	if !strings.Contains(lastMessage.Text, "tool error's expected/current context diagnostics") {
+		t.Fatalf("expected mismatch diagnostic guidance, got %#v", lastMessage)
+	}
+	if !strings.Contains(lastMessage.Text, "Do not repeat or lightly reformat the previous patch text") {
+		t.Fatalf("expected previous patch reuse warning, got %#v", lastMessage)
+	}
+	if !strings.Contains(lastMessage.Text, "Do not broaden into a function rewrite or adjacent API redesign") {
+		t.Fatalf("expected narrow mismatch recovery guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentDefersBroadApplyPatchAfterEditTargetMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc existing() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// stale attempt\n*** End Patch\n",
+			}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// first broad hunk\n@@\n func existing() {}\n+// second broad hunk\n*** End Patch\n",
+			}),
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// narrow repair\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "Applied the narrowed recovery patch."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &sequenceTool{
+		name:    "apply_patch",
+		outputs: []string{"", "patched"},
+		errs:    []error{fmt.Errorf("%w: stale hunk", ErrEditTargetMismatch), nil},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Applied the narrowed recovery patch." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if patchTool.calls != 2 {
+		t.Fatalf("expected stale attempt and narrowed retry to execute, broad retry must be deferred; got %d calls", patchTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: this recovery apply_patch was not executed") {
+		t.Fatalf("expected broad recovery patch to be returned as NOT_EXECUTED")
+	}
+	if !scriptedRequestsContainText(provider.requests, "one file and one independent hunk") {
+		t.Fatalf("expected one-file one-hunk recovery guidance, got %#v", provider.requests)
+	}
+}
+
+func TestAgentStopsAfterRepeatedBroadApplyPatchRecovery(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc existing() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	broadPatch := "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// first broad hunk\n*** Add File: other.go\n+package main\n*** End Patch\n"
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// stale attempt\n*** End Patch\n",
+			}),
+			toolCallResponse("apply_patch", map[string]any{"patch": broadPatch}),
+			toolCallResponse("apply_patch", map[string]any{"patch": broadPatch}),
+			{Message: Message{Role: "assistant", Text: "this should not be requested"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &sequenceTool{
+		name: "apply_patch",
+		errs: []error{fmt.Errorf("%w: stale hunk", ErrEditTargetMismatch)},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Broad apply_patch payloads repeated during recovery") {
+		t.Fatalf("expected repeated broad patch recovery stop reply, got %q", reply)
+	}
+	if patchTool.calls != 1 {
+		t.Fatalf("expected only stale attempt to execute, broad retries must be deferred; got %d calls", patchTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected stop on the second broad recovery patch, got %d requests", len(provider.requests))
 	}
 }
 
@@ -2957,6 +4036,99 @@ func TestAgentReadOnlyAnalysisFallsBackWhenModelDoesNotSupportToolUse(t *testing
 	}
 }
 
+func TestAgentReadOnlyAnalysisBlocksMutationCapableToolsAtExecution(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	marker := filepath.Join(root, "review-mode-marker.txt")
+	runArgs, err := json.Marshal(map[string]any{
+		"command": "Set-Content -Path review-mode-marker.txt -Value mutated",
+	})
+	if err != nil {
+		t.Fatalf("marshal run args: %v", err)
+	}
+	readArgs, err := json.Marshal(map[string]any{
+		"path": "target.txt",
+	})
+	if err != nil {
+		t.Fatalf("marshal read args: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{
+						{
+							ID:        "call-shell",
+							Name:      "run_shell",
+							Arguments: string(runArgs),
+						},
+						{
+							ID:        "call-read",
+							Name:      "read_file",
+							Arguments: string(readArgs),
+						},
+					},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "done",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = append(session.Messages, Message{Role: "user", Text: "analysis only"})
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewRunShellTool(ws), NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "done") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected read-only mode to prevent marker creation, stat err=%v", err)
+	}
+	var shellBlocked bool
+	var readSucceeded bool
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		switch msg.ToolName {
+		case "run_shell":
+			if msg.IsError && strings.Contains(msg.Text, "NOT_EXECUTED") && toolMetaBool(msg.ToolMeta, "read_only_analysis") {
+				shellBlocked = true
+			}
+		case "read_file":
+			if !msg.IsError && strings.Contains(msg.Text, "source") {
+				readSucceeded = true
+			}
+		}
+	}
+	if !shellBlocked {
+		t.Fatalf("expected run_shell tool output to be a read-only block, messages=%#v", session.Messages)
+	}
+	if !readSucceeded {
+		t.Fatalf("expected read_file to remain executable in read-only mode, messages=%#v", session.Messages)
+	}
+}
+
 func TestAgentEditRequestReturnsFriendlyToolUseUnsupportedError(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "VAllocAnalyzer.cpp"), []byte("int Check()\n{\n    return 0;\n}\n"), 0o644); err != nil {
@@ -3355,7 +4527,7 @@ func TestAgentBlocksWebResearchForLocalCodeRepair(t *testing.T) {
 		},
 	}
 
-	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	reply, err := agent.Reply(context.Background(), "검증 명령을 실행해줘")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -3418,7 +4590,7 @@ func TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog(t *
 		Store:          store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	reply, err := agent.Reply(context.Background(), "검증 명령을 실행해줘")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -3437,6 +4609,866 @@ func TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog(t *
 	guidance := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
 	if guidance.Role != "user" || !strings.Contains(guidance.Text, "로컬 코드 리뷰/수정 작업") {
 		t.Fatalf("expected Korean local-code web block guidance, got %#v", guidance)
+	}
+}
+
+func TestAgentBlocksWebResearchWhenLocalCodeContextComesFromToolTranscript(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	session.Messages = append(session.Messages,
+		Message{Role: "user", Text: "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해"},
+		Message{
+			Role:     "tool",
+			ToolName: "read_file",
+			Text:     "read_file loaded SampleApp/SampleWorker/PathConverter.cpp",
+			ToolMeta: map[string]any{"path": "SampleApp/SampleWorker/PathConverter.cpp"},
+		},
+	)
+	for i := 0; i < 16; i++ {
+		session.Messages = append(session.Messages, Message{Role: "user", Text: fmt.Sprintf("계속 진행 %d", i)})
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "Microsoft Learn FindFirstVolume"}),
+			{Message: Message{Role: "assistant", Text: "로컬 도구 기록을 기준으로 계속했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "계속 진행해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 도구") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("web research should be blocked from local tool transcript context, got %d calls", webTool.calls)
+	}
+	if chatRequestHasTool(provider.requests[0], "mcp__web_research__search_web") {
+		t.Fatalf("local code context from tool transcript should hide namespaced web research tools")
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected web tool call to be blocked and retried once, got %d requests", len(provider.requests))
+	}
+	guidance := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if guidance.Role != "user" || !strings.Contains(guidance.Text, "로컬 코드 리뷰/수정 작업") {
+		t.Fatalf("expected Korean local-code web block guidance, got %#v", guidance)
+	}
+}
+
+func TestAgentKeepsLocalCodeWebBlockStickyAcrossRepairLoop(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__fetch_url",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("update_plan", map[string]any{"items": []any{
+				map[string]any{"step": "Gather external API behavior evidence", "status": "in_progress"},
+				map[string]any{"step": "Repair local file", "status": "pending"},
+			}}),
+			toolCallResponse("mcp__web_research__fetch_url", map[string]any{"url": "https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-findfirstvolumew"}),
+			{Message: Message{Role: "assistant", Text: "로컬 코드 수리 맥락을 유지했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewUpdatePlanTool(ws), NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "검증 명령을 실행해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 코드") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("web research should be blocked throughout a local repair loop, got %d calls", webTool.calls)
+	}
+	if chatRequestHasTool(provider.requests[1], "mcp__web_research__fetch_url") {
+		t.Fatalf("local repair turn should keep namespaced web research hidden after prior model plan")
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected plan, blocked web call, final reply; got %d requests", len(provider.requests))
+	}
+	guidance := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if guidance.Role != "user" ||
+		(!strings.Contains(guidance.Text, "local code review or repair request") &&
+			!strings.Contains(guidance.Text, "로컬 코드 리뷰/수정 작업")) {
+		t.Fatalf("expected local-code block guidance, got %#v", guidance)
+	}
+}
+
+func TestAgentBlocksVerificationRetryAndPollAfterDeclineInSameTurn(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	confirmCount := 0
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			confirmCount++
+			return false, nil
+		},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell_background", map[string]any{"command": "go test ./..."}),
+			toolCallResponse("check_shell_job", map[string]any{"job_id": "latest"}),
+			toolCallResponse("run_shell", map[string]any{"command": "Write-Output hello"}),
+			toolCallResponse("run_shell", map[string]any{"command": "go test ./..."}),
+			{Message: Message{Role: "assistant", Text: "검증은 사용자 거절로 실행하지 않았고 재시도하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewRunBackgroundShellTool(ws),
+			NewCheckShellJobTool(ws),
+			NewRunShellTool(ws),
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "검증 명령을 실행해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "재시도하지") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected follow-up request after declined verification, got %d", len(provider.requests))
+	}
+	for i, req := range provider.requests[1:] {
+		for _, toolName := range []string{"run_shell", "run_shell_background"} {
+			if !chatRequestHasTool(req, toolName) {
+				t.Fatalf("request %d should keep %s available; verification-like calls are blocked by arguments at execution time", i+2, toolName)
+			}
+		}
+		if !chatRequestHasTool(req, "check_shell_job") {
+			t.Fatalf("request %d should keep check_shell_job available for already-running non-verification jobs", i+2)
+		}
+	}
+	if confirmCount != 1 {
+		t.Fatalf("declined verification should not prompt again for retry or poll, got %d prompts", confirmCount)
+	}
+	blockedCount := 0
+	unavailablePollCount := 0
+	readOnlyShellCount := 0
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && strings.Contains(msg.Text, "NOT_EXECUTED: a build, test, or verification command was already skipped") {
+			blockedCount++
+			if msg.IsError {
+				t.Fatalf("blocked verification follow-up should be a skipped non-error status: %#v", msg)
+			}
+			if toolMetaBool(msg.ToolMeta, "success") {
+				t.Fatalf("blocked verification follow-up must not be successful evidence: %#v", msg.ToolMeta)
+			}
+			if toolMetaBool(msg.ToolMeta, "verification_evidence") {
+				t.Fatalf("blocked verification follow-up must not count as verification evidence: %#v", msg.ToolMeta)
+			}
+		}
+		if msg.Role == "tool" && msg.ToolName == "check_shell_job" && strings.Contains(msg.Text, "no background shell job is available") {
+			unavailablePollCount++
+			if msg.IsError {
+				t.Fatalf("checking for a missing background job after declined verification should be a non-error status: %#v", msg)
+			}
+			if toolMetaBool(msg.ToolMeta, "verification_evidence") {
+				t.Fatalf("missing background job status must not count as verification evidence: %#v", msg.ToolMeta)
+			}
+		}
+		if msg.Role == "tool" && msg.ToolName == "run_shell" && strings.Contains(msg.Text, "hello") {
+			readOnlyShellCount++
+			if msg.IsError {
+				t.Fatalf("non-verification run_shell should be allowed after declined verification: %#v", msg)
+			}
+		}
+	}
+	if blockedCount != 2 {
+		t.Fatalf("expected verification poll and run_shell retry to be blocked, got %d", blockedCount)
+	}
+	if unavailablePollCount != 0 {
+		t.Fatalf("missing latest background poll after declined verification should be blocked before polling, got %d unavailable poll result(s)", unavailablePollCount)
+	}
+	if readOnlyShellCount != 1 {
+		t.Fatalf("expected one allowed non-verification run_shell after declined verification, got %d", readOnlyShellCount)
+	}
+}
+
+func TestAgentAllowsNonVerificationBackgroundPollAfterDeclinedVerification(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.UpsertBackgroundJob(BackgroundShellJob{
+		ID:             "job-readonly",
+		Command:        "Write-Output hello",
+		CommandSummary: "Write-Output hello",
+		Status:         "completed",
+		MutationClass:  string(shellMutationReadOnly),
+		StartedAt:      time.Now(),
+	})
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	confirmCount := 0
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			confirmCount++
+			return false, nil
+		},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell_background", map[string]any{"command": "go test ./..."}),
+			toolCallResponse("check_shell_job", map[string]any{"job_id": "job-readonly"}),
+			{Message: Message{Role: "assistant", Text: "기존 비검증 작업 상태를 확인했고 검증은 실행하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewRunBackgroundShellTool(ws),
+			NewCheckShellJobTool(ws),
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "비검증 작업") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if confirmCount != 1 {
+		t.Fatalf("declined verification should only prompt once, got %d", confirmCount)
+	}
+	foundPoll := false
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "check_shell_job" && strings.Contains(msg.Text, "job: job-readonly") {
+			foundPoll = true
+			if msg.IsError {
+				t.Fatalf("non-verification background poll should be allowed, got error message: %#v", msg)
+			}
+		}
+	}
+	if !foundPoll {
+		t.Fatalf("expected non-verification background poll result in session")
+	}
+}
+
+func TestAgentBlocksVerificationBackgroundPollAfterDeclinedVerification(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.UpsertBackgroundJob(BackgroundShellJob{
+		ID:             "job-verification",
+		Command:        "go test ./...",
+		CommandSummary: "go test ./...",
+		Status:         "running",
+		MutationClass:  string(shellMutationVerificationArtifacts),
+		StartedAt:      time.Now(),
+	})
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	confirmCount := 0
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			confirmCount++
+			return false, nil
+		},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell_background", map[string]any{"command": "go test ./..."}),
+			toolCallResponse("check_shell_job", map[string]any{"job_id": "job-verification"}),
+			{Message: Message{Role: "assistant", Text: "검증 작업 조회는 재시도하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewRunBackgroundShellTool(ws),
+			NewCheckShellJobTool(ws),
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "tool connectivity") || strings.Contains(reply, "failing to return") {
+		t.Fatalf("reply should not blame skipped verification on tool availability: %q", reply)
+	}
+	if confirmCount != 1 {
+		t.Fatalf("declined verification should only prompt once, got %d", confirmCount)
+	}
+	blockedCount := 0
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "check_shell_job" && strings.Contains(msg.Text, "NOT_EXECUTED: a build, test, or verification command was already skipped") {
+			blockedCount++
+			if msg.IsError {
+				t.Fatalf("verification background poll should be a skipped non-error tool result: %#v", msg)
+			}
+			if got := fmt.Sprint(msg.ToolMeta["result_class"]); got != "verification_skipped" {
+				t.Fatalf("expected verification_skipped result class, got %q in %#v", got, msg.ToolMeta)
+			}
+		}
+	}
+	if blockedCount != 1 {
+		t.Fatalf("expected verification background poll to be blocked once, got %d", blockedCount)
+	}
+}
+
+func TestToolCallIsVerificationRetryOrPollUsesBackgroundMetadata(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	session.UpsertBackgroundJob(BackgroundShellJob{
+		ID:             "job-readonly",
+		Command:        "Write-Output hello",
+		CommandSummary: "Write-Output hello",
+		Status:         "completed",
+		MutationClass:  string(shellMutationReadOnly),
+		StartedAt:      time.Now(),
+	})
+	session.UpsertBackgroundJob(BackgroundShellJob{
+		ID:             "job-verification",
+		Command:        "go test ./...",
+		CommandSummary: "go test ./...",
+		Status:         "running",
+		MutationClass:  string(shellMutationVerificationArtifacts),
+		StartedAt:      time.Now(),
+	})
+
+	readOnlyArgs, _ := json.Marshal(map[string]any{"job_id": "job-readonly"})
+	verificationArgs, _ := json.Marshal(map[string]any{"job_id": "job-verification"})
+	if toolCallIsVerificationRetryOrPoll(ToolCall{Name: "check_shell_job", Arguments: string(readOnlyArgs)}, session) {
+		t.Fatalf("read-only background job poll must not be treated as verification retry")
+	}
+	if !toolCallIsVerificationRetryOrPoll(ToolCall{Name: "check_shell_job", Arguments: string(verificationArgs)}, session) {
+		t.Fatalf("verification background job poll should be treated as verification retry")
+	}
+
+	emptySession := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	latestArgs, _ := json.Marshal(map[string]any{"job_id": "latest"})
+	if !toolCallIsVerificationRetryOrPoll(ToolCall{Name: "check_shell_job", Arguments: string(latestArgs)}, emptySession) {
+		t.Fatalf("latest background poll with no job after declined verification should be blocked before emitting a misleading poll")
+	}
+}
+
+func TestLatestEditProposalForUserDecisionSkipsIncludeOnlyWhenReviewNeedsCodePatch(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	meaningfulPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"-\treturn false;",
+		"+\treturn true;",
+		"*** End Patch",
+	}, "\n")
+	includeOnlyPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"+#include <vector>",
+		"*** End Patch",
+	}, "\n")
+	session.AddMessage(Message{Role: "assistant", Text: "최신 리뷰 결과:\n- RF-001: 함수 본문을 수정해야 합니다."})
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": meaningfulPatch}).Message)
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": includeOnlyPatch}).Message)
+	session.LastReviewRun = &ReviewRun{
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Loop body still exits early",
+			Evidence:    "The function body still contains the old branch.",
+			RequiredFix: "Patch the control flow in the function body.",
+			BlocksGate:  true,
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+
+	toolName, proposal := latestEditToolProposalForUserDecision(session)
+	if toolName != "apply_patch" {
+		t.Fatalf("expected apply_patch proposal, got %q", toolName)
+	}
+	if !strings.Contains(proposal, "return true") {
+		t.Fatalf("expected previous meaningful patch, got %q", proposal)
+	}
+	if strings.Contains(proposal, "#include <vector>") {
+		t.Fatalf("include-only follow-up should not hide the meaningful blocked patch: %q", proposal)
+	}
+}
+
+func TestLatestEditProposalForUserDecisionScansWithoutReviewBoundary(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	meaningfulPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"-\treturn false;",
+		"+\treturn true;",
+		"*** End Patch",
+	}, "\n")
+	includeOnlyPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"+#include <vector>",
+		"*** End Patch",
+	}, "\n")
+	session.AddMessage(Message{Role: "user", Text: "Fix the pre-write review finding."})
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": meaningfulPatch}).Message)
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": includeOnlyPatch}).Message)
+	session.LastReviewRun = &ReviewRun{
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Loop body still exits early",
+			Evidence:    "The function body still contains the old branch.",
+			RequiredFix: "Patch the control flow in the function body.",
+			BlocksGate:  true,
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+
+	_, proposal := latestEditToolProposalForUserDecision(session)
+	if !strings.Contains(proposal, "return true") {
+		t.Fatalf("expected previous meaningful patch without a review boundary, got %q", proposal)
+	}
+	if strings.Contains(proposal, "#include <vector>") {
+		t.Fatalf("include-only follow-up should not hide the meaningful blocked patch: %q", proposal)
+	}
+}
+
+func TestProposalLooksIncludeOnlyIgnoresDiffContextLines(t *testing.T) {
+	proposal := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		" void Existing()",
+		" {",
+		" \treturn;",
+		" }",
+		"+#include <vector>",
+		"*** End Patch",
+	}, "\n")
+	if !proposalLooksIncludeOnly(proposal) {
+		t.Fatalf("diff context lines with leading whitespace must not be treated as changed code")
+	}
+}
+
+func TestProposalLooksIncludeOnlyRejectsActualCodeChanges(t *testing.T) {
+	proposal := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"+#include <vector>",
+		"-\treturn false;",
+		"+\treturn true;",
+		"*** End Patch",
+	}, "\n")
+	if proposalLooksIncludeOnly(proposal) {
+		t.Fatalf("actual +/- code lines at diff column zero must not be classified as include-only")
+	}
+}
+
+func TestLatestEditProposalForUserDecisionDoesNotUseStaleProposalBeforeReviewBoundary(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	stalePatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: old.cpp",
+		"@@",
+		"-\treturn false;",
+		"+\treturn true;",
+		"*** End Patch",
+	}, "\n")
+	includeOnlyPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"+#include <vector>",
+		"*** End Patch",
+	}, "\n")
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": stalePatch}).Message)
+	session.AddMessage(Message{Role: "assistant", Text: "최신 리뷰 결과:\n- RF-001: 현재 함수 본문을 수정해야 합니다."})
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": includeOnlyPatch}).Message)
+	session.LastReviewRun = &ReviewRun{
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Function body still exits early",
+			Evidence:    "The current function body still contains the old branch.",
+			RequiredFix: "Patch the control flow in the function body.",
+			BlocksGate:  true,
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+
+	_, proposal := latestEditToolProposalForUserDecision(session)
+	if strings.Contains(proposal, "old.cpp") || strings.Contains(proposal, "return true") {
+		t.Fatalf("stale proposal before the latest review boundary should not be reused: %q", proposal)
+	}
+	if !strings.Contains(proposal, "#include <vector>") {
+		t.Fatalf("expected latest in-boundary proposal when no meaningful in-boundary patch exists, got %q", proposal)
+	}
+}
+
+func TestLatestEditProposalForUserDecisionKeepsIncludeOnlyWhenReviewNeedsInclude(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	meaningfulPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"-\treturn false;",
+		"+\treturn true;",
+		"*** End Patch",
+	}, "\n")
+	includeOnlyPatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: sample.cpp",
+		"@@",
+		"+#include <memory>",
+		"*** End Patch",
+	}, "\n")
+	session.AddMessage(Message{Role: "assistant", Text: "최신 리뷰 결과:\n- RF-include: include를 추가해야 합니다."})
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": meaningfulPatch}).Message)
+	session.AddMessage(toolCallResponse("apply_patch", map[string]any{"patch": includeOnlyPatch}).Message)
+	session.LastReviewRun = &ReviewRun{
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-include",
+			Title:       "std::unique_ptr include is missing",
+			Evidence:    "The latest code uses std::unique_ptr.",
+			RequiredFix: "Add #include <memory> and resubmit the patch.",
+			BlocksGate:  true,
+		}},
+	}
+
+	_, proposal := latestEditToolProposalForUserDecision(session)
+	if !strings.Contains(proposal, "#include <memory>") {
+		t.Fatalf("include-only blocker should keep the latest include proposal, got %q", proposal)
+	}
+	if strings.Contains(proposal, "return true") {
+		t.Fatalf("include-only blocker should not restore an older function-body proposal: %q", proposal)
+	}
+}
+
+func TestExplicitWebResearchRequestOverridesRecentLocalCodeContext(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "assistant", Text: "로컬 코드 수정을 검토했습니다."})
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "fresh source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "latest Windows storage API docs"}),
+			{Message: Message{Role: "assistant", Text: "웹 리서치 결과를 확인했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools:  NewToolRegistry(webTool),
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		Session: session,
+		Store:   store,
+		MCP: &MCPManager{
+			servers: []*MCPClient{{
+				config: MCPServerConfig{Name: "web_research"},
+				tools: []MCPToolDescriptor{{
+					Name:        "search_web",
+					Description: "Search the web for current articles and references",
+				}},
+			}},
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "최신 Windows storage API 문서를 웹에서 검색해서 알려줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "웹 리서치") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 1 {
+		t.Fatalf("explicit web research request should execute the web tool once, got %d", webTool.calls)
+	}
+	if len(provider.requests) == 0 || !chatRequestHasTool(provider.requests[0], "mcp__web_research__search_web") {
+		t.Fatalf("explicit web research request should expose web tool despite earlier local-code context")
+	}
+}
+
+func TestLocalCodeToolPolicyDoesNotStickToLaterNonCodeRequest(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Source/Sample.cpp:1-20 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "assistant", Text: "로컬 코드를 수정했습니다."})
+	session.LastReviewRun = &ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Source/Sample.cpp:1-20 검토하고 버그를 수정해",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"Source/Sample.cpp"},
+		},
+	}
+	session.AddMessage(Message{Role: "user", Text: "방금 결과를 짧게 요약해줘"})
+
+	if shouldUseLocalCodeToolPolicy(session) {
+		t.Fatalf("previous local-code context should not force current non-code request into local-code policy")
+	}
+}
+
+func TestLocalCodeToolPolicyAllowsCurrentRepairContinuation(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Source/Sample.cpp:1-20 검토하고 버그를 수정해",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"Source/Sample.cpp"},
+		},
+	}
+	session.AddMessage(Message{Role: "user", Text: "계속 수정해\n\nPending review repair confirmation:\n- Continue from the latest review findings."})
+
+	if !shouldUseLocalCodeToolPolicy(session) {
+		t.Fatalf("explicit current repair continuation should keep local-code policy")
+	}
+}
+
+func TestAgentRetriesFinalReplyThatBlamesSkippedVerificationOnToolAvailability(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	confirmCount := 0
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			confirmCount++
+			return false, nil
+		},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell_background", map[string]any{"command": "go test ./..."}),
+			toolCallResponse("run_shell_background", map[string]any{"command": "go test ./..."}),
+			{Message: Message{Role: "assistant", Text: "Blocked by tool availability/session errors.\n\n- The requested MCP tools (`mcp__web_research__search_web`) are not exposed in the callable tool namespace.\n- Local inspection/verification tools are currently returning transcript-recovery errors.\n\nBest next action: enable/expose the MCP web-research tools."}},
+			{Message: Message{Role: "assistant", Text: "검증은 사용자 승인 없이 실행하지 않았고 재시도하지 않았습니다. 코드 변경 요약과 미검증 위험만 보고합니다."}},
+		},
+	}
+	var progress []string
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewRunBackgroundShellTool(ws),
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(strings.ToLower(reply), "mcp") || strings.Contains(strings.ToLower(reply), "web-research") {
+		t.Fatalf("tool availability blame leaked to final reply: %q", reply)
+	}
+	if !strings.Contains(reply, "검증은") || !strings.Contains(reply, "실행하지") {
+		t.Fatalf("expected final reply to disclose skipped verification, got %q", reply)
+	}
+	if confirmCount != 1 {
+		t.Fatalf("declined verification should only prompt once, got %d", confirmCount)
+	}
+	approvalProgressCount := 0
+	for _, message := range progress {
+		if strings.Contains(message, "Requesting background verification approval") || strings.Contains(message, "백그라운드 검증 승인 확인") {
+			approvalProgressCount++
+		}
+	}
+	if approvalProgressCount != 1 {
+		t.Fatalf("declined verification should only emit one approval progress message, got %d: %#v", approvalProgressCount, progress)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected retry after bad final reply, got %d requests", len(provider.requests))
+	}
+	foundGuidance := false
+	for _, msg := range session.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Text, "도구 가용성/세션 장애로 잘못 해석") {
+			foundGuidance = true
+			break
+		}
+	}
+	if !foundGuidance {
+		t.Fatalf("expected skipped-verification tool-availability guidance in session")
+	}
+	if !scriptedRequestsContainText(provider.requests, "같은 검증을 위해 run_shell") {
+		t.Fatalf("expected blocked verification retry guidance before final reply, got %#v", provider.requests)
+	}
+}
+
+func TestDeclinedVerificationFollowupDoesNotRecordBackgroundStartOrFailure(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	call := ToolCall{
+		Name:      "run_shell_background",
+		Arguments: `{"command":"go test ./..."}`,
+	}
+	agent.noteToolExecutionResultDetailed(call, declinedVerificationFollowupBlockedResult(call), nil)
+
+	if session.TaskState == nil {
+		t.Fatalf("expected task state")
+	}
+	for _, failed := range session.TaskState.FailedAttempts {
+		if strings.Contains(strings.ToLower(failed), "verification") || strings.Contains(strings.ToLower(failed), "go test") {
+			t.Fatalf("declined verification follow-up must not be a failed attempt: %#v", session.TaskState.FailedAttempts)
+		}
+	}
+	for _, event := range session.TaskState.Events {
+		if event.Kind == "background_start" {
+			t.Fatalf("declined verification follow-up must not be recorded as a background start: %#v", session.TaskState.Events)
+		}
+	}
+	foundSkipped := false
+	for _, event := range session.TaskState.Events {
+		if event.Kind == "verification_skipped" && event.Status == "skipped" {
+			foundSkipped = true
+			break
+		}
+	}
+	if !foundSkipped {
+		t.Fatalf("expected skipped verification event, got %#v", session.TaskState.Events)
+	}
+}
+
+func TestAgentDoesNotRewriteToolAvailabilityReplyAsSkippedVerificationWithoutSkippedVerification(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "Blocked by tool availability/session errors.\n\n- The requested MCP tools are not exposed in the callable tool namespace.\n- Local inspection tools are currently unavailable."}},
+		},
+	}
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools:  NewToolRegistry(),
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		Session: session,
+		Store:   store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "tool availability") {
+		t.Fatalf("expected original tool-availability reply to remain visible, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("tool-availability reply should not be rewritten as skipped verification without a skipped verification event, got %d requests", len(provider.requests))
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Text, "검증 생략 상태") {
+			t.Fatalf("unexpected skipped-verification guidance without skipped verification: %#v", msg)
+		}
 	}
 }
 
@@ -3824,6 +5856,152 @@ func TestAgentReportsReviewAndProposalAfterRepeatedPreWriteBlock(t *testing.T) {
 	}
 }
 
+func TestAgentContinuesAfterDistinctPreWriteCodeFinding(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	setReview := func(id string, title string, fix string) {
+		session.LastReviewRun = &ReviewRun{
+			Trigger: "pre_write",
+			Gate: GateDecision{
+				Verdict:          reviewVerdictNeedsRevision,
+				BlockingFindings: []string{id},
+			},
+			Result: ReviewResult{Summary: title},
+			Findings: []ReviewFinding{{
+				ID:          id,
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       title,
+				RequiredFix: fix,
+				Quality:     reviewFindingQualityComplete,
+			}},
+		}
+	}
+	preWriteErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n" +
+		"Automatic pre-write review found blockers.\n\nReview gate: needs_revision")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &sequenceTool{
+		name:    "apply_patch",
+		outputs: []string{"", "", "Patch applied successfully."},
+		errs:    []error{preWriteErr, preWriteErr, nil},
+		before: []func(){
+			func() {
+				setReview("RF-001", "First proposed edit still misses one guard", "Add the missing guard.")
+			},
+			func() {
+				setReview("RF-002", "Second proposed edit now misses a different repair", "Apply the different required repair.")
+			},
+		},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// second proposal\n*** End Patch\n"}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// fixed\n*** End Patch\n"}),
+			{Message: Message{Role: "assistant", Text: "Distinct pre-write findings were repaired."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Distinct pre-write findings were repaired.") {
+		t.Fatalf("expected repair loop to continue through distinct pre-write blockers, got %q", reply)
+	}
+	if patchTool.calls != 3 {
+		t.Fatalf("expected two blocked patches and one successful repair, got %d", patchTool.calls)
+	}
+	if len(provider.requests) != 6 {
+		t.Fatalf("expected final response after continuing through distinct blockers, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentBlocksImmediateEditAfterPreWriteBlockUntilReanchor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	preWriteErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n" +
+		"Automatic pre-write review found blockers.\n\nReview gate: needs_revision")
+	patchTool := &sequenceTool{
+		name:    "apply_patch",
+		outputs: []string{"", "Patch applied successfully."},
+		errs:    []error{preWriteErr, nil},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(ToolCall{
+				ID:        "call-first-patch",
+				Name:      "apply_patch",
+				Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+			}),
+			multiToolCallResponse(ToolCall{
+				ID:        "call-immediate-patch",
+				Name:      "apply_patch",
+				Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+			}),
+			multiToolCallResponse(ToolCall{
+				ID:        "call-reanchor",
+				Name:      "read_file",
+				Arguments: `{"path":"main.go"}`,
+			}),
+			multiToolCallResponse(ToolCall{
+				ID:        "call-final-patch",
+				Name:      "apply_patch",
+				Arguments: `{"patch":"*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// repaired\n*** End Patch\n"}`,
+			}),
+			{Message: Message{Role: "assistant", Text: "reanchored and repaired"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "reanchored and repaired" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if patchTool.calls != 2 {
+		t.Fatalf("expected immediate stale patch to be blocked before execution, got %d patch calls", patchTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-immediate-patch", "NOT_EXECUTED: the previous edit proposal was blocked before writing") {
+		t.Fatalf("expected immediate patch to be returned as NOT_EXECUTED")
+	}
+	if !scriptedRequestsContainText(provider.requests, "Before another edit tool can run, re-anchor on committed workspace state") {
+		t.Fatalf("expected reanchor guidance in model requests, got %#v", provider.requests)
+	}
+	if len(provider.requests) != 5 {
+		t.Fatalf("expected reanchor turn before final patch, got %d requests", len(provider.requests))
+	}
+}
+
 func TestAgentForcesEditAfterPreWriteRepairInspectionBudget(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
@@ -3878,6 +6056,116 @@ func TestAgentForcesEditAfterPreWriteRepairInspectionBudget(t *testing.T) {
 	}
 	if !scriptedRequestsContainText(provider.requests, "next response must be an edit-tool call") {
 		t.Fatalf("expected force-edit guidance after inspection budget, got %#v", provider.requests)
+	}
+}
+
+func TestAgentStopsCurrentBatchAfterPreWriteRepairInspectionBudget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	readCalls := make([]ToolCall, 0, maxPreWriteReviewRepairInspectTools+2)
+	for i := 1; i <= maxPreWriteReviewRepairInspectTools+1; i++ {
+		name := fmt.Sprintf("file%d.go", i)
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+		readCalls = append(readCalls, ToolCall{
+			ID:        fmt.Sprintf("call-read-%d", i),
+			Name:      "read_file",
+			Arguments: fmt.Sprintf(`{"path":"%s"}`, name),
+		})
+	}
+	readCalls = append(readCalls, ToolCall{
+		ID:        "call-same-batch-patch",
+		Name:      "apply_patch",
+		Arguments: `{"patch":"*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// same batch should not run\n*** End Patch\n"}`,
+	})
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	preWriteErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n" +
+		"Automatic pre-write review found blockers.\n\nReview gate: needs_revision")
+	patchTool := &sequenceTool{
+		name:    "apply_patch",
+		outputs: []string{"", "Patch applied successfully."},
+		errs:    []error{preWriteErr, nil},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			multiToolCallResponse(readCalls...),
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// fixed\n*** End Patch\n"}),
+			{Message: Message{Role: "assistant", Text: "Applied the narrow pre-write repair."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Applied the narrow pre-write repair.") {
+		t.Fatalf("expected next-turn repair after inspection budget nudge, got %q", reply)
+	}
+	if patchTool.calls != 2 {
+		t.Fatalf("expected blocked patch plus next-turn repair patch only, got %d calls", patchTool.calls)
+	}
+	var skippedSameBatchPatch bool
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolCallID == "call-same-batch-patch" && strings.Contains(msg.Text, "NOT_EXECUTED") {
+			skippedSameBatchPatch = true
+			break
+		}
+	}
+	if !skippedSameBatchPatch {
+		t.Fatalf("expected same-batch patch after exhausted inspection budget to be marked NOT_EXECUTED")
+	}
+}
+
+func TestAgentClosesBlockedReadOnlyEditToolBatchBeforeGuidance(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &sequenceTool{name: "apply_patch", outputs: []string{"patched"}}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "분석만 수행했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+	session.AddMessage(Message{Role: "user", Text: "analysis-only"})
+
+	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "분석") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if patchTool.calls != 0 {
+		t.Fatalf("read-only blocked edit tool must not execute, got %d calls", patchTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: this is a read-only analysis turn") {
+		t.Fatalf("blocked edit tool call must be closed with a NOT_EXECUTED tool result")
 	}
 }
 
@@ -4429,6 +6717,45 @@ func TestReviewerGateUnavailableRouteOnlyReplyDoesNotRecordPendingConfirmation(t
 	}
 }
 
+func TestReviewerGateUnavailableUserDecisionReplyDoesNotMutateSession(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-format-pure",
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-101"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-101",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Retry path drops an item",
+				RequiredFix: "Repair the item handling path.",
+				BlocksGate:  true,
+			},
+		},
+	}
+
+	reply := formatReviewerGateUnavailableUserDecisionReply(Config{AutoLocale: boolPtr(false)}, session)
+	if !strings.Contains(reply, "[y/N]") {
+		t.Fatalf("expected actionable formatter content to include y/N guidance, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("formatter must not mutate pending confirmation state")
+	}
+}
+
 func TestAgentContinuesReviewerGateRepairOnlyOnY(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "main-model", "", "default")
@@ -4806,11 +7133,94 @@ func TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess(t *te
 	if !strings.Contains(reply, "Edit target mismatches repeated") {
 		t.Fatalf("expected bounded edit mismatch stop reply, got %q", reply)
 	}
+	if !strings.Contains(reply, "Result: no code changes were applied") || !strings.Contains(reply, "Latest edit proposal") {
+		t.Fatalf("expected mismatch stop reply to show result and latest proposal, got %q", reply)
+	}
 	if replaceTool.calls != 2 {
 		t.Fatalf("expected exactly two mismatched edit attempts, got %d", replaceTool.calls)
 	}
 	if len(provider.requests) != 3 {
 		t.Fatalf("expected agent to stop on the second edit mismatch, got %d requests", len(provider.requests))
+	}
+}
+
+func TestEditTargetMismatchLoopLimitShowsPreWriteBlocker(t *testing.T) {
+	session := &Session{
+		LastReviewRun: &ReviewRun{
+			Trigger: "pre_write",
+			Gate: GateDecision{
+				Verdict:          reviewVerdictInsufficientEvidence,
+				BlockingFindings: []string{"RF-001"},
+				WarningFindings:  []string{"RF-002"},
+			},
+			Findings: []ReviewFinding{
+				{
+					ID:          "RF-001",
+					Severity:    reviewSeverityMedium,
+					Category:    "evidence_gap",
+					Title:       "Dynamic buffer repair evidence is missing",
+					RequiredFix: "Resubmit the full after-change function body.",
+					BlocksGate:  true,
+				},
+				{
+					ID:       "RF-002",
+					Severity: reviewSeverityLow,
+					Category: "test_gap",
+					Title:    "Build result is missing",
+				},
+			},
+		},
+	}
+	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session)
+	if !strings.Contains(reply, "Latest review result: insufficient_evidence") ||
+		!strings.Contains(reply, "RF-001") ||
+		!strings.Contains(reply, "Dynamic buffer repair evidence is missing") {
+		t.Fatalf("expected mismatch stop reply to surface the pre-write blocker, got %q", reply)
+	}
+}
+
+func TestPreWriteReviewBlockDisablesReplaceForNextRetry(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("automatic pre-write review blocked this edit before writing: missing evidence"),
+	}
+	replaceTool := &failingTool{name: "replace_in_file"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			{Message: Message{Role: "assistant", Text: "ready to retry with apply_patch only"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, replaceTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+	reply, err := agent.Reply(context.Background(), "fix main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "ready to retry") {
+		t.Fatalf("expected second model reply, got %q", reply)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a second model request after pre-write block, got %d", len(provider.requests))
+	}
+	if !chatRequestHasTool(provider.requests[0], "replace_in_file") {
+		t.Fatalf("expected replace_in_file to be initially available")
+	}
+	if chatRequestHasTool(provider.requests[1], "replace_in_file") {
+		t.Fatalf("expected replace_in_file to be disabled after pre-write block")
+	}
+	if !scriptedRequestsContainText(provider.requests, "replace_in_file is disabled for this recovery path") {
+		t.Fatalf("expected retry guidance to explain disabled replace_in_file")
 	}
 }
 
@@ -5044,6 +7454,68 @@ func TestAgentReturnsFinalReplyEvenWhenAlreadyStreamed(t *testing.T) {
 	if reply != "final streamed answer" {
 		t.Fatalf("expected streamed final reply to be returned, got %q", reply)
 	}
+}
+
+func TestReadFilePathKeyNormalizesCaseInsensitivePaths(t *testing.T) {
+	upperArgs, err := json.Marshal(map[string]any{"path": "Src/Foo.cpp"})
+	if err != nil {
+		t.Fatalf("marshal upper args: %v", err)
+	}
+	lowerArgs, err := json.Marshal(map[string]any{"path": "Src/foo.cpp"})
+	if err != nil {
+		t.Fatalf("marshal lower args: %v", err)
+	}
+	upper := readFilePathKey(string(upperArgs))
+	lower := readFilePathKey(string(lowerArgs))
+	if upper == "" || lower == "" {
+		t.Fatalf("expected non-empty path keys, got upper=%q lower=%q", upper, lower)
+	}
+	if runtime.GOOS == "windows" {
+		if upper != lower {
+			t.Fatalf("Windows read_file path keys should normalize case, got upper=%q lower=%q", upper, lower)
+		}
+	} else if upper == lower {
+		t.Fatalf("POSIX-style read_file path keys should preserve case on case-sensitive workspaces, got %q", upper)
+	}
+
+	winUpperArgs, err := json.Marshal(map[string]any{"path": `C:\Repo\Src\Foo.cpp`})
+	if err != nil {
+		t.Fatalf("marshal windows upper args: %v", err)
+	}
+	winLowerArgs, err := json.Marshal(map[string]any{"path": `c:\repo\src\foo.cpp`})
+	if err != nil {
+		t.Fatalf("marshal windows lower args: %v", err)
+	}
+	if gotUpper, gotLower := readFilePathKey(string(winUpperArgs)), readFilePathKey(string(winLowerArgs)); gotUpper != gotLower {
+		t.Fatalf("Windows-style read_file path keys should normalize case, got upper=%q lower=%q", gotUpper, gotLower)
+	}
+
+	backslashUpperArgs, err := json.Marshal(map[string]any{"path": `Dir\File.txt`})
+	if err != nil {
+		t.Fatalf("marshal backslash upper args: %v", err)
+	}
+	backslashLowerArgs, err := json.Marshal(map[string]any{"path": `dir\file.txt`})
+	if err != nil {
+		t.Fatalf("marshal backslash lower args: %v", err)
+	}
+	backslashUpper := readFilePathKey(string(backslashUpperArgs))
+	backslashLower := readFilePathKey(string(backslashLowerArgs))
+	if runtime.GOOS == "windows" {
+		if backslashUpper != backslashLower {
+			t.Fatalf("Windows backslash read_file path keys should normalize case, got upper=%q lower=%q", backslashUpper, backslashLower)
+		}
+	} else if backslashUpper == backslashLower {
+		t.Fatalf("non-Windows ordinary backslash paths must preserve case, got upper=%q lower=%q", backslashUpper, backslashLower)
+	}
+}
+
+func containsStringMatching(values []string, needle string) bool {
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
@@ -5464,6 +7936,124 @@ func TestAgentStopsAfterDiffPreviewPromptCanceledWithoutModelRetry(t *testing.T)
 	}
 }
 
+func TestAgentStopsAfterDiffPreviewEOFWithoutModelRetry(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := "package main\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "this response must not be requested after preview EOF",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	previewCalls := 0
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			previewCalls++
+			if !strings.Contains(preview.Preview, "Preview for main.go") {
+				t.Fatalf("expected patch preview contents, got %q", preview.Preview)
+			}
+			return false, io.EOF
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "update main.go")
+	if !errors.Is(err, ErrEditCanceled) {
+		t.Fatalf("expected ErrEditCanceled after preview EOF, got %v", err)
+	}
+	if previewCalls != 1 {
+		t.Fatalf("expected one preview call, got %d", previewCalls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("preview EOF must stop without a model retry, got %d requests", len(provider.requests))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("preview EOF must not change files, got %q", string(data))
+	}
+}
+
+func TestAgentStopsAfterWriteApprovalUnavailableWithoutModelRetry(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := "package main\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "this response must not be requested after write approval is unavailable",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Perms: NewPermissionManager(ModeDefault, func(question string) (bool, error) {
+			return false, fmt.Errorf("interactive confirmation unavailable")
+		}),
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "update main.go")
+	if !errors.Is(err, ErrWriteDenied) {
+		t.Fatalf("expected ErrWriteDenied after write approval unavailable, got %v", err)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("write approval failure must stop without a model retry, got %d requests", len(provider.requests))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("write approval failure must not change files, got %q", string(data))
+	}
+}
+
 func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 	root := t.TempDir()
 	mainProvider := &scriptedProviderClient{
@@ -5486,18 +8076,6 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: strings.Join([]string{
-						"REVIEW_RESULT",
-						"verdict: approved",
-						"summary: post-change review approved the edit",
-						"findings:",
-					}, "\n"),
-				},
-				StopReason: "stop",
-			},
-			{
-				Message: Message{
-					Role: "assistant",
 					Text: "I updated the fix, verified the result via go test ./..., and there are no remaining blockers.",
 				},
 				StopReason: "stop",
@@ -5510,6 +8088,18 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 				Message: Message{
 					Role: "assistant",
 					Text: "APPROVED\nThe execution plan is sound.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: strings.Join([]string{
+						"REVIEW_RESULT",
+						"verdict: approved",
+						"summary: post-change review approved the edit",
+						"findings:",
+					}, "\n"),
 				},
 				StopReason: "stop",
 			},
@@ -5563,8 +8153,8 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 	if !strings.Contains(reply, "verified the result") {
 		t.Fatalf("expected revised final answer, got %q", reply)
 	}
-	if len(reviewer.requests) != 3 {
-		t.Fatalf("expected plan review + 2 final reviews, got %d requests", len(reviewer.requests))
+	if len(reviewer.requests) != 4 {
+		t.Fatalf("expected plan review + post-change review + 2 final reviews, got %d requests", len(reviewer.requests))
 	}
 	foundRevisionPrompt := false
 	for _, msg := range session.Messages {
@@ -5600,6 +8190,17 @@ func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 				},
 				StopReason: "stop",
 			},
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "APPROVED\nThe execution plan is sound.",
+				},
+				StopReason: "stop",
+			},
 			{
 				Message: Message{
 					Role: "assistant",
@@ -5609,17 +8210,6 @@ func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 						"summary: post-change review approved the edit",
 						"findings:",
 					}, "\n"),
-				},
-				StopReason: "stop",
-			},
-		},
-	}
-	reviewer := &scriptedProviderClient{
-		replies: []ChatResponse{
-			{
-				Message: Message{
-					Role: "assistant",
-					Text: "APPROVED\nThe execution plan is sound.",
 				},
 				StopReason: "stop",
 			},
@@ -5966,6 +8556,14 @@ func TestAssignFocusedOwnerNodeToToolCalls(t *testing.T) {
 	session.TaskState = &TaskState{
 		ExecutorFocusNode: "plan-02",
 	}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:                 "plan-02",
+				EditableLeasePaths: []string{"main.go"},
+			},
+		},
+	}
 
 	calls := []ToolCall{
 		{
@@ -5991,6 +8589,33 @@ func TestAssignFocusedOwnerNodeToToolCalls(t *testing.T) {
 	}
 	if got := stringValue(toolCallArgumentsMap(updated[2]), "owner_node_id"); got != "" {
 		t.Fatalf("expected read-only tool call to remain unchanged, got %#v", updated[2])
+	}
+}
+
+func TestAssignFocusedOwnerNodeToToolCallsSkipsUnroutedFocusNode(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		ExecutorFocusNode: "plan-02",
+	}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:    "plan-02",
+				Title: "Review focused code",
+			},
+		},
+	}
+
+	calls := []ToolCall{
+		{
+			Name:      "apply_patch",
+			Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+		},
+	}
+
+	updated := assignFocusedOwnerNodeToToolCalls(calls, session)
+	if got := stringValue(toolCallArgumentsMap(updated[0]), "owner_node_id"); got != "" {
+		t.Fatalf("expected unrouted focus node not to be injected as owner_node_id, got %#v", updated[0])
 	}
 }
 

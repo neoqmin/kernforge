@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -44,7 +45,6 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 		})
 	}
 	if preWrite {
-		findings = append(findings, deterministicPreWriteRepairProposalFindings(run)...)
 		// Pre-write review gates the proposed diff before it is applied. Runtime
 		// verification is still expected after the edit, so missing verification
 		// evidence must not block the pre-write gate.
@@ -58,7 +58,7 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 					Confidence:   "high",
 					Quality:      reviewFindingQualityComplete,
 					Title:        "Single-model pre-write review lacks a frozen diff",
-					Evidence:     "Single-model mode cannot independently re-check a write without a frozen diff or edit proposal fingerprint.",
+					Evidence:     "Single-model mode cannot independently re-check a write without a frozen diff or captured edit proposal preview.",
 					Impact:       "The same model could approve a moving patch instead of the exact edit that will be shown in diff preview.",
 					RequiredFix:  "Create a frozen edit proposal with diff preview evidence, then rerun the pre-write review.",
 					BlocksGate:   true,
@@ -130,7 +130,7 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 			BlocksGate:   false,
 		})
 	}
-	if rt != nil && rt.session != nil && rt.session.LastCodingHarnessReport != nil {
+	if reviewShouldIncludeCodingHarness(run) && rt != nil && rt.session != nil && rt.session.LastCodingHarnessReport != nil {
 		report := *rt.session.LastCodingHarnessReport
 		report.Normalize()
 		for _, finding := range report.allFindings() {
@@ -149,6 +149,16 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 				blocks = true
 			case "warning":
 				severity = reviewSeverityMedium
+			}
+			if preWrite {
+				// The coding harness audits the agent's final state and final
+				// answer claims. Pre-write review gates a frozen edit proposal,
+				// so stale or unrelated final-state blockers must not veto the
+				// exact diff before it reaches preview.
+				if severity == reviewSeverityBlocker {
+					severity = reviewSeverityMedium
+				}
+				blocks = false
 			}
 			findings = append(findings, ReviewFinding{
 				Source:       "deterministic",
@@ -181,113 +191,6 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 	}
 	assignReviewFindingIDs(findings)
 	return findings
-}
-
-func deterministicPreWriteRepairProposalFindings(run ReviewRun) []ReviewFinding {
-	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || len(run.RepairFindings) == 0 {
-		return nil
-	}
-	proposalText := preWriteProposalAlignmentText(run)
-	if strings.TrimSpace(proposalText) == "" {
-		return nil
-	}
-	includeOnly := proposalLooksIncludeOnly(proposalText)
-	var findings []ReviewFinding
-	for _, repair := range run.RepairFindings {
-		repair.Normalize()
-		if !repairFindingNeedsProposalAlignment(repair) {
-			continue
-		}
-		if includeOnly && !repairFindingAllowsIncludeOnlyProposal(repair) {
-			findings = append(findings, preWriteUnalignedRepairFinding(repair, "The proposed edit appears to only modify #include lines."))
-			continue
-		}
-		if repairFindingProposalAligned(repair, proposalText) {
-			continue
-		}
-		findings = append(findings, preWriteUnalignedRepairFinding(repair, "The proposed edit does not contain enough code tokens from the required repair finding."))
-	}
-	return limitReviewFindings(findings, 4)
-}
-
-func preWriteProposalAlignmentText(run ReviewRun) string {
-	var parts []string
-	if strings.TrimSpace(run.ChangeSet.DiffExcerpt) != "" {
-		parts = append(parts, run.ChangeSet.DiffExcerpt)
-	}
-	if proposalText := renderEditProposalsForEvidence(run.EditProposals); strings.TrimSpace(proposalText) != "" {
-		parts = append(parts, proposalText)
-	}
-	return strings.Join(parts, "\n")
-}
-
-func repairFindingNeedsProposalAlignment(finding ReviewFinding) bool {
-	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(finding.ID)), "RF-REVIEWER") {
-		return false
-	}
-	if strings.EqualFold(finding.Category, "evidence_gap") ||
-		strings.EqualFold(finding.Category, "test_gap") {
-		return false
-	}
-	return finding.BlocksGate || reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium)
-}
-
-func repairFindingAllowsIncludeOnlyProposal(finding ReviewFinding) bool {
-	text := strings.ToLower(strings.Join([]string{
-		finding.Title,
-		finding.Evidence,
-		finding.RequiredFix,
-		finding.TestRecommendation,
-	}, " "))
-	if strings.Contains(text, "#include") || strings.Contains(text, "missing include") ||
-		strings.Contains(text, "include directive") || strings.Contains(text, "header include") {
-		return true
-	}
-	return false
-}
-
-func proposalLooksIncludeOnly(text string) bool {
-	changed := 0
-	includeChanges := 0
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if len(trimmed) < 2 {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "+++") || strings.HasPrefix(trimmed, "---") {
-			continue
-		}
-		if trimmed[0] != '+' && trimmed[0] != '-' {
-			continue
-		}
-		body := strings.TrimSpace(trimmed[1:])
-		if body == "" {
-			continue
-		}
-		changed++
-		if strings.HasPrefix(body, "#include") {
-			includeChanges++
-		}
-	}
-	return changed > 0 && changed == includeChanges
-}
-
-func repairFindingProposalAligned(finding ReviewFinding, proposalText string) bool {
-	tokens := repairFindingAlignmentTokens(finding)
-	if len(tokens) == 0 {
-		return true
-	}
-	lowerProposal := strings.ToLower(proposalText)
-	matches := 0
-	for _, token := range tokens {
-		if strings.Contains(lowerProposal, strings.ToLower(token)) {
-			matches++
-			if matches >= 2 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func repairFindingAlignmentTokens(finding ReviewFinding) []string {
@@ -349,32 +252,6 @@ func repairAlignmentTokenUseful(token string) bool {
 	}
 }
 
-func preWriteUnalignedRepairFinding(repair ReviewFinding, reason string) ReviewFinding {
-	title := "Proposed edit does not address a required repair finding"
-	repairID := valueOrDefault(strings.TrimSpace(repair.ID), "required repair")
-	expected := strings.Join(limitStrings(repairFindingAlignmentTokens(repair), 8), ", ")
-	evidence := fmt.Sprintf("%s %s asks for: %s", reason, repairID, compactPromptSection(repair.Title, 240))
-	if expected != "" {
-		evidence += fmt.Sprintf(" Expected code evidence tokens include: %s.", expected)
-	}
-	return ReviewFinding{
-		Source:       "deterministic",
-		ReviewerRole: "proposal_alignment",
-		Severity:     reviewSeverityBlocker,
-		Category:     "correctness",
-		Confidence:   "high",
-		Quality:      reviewFindingQualityComplete,
-		Path:         repair.Path,
-		Symbol:       repair.Symbol,
-		Title:        title,
-		Evidence:     evidence,
-		Impact:       "The repair loop can continue with an unrelated patch while the original blocker remains unresolved.",
-		RequiredFix:  "Discard the unrelated proposal and create a narrow patch that touches the code path and identifiers cited by the required repair finding.",
-		BlocksGate:   true,
-		FixRefs:      []string{repairID},
-	}
-}
-
 func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || !run.SingleModelPolicy.Enabled {
 		return nil
@@ -393,7 +270,7 @@ func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
 		Confidence:   "high",
 		Quality:      reviewFindingQualityComplete,
 		Title:        "Single-model pre-write review lacks repair obligation status",
-		Evidence:     "Required repair findings from the pre-fix review do not all record resolved, partial, unresolved, or verification_needed status.",
+		Evidence:     "Required repair findings from the pre-fix review do not all record resolved, partial, unresolved, verification_needed, or evidence_unconfirmed status.",
 		Impact:       "A single-model pre-write approval could hide an unresolved pre-fix obligation.",
 		RequiredFix:  "Record a resolution_status for each required repair finding before approving the single-model pre-write review.",
 		BlocksGate:   true,
@@ -430,6 +307,9 @@ func inferSingleModelPreWriteRepairStatus(run ReviewRun, repair ReviewFinding) s
 			return "verification_needed"
 		}
 		if strings.EqualFold(finding.Category, "evidence_gap") {
+			if reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding) {
+				return "evidence_unconfirmed"
+			}
 			return "partial"
 		}
 		if reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium) ||
@@ -438,14 +318,10 @@ func inferSingleModelPreWriteRepairStatus(run ReviewRun, repair ReviewFinding) s
 		}
 		return "partial"
 	}
-	return "resolved"
+	return "evidence_unconfirmed"
 }
 
 func reviewFindingReferencesRepairFinding(finding ReviewFinding, repair ReviewFinding) bool {
-	needles := []string{
-		strings.TrimSpace(repair.ID),
-		strings.TrimSpace(repair.Title),
-	}
 	haystack := strings.ToLower(strings.Join([]string{
 		finding.Title,
 		finding.Evidence,
@@ -453,29 +329,122 @@ func reviewFindingReferencesRepairFinding(finding ReviewFinding, repair ReviewFi
 		finding.RequiredFix,
 		finding.TestRecommendation,
 	}, " "))
-	for _, needle := range needles {
-		needle = strings.ToLower(strings.TrimSpace(needle))
-		if needle == "" {
-			continue
+	if reviewTextContainsIdentifierToken(haystack, repair.ID) {
+		return true
+	}
+	title := normalizeReviewReferenceText(repair.Title)
+	return len(title) >= 24 && strings.Contains(normalizeReviewReferenceText(haystack), title)
+}
+
+func reviewTextContainsIdentifierToken(text string, token string) bool {
+	text = strings.ToLower(text)
+	token = strings.ToLower(strings.TrimSpace(token))
+	if token == "" {
+		return false
+	}
+	offset := 0
+	for {
+		idx := strings.Index(text[offset:], token)
+		if idx < 0 {
+			return false
 		}
-		if strings.Contains(haystack, needle) {
+		start := offset + idx
+		end := start + len(token)
+		if reviewIdentifierBoundary(text, start-1) && reviewIdentifierBoundary(text, end) {
 			return true
 		}
+		offset = end
 	}
-	return false
+}
+
+func reviewIdentifierBoundary(text string, index int) bool {
+	if index < 0 || index >= len(text) {
+		return true
+	}
+	ch := text[index]
+	return !((ch >= 'a' && ch <= 'z') ||
+		(ch >= 'A' && ch <= 'Z') ||
+		(ch >= '0' && ch <= '9') ||
+		ch == '-' ||
+		ch == '_')
+}
+
+func normalizeReviewReferenceText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
 }
 
 func singleModelPreWriteHasFrozenDiff(run ReviewRun) bool {
-	if strings.TrimSpace(run.ChangeSet.DiffExcerpt) != "" {
+	proposals := normalizeEditProposals(run.EditProposals)
+	if len(proposals) == 0 {
+		return singleModelPreWriteHasProvidedDiffEvidence(run)
+	}
+	proposalFiles := singleModelPreWriteProposalFiles(proposals)
+	for _, proposal := range proposals {
+		if !singleModelPreWriteProposalHasBoundPreview(proposal, proposalFiles) &&
+			!singleModelPreWriteProposalMatchesProvidedDiff(run, proposal) {
+			return false
+		}
+	}
+	return true
+}
+
+func singleModelPreWriteHasProvidedDiffEvidence(run ReviewRun) bool {
+	if !containsString(run.Evidence.Sources, "provided_diff") {
+		return false
+	}
+	text := strings.TrimSpace(run.Evidence.Text)
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "## Provided diff")
+}
+
+func singleModelPreWriteProposalMatchesProvidedDiff(run ReviewRun, proposal EditProposal) bool {
+	if !singleModelPreWriteHasProvidedDiffEvidence(run) {
+		return false
+	}
+	expectedPreview := strings.TrimSpace(proposal.ExpectedPreview)
+	if expectedPreview == "" {
+		return false
+	}
+	return strings.Contains(run.Evidence.Text, expectedPreview)
+}
+
+func singleModelPreWriteProposalFiles(proposals []EditProposal) []string {
+	var files []string
+	for _, proposal := range proposals {
+		files = append(files, normalizeEditProposalFiles(proposal.Files)...)
+		if strings.TrimSpace(proposal.File) != "" {
+			files = append(files, filepath.ToSlash(strings.TrimSpace(proposal.File)))
+		}
+	}
+	return normalizeEditProposalPathList(files, 0)
+}
+
+func singleModelPreWriteProposalHasBoundPreview(proposal EditProposal, proposalFiles []string) bool {
+	expectedPreview := proposal.ExpectedPreview
+	if strings.TrimSpace(expectedPreview) == "" {
+		return false
+	}
+	fingerprint := strings.TrimSpace(proposal.PreviewFingerprint)
+	if fingerprint == "" {
+		return false
+	}
+	if proposal.trustedPreviewFingerprint != "" &&
+		fingerprint == strings.TrimSpace(proposal.trustedPreviewFingerprint) {
 		return true
 	}
-	for _, proposal := range run.EditProposals {
-		if strings.TrimSpace(proposal.PreviewFingerprint) != "" ||
-			strings.TrimSpace(proposal.ExpectedPreview) != "" ||
-			strings.TrimSpace(proposal.ExactSearch) != "" ||
-			strings.TrimSpace(proposal.Replacement) != "" {
-			return true
-		}
+	if proposal.ExpectedComplete != nil && !*proposal.ExpectedComplete {
+		return false
+	}
+	operation := strings.TrimSpace(proposal.Operation)
+	file := filepath.ToSlash(strings.TrimSpace(proposal.File))
+	if fingerprint == computeReviewFingerprint(operation, file, expectedPreview) {
+		return true
+	}
+	if len(proposalFiles) > 0 &&
+		fingerprint == computeReviewFingerprint(operation, editProposalFingerprintTargetForPaths(proposalFiles), expectedPreview) {
+		return true
 	}
 	return false
 }
@@ -494,7 +463,7 @@ func repairFindingsHaveResolutionStatus(findings []ReviewFinding) bool {
 
 func reviewRepairResolutionStatusKnown(status string) bool {
 	switch normalizeReviewRepairResolutionStatus(status) {
-	case "resolved", "partial", "unresolved", "verification_needed":
+	case "resolved", "partial", "unresolved", "verification_needed", "evidence_unconfirmed":
 		return true
 	default:
 		return false
@@ -506,6 +475,8 @@ func normalizeReviewRepairResolutionStatus(status string) string {
 	switch status {
 	case "verification_needed_only":
 		return "verification_needed"
+	case "evidence_gap", "evidence_gap_only", "evidence_unconfirmed_only":
+		return "evidence_unconfirmed"
 	default:
 		return status
 	}
@@ -514,21 +485,38 @@ func normalizeReviewRepairResolutionStatus(status string) string {
 func mergeReviewFindings(findings []ReviewFinding) ([]ReviewFinding, ReviewMergeResult) {
 	result := ReviewMergeResult{}
 	seen := map[string]int{}
+	seenSubject := map[string]int{}
 	var merged []ReviewFinding
 	for _, finding := range findings {
 		finding.Normalize()
 		key := reviewFindingKey(finding)
 		if prior, ok := seen[key]; ok {
-			existing := merged[prior]
-			result.SuppressedDuplicates = append(result.SuppressedDuplicates, finding.ID)
-			if reviewSeverityRank(finding.Severity) < reviewSeverityRank(existing.Severity) {
-				result.SeverityChanges = append(result.SeverityChanges, fmt.Sprintf("%s kept higher severity %s over %s", existing.ID, finding.Severity, existing.Severity))
-				merged[prior].Severity = finding.Severity
-				merged[prior].BlocksGate = merged[prior].BlocksGate || finding.BlocksGate
+			mergeDuplicateReviewFinding(&merged[prior], finding, &result)
+			if subjectKey := reviewFindingDuplicateSubjectKey(merged[prior]); subjectKey != "" {
+				seenSubject[subjectKey] = prior
+			}
+			continue
+		}
+		subjectKey := reviewFindingDuplicateSubjectKey(finding)
+		if subjectKey != "" {
+			if prior, ok := seenSubject[subjectKey]; ok {
+				mergeDuplicateReviewFinding(&merged[prior], finding, &result)
+				seen[key] = prior
+				continue
+			}
+		}
+		if prior, ok := reviewFindDuplicateByTokenOverlap(merged, finding); ok {
+			mergeDuplicateReviewFinding(&merged[prior], finding, &result)
+			seen[key] = prior
+			if subjectKey != "" {
+				seenSubject[subjectKey] = prior
 			}
 			continue
 		}
 		seen[key] = len(merged)
+		if subjectKey != "" {
+			seenSubject[subjectKey] = len(merged)
+		}
 		if strings.EqualFold(finding.Source, "deterministic") && finding.BlocksGate {
 			result.DeterministicPreserved = append(result.DeterministicPreserved, finding.ID)
 		}
@@ -540,6 +528,160 @@ func mergeReviewFindings(findings []ReviewFinding) ([]ReviewFinding, ReviewMerge
 		result.MergedFindings = append(result.MergedFindings, finding.ID)
 	}
 	return merged, result
+}
+
+func reviewFindDuplicateByTokenOverlap(findings []ReviewFinding, incoming ReviewFinding) (int, bool) {
+	for i := range findings {
+		if reviewFindingsHaveDuplicateTokenSubject(findings[i], incoming) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func reviewFindingsHaveDuplicateTokenSubject(left ReviewFinding, right ReviewFinding) bool {
+	if strings.TrimSpace(left.Path) == "" || strings.TrimSpace(left.Symbol) == "" {
+		return false
+	}
+	if !strings.EqualFold(filepathSlash(left.Path), filepathSlash(right.Path)) ||
+		!strings.EqualFold(strings.TrimSpace(left.Symbol), strings.TrimSpace(right.Symbol)) ||
+		!strings.EqualFold(strings.TrimSpace(left.Category), strings.TrimSpace(right.Category)) {
+		return false
+	}
+	leftTokens := reviewFindingTokenSet(left)
+	rightTokens := reviewFindingTokenSet(right)
+	overlap := 0
+	for token := range leftTokens {
+		if rightTokens[token] {
+			overlap++
+			if overlap >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func reviewFindingTokenSet(finding ReviewFinding) map[string]bool {
+	out := map[string]bool{}
+	tokenMap := map[string]string{}
+	addRepairFindingAlignmentTokens(tokenMap, strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+		finding.RawExcerpt,
+	}, " "))
+	for token := range tokenMap {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if reviewDuplicateSubjectTokenUseful(token) {
+			out[token] = true
+		}
+	}
+	return out
+}
+
+func reviewDuplicateSubjectTokenUseful(token string) bool {
+	lower := strings.ToLower(strings.TrimSpace(token))
+	if lower == "" {
+		return false
+	}
+	switch lower {
+	case "code", "finding", "fix", "issue", "review", "required", "repair",
+		"line", "lines", "path", "paths", "file", "files", "name", "names",
+		"current", "existing", "updated", "change", "changes":
+		return false
+	default:
+		return true
+	}
+}
+
+func mergeDuplicateReviewFinding(existing *ReviewFinding, incoming ReviewFinding, result *ReviewMergeResult) {
+	if existing == nil {
+		return
+	}
+	if result != nil {
+		result.SuppressedDuplicates = append(result.SuppressedDuplicates, incoming.ID)
+	}
+	previousSeverity := existing.Severity
+	if reviewSeverityRank(incoming.Severity) < reviewSeverityRank(existing.Severity) {
+		existing.Severity = incoming.Severity
+	}
+	existing.BlocksGate = existing.BlocksGate || incoming.BlocksGate
+	existing.Confidence = reviewStrongerConfidence(existing.Confidence, incoming.Confidence)
+	existing.Quality = reviewStrongerFindingQuality(existing.Quality, incoming.Quality)
+	if reviewFindingHasMoreRepairDetail(incoming, *existing) {
+		id := existing.ID
+		blocks := existing.BlocksGate
+		severity := existing.Severity
+		confidence := existing.Confidence
+		quality := existing.Quality
+		*existing = mergeReviewFindingText(incoming, *existing)
+		existing.ID = id
+		existing.BlocksGate = blocks
+		existing.Severity = severity
+		existing.Confidence = confidence
+		existing.Quality = quality
+	} else {
+		*existing = mergeReviewFindingText(*existing, incoming)
+	}
+	if result != nil && previousSeverity != existing.Severity {
+		result.SeverityChanges = append(result.SeverityChanges, fmt.Sprintf("%s kept higher severity %s over %s", existing.ID, existing.Severity, previousSeverity))
+	}
+}
+
+func mergeReviewFindingText(primary ReviewFinding, secondary ReviewFinding) ReviewFinding {
+	if strings.TrimSpace(primary.Path) == "" {
+		primary.Path = secondary.Path
+	}
+	if strings.TrimSpace(primary.Symbol) == "" {
+		primary.Symbol = secondary.Symbol
+	}
+	if strings.TrimSpace(primary.Title) == "" {
+		primary.Title = secondary.Title
+	}
+	if strings.TrimSpace(primary.Evidence) == "" {
+		primary.Evidence = secondary.Evidence
+	}
+	if strings.TrimSpace(primary.Impact) == "" {
+		primary.Impact = secondary.Impact
+	}
+	if strings.TrimSpace(primary.RequiredFix) == "" {
+		primary.RequiredFix = secondary.RequiredFix
+	}
+	if strings.TrimSpace(primary.TestRecommendation) == "" {
+		primary.TestRecommendation = secondary.TestRecommendation
+	}
+	if strings.TrimSpace(primary.RawExcerpt) == "" {
+		primary.RawExcerpt = secondary.RawExcerpt
+	}
+	if len(primary.EvidenceRefs) == 0 {
+		primary.EvidenceRefs = append([]string(nil), secondary.EvidenceRefs...)
+	}
+	if len(primary.FixRefs) == 0 {
+		primary.FixRefs = append([]string(nil), secondary.FixRefs...)
+	}
+	return primary
+}
+
+func reviewFindingHasMoreRepairDetail(left ReviewFinding, right ReviewFinding) bool {
+	return reviewFindingRepairDetailScore(left) > reviewFindingRepairDetailScore(right)
+}
+
+func reviewFindingRepairDetailScore(f ReviewFinding) int {
+	score := 0
+	for _, value := range []string{f.Path, f.Symbol, f.Title, f.Evidence, f.Impact, f.RequiredFix, f.TestRecommendation, f.RawExcerpt} {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		score += 1
+		if len(value) > 80 {
+			score += 1
+		}
+	}
+	return score
 }
 
 func (f *ReviewFinding) Normalize() {
@@ -560,6 +702,11 @@ func (f *ReviewFinding) Normalize() {
 	}
 	if strings.TrimSpace(f.Title) == "" {
 		f.Title = synthesizeReviewFindingTitle(*f)
+	}
+	if reviewFindingSourceIsModelish(*f) && reviewFindingLooksNonActionablePlaceholder(*f) {
+		f.Quality = reviewFindingQualityWeak
+		f.Confidence = "low"
+		f.BlocksGate = false
 	}
 	if f.Severity == reviewSeverityBlocker || (f.Severity == reviewSeverityHigh && f.Quality == reviewFindingQualityComplete) {
 		f.BlocksGate = f.BlocksGate || f.Severity == reviewSeverityBlocker
@@ -676,6 +823,106 @@ func reviewFindingKey(f ReviewFinding) string {
 	return path + "|" + symbol + "|" + category + "|" + title
 }
 
+func reviewFindingDuplicateSubjectKey(f ReviewFinding) string {
+	if reviewFindingLooksNonActionablePlaceholder(f) {
+		return ""
+	}
+	subject := reviewFindingCanonicalDuplicateSubject(f)
+	if subject == "" {
+		return ""
+	}
+	path := strings.ToLower(strings.TrimSpace(filepathSlash(f.Path)))
+	symbol := strings.ToLower(strings.TrimSpace(f.Symbol))
+	if path == "" && symbol == "" {
+		return subject
+	}
+	return path + "|" + symbol + "|" + subject
+}
+
+func reviewFindingCanonicalDuplicateSubject(f ReviewFinding) string {
+	tokens := repairFindingAlignmentTokens(f)
+	if len(tokens) == 0 {
+		return ""
+	}
+	if len(tokens) > 4 {
+		tokens = tokens[:4]
+	}
+	lowered := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token != "" {
+			lowered = append(lowered, token)
+		}
+	}
+	return strings.Join(lowered, "|")
+}
+
+func reviewFindingSourceIsModelish(f ReviewFinding) bool {
+	source := strings.ToLower(strings.TrimSpace(f.Source))
+	return source == "" || source == "model" || source == "reviewer" || source == "main" || source == "cross"
+}
+
+func reviewFindingLooksNonActionablePlaceholder(f ReviewFinding) bool {
+	title := strings.ToLower(strings.Trim(strings.TrimSpace(f.Title), ". "))
+	fix := strings.ToLower(strings.Trim(strings.TrimSpace(f.RequiredFix), ". "))
+	evidence := strings.TrimSpace(f.Evidence)
+	impact := strings.TrimSpace(f.Impact)
+	genericTitle := title == "stability issue" ||
+		title == "correctness issue" ||
+		title == "security issue" ||
+		title == "performance issue" ||
+		title == "maintainability issue" ||
+		title == "review finding" ||
+		strings.HasPrefix(title, "finding in ")
+	genericFix := fix == "inspect and address this reviewer finding" ||
+		fix == "inspect and address this finding" ||
+		fix == "address this reviewer finding" ||
+		fix == "apply the reviewer-described fix if it is not already present"
+	return genericTitle && genericFix && evidence == "" && impact == ""
+}
+
+func reviewStrongerFindingQuality(left string, right string) string {
+	if reviewFindingQualityRank(right) < reviewFindingQualityRank(left) {
+		return right
+	}
+	return left
+}
+
+func reviewFindingQualityRank(quality string) int {
+	switch strings.ToLower(strings.TrimSpace(quality)) {
+	case reviewFindingQualityComplete:
+		return 0
+	case reviewFindingQualityPartial:
+		return 1
+	case reviewFindingQualityWeak:
+		return 2
+	case reviewFindingQualityInvalid:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func reviewStrongerConfidence(left string, right string) string {
+	if reviewConfidenceRank(right) < reviewConfidenceRank(left) {
+		return right
+	}
+	return left
+}
+
+func reviewConfidenceRank(confidence string) int {
+	switch strings.ToLower(strings.TrimSpace(confidence)) {
+	case "high":
+		return 0
+	case "medium":
+		return 1
+	case "low":
+		return 2
+	default:
+		return 3
+	}
+}
+
 func evaluateReviewGate(run ReviewRun) GateDecision {
 	gate := GateDecision{
 		WaiverAllowed:        true,
@@ -690,6 +937,9 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 		if reviewFindingCountsAsWarning(finding) {
 			gate.WarningFindings = append(gate.WarningFindings, finding.ID)
 		}
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		gate = reviewPromotePreWriteActionableWarnings(run, gate)
 	}
 	gate.RequiredActions = normalizeTaskStateList(gate.RequiredActions, 12)
 	switch {
@@ -720,6 +970,131 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 	return gate
 }
 
+func normalizePreWriteVerificationOnlyFindings(run *ReviewRun) {
+	normalizeNonBlockingVerificationOnlyFindings(run)
+}
+
+func normalizeNonBlockingVerificationOnlyFindings(run *ReviewRun) {
+	if run == nil || !reviewVerificationOnlyFindingsAreNonBlocking(*run) {
+		return
+	}
+	for i := range run.Findings {
+		if !reviewFindingLooksVerificationOnly(run.Findings[i]) {
+			continue
+		}
+		if strings.EqualFold(run.Findings[i].Severity, reviewSeverityBlocker) ||
+			strings.EqualFold(run.Findings[i].Severity, reviewSeverityHigh) {
+			run.Findings[i].Severity = reviewSeverityMedium
+		}
+		run.Findings[i].Category = "test_gap"
+		run.Findings[i].BlocksGate = false
+		if strings.TrimSpace(run.Findings[i].Confidence) == "" {
+			run.Findings[i].Confidence = "medium"
+		}
+	}
+}
+
+func reviewVerificationOnlyFindingsAreNonBlocking(run ReviewRun) bool {
+	trigger := strings.TrimSpace(run.Trigger)
+	return strings.EqualFold(trigger, "pre_write") ||
+		strings.EqualFold(trigger, reviewBeforeFixTrigger)
+}
+
+func reviewFindingLooksVerificationOnly(f ReviewFinding) bool {
+	if !reviewFindingSourceIsModelish(f) &&
+		!reviewFindingRoleCanReportVerificationOnly(f) {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		f.Title,
+		f.Evidence,
+		f.Impact,
+		f.RequiredFix,
+		f.TestRecommendation,
+	}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	return containsAny(text,
+		"latest verification",
+		"verification reports",
+		"verification report",
+		"verification section",
+		"verification evidence",
+		"verification failed",
+		"verification was skipped",
+		"verification skipped",
+		"recommended verification not recorded",
+		"recommended verification",
+		"verification not recorded",
+		"verification pending",
+		"no recorded evidence",
+		"[failed]",
+		"passed=",
+		"failed=",
+		"최신 검증",
+		"검증 기록",
+		"검증 증거",
+		"검증 실패",
+	)
+}
+
+func reviewFindingRoleCanReportVerificationOnly(f ReviewFinding) bool {
+	role := strings.TrimSpace(f.ReviewerRole)
+	return strings.EqualFold(role, "verification_reviewer") ||
+		strings.EqualFold(role, "test_impact_reviewer") ||
+		strings.EqualFold(role, "coding_harness")
+}
+
+func reviewPromotePreWriteActionableWarnings(run ReviewRun, gate GateDecision) GateDecision {
+	if len(gate.WarningFindings) == 0 {
+		return gate
+	}
+	actionableWarnings := reviewPreWriteActionableWarningIDSet(run, gate.WarningFindings)
+	if len(actionableWarnings) == 0 {
+		return gate
+	}
+	existingBlockers := reviewFindingIDSet(gate.BlockingFindings)
+	var remainingWarnings []string
+	for _, id := range gate.WarningFindings {
+		if actionableWarnings[id] {
+			if !existingBlockers[id] {
+				gate.BlockingFindings = append(gate.BlockingFindings, id)
+				existingBlockers[id] = true
+			}
+			continue
+		}
+		remainingWarnings = append(remainingWarnings, id)
+	}
+	gate.WarningFindings = remainingWarnings
+	for _, finding := range run.Findings {
+		if actionableWarnings[finding.ID] && strings.TrimSpace(finding.RequiredFix) != "" {
+			gate.RequiredActions = append(gate.RequiredActions, finding.RequiredFix)
+		}
+	}
+	return gate
+}
+
+func reviewPreWriteActionableWarningIDSet(run ReviewRun, warningIDs []string) map[string]bool {
+	warningSet := reviewFindingIDSet(warningIDs)
+	if len(warningSet) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, finding := range run.Findings {
+		if !warningSet[finding.ID] {
+			continue
+		}
+		if preWriteReviewWarningShouldBlock(finding) {
+			out[finding.ID] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func reviewFindingCountsAsWarning(finding ReviewFinding) bool {
 	if strings.EqualFold(finding.Severity, reviewSeverityHigh) ||
 		strings.EqualFold(finding.Severity, reviewSeverityMedium) ||
@@ -730,7 +1105,7 @@ func reviewFindingCountsAsWarning(finding ReviewFinding) bool {
 }
 
 func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
-	if strings.EqualFold(strings.TrimSpace(finding.Source), "model") &&
+	if reviewFindingSourceIsModelish(finding) &&
 		(strings.EqualFold(finding.Quality, reviewFindingQualityWeak) ||
 			strings.EqualFold(finding.Quality, reviewFindingQualityInvalid)) {
 		return false
@@ -745,8 +1120,11 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	if reviewRunLooksReadOnlyAnalysis(run) {
 		return false
 	}
-	if strings.EqualFold(finding.Category, "evidence_gap") ||
-		strings.EqualFold(finding.Category, "test_gap") {
+	if strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") &&
+		!reviewFindingLooksImplementationRepairDespiteGapCategory(finding) {
 		return false
 	}
 	if reviewFindingLooksAdvisoryStyleCategory(finding) {
@@ -1037,6 +1415,11 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 	if len(blocking) == 0 {
 		return ReviewRepairPlan{}
 	}
+	blocking = canonicalizeReviewRepairPlanFindings(blocking)
+	warnings = canonicalizeReviewRepairPlanFindings(warnings)
+	if len(blocking) == 0 {
+		return ReviewRepairPlan{}
+	}
 	var b strings.Builder
 	if korean {
 		b.WriteString("리뷰 차단 항목을 범위 확장 없이 수정하세요.\n\n")
@@ -1053,6 +1436,10 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		b.WriteString("\n\n")
 	}
 	b.WriteString(reviewRepairPatchConstructionGuidance(blocking, warnings, korean))
+	if reviewRunUsesLocalOrDegradedPrimary(run) {
+		b.WriteString("\n")
+		b.WriteString(reviewLocalRepairHandoffGuidance(korean))
+	}
 	b.WriteString("\n\n")
 	if korean {
 		b.WriteString("차단 finding:\n")
@@ -1118,6 +1505,61 @@ func writeReviewRepairPlanFinding(b *strings.Builder, finding ReviewFinding, kor
 	}
 }
 
+func canonicalizeReviewRepairPlanFindings(findings []ReviewFinding) []ReviewFinding {
+	if len(findings) <= 1 {
+		return findings
+	}
+	seen := map[string]int{}
+	var out []ReviewFinding
+	for _, finding := range findings {
+		finding.Normalize()
+		if strings.EqualFold(finding.Quality, reviewFindingQualityWeak) ||
+			strings.EqualFold(finding.Quality, reviewFindingQualityInvalid) ||
+			reviewFindingLooksNonActionablePlaceholder(finding) {
+			continue
+		}
+		key := reviewFindingDuplicateSubjectKey(finding)
+		if key == "" {
+			key = reviewFindingKey(finding)
+		}
+		if prior, ok := seen[key]; ok {
+			mergeDuplicateReviewFinding(&out[prior], finding, nil)
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, finding)
+	}
+	return out
+}
+
+func reviewRunUsesLocalOrDegradedPrimary(run ReviewRun) bool {
+	for _, reviewerRun := range run.ReviewerRuns {
+		if !preFixReviewerRunIsMainRoute(reviewerRun) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityWeak) ||
+			strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityFailed) ||
+			strings.TrimSpace(reviewerRun.Error) != "" ||
+			reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(Config{}, reviewerRun)) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewLocalRepairHandoffGuidance(korean bool) string {
+	if korean {
+		return strings.TrimSpace("로컬/degraded 모델용 수리 축약 규칙:\n" +
+			"- 같은 호출, 변수, 라인, 실패 경로를 가리키는 RF는 하나의 코드 변경으로만 처리하세요. 중복 RF마다 별도 rewrite를 만들지 마세요.\n" +
+			"- 리뷰 evidence에 직접 나온 코드 경로만 고치세요. 인접 코드 경로, 데이터 처리 정책, 함수 구조를 추측으로 재설계하지 마세요.\n" +
+			"- 근거가 모호한 RF는 패치 범위로 확장하지 말고, 명확한 RF를 해결하는 좁은 hunk를 현재 파일 내용에 맞춰 작성하세요.")
+	}
+	return strings.TrimSpace("Local/degraded model repair compression rules:\n" +
+		"- Treat RFs that point at the same call, variable, line, or failure path as one code edit. Do not create separate rewrites for duplicate RFs.\n" +
+		"- Fix only the code paths directly evidenced by the review. Do not redesign adjacent code paths, data handling policy, or function structure by speculation.\n" +
+		"- If an RF is vague, do not expand the patch around it; address the concrete RFs with narrow hunks anchored to the current file contents.")
+}
+
 func reviewRepairPatchConstructionGuidance(blocking []ReviewFinding, warnings []ReviewFinding, korean bool) string {
 	required := append([]ReviewFinding(nil), blocking...)
 	required = append(required, warnings...)
@@ -1162,14 +1604,75 @@ func reviewFindingShouldBeRepairPlanWarning(finding ReviewFinding) bool {
 	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
 		return false
 	}
-	if strings.EqualFold(finding.Category, "test_gap") ||
-		strings.EqualFold(finding.Category, "evidence_gap") {
+	if strings.EqualFold(finding.Quality, reviewFindingQualityWeak) ||
+		strings.EqualFold(finding.Quality, reviewFindingQualityInvalid) ||
+		reviewFindingLooksNonActionablePlaceholder(finding) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") &&
+		!reviewFindingLooksImplementationRepairDespiteGapCategory(finding) {
 		return false
 	}
 	return strings.TrimSpace(finding.RequiredFix) != "" ||
 		strings.TrimSpace(finding.Path) != "" ||
 		strings.TrimSpace(finding.Symbol) != "" ||
 		strings.TrimSpace(finding.Title) != ""
+}
+
+func reviewFindingLooksImplementationRepairDespiteGapCategory(finding ReviewFinding) bool {
+	finding.Normalize()
+	if !strings.EqualFold(finding.Category, "test_gap") {
+		return false
+	}
+	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
+		return false
+	}
+	if strings.TrimSpace(finding.RequiredFix) == "" {
+		return false
+	}
+	if strings.TrimSpace(finding.Path) == "" && strings.TrimSpace(finding.Symbol) == "" {
+		return false
+	}
+	requiredFix := strings.TrimSpace(finding.RequiredFix)
+	if reviewTextLooksVerificationOnlyAction(requiredFix) {
+		return false
+	}
+	return reviewTextLooksImplementationRepairAction(requiredFix)
+}
+
+func reviewTextLooksVerificationOnlyAction(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if reviewTextLooksImplementationRepairAction(lower) {
+		return false
+	}
+	return containsAny(lower,
+		"add test", "add regression test", "write test", "run test", "run focused verification",
+		"rerun", "re-run", "msbuild", "ctest", "go test", "cargo test", "npm test",
+		"provide evidence", "verification evidence", "coverage",
+		"테스트", "검증", "빌드", "증거", "커버리지",
+	)
+}
+
+func reviewTextLooksImplementationRepairAction(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"change ", "modify ", "replace ", "remove ", "delete ", "restore ", "return ",
+		"continue", "break", "skip ", "guard ", "validate ", "check ", "handle ",
+		"allocate ", "retry ", "call ", "pass ", "use ", "set ", "clear ",
+		"control flow", "data handling", "error handling",
+		"변경", "수정", "교체", "제거", "삭제", "복구", "반환", "건너뛰",
+		"처리", "검사", "확인한 뒤", "할당", "재시도", "재호출", "호출",
+		"사용", "설정", "초기화", "제어 흐름", "데이터 처리", "오류 처리",
+	)
 }
 
 func reviewResultSummary(run ReviewRun) string {
@@ -1326,7 +1829,17 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 			continue
 		}
 		if strings.HasPrefix(lower, "path:") {
-			current.Path = strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":"))
+			path, line := reviewPathAndOptionalLine(strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":")))
+			current.Path = path
+			if line > 0 {
+				current.Line = line
+			}
+			continue
+		}
+		if strings.HasPrefix(lower, "line:") || strings.HasPrefix(lower, "lines:") {
+			if line := parseReviewFindingLine(strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":"))); line > 0 {
+				current.Line = line
+			}
 			continue
 		}
 		if strings.HasPrefix(lower, "symbol:") {
@@ -1354,7 +1867,7 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 			current.Severity = normalizeReviewSeverity(severityRe.FindString(trimmed))
 			current.Title = cleanReviewModelFieldValue(reviewFallbackFindingTitle(trimmed, severityRe))
 			if path := pathRe.FindString(trimmed); path != "" {
-				current.Path = strings.TrimSuffix(filepathSlash(path), ":")
+				current.Path, current.Line = reviewPathAndOptionalLine(path)
 			}
 			current.Evidence = trimmed
 			current.Impact = "Model reviewer identified this as a review risk."
@@ -1387,6 +1900,60 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 		return findings, reviewModelQualityWeak
 	}
 	return findings, reviewModelQualityUsable
+}
+
+func reviewPathAndOptionalLine(raw string) (string, int) {
+	path := strings.TrimSpace(strings.TrimSuffix(raw, ":"))
+	if path == "" {
+		return "", 0
+	}
+	if idx := strings.LastIndex(path, ":"); idx > 0 && idx+1 < len(path) {
+		suffix := path[idx+1:]
+		if reviewStringIsDigits(suffix) && !(idx == 1 && len(path) >= 2 && isASCIIAlpha(path[0])) {
+			line, err := strconv.Atoi(suffix)
+			if err == nil && line > 0 {
+				return filepathSlash(path[:idx]), line
+			}
+		}
+	}
+	return strings.TrimSuffix(filepathSlash(path), ":"), 0
+}
+
+func parseReviewFindingLine(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	for _, sep := range []string{"-", ":", ",", " "} {
+		if idx := strings.Index(raw, sep); idx > 0 {
+			raw = raw[:idx]
+			break
+		}
+	}
+	if !reviewStringIsDigits(raw) {
+		return 0
+	}
+	line, err := strconv.Atoi(raw)
+	if err != nil || line <= 0 {
+		return 0
+	}
+	return line
+}
+
+func reviewStringIsDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIAlpha(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')
 }
 
 func reviewLineIsEmptyFindingsMarker(lowerLine string) bool {

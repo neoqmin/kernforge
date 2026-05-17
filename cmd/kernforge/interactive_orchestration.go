@@ -170,11 +170,17 @@ func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, expl
 	if readOnlyAnalysis && !explicitEditRequest && !explicitGitRequest {
 		return true
 	}
+	if looksLikeInternalReviewFeedbackUserMessage(goal) {
+		return true
+	}
 	lowerGoal := strings.ToLower(strings.TrimSpace(goal))
 	if explicitEditRequest && looksLikeFocusedRepairRequest(lowerGoal) {
 		return true
 	}
 	if explicitEditRequest && looksLikeBugSearchAndFixIntent(lowerGoal) {
+		return true
+	}
+	if requestLooksLikeLocalVerificationWork(lowerGoal) {
 		return true
 	}
 	if shouldPrioritizeWebResearchInSystemPrompt(lowerGoal) {
@@ -279,6 +285,9 @@ func (a *Agent) ensureInteractiveReviewerClient() (ProviderClient, string) {
 	}
 	if a.ReviewerClient != nil && strings.TrimSpace(a.ReviewerModel) != "" {
 		return a.ReviewerClient, strings.TrimSpace(a.ReviewerModel)
+	}
+	if a.AuxReviewerClient != nil && strings.TrimSpace(a.AuxReviewerModel) != "" {
+		return a.AuxReviewerClient, strings.TrimSpace(a.AuxReviewerModel)
 	}
 	return nil, ""
 }
@@ -880,6 +889,12 @@ func (a *Agent) noteToolExecutionResultDetailed(call ToolCall, result ToolExecut
 		state.SetPhase("recovery")
 		return
 	}
+	if toolMetaVerificationWasSkipped(meta, out) {
+		state.AddConfirmedFact(summary)
+		state.RecordEvent("verification_skipped", policy.OwnerNodeID, call.Name, summary, out, "skipped", false)
+		a.syncBackgroundJobPendingCheck()
+		return
+	}
 	effect := strings.TrimSpace(strings.ToLower(toolMetaString(meta, "effect")))
 	switch call.Name {
 	case "check_shell_job", "check_shell_bundle":
@@ -905,13 +920,24 @@ func (a *Agent) noteToolExecutionResultDetailed(call ToolCall, result ToolExecut
 	case "run_shell":
 		planHandled := a.applyToolExecutionPolicy(policy, call, summary, out)
 		state.AddCompletedStep(summary)
-		if toolMetaBool(meta, "verification_like") || runShellOutputLooksLikeVerification(out) {
+		if toolResultHasSuccessfulVerificationEvidence(call.Name, meta, out) {
 			state.RemovePendingCheck(verificationPendingCheck)
 		}
 		if !planHandled && toolExecutionShouldAdvancePlanDetailed(call, out, meta) {
 			a.Session.advanceSharedPlan()
 		}
-		state.RecordEvent("tool_result", policy.OwnerNodeID, call.Name, summary, out, "ok", false)
+		eventStatus := "ok"
+		switch toolMetaExplicitVerificationStatus(meta) {
+		case VerificationPassed:
+			eventStatus = "passed"
+		case VerificationFailed:
+			eventStatus = "failed"
+		case VerificationSkipped:
+			eventStatus = "skipped"
+		case VerificationPending:
+			eventStatus = "pending"
+		}
+		state.RecordEvent("tool_result", policy.OwnerNodeID, call.Name, summary, out, eventStatus, false)
 	case "run_shell_background", "run_shell_bundle_background":
 		a.applyToolExecutionPolicy(policy, call, summary, out)
 		state.AddCompletedStep(summary)
@@ -1046,6 +1072,23 @@ func (a *Agent) noteVerificationResult(report VerificationReport) {
 		state.RecordEvent("verification", strings.TrimSpace(state.ExecutorFocusNode), "verify", report.FailureSummary(), report.RenderShort(), "failed", true)
 		state.SetPhase("recovery")
 		state.SetNextStep("Fix the failing verification or explain the blocker clearly.")
+		return
+	}
+	if report.WasSkipped() {
+		summary := strings.TrimSpace(report.Decision)
+		if summary == "" {
+			summary = report.SummaryLine()
+		}
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:     conversationEventKindVerification,
+			Severity: conversationSeverityWarn,
+			Summary:  "Automatic verification skipped: " + truncateStatusSnippet(summary, 180),
+			Raw:      compactPromptSection(report.RenderShort(), 900),
+		})
+		state.AddPendingCheck(verificationPendingCheck)
+		state.RecordEvent("verification", strings.TrimSpace(state.ExecutorFocusNode), "verify", "Automatic verification skipped.", report.RenderShort(), "skipped", true)
+		state.SetPhase("execution")
+		state.SetNextStep(verificationPendingCheck)
 		return
 	}
 	a.Session.AppendConversationEvent(ConversationEvent{
@@ -1194,8 +1237,11 @@ func toolExecutionShouldAdvancePlanDetailed(call ToolCall, out string, meta map[
 			return true
 		}
 	case "run_shell":
-		if toolMetaBool(meta, "verification_like") {
+		if toolResultHasSuccessfulVerificationEvidence(call.Name, meta, out) {
 			return true
+		}
+		if toolMetaVerificationWasSkipped(meta, out) {
+			return false
 		}
 	}
 	lower := strings.ToLower(strings.TrimSpace(out))
@@ -1215,11 +1261,37 @@ func toolExecutionShouldAdvancePlanDetailed(call ToolCall, out string, meta map[
 
 func runShellOutputLooksLikeVerification(out string) bool {
 	lower := strings.ToLower(strings.TrimSpace(out))
+	if runShellOutputLooksLikeSkippedVerification(lower) {
+		return false
+	}
 	return strings.Contains(lower, "build") ||
 		strings.Contains(lower, "test") ||
 		strings.Contains(lower, "verification") ||
 		strings.Contains(lower, "passed") ||
 		strings.Contains(lower, "ok ")
+}
+
+func runShellOutputLooksLikeSkippedVerification(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"verification command skipped",
+		"verification skipped because",
+		"command skipped because the user declined",
+		"user declined to run",
+		"declined to run it",
+		"verification not run",
+		"verification was not run",
+		"build not run",
+		"test not run",
+		"검증하지 않았",
+		"검증을 실행하지 않았",
+		"검증 생략",
+		"빌드를 실행하지 않았",
+		"테스트를 실행하지 않았",
+	)
 }
 
 func (a *Agent) markBackgroundBundlesStale(reason string) {

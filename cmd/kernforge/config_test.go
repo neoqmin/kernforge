@@ -307,6 +307,38 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 	}
 }
 
+func TestLoadConfigEnvReasoningEffortOverridesActiveProfile(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KERNFORGE_REASONING_EFFORT", "xhigh")
+
+	active := Profile{
+		Name:            "codex-main",
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = active.Provider
+	cfg.Model = active.Model
+	cfg.ReasoningEffort = "low"
+	cfg.Profiles = []Profile{active}
+	cfg.ActiveProfileKey = configProfileKey(active)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ReasoningEffort != "xhigh" {
+		t.Fatalf("expected env reasoning effort to override active profile, got %q", loaded.ReasoningEffort)
+	}
+}
+
 func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()

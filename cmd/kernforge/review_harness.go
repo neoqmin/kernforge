@@ -16,23 +16,27 @@ import (
 const (
 	reviewSchemaVersion = "review_run.v1"
 
-	reviewDefaultMaxContextChars        = 60000
-	reviewFocusedMaxContextChars        = 20000
-	reviewPreWriteMaxContextChars       = 20000
+	reviewDefaultMaxContextChars        = 180000
+	reviewFocusedMaxContextChars        = 180000
+	reviewPreWriteMaxContextChars       = 180000
 	reviewSourceAnalysisMaxContextChars = 180000
 
-	reviewFocusedPromptEvidenceLimit       = 12000
-	reviewPreWritePromptEvidenceLimit      = 16000
-	reviewFocusedCrossEvidenceLimit        = 12000
-	reviewPreWriteCrossEvidenceLimit       = 12000
-	reviewFocusedCrossSoftTimeout          = 3 * time.Minute
-	reviewPreWriteCrossSoftTimeout         = 3 * time.Minute
-	reviewLowerPerformanceCrossSoftTimeout = 5 * time.Minute
-	reviewDeepSeekBroadCrossSoftTimeout    = 4 * time.Minute
+	reviewFocusedPromptEvidenceLimit       = 90000
+	reviewPreWritePromptEvidenceLimit      = 120000
+	reviewFocusedCrossEvidenceLimit        = 90000
+	reviewPreWriteCrossEvidenceLimit       = 120000
+	reviewCloudCrossSoftTimeout            = 5 * time.Minute
+	reviewFocusedCrossSoftTimeout          = reviewCloudCrossSoftTimeout
+	reviewPreWriteCrossSoftTimeout         = reviewCloudCrossSoftTimeout
+	reviewCLICrossSoftTimeout              = 8 * time.Minute
+	reviewLocalCrossSoftTimeout            = 8 * time.Minute
+	reviewLowerPerformanceCrossSoftTimeout = reviewLocalCrossSoftTimeout
+	reviewDeepSeekBroadCrossSoftTimeout    = reviewCloudCrossSoftTimeout
+	reviewAdaptiveTimeoutCrossSoftTimeout  = 10 * time.Minute
 	reviewFocusedPrimaryRawCrossLimit      = 6000
 	reviewFocusedPrimaryFindingCrossLimit  = 6000
-	reviewPreWriteDiffEvidenceMaxChars     = 6000
-	reviewPreWriteFileContextChars         = 9000
+	reviewPreWriteDiffEvidenceMaxChars     = 50000
+	reviewPreWriteFileContextChars         = 60000
 	reviewPreWriteLineContextBefore        = 20
 	reviewPreWriteLineContextAfter         = 180
 
@@ -352,16 +356,21 @@ type ReviewRedactionReport struct {
 }
 
 type EditProposal struct {
-	File               string `json:"file,omitempty"`
-	Operation          string `json:"operation,omitempty"`
-	AnchorBefore       string `json:"anchor_before,omitempty"`
-	ReplaceRange       string `json:"replace_range,omitempty"`
-	ExactSearch        string `json:"exact_search,omitempty"`
-	Replacement        string `json:"replacement,omitempty"`
-	Rationale          string `json:"rationale,omitempty"`
-	Risk               string `json:"risk,omitempty"`
-	ExpectedPreview    string `json:"expected_preview,omitempty"`
-	PreviewFingerprint string `json:"preview_fingerprint,omitempty"`
+	File               string   `json:"file,omitempty"`
+	Files              []string `json:"files,omitempty"`
+	Operation          string   `json:"operation,omitempty"`
+	AnchorBefore       string   `json:"anchor_before,omitempty"`
+	ReplaceRange       string   `json:"replace_range,omitempty"`
+	ExactSearch        string   `json:"exact_search,omitempty"`
+	Replacement        string   `json:"replacement,omitempty"`
+	AfterExcerpt       string   `json:"after_excerpt,omitempty"`
+	Rationale          string   `json:"rationale,omitempty"`
+	Risk               string   `json:"risk,omitempty"`
+	ExpectedPreview    string   `json:"expected_preview,omitempty"`
+	ExpectedComplete   *bool    `json:"expected_preview_complete,omitempty"`
+	PreviewFingerprint string   `json:"preview_fingerprint,omitempty"`
+
+	trustedPreviewFingerprint string
 }
 
 type ReviewWaiver struct {
@@ -745,6 +754,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		run.Result.DegradedReason = "model review disabled by --no-model"
 		run.Result.ModelQuality = reviewModelQualityUsable
 	}
+	normalizeNonBlockingVerificationOnlyFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Findings = append(run.Findings, preFixNonConclusiveBugHuntFindings(run)...)
 	annotateSingleModelPreWriteRepairStatuses(&run)

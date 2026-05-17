@@ -255,6 +255,47 @@ func TestAssistantCodeBlocksUseSeparateToneWhenColorEnabled(t *testing.T) {
 	}
 }
 
+func TestAssistantCollapsesRepeatedSentenceRun(t *testing.T) {
+	ui := UI{color: false}
+	repeated := "검증 실패가 현재 patch scope 밖입니다. 검증 실패가 현재 patch scope 밖입니다. 검증 실패가 현재 patch scope 밖입니다.수정 완료했습니다."
+	rendered := ui.assistant(repeated)
+
+	if strings.Count(rendered, "검증 실패가 현재 patch scope 밖입니다.") != 1 {
+		t.Fatalf("expected repeated sentence to be collapsed, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "수정 완료했습니다.") {
+		t.Fatalf("expected trailing content to remain, got %q", rendered)
+	}
+	if strings.Contains(rendered, "입니다.수정") {
+		t.Fatalf("expected adjacent Korean sentences to be spaced after collapse, got %q", rendered)
+	}
+}
+
+func TestAssistantDoesNotCollapseCodeFenceRepeatedText(t *testing.T) {
+	ui := UI{color: false}
+	repeated := "```\n검증 실패가 현재 patch scope 밖입니다. 검증 실패가 현재 patch scope 밖입니다. 검증 실패가 현재 patch scope 밖입니다.\n```"
+	rendered := ui.assistant(repeated)
+
+	if strings.Count(rendered, "검증 실패가 현재 patch scope 밖입니다.") != 3 {
+		t.Fatalf("expected repeated code text to remain intact, got %q", rendered)
+	}
+}
+
+func TestAssistantSentenceSpacingPreservesCodeLikeDots(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.assistant("PathConverter.cpp:132 확인.수정 완료했습니다.\n```\n확인.수정\n```")
+
+	if !strings.Contains(rendered, "PathConverter.cpp:132") {
+		t.Fatalf("expected path-like dots to remain untouched, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "확인. 수정 완료했습니다.") {
+		t.Fatalf("expected adjacent Korean sentences to be spaced, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "확인.수정") {
+		t.Fatalf("expected code fence text to remain untouched, got %q", rendered)
+	}
+}
+
 func TestFormatCompletionSuggestionsShowsCommandDescriptions(t *testing.T) {
 	ui := UI{color: false}
 	rendered := ui.formatCompletionSuggestions([]string{"/status", "/verify", "/simulate"}, "/")

@@ -95,6 +95,7 @@ type runtimeState struct {
 	lastAssistantPrinted       string
 	alwaysApprovePreview       bool
 	alwaysApproveWrites        bool
+	alwaysApproveVerification  bool
 	autoAcceptPreviewOnce      bool
 }
 
@@ -322,7 +323,7 @@ func run(args []string) error {
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
 		modelRoutes:    defaultModelRouteScheduler(),
-		interactive:    promptFlag == "" && commandFlag == "",
+		interactive:    runtimeShouldUseInteractiveLoop(promptFlag, commandFlag, goalFlag, goalFileFlag),
 	}
 	defer rt.closeExtensions()
 
@@ -353,6 +354,9 @@ func run(args []string) error {
 			return rt.session.CurrentSelection()
 		},
 		PreviewEdit: rt.previewEdit,
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			return rt.promptConfirmAutoVerify(plan)
+		},
 		UpdatePlan: func(items []PlanItem) {
 			rt.session.SetSharedPlan(items)
 			_ = rt.store.Save(rt.session)
@@ -384,6 +388,9 @@ func run(args []string) error {
 		VerifyHistory: rt.verifyHistory,
 		FunctionFuzz:  rt.functionFuzz,
 		FuzzCampaigns: rt.fuzzCampaigns,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			return rt.promptConfirmAutoVerify(plan)
+		},
 		PromptResolveAutoVerifyFailure: func(report VerificationReport) (AutoVerifyFailureResolution, error) {
 			return rt.promptResolveAutoVerifyFailure(report)
 		},
@@ -503,6 +510,16 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	ctx := context.Background()
 	reply, err := rt.runAgentReplyWithImages(ctx, prompt, images)
 	if err != nil {
+		if errors.Is(err, ErrEditCanceled) {
+			fmt.Fprintln(rt.writer, rt.ui.infoLine("Edit canceled."))
+			rt.printTurnElapsed(turnStartedAt)
+			return nil
+		}
+		if errors.Is(err, ErrWriteDenied) {
+			fmt.Fprintln(rt.writer, rt.ui.infoLine("Write canceled."))
+			rt.printTurnElapsed(turnStartedAt)
+			return nil
+		}
 		rt.printTurnElapsed(turnStartedAt)
 		return err
 	}
@@ -569,11 +586,19 @@ func (rt *runtimeState) runSingleGoal(objective string, filePath string, options
 	return rt.handleGoalStart(fields)
 }
 
+func runtimeShouldUseInteractiveLoop(promptFlag string, commandFlag string, goalFlag string, goalFileFlag string) bool {
+	return strings.TrimSpace(promptFlag) == "" &&
+		strings.TrimSpace(commandFlag) == "" &&
+		strings.TrimSpace(goalFlag) == "" &&
+		strings.TrimSpace(goalFileFlag) == ""
+}
+
 func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
-	if !rt.interactive {
+	if rt.alwaysApprovePreview {
 		return true, nil
 	}
-	if rt.alwaysApprovePreview {
+	if rt.autoAcceptPreviewOnce {
+		rt.autoAcceptPreviewOnce = false
 		return true, nil
 	}
 	var (
@@ -997,6 +1022,7 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 	}
 	requestCtx := ctx
 	cancel := func() {}
+	installCancelWatcher = installCancelWatcher && rt.shouldInstallRequestCancelWatcher()
 	if installCancelWatcher {
 		requestCtx, cancel = context.WithCancel(ctx)
 		defer cancel()
@@ -1868,9 +1894,13 @@ func (rt *runtimeState) shouldHonorRequestCancel() bool {
 	return rt.requestCancelPauses == 0
 }
 
+func (rt *runtimeState) shouldInstallRequestCancelWatcher() bool {
+	return rt != nil && rt.interactive
+}
+
 func (rt *runtimeState) confirmRequestCancel() bool {
 	if !rt.interactive {
-		return true
+		return false
 	}
 	var (
 		allowed bool
@@ -2230,9 +2260,6 @@ func (rt *runtimeState) withPinnedPrompt(fn func() error) error {
 }
 
 func (rt *runtimeState) confirm(question string) (bool, error) {
-	if !rt.interactive {
-		return false, fmt.Errorf("interactive confirmation unavailable")
-	}
 	if rt.autoApproveConfirmation(question) {
 		return true, nil
 	}
@@ -2243,6 +2270,9 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 			answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
 			if !usedInteractive {
 				fmt.Fprint(rt.writer, label+" ")
+				if rt.reader == nil {
+					return ErrPromptCanceled
+				}
 				answer, err = rt.reader.ReadString('\n')
 				if err != nil {
 					return err
@@ -2328,6 +2358,9 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 	if isDiffPreviewQuestion(question) {
 		return rt.alwaysApprovePreview
 	}
+	if isAutoVerificationQuestion(question) {
+		return rt.alwaysApproveVerification
+	}
 	if isGitApprovalQuestion(question) {
 		return rt.perms != nil && rt.perms.IsGitAllowed()
 	}
@@ -2338,6 +2371,8 @@ func (rt *runtimeState) confirmLabel(question string) string {
 	hint := localizedText(rt.cfg, "[y/N, Esc=cancel]", "[y/N, Esc=취소]")
 	if isDiffPreviewQuestion(question) {
 		hint = localizedText(rt.cfg, "[y/N/a=auto-accept, Esc=cancel]", "[y/N/a=자동 수락, Esc=취소]")
+	} else if isAutoVerificationQuestion(question) {
+		hint = localizedText(rt.cfg, "[y/N/a=auto-run, Esc=cancel]", "[y/N/a=자동 실행, Esc=취소]")
 	} else if supportsAlwaysApproval(question) {
 		hint = localizedText(rt.cfg, "[y/N/a=always, Esc=cancel]", "[y/N/a=항상 승인, Esc=취소]")
 	}
@@ -2345,7 +2380,7 @@ func (rt *runtimeState) confirmLabel(question string) string {
 }
 
 func supportsAlwaysApproval(question string) bool {
-	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question) || isGitApprovalQuestion(question)
+	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question) || isAutoVerificationQuestion(question) || isGitApprovalQuestion(question)
 }
 
 func isWriteApprovalQuestion(question string) bool {
@@ -2357,15 +2392,26 @@ func isDiffPreviewQuestion(question string) bool {
 	return strings.EqualFold(normalized, diffPreviewQuestionEnglish) || normalized == diffPreviewQuestionKorean
 }
 
+func isAutoVerificationQuestion(question string) bool {
+	normalized := strings.TrimSpace(question)
+	return strings.EqualFold(normalized, autoVerificationQuestionEnglish) || normalized == autoVerificationQuestionKorean
+}
+
 const (
-	diffPreviewQuestionEnglish  = "Open diff preview?"
-	diffPreviewQuestionKorean   = "변경 미리보기를 열까요?"
-	reviewRepairQuestionEnglish = "Continue repairing?"
-	reviewRepairQuestionKorean  = "계속 수정할까요?"
+	diffPreviewQuestionEnglish      = "Open diff preview?"
+	diffPreviewQuestionKorean       = "변경 미리보기를 열까요?"
+	autoVerificationQuestionEnglish = "Run automatic verification now?"
+	autoVerificationQuestionKorean  = "자동 검증을 실행할까요?"
+	reviewRepairQuestionEnglish     = "Continue repairing?"
+	reviewRepairQuestionKorean      = "계속 수정할까요?"
 )
 
 func diffPreviewQuestion(cfg Config) string {
 	return localizedText(cfg, diffPreviewQuestionEnglish, diffPreviewQuestionKorean)
+}
+
+func autoVerificationQuestion(cfg Config) string {
+	return localizedText(cfg, autoVerificationQuestionEnglish, autoVerificationQuestionKorean)
 }
 
 func reviewRepairContinuationQuestion(cfg Config) string {
@@ -2398,6 +2444,10 @@ func (rt *runtimeState) rememberConfirmationApproval(question string) {
 	if isDiffPreviewQuestion(question) {
 		rt.alwaysApprovePreview = true
 		rt.autoAcceptPreviewOnce = true
+		return
+	}
+	if isAutoVerificationQuestion(question) {
+		rt.alwaysApproveVerification = true
 		return
 	}
 	if isGitApprovalQuestion(question) && rt.perms != nil {
@@ -7222,6 +7272,69 @@ func (rt *runtimeState) verificationToolDetector() func(string) string {
 		return rt.detectVerificationToolPath
 	}
 	return detectWindowsVerificationToolPath
+}
+
+func (rt *runtimeState) promptConfirmAutoVerify(plan VerificationPlan) (bool, error) {
+	if rt.autoApproveVerificationPrompt() {
+		return true, nil
+	}
+	if summary := renderAutoVerificationPromptSummary(rt.cfg, plan); summary != "" {
+		rt.writeOutputLines(summary)
+	}
+	var (
+		confirmed bool
+		err       error
+	)
+	rt.withRequestCancelSuspended(func() {
+		confirmed, err = rt.confirm(autoVerificationQuestion(rt.cfg))
+	})
+	if err != nil {
+		if !rt.interactive && (errors.Is(err, io.EOF) || errors.Is(err, ErrPromptCanceled)) {
+			return false, nil
+		}
+		return false, err
+	}
+	return confirmed, nil
+}
+
+func (rt *runtimeState) autoApproveVerificationPrompt() bool {
+	if rt.alwaysApproveVerification {
+		return true
+	}
+	if rt.perms != nil && rt.perms.Mode() == ModeBypass {
+		return true
+	}
+	if ParseMode(rt.cfg.PermissionMode) == ModeBypass {
+		return true
+	}
+	if rt.session != nil && ParseMode(rt.session.PermissionMode) == ModeBypass {
+		return true
+	}
+	return false
+}
+
+func renderAutoVerificationPromptSummary(cfg Config, plan VerificationPlan) string {
+	var lines []string
+	lines = append(lines, localizedText(cfg, "Automatic verification plan:", "자동 검증 계획:"))
+	if len(plan.ChangedPaths) > 0 {
+		lines = append(lines, "- "+localizedText(cfg, "Changed paths: ", "변경 경로: ")+strings.Join(limitStrings(plan.ChangedPaths, 6), ", "))
+	}
+	for i, step := range plan.Steps {
+		if i >= 5 {
+			lines = append(lines, fmt.Sprintf(localizedText(cfg, "- ... %d more step(s)", "- ... %d개 단계 더 있음"), len(plan.Steps)-i))
+			break
+		}
+		label := strings.TrimSpace(step.Label)
+		if label == "" {
+			label = localizedText(cfg, "verification step", "검증 단계")
+		}
+		line := "- " + label
+		if command := strings.TrimSpace(step.Command); command != "" {
+			line += ": " + compactPromptSection(command, 160)
+		}
+		lines = append(lines, line)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (rt *runtimeState) tryAutoResolveAutoVerifyFailure(report VerificationReport) (AutoVerifyFailureResolution, bool, error) {

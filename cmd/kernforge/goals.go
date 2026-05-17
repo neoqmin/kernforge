@@ -510,7 +510,7 @@ func (rt *runtimeState) runGoalReviewHarnessReply(ctx context.Context, goal Goal
 		Request:         goal.Objective,
 		IncludeGitDiff:  true,
 		AutoTriggered:   true,
-		MaxContextChars: 60000,
+		MaxContextChars: reviewDefaultMaxContextChars,
 	}
 	run, err := runReviewHarness(ctx, rt, opts)
 	if err != nil {

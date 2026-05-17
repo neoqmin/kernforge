@@ -10,6 +10,9 @@ import (
 const naturalReviewTrigger = "explicit_natural_language"
 
 func (rt *runtimeState) maybeHandleNaturalLanguageReview(ctx context.Context, input string, images []MessageImage) (bool, error) {
+	if rt == nil {
+		return false, nil
+	}
 	opts, selection, ok := rt.naturalLanguageReviewOptions(input, images)
 	if !ok {
 		return false, nil
@@ -17,7 +20,7 @@ func (rt *runtimeState) maybeHandleNaturalLanguageReview(ctx context.Context, in
 	if selection != nil {
 		rt.rememberNaturalReviewSelection(*selection)
 	}
-	if rt != nil && rt.writer != nil {
+	if rt.writer != nil {
 		target := strings.TrimSpace(opts.Target)
 		command := "/review"
 		if target != "" && target != reviewTargetAuto {
@@ -32,8 +35,190 @@ func (rt *runtimeState) maybeHandleNaturalLanguageReview(ctx context.Context, in
 	if err != nil {
 		return true, err
 	}
-	rt.printReviewRun(run)
+	if shouldRenderCodexAppReviewModeReply(input) {
+		rt.printReviewModeRun(run)
+	} else {
+		rt.printReviewRun(run)
+	}
 	return true, nil
+}
+
+func (rt *runtimeState) printReviewModeRun(run ReviewRun) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section(reviewRunLocalizedText(rt.cfg, run, "Review Mode", "리뷰 모드")))
+	rendered := formatCodexAppReviewModeReply(rt.cfg, run)
+	switch run.Gate.Verdict {
+	case reviewVerdictApproved:
+		fmt.Fprintln(rt.writer, rt.ui.successLine(rendered))
+	case reviewVerdictApprovedWithWarnings, reviewVerdictNeedsRevision, reviewVerdictBlocked, reviewVerdictInsufficientEvidence:
+		fmt.Fprintln(rt.writer, rt.ui.warnLine(rendered))
+	default:
+		fmt.Fprintln(rt.writer, rt.ui.errorLine(rendered))
+	}
+}
+
+func (a *Agent) maybeRunCodexAppReviewMode(ctx context.Context, userText string, reviewText string, images []MessageImage) (bool, string, error) {
+	if a == nil || a.Session == nil {
+		return false, "", nil
+	}
+	if !looksLikeReviewOnlyModeIntent(userText) {
+		return false, "", nil
+	}
+	root := workspaceSnapshotRoot(a.Workspace)
+	if strings.TrimSpace(root) == "" {
+		root = firstNonBlankString(a.Workspace.Root, a.Session.WorkingDir)
+	}
+	rt := a.reviewHarnessRuntime(root)
+	opts, selection, ok := rt.naturalLanguageReviewOptions(userText, images)
+	if !ok {
+		return false, "", nil
+	}
+	if expanded := strings.TrimSpace(reviewText); expanded != "" {
+		opts.Request = expanded
+		opts.RawArgs = expanded
+	}
+	if selection != nil {
+		rt.rememberNaturalReviewSelection(*selection)
+	}
+	run, err := rt.runReviewCommandWithContext(ctx, opts)
+	if err != nil {
+		return true, "", err
+	}
+	return true, formatCodexAppReviewModeReply(a.Config, run), nil
+}
+
+func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	findings := reviewModeVisibleFindings(run, 10)
+	var b strings.Builder
+	if korean {
+		b.WriteString("검토 결과:")
+		if len(findings) == 0 {
+			if strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
+				b.WriteString("\n\n- 차단 finding 없음.")
+			} else {
+				b.WriteString("\n\n- 구조화된 finding 없음.")
+			}
+		} else {
+			for _, finding := range findings {
+				writeCodexAppReviewModeFinding(&b, finding, true)
+			}
+		}
+		b.WriteString("\n\n요약:")
+		fmt.Fprintf(&b, "\n- 판정: %s", firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"))
+		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
+		fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
+		if strings.TrimSpace(run.Result.Summary) != "" {
+			fmt.Fprintf(&b, "\n- 리뷰 요약: %s", reviewVisibleInlineText(run.Result.Summary))
+		}
+		if len(findings) == 0 && !strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
+			b.WriteString("\n- 남은 리스크: evidence가 부족할 수 있으니 대상 범위를 좁혀 다시 리뷰하는 편이 안전합니다.")
+		}
+		return strings.TrimSpace(b.String())
+	}
+	b.WriteString("Review findings:")
+	if len(findings) == 0 {
+		if strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
+			b.WriteString("\n\n- No blocking findings.")
+		} else {
+			b.WriteString("\n\n- No structured findings.")
+		}
+	} else {
+		for _, finding := range findings {
+			writeCodexAppReviewModeFinding(&b, finding, false)
+		}
+	}
+	b.WriteString("\n\nSummary:")
+	fmt.Fprintf(&b, "\n- Verdict: %s", firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"))
+	fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
+	fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
+	if strings.TrimSpace(run.Result.Summary) != "" {
+		fmt.Fprintf(&b, "\n- Review summary: %s", reviewVisibleInlineText(run.Result.Summary))
+	}
+	if len(findings) == 0 && !strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
+		b.WriteString("\n- Residual risk: review evidence may be incomplete; rerun with a narrower target before relying on it.")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func reviewModeVisibleFindings(run ReviewRun, limit int) []ReviewFinding {
+	findings := make([]ReviewFinding, 0, len(run.Findings))
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if strings.TrimSpace(finding.Title) == "" &&
+			strings.TrimSpace(finding.Evidence) == "" &&
+			strings.TrimSpace(finding.Impact) == "" {
+			continue
+		}
+		findings = append(findings, finding)
+	}
+	sortReviewFindings(findings)
+	return limitReviewFindings(findings, limit)
+}
+
+func writeCodexAppReviewModeFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
+	finding.Normalize()
+	id := valueOrDefault(finding.ID, "RF")
+	severity := valueOrDefault(finding.Severity, "unknown")
+	category := valueOrDefault(finding.Category, "general")
+	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
+	fmt.Fprintf(b, "\n\n- %s [%s/%s]: %s", id, severity, category, title)
+	if location := codexAppReviewModeFindingLocation(finding, korean); location != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 위치: %s", location)
+		} else {
+			fmt.Fprintf(b, "\n  - Location: %s", location)
+		}
+	}
+	if strings.TrimSpace(finding.Evidence) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 근거: %s", reviewVisibleInlineText(finding.Evidence))
+		} else {
+			fmt.Fprintf(b, "\n  - Evidence: %s", reviewVisibleInlineText(finding.Evidence))
+		}
+	}
+	if strings.TrimSpace(finding.Impact) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 영향: %s", reviewVisibleInlineText(finding.Impact))
+		} else {
+			fmt.Fprintf(b, "\n  - Impact: %s", reviewVisibleInlineText(finding.Impact))
+		}
+	}
+	if strings.TrimSpace(finding.RequiredFix) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 조치: %s", reviewVisibleInlineText(finding.RequiredFix))
+		} else {
+			fmt.Fprintf(b, "\n  - Fix: %s", reviewVisibleInlineText(finding.RequiredFix))
+		}
+	}
+	if strings.TrimSpace(finding.TestRecommendation) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 테스트: %s", reviewVisibleInlineText(finding.TestRecommendation))
+		} else {
+			fmt.Fprintf(b, "\n  - Test: %s", reviewVisibleInlineText(finding.TestRecommendation))
+		}
+	}
+}
+
+func codexAppReviewModeFindingLocation(finding ReviewFinding, korean bool) string {
+	var parts []string
+	if strings.TrimSpace(finding.Path) != "" {
+		path := reviewVisibleInlineText(finding.Path)
+		if finding.Line > 0 {
+			path = fmt.Sprintf("%s:%d", path, finding.Line)
+		}
+		parts = append(parts, path)
+	}
+	if strings.TrimSpace(finding.Symbol) != "" {
+		if korean {
+			parts = append(parts, "심볼 "+reviewVisibleInlineText(finding.Symbol))
+		} else {
+			parts = append(parts, "symbol "+reviewVisibleInlineText(finding.Symbol))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (rt *runtimeState) naturalLanguageReviewOptions(input string, images []MessageImage) (ReviewHarnessOptions, *ViewerSelection, bool) {
@@ -53,6 +238,9 @@ func (rt *runtimeState) naturalLanguageReviewOptions(input string, images []Mess
 	}
 	selection, hasSelectionMention := firstReviewMentionSelection(root, request)
 	mentionPath, hasPathMention := firstReviewMentionPath(root, request)
+	if reviewRequestHasPathLikeMentionToken(request) && !hasSelectionMention && !hasPathMention {
+		return ReviewHarnessOptions{}, nil, false
+	}
 	hasActiveSelection := false
 	if rt != nil && rt.session != nil {
 		if current := rt.session.CurrentSelection(); current != nil && current.HasSelection() {
@@ -81,7 +269,7 @@ func (rt *runtimeState) naturalLanguageReviewOptions(input string, images []Mess
 		Paths:               paths,
 		IncludeGitDiff:      !includeFileContents,
 		IncludeFileContents: includeFileContents,
-		MaxContextChars:     60000,
+		MaxContextChars:     reviewDefaultMaxContextChars,
 		RawArgs:             request,
 	}
 	return opts, selection, true
@@ -119,6 +307,9 @@ func looksLikeReviewBeforeFixIntent(input string) bool {
 	if hasNaturalReviewNegation(lower) {
 		return false
 	}
+	if hasRepairActionNegation(lower) {
+		return false
+	}
 	if hasNaturalReviewIntent(lower) && hasRepairActionIntent(lower) {
 		return true
 	}
@@ -126,14 +317,61 @@ func looksLikeReviewBeforeFixIntent(input string) bool {
 }
 
 func hasRepairActionIntent(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if hasRepairActionNegation(lower) {
+		return false
+	}
 	return containsAny(lower,
 		"수정", "고쳐", "고치", "해결", "패치", "반영",
 		"fix", "repair", "patch", "address", "correct")
 }
 
+func hasRepairActionNegation(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	return containsAny(lower,
+		"수정하지 말", "수정 하지 말", "수정은 하지", "수정 없이", "수정하지마", "수정 하지마",
+		"고치지 말", "고치지는 말", "고치지마", "패치하지 말", "패치 하지 말", "패치 없이",
+		"do not edit", "don't edit", "dont edit", "no edit", "no edits", "without editing",
+		"do not modify", "don't modify", "dont modify", "without modifying",
+		"do not patch", "don't patch", "dont patch", "without patching")
+}
+
+func looksLikeExplicitReviewModeIntent(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	return containsAny(lower,
+		"리뷰 모드", "리뷰모드", "검토 모드", "검토모드", "코드 리뷰 모드",
+		"review mode", "review-mode", "code review mode", "code-review mode",
+		"reviewer mode", "reviewer stance", "review stance", "code-review stance")
+}
+
+func shouldRenderCodexAppReviewModeReply(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" || hasNaturalReviewNegation(lower) {
+		return false
+	}
+	return looksLikeExplicitReviewModeIntent(lower)
+}
+
+func looksLikeReviewOnlyModeIntent(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" || hasNaturalReviewNegation(lower) || !hasNaturalReviewIntent(lower) {
+		return false
+	}
+	if hasRepairActionNegation(lower) {
+		return true
+	}
+	if looksLikeExplicitReviewModeIntent(lower) && !hasRepairActionIntent(lower) {
+		return true
+	}
+	return false
+}
+
 func looksLikeBugFindingFixIntent(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	if lower == "" {
+		return false
+	}
+	if hasRepairActionNegation(lower) {
 		return false
 	}
 	if looksLikeBugSearchAndFixIntent(lower) {
@@ -147,6 +385,9 @@ func looksLikeBugFindingFixIntent(input string) bool {
 
 func looksLikeBugSearchAndFixIntent(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
+	if hasRepairActionNegation(lower) {
+		return false
+	}
 	return containsAny(lower,
 		"find and fix", "find bug and fix", "find bugs and fix", "find the bug and fix", "find defects and fix",
 		"찾아서 수정", "찾아 수정", "찾고 수정", "찾아서 고쳐", "찾아 고쳐", "찾고 고쳐",
@@ -176,10 +417,12 @@ func looksSelectionScopedReviewRequest(input string) bool {
 func looksGeneralReviewCommandRequest(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	return containsAny(lower,
+		"리뷰 모드", "리뷰모드", "검토 모드", "검토모드", "코드 리뷰 모드",
 		"리뷰해줘", "리뷰 해줘", "리뷰해봐", "리뷰 해봐", "리뷰 부탁", "리뷰하자", "리뷰 요청",
-		"검토해줘", "검토 해줘", "검토해봐", "검토 해봐", "검토 부탁", "검토하자", "검토 요청",
+		"검토해", "검토 해", "검토해줘", "검토 해줘", "검토해봐", "검토 해봐", "검토 부탁", "검토하자", "검토 요청",
 		"코드 리뷰", "변경 리뷰", "변경사항 리뷰", "수정사항 리뷰", "diff 리뷰", "pr 리뷰",
 		"please review", "review this", "review current", "review the current", "review change", "review changes",
+		"review mode", "review-mode", "code review mode", "reviewer stance", "review stance",
 		"code review", "run review", "audit this", "inspect this", "review selection", "review selected")
 }
 
@@ -199,6 +442,24 @@ func firstReviewMentionPath(root string, input string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func reviewRequestHasPathLikeMentionToken(input string) bool {
+	for _, token := range strings.Fields(input) {
+		raw := strings.TrimSpace(token)
+		raw = strings.Trim(raw, " \t\r\n\"'`<>.,;()[]{}")
+		if !strings.HasPrefix(raw, "@") {
+			continue
+		}
+		mention := strings.TrimPrefix(raw, "@")
+		if mention == "" {
+			continue
+		}
+		if len(mentionRangePattern.FindStringSubmatch(mention)) == 4 || looksLikeReviewMentionPath(mention) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseReviewMentionSelection(root string, token string) (ViewerSelection, bool) {
@@ -227,11 +488,12 @@ func parseReviewMentionSelection(root string, token string) (ViewerSelection, bo
 	if path == "" {
 		return ViewerSelection{}, false
 	}
-	if strings.TrimSpace(root) != "" && !filepath.IsAbs(path) {
-		path = filepath.Join(root, path)
+	resolvedPath, ok := resolveReviewMentionPathWithinRoot(root, path)
+	if !ok {
+		return ViewerSelection{}, false
 	}
 	return ViewerSelection{
-		FilePath:  path,
+		FilePath:  resolvedPath,
 		StartLine: start,
 		EndLine:   end,
 	}, true
@@ -253,11 +515,34 @@ func parseReviewMentionPath(root string, token string) (string, bool) {
 	if !looksLikeReviewMentionPath(raw) {
 		return "", false
 	}
-	path := strings.TrimSpace(raw)
-	if strings.TrimSpace(root) != "" && !filepath.IsAbs(path) {
-		path = filepath.Join(root, path)
+	path, ok := resolveReviewMentionPathWithinRoot(root, raw)
+	if !ok {
+		return "", false
 	}
 	return path, true
+}
+
+func resolveReviewMentionPathWithinRoot(root string, rawPath string) (string, bool) {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return "", false
+	}
+	path = filepath.Clean(path)
+	if path == "." {
+		return "", false
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return path, true
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	resolved, err := ensurePathWithinRoot(rawPath, root, path)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
 }
 
 func looksLikeReviewMentionPath(path string) bool {

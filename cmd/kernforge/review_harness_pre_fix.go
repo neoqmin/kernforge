@@ -26,15 +26,15 @@ func reviewNarrowPatchGuidance(korean bool) string {
 func reviewPatchRelevanceGuidance(korean bool) string {
 	if korean {
 		return strings.Join([]string{
-			"- 수정안은 최신 차단 finding의 근거/required_fix에 나온 코드 토큰을 실제 diff에서 직접 건드려야 합니다.",
-			"- 예를 들어 `QueryDosDevice`, `break`, `FindNextVolume` 문제를 `#include` 변경만으로 해결했다고 판단하지 마세요.",
-			"- 마지막 수정안이 최신 blocker와 무관하면 재사용하지 말고, 현재 파일 본문을 다시 확인한 뒤 해당 blocker 주변의 좁은 hunk로 다시 작성하세요.",
+			"- 수정안은 최신 차단 finding의 근거/required_fix와 추적 가능하게 연결되어야 합니다.",
+			"- 하네스는 소스 의미를 대신 판정하지 않습니다. 관련 없는 보강만 제출하지 말고, 리뷰 모델이 판단할 수 있도록 실제 diff와 after 상태가 충분히 보이게 하세요.",
+			"- 마지막 수정안이 최신 blocker와 무관하면 재사용하지 말고, 현재 파일 본문을 다시 확인한 뒤 좁은 hunk로 다시 작성하세요.",
 		}, "\n")
 	}
 	return strings.Join([]string{
-		"- The proposed edit must directly touch code tokens from the latest blocking finding evidence or required_fix.",
-		"- For example, do not treat an #include-only edit as a fix for a `QueryDosDevice`, `break`, or `FindNextVolume` blocker.",
-		"- If the last proposal is unrelated to the latest blocker, discard it, reread the current file body, and produce a narrow hunk around that blocker.",
+		"- The proposed edit must be traceably connected to the latest blocking finding evidence or required_fix.",
+		"- The harness does not judge source semantics. Do not submit unrelated reinforcement only; make the actual diff and after-state visible enough for the reviewer model to judge.",
+		"- If the last proposal is unrelated to the latest blocker, discard it, reread the current file body, and produce a narrow hunk.",
 	}, "\n")
 }
 
@@ -50,6 +50,9 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		return false, nil
 	}
 	if !looksLikeReviewBeforeFixIntent(userText) {
+		return false, nil
+	}
+	if !reviewHarnessHasPreFixModelRoute(a) {
 		return false, nil
 	}
 	root := workspaceSnapshotRoot(a.Workspace)
@@ -209,9 +212,9 @@ func (rt *runtimeState) reviewBeforeFixOptions(input string, images []MessageIma
 	if target == "" {
 		return ReviewHarnessOptions{}, nil, false
 	}
-	maxContextChars := 20000
+	maxContextChars := reviewFocusedMaxContextChars
 	if target == reviewTargetSelection || len(paths) > 0 {
-		maxContextChars = 60000
+		maxContextChars = reviewSourceAnalysisMaxContextChars
 	}
 	return ReviewHarnessOptions{
 		Trigger:             reviewBeforeFixTrigger,
@@ -398,7 +401,10 @@ func preFixNonConclusiveBugHuntFindings(run ReviewRun) []ReviewFinding {
 	if !reviewBeforeFixNeedsDeepBugHunt(run) || preFixReviewHasActionableBugHuntFinding(run) {
 		return nil
 	}
-	if len(run.Evidence.ChangedPaths) == 0 && len(run.ChangeSet.ChangedPaths) == 0 {
+	if len(run.Evidence.ChangedPaths) == 0 &&
+		len(run.ChangeSet.ChangedPaths) == 0 &&
+		len(run.RequestAnalysis.ScopeDiscovery.CandidateFiles) == 0 &&
+		!strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetSelection) {
 		return nil
 	}
 	if preFixReviewHadLocalDegradedUnreliableReviewerRoute(run) {
@@ -510,6 +516,9 @@ func preFixReviewHadUnreliableReviewerRoute(run ReviewRun) bool {
 		if !preFixReviewerRunIsMainRoute(reviewerRun) {
 			continue
 		}
+		if preFixReviewerRunIsNoConfiguredModel(reviewerRun) {
+			continue
+		}
 		if preFixReviewerRunIsUnreliable(reviewerRun) {
 			return true
 		}
@@ -551,6 +560,21 @@ func preFixReviewerRunIsUnreliable(reviewerRun ReviewReviewerRun) bool {
 		strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityWeak) ||
 		strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityFailed) ||
 		strings.TrimSpace(reviewerRun.Error) != ""
+}
+
+func preFixReviewerRunIsNoConfiguredModel(reviewerRun ReviewReviewerRun) bool {
+	text := strings.ToLower(strings.Join([]string{
+		reviewerRun.Status,
+		reviewerRun.ModelQuality,
+		reviewerRun.Model,
+		reviewerRun.Error,
+	}, " "))
+	if !containsAny(text, "no main model configured", "no reviewer model configured", "no model configured", "model review disabled") {
+		return false
+	}
+	return strings.TrimSpace(reviewerRun.Model) == "" ||
+		strings.Contains(text, "no main model configured") ||
+		strings.Contains(text, "no reviewer model configured")
 }
 
 func preFixReviewHasActionableBugHuntFinding(run ReviewRun) bool {
@@ -986,9 +1010,9 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 	if korean {
 		b.WriteString("\n\n구현 규칙:\n")
 		if preFixReviewCanContinueWithIndependentInspection(run) {
-			b.WriteString("- 수정 전 리뷰 route 실패는 코드 승인도, 수정 금지도 아닙니다. 먼저 참조된 파일을 직접 읽고 실제 버그가 있는지 독립적으로 확인하세요.\n")
-			b.WriteString("- 실행 가능한 코드 finding이 없으면 추측성 패치를 만들지 말고, 명확한 버그를 찾은 경우에만 좁게 수정하세요.\n")
-			b.WriteString("- 파일 쓰기 전 pre-write review는 그대로 필수이며, 그 단계에서 실패하면 파일을 쓰면 안 됩니다.\n")
+			b.WriteString("- 수정 전 리뷰 route 실패는 코드 승인도, 수정 금지도 아닙니다. 원래 사용자 요청을 기준으로 참조된 파일을 직접 읽고 검토/수정을 계속하세요.\n")
+			b.WriteString("- 리뷰가 실행 가능한 코드 finding을 만들지 못한 경우 하네스가 대체 버그 목록을 만들지 않습니다. 버그 판단은 메인 모델이 소스에서 직접 수행하고, 최종 수정안은 pre-write 리뷰가 실제 diff와 after excerpt로 검증합니다.\n")
+			b.WriteString("- 파일 쓰기 전 일반 pre-write review는 계속 필수입니다.\n")
 		}
 		b.WriteString("- 필요한 범위에서만 추가로 확인하세요.\n")
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
@@ -1011,9 +1035,9 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 	} else {
 		b.WriteString("\n\nImplementation rules:\n")
 		if preFixReviewCanContinueWithIndependentInspection(run) {
-			b.WriteString("- The failed pre-fix review route is neither code approval nor an editing ban. First read the referenced files and independently verify whether a real bug exists.\n")
-			b.WriteString("- If there is no actionable code finding, do not invent a speculative patch; edit narrowly only when you find a concrete bug.\n")
-			b.WriteString("- The normal pre-write review remains mandatory, and files must not be written if that gate fails.\n")
+			b.WriteString("- The failed pre-fix review route is neither code approval nor an editing ban. Continue the original user request by reading the referenced files directly and independently verifying the source.\n")
+			b.WriteString("- If the review did not produce actionable code findings, the harness does not invent replacement bug findings. The main model must judge bugs from source, and pre-write review must validate the actual diff and after excerpt.\n")
+			b.WriteString("- The normal pre-write review remains mandatory before any file write.\n")
 		}
 		b.WriteString("- Inspect further only where needed.\n")
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
@@ -1041,8 +1065,13 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 	korean := reviewRunPrefersKorean(cfg, run)
 	failed := reviewFailedRequiredReviewerRuns(run)
 	var b strings.Builder
+	preWriteGate := strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write")
 	if korean {
-		b.WriteString("쓰기 전 리뷰어 게이트가 충분한 근거를 만들지 못해서 편집을 중단했습니다.")
+		if preWriteGate {
+			b.WriteString("쓰기 전 리뷰어 게이트가 충분한 근거를 만들지 못해서 편집을 중단했습니다.")
+		} else {
+			b.WriteString("리뷰어 게이트가 충분한 근거를 만들지 못해서 편집을 중단했습니다.")
+		}
 		b.WriteString("\n\n- 원인: 필수 리뷰 단계의 모델 route가 실패했거나 `weak` 품질로 판정되었습니다. `primary`는 현재 메인 모델 route이고, `cross`는 전용 reviewer route입니다.")
 		b.WriteString("\n- 결과: 이 상태의 리뷰 결과는 쓰기 승인으로 신뢰할 수 없어 편집을 적용하지 않습니다.")
 		b.WriteString("\n- 다음 조치: `primary` 실패면 `/model`로 메인 모델을 바꾸거나 해당 provider 문제를 해결하세요. `cross` 실패면 `/review models`로 reviewer route를 바꾸세요. 그 뒤 같은 요청을 다시 실행하세요.")
@@ -1051,7 +1080,11 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 		}
 		b.WriteString("\n\n코드 수정은 적용하지 않았습니다.")
 	} else {
-		b.WriteString("The pre-write reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
+		if preWriteGate {
+			b.WriteString("The pre-write reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
+		} else {
+			b.WriteString("The reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
+		}
 		b.WriteString("\n\n- Cause: a required review-stage model route failed or was classified as `weak` quality. `primary` is the active main model route; `cross` is a dedicated reviewer route.")
 		b.WriteString("\n- Result: this review cannot be trusted as write approval, so the edit was not applied.")
 		b.WriteString("\n- Next step: if `primary` failed, use `/model` to switch the main model or fix that provider route. If `cross` failed, use `/review models` to switch the reviewer route. Then rerun the same request.")
@@ -1059,6 +1092,10 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 			b.WriteString("\n- Option: if you still want to decide from the main model review shown above, reply with `proceed with the main model review` and I will retry the edit with diff-preview confirmation.")
 		}
 		b.WriteString("\n\nNo code changes were applied.")
+	}
+	if recoveryOptions := formatReviewerGateRecoveryOptions(korean, &run); recoveryOptions != "" {
+		b.WriteString("\n\n")
+		b.WriteString(recoveryOptions)
 	}
 	if len(failed) > 0 {
 		if korean {
@@ -1082,6 +1119,51 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func formatReviewerGateRecoveryOptions(korean bool, run *ReviewRun) string {
+	timeout := reviewRunHasReviewerTimeoutFailure(run)
+	if korean {
+		var b strings.Builder
+		b.WriteString("[사용자 선택지]")
+		if timeout {
+			b.WriteString("\n- 같은 reviewer로 재시도: 최근 timeout이 기록된 route는 다음 reviewer call에서 soft timeout을 자동으로 한 단계 늘립니다.")
+		} else {
+			b.WriteString("\n- 같은 reviewer로 재시도: route 설정을 유지하고 같은 요청을 다시 실행합니다.")
+		}
+		b.WriteString("\n- reviewer 모델 변경: `/review models`로 더 가까운/강한 reviewer를 선택합니다.")
+		b.WriteString("\n- reviewer 없이 single-model mode: `/review models clear primary` 후 같은 요청을 다시 실행하고 diff preview에서 직접 확인합니다.")
+		b.WriteString("\n- main model 변경: `[0] 실패한 리뷰어`가 `primary`이면 `/model`로 메인 모델을 바꿉니다.")
+		return b.String()
+	}
+	var b strings.Builder
+	b.WriteString("[User actions]")
+	if timeout {
+		b.WriteString("\n- Retry the same reviewer: a recently timed-out route gets one automatically extended soft timeout on the next reviewer call.")
+	} else {
+		b.WriteString("\n- Retry the same reviewer: keep the route and rerun the same request.")
+	}
+	b.WriteString("\n- Change reviewer model: use `/review models` to pick a closer or stronger reviewer.")
+	b.WriteString("\n- Use single-model mode: run `/review models clear primary`, rerun, and inspect the diff preview yourself.")
+	b.WriteString("\n- Change main model: if `[0] Failed reviewer` shows `primary`, use `/model`.")
+	return b.String()
+}
+
+func reviewRunHasReviewerTimeoutFailure(run *ReviewRun) bool {
+	if run == nil {
+		return false
+	}
+	for _, reviewerRun := range run.ReviewerRuns {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(reviewerRun.Error)), "timeout") {
+			return true
+		}
+	}
+	for _, health := range run.ModelPlan.RouteHealth {
+		if reviewRouteHealthNeedsAdaptiveTimeout(health) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderReviewBeforeFixInlineFindings(run ReviewRun) string {

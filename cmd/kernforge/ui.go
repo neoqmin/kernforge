@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type UI struct {
@@ -797,9 +799,7 @@ const (
 )
 
 func formatAssistantText(text string) string {
-	normalized := strings.ReplaceAll(text, "\r\n", "\n")
-	normalized = strings.ReplaceAll(normalized, "\r", "\n")
-	normalized = trimOuterBlankLines(normalized)
+	normalized := sanitizeAssistantFinalText(text)
 	if normalized == "" {
 		return ""
 	}
@@ -837,6 +837,163 @@ func formatAssistantText(text string) string {
 		out = out[:len(out)-1]
 	}
 	return strings.Join(out, "\n")
+}
+
+func sanitizeAssistantFinalText(text string) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = collapseRepeatedAssistantSentences(normalized)
+	normalized = normalizeAssistantSentenceSpacing(normalized)
+	return trimOuterBlankLines(normalized)
+}
+
+func collapseRepeatedAssistantSentences(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	inFence := false
+	for i, line := range lines {
+		if isAssistantFenceLine(line) {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines[i] = collapseRepeatedAssistantSentenceRuns(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeAssistantSentenceSpacing(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	inFence := false
+	for i, line := range lines {
+		if isAssistantFenceLine(line) {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		lines[i] = normalizeAssistantSentenceSpacingLine(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeAssistantSentenceSpacingLine(line string) string {
+	if line == "" {
+		return line
+	}
+	var out strings.Builder
+	var prev rune
+	for _, r := range line {
+		if out.Len() > 0 && isAssistantSentenceTerminator(prev) && !unicode.IsSpace(r) && isCJKOrHangulRune(r) {
+			out.WriteByte(' ')
+		}
+		out.WriteRune(r)
+		prev = r
+	}
+	return out.String()
+}
+
+func isCJKOrHangulRune(r rune) bool {
+	return (r >= 0x1100 && r <= 0x11FF) ||
+		(r >= 0x3130 && r <= 0x318F) ||
+		(r >= 0xAC00 && r <= 0xD7AF) ||
+		(r >= 0x2E80 && r <= 0x9FFF)
+}
+
+func collapseRepeatedAssistantSentenceRuns(line string) string {
+	if strings.TrimSpace(line) == "" {
+		return line
+	}
+	var out strings.Builder
+	rest := line
+	for rest != "" {
+		candidate, count, consumed := repeatedAssistantSentencePrefix(rest)
+		if count >= 3 && consumed > 0 {
+			out.WriteString(candidate)
+			rest = rest[consumed:]
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(rest)
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		out.WriteString(rest[:size])
+		rest = rest[size:]
+	}
+	return out.String()
+}
+
+func repeatedAssistantSentencePrefix(text string) (string, int, int) {
+	for _, end := range assistantSentenceEndIndexes(text) {
+		candidate := text[:end]
+		if !isRepeatedAssistantSentenceCandidate(candidate) {
+			continue
+		}
+		count, consumed := countRepeatedAssistantSentence(text, candidate)
+		if count >= 3 {
+			return candidate, count, consumed
+		}
+	}
+	return "", 0, 0
+}
+
+func assistantSentenceEndIndexes(text string) []int {
+	var out []int
+	for idx, r := range text {
+		if isAssistantSentenceTerminator(r) {
+			out = append(out, idx+utf8.RuneLen(r))
+		}
+	}
+	return out
+}
+
+func isAssistantSentenceTerminator(r rune) bool {
+	switch r {
+	case '.', '!', '?', 0x3002, 0xFF01, 0xFF1F:
+		return true
+	default:
+		return false
+	}
+}
+
+func isRepeatedAssistantSentenceCandidate(sentence string) bool {
+	trimmed := strings.TrimSpace(sentence)
+	if utf8.RuneCountInString(trimmed) < 20 {
+		return false
+	}
+	return strings.IndexFunc(trimmed, unicode.IsLetter) >= 0
+}
+
+func countRepeatedAssistantSentence(text string, sentence string) (int, int) {
+	count := 0
+	pos := 0
+	for pos < len(text) {
+		start := pos
+		for start < len(text) {
+			r, size := utf8.DecodeRuneInString(text[start:])
+			if !unicode.IsSpace(r) {
+				break
+			}
+			start += size
+		}
+		if !strings.HasPrefix(text[start:], sentence) {
+			break
+		}
+		count++
+		pos = start + len(sentence)
+	}
+	if count == 0 {
+		return 0, 0
+	}
+	return count, pos
 }
 
 func trimOuterBlankLines(text string) string {

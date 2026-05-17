@@ -64,13 +64,22 @@ func resolvePolicyOwnerNode(meta map[string]any, session *Session) string {
 func inferToolResultClass(call ToolCall, effect string, meta map[string]any, verificationLike bool) string {
 	switch strings.TrimSpace(call.Name) {
 	case "run_shell_background", "run_shell_bundle_background":
+		if verificationLike && toolMetaVerificationWasSkipped(meta, "") {
+			return "verification_skipped"
+		}
 		return "background_start"
 	case "check_shell_job", "check_shell_bundle":
+		if verificationLike && toolMetaVerificationWasSkipped(meta, "") {
+			return "verification_skipped"
+		}
 		return "background_status"
 	case "cancel_shell_job", "cancel_shell_bundle":
 		return "background_cancel"
 	case "run_shell":
 		if verificationLike {
+			if toolMetaVerificationWasSkipped(meta, "") {
+				return "verification_skipped"
+			}
 			return "verification"
 		}
 		return "command_result"
@@ -92,8 +101,14 @@ func inferToolResultClass(call ToolCall, effect string, meta map[string]any, ver
 func inferToolPlanEffect(call ToolCall, effect string, meta map[string]any, verificationLike bool) string {
 	switch strings.TrimSpace(call.Name) {
 	case "run_shell_background", "run_shell_bundle_background", "cancel_shell_job", "cancel_shell_bundle":
+		if verificationLike && toolMetaVerificationWasSkipped(meta, "") {
+			return "none"
+		}
 		return "progress"
 	case "check_shell_job":
+		if verificationLike && toolMetaVerificationWasSkipped(meta, "") {
+			return "none"
+		}
 		switch strings.TrimSpace(strings.ToLower(toolMetaString(meta, "job_status"))) {
 		case "completed":
 			return "complete"
@@ -103,6 +118,9 @@ func inferToolPlanEffect(call ToolCall, effect string, meta map[string]any, veri
 			return "progress"
 		}
 	case "check_shell_bundle":
+		if verificationLike && toolMetaVerificationWasSkipped(meta, "") {
+			return "none"
+		}
 		switch strings.TrimSpace(strings.ToLower(toolMetaString(meta, "bundle_status"))) {
 		case "completed":
 			return "complete"
@@ -113,6 +131,15 @@ func inferToolPlanEffect(call ToolCall, effect string, meta map[string]any, veri
 		}
 	case "run_shell":
 		if verificationLike {
+			if toolMetaVerificationWasSkipped(meta, "") {
+				return "none"
+			}
+			switch toolMetaExplicitVerificationStatus(meta) {
+			case VerificationFailed:
+				return "block"
+			case VerificationPending:
+				return "progress"
+			}
 			return "complete"
 		}
 		return "progress"

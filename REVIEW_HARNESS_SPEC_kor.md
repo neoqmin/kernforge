@@ -402,9 +402,10 @@ Gate rule:
 8. 하네스 증거 부족 경고는 implementation model에게 패치를 다시 쓰게 할 근거가 아니다. 실제 코드 누락, header/API surface 누락, member declaration 누락, requested scope 미구현처럼 patch 자체의 결함을 가리키는 `evidence_gap`만 actionable warning으로 차단한다.
 9. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, 별도 review role이 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 확인한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
 10. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
-11. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
-12. docs-only change는 test gap을 warning으로 낮출 수 있다.
-13. user가 명시적으로 waiver를 요청하지 않으면 blocker waiver는 불가.
+11. build/test 검증 명령이 사용자에게 거절되어 `skipped`/`declined`로 기록된 뒤에는 같은 턴에서 동일 검증 재실행이나 `latest` background poll을 실행하지 않는다. 하네스는 tool progress를 emit하기 전에 `NOT_EXECUTED` tool result와 guidance로 접고, 미검증 gap만 final/status에 남긴다.
+12. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
+13. docs-only change는 test gap을 warning으로 낮출 수 있다.
+14. user가 명시적으로 waiver를 요청하지 않으면 blocker waiver는 불가.
 
 ### 5.6 Review Artifact Versioning
 
@@ -2352,7 +2353,8 @@ Phase 3: 장기 runtime protocol화
 37. 사용자 smoke - openai-codex Responses provider에서 orphan tool output 400 오류 수정
    - 발견: 메인 모델을 `openai-codex-subscription / gpt-5.5`로, 리뷰 모델을 `anthropic-claude-cli / opus`로 바꾼 smoke에서 `update_plan` tool result가 다음 OpenAI Codex Responses 요청의 첫 `function_call_output`으로 들어갔다. 대응하는 `function_call` item이 같은 input에 없어 API가 `No tool call found for function call output` 400 오류를 반환했다.
    - 영향: 세션 압축, provider 전환, tool-turn 복구 과정에서 assistant tool call 원본이 누락되면 openai-codex Responses 경로가 대화를 이어가지 못한다. 일반 OpenAI chat-completions 경로에는 orphan tool result 보호가 있었지만 Codex Responses payload builder에는 같은 보호가 없었다.
-   - 수정: `buildOpenAICodexInput`이 메시지를 직렬화하기 전에 `ensureOpenAIToolCallResponses`를 통과하도록 했다. 매칭 assistant tool call이 없는 saved tool result는 plain user context로 변환하고, assistant tool call 뒤 tool result가 빠진 경우에는 runtime guidance에 맞는 synthetic tool output을 추가한다.
+   - 수정: `buildOpenAICodexInput`이 메시지를 직렬화하기 전에 `ensureOpenAIToolCallResponses`를 통과하도록 했다. 매칭 assistant tool call이 없는 saved tool result는 Codex의 `remove_orphan_outputs`처럼 제거하고, assistant tool call 뒤 tool result가 빠진 경우에는 Codex의 missing-output 보정처럼 `aborted` synthetic tool output을 추가한다. runtime guidance가 바로 뒤따르는 경우에는 기존처럼 superseded `NOTICE`를 넣는다.
+   - 추가 수정: post-change diff review는 final-answer coding harness 상태를 evidence나 deterministic blocker로 가져오지 않는다. `coding_harness` finding은 final answer/completion audit gate에서 계속 사용하지만, 이미 적용된 코드 diff를 검토하는 post-change review에서는 patch transaction, diff, source excerpt, verification state만 기준으로 삼는다.
    - 회귀 테스트: `TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext`, `TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput`, 기존 `TestBuildOpenAICodexRequestBodyPreservesToolContext`.
    - 검증: `go test ./cmd/kernforge -run "TestBuildOpenAICodexRequestBodyPreservesToolContext|TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext|TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput" -count=1` 통과.
 38. 사용자 smoke - Claude Code CLI review model 선택지에 버전 모델 표시
@@ -2432,6 +2434,13 @@ Phase 3: 장기 runtime protocol화
    - 회귀 테스트: `TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate`, `TestReviewerGateUnavailableReplyOffersMainModelFallback`, `TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview`, 기존 pre-write reviewer failure/web-research stop tests.
    - 검증: `go test ./cmd/kernforge -run "TestPreWriteReviewModelFailureBlocksEditGate|TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate|TestReviewerGateUnavailableReplyOffersMainModelFallback|TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry" -count=1 -timeout 10m` 통과.
 
+50. 사용자 smoke - Codex App식 build verification command lifecycle 반영
+   - 발견: artifact를 만들 수 있는 `run_shell` build/test 명령이 사용자 확인에서 거절되면 출력은 "skipped"였지만 tool call 자체는 non-error `success=true`로 저장됐다. 일부 하네스 경로는 `verification_like=true`만 보고 pending verification을 해소하거나 성공 evidence로 오판할 수 있었다.
+   - 영향: 사용자가 빌드 검증을 거절했는데도 최종 답변/리뷰 하네스가 검증이 끝난 것처럼 보일 수 있고, 반대로 실제로 필요한 미검증 gap이 사라져 GPT 단일 모델 smoke에서 회귀가 반복될 수 있다.
+   - 수정: `F:\kernullist\codex`의 command execution 승인 수명주기처럼 verification-like shell command 결과에 `verification_status`와 `command_execution_status`를 명시적으로 기록한다. 거절된 build/test는 `verification_status=skipped`, `command_execution_status=declined`, `verification_evidence=false`로 남기고, pending verification 해소와 성공 evidence 계산에서 제외한다. background verification 시작은 `verification_status=pending`, `verification_evidence=false`로 남겨 성공 evidence처럼 계산하지 않는다. skipped-only `VerificationReport`도 더 이상 성공 evidence가 아니다.
+   - 회귀 테스트: `TestRunShellDeclinedVerificationDetailedStatusIsSkipped`, `TestDeclinedVerificationDoesNotClearPendingCheckOrCountAsEvidence`, `TestSkippedVerificationReportIsNotSuccessfulEvidence`, 기존 verification claim/disclosure tests.
+   - 검증: `go test ./cmd/kernforge -run "TestAssessShellCommandMutationClassifiesVerificationArtifactCommands|TestRunShellVerificationCommandRequiresConfirmation|TestRunShellDeclinedVerificationDetailedStatusIsSkipped|TestSkippedVerificationOutputIsNotSuccessfulEvidence|TestManualVerificationClearsPendingCheck|TestDeclinedVerificationDoesNotClearPendingCheckOrCountAsEvidence|TestSkippedVerificationReportIsNotSuccessfulEvidence|TestPreFinalHarnessBlocksVerificationClaimWithoutEvidence|TestDiffAwareHarnessBlocksKoreanBuildPassClaimWithoutEvidence|TestDiffAwareHarnessAllowsKoreanBuildSkippedDisclosure" -count=1 -timeout 4m` 통과.
+
 ### 16.10 Review Harness 85점 이상 목표 설계
 
 아래 설계는 Codex App을 100점으로 둔 상대 평가에서 Kernforge review harness의 모든 주요 항목을 85점 이상으로 올리기 위한 목표 상태다. 현재 점수는 주관적 운영 평가이며, 구현 후에는 regression test, synthetic transcript replay, 실제 sample smoke run을 함께 통과해야 85점 달성으로 본다.
@@ -2457,6 +2466,7 @@ Codex App 기준에서 좋은 리뷰 하네스는 다음 성질을 가진다.
 1. 작업 경계가 명확하다.
    - 분석, 수정 계획, 패치 작성, 쓰기 전 리뷰, diff preview, 파일 쓰기, 검증, 최종 응답이 섞이지 않는다.
    - 각 단계는 현재 무엇을 하는지 사용자에게 보이는 로그를 남긴다.
+   - 한 model response에 read-only tool과 write tool이 섞이면 write tool은 즉시 실행하지 않고 다음 isolated turn으로 미룬다.
 2. 승인 경계가 명확하다.
    - 리뷰 승인과 파일 쓰기 승인은 다르다.
    - 파일 쓰기 승인과 commit/push 승인은 다르다.
@@ -2471,7 +2481,7 @@ Codex App 기준에서 좋은 리뷰 하네스는 다음 성질을 가진다.
    - 웹 검색을 수행할 때는 검색 목적과 기대하는 근거를 먼저 로그로 출력한다.
 5. 실패가 사용자 선택으로 이어진다.
    - 필수 리뷰어가 timeout, empty, weak로 실패하면 단순 중단만 하지 않는다.
-   - 메인 모델 리뷰가 usable이면 그 내용을 사용자에게 보여주고, 정책에 따라 계속 진행할지, 모델을 바꿀지, 재시도할지 선택 가능한 fallback을 제공한다.
+   - 메인 모델 리뷰가 usable이면 그 내용을 사용자에게 보여주고, 정책에 따라 같은 reviewer timeout 연장 재시도, reviewer 변경, single-model mode, main model 복구/변경 중 어떤 행동이 필요한지 출력한다.
    - 자동 모드에서는 위험도가 낮은 문서 변경과 코드 쓰기 변경을 다르게 취급한다.
 6. 장시간 작업은 진행 상황이 설명된다.
    - 단순 "모델 응답 대기 중"만 반복하지 않고, 현재 단계, 경과 시간, soft timeout, retry budget, 다음 전이를 같이 출력한다.
@@ -2580,7 +2590,7 @@ CapabilityManifest
 1. web search API key가 없으면 `web_search=unavailable`로 기록하고 모델 prompt에 "웹 검색 tool을 호출하지 말라"는 제약을 넣는다.
 2. web fetch가 가능해도 모델이 임의로 외부 문서를 열기 전에 `external_lookup_intent` 로그를 출력한다.
 3. patch apply가 실패하면 이전 patch를 재시도하지 않고 현재 파일 digest와 실패 hunk를 기반으로 새 proposal을 만든다.
-4. cross review model이 main model보다 느리거나 낮은 등급이면 soft timeout을 자동으로 늘리되, 전체 session budget은 넘지 않는다.
+4. cross review timeout은 provider/profile default를 우선한다. cloud API reviewer는 기본 5분, CLI/local reviewer는 기본 8분으로 시작하고, 최근 timeout health가 있으면 다음 reviewer call에만 adaptive extension을 적용한다. 이 상태는 status와 실패 메시지에서 사용자 선택지로 번역한다.
 
 ##### 16.10.0.4 Single-Model Review Mode
 
@@ -2915,8 +2925,8 @@ Acceptance criteria:
 4. focused/pre-write route는 다음 순서로 timeout을 정한다.
    - explicit policy override
    - capability recommended timeout
-   - main보다 낮은 rank면 최소 5분
-   - route health가 timeout-heavy면 retry를 줄이고 fallback 안내를 강화
+   - provider class default: cloud API 5분, CLI/local 8분
+   - route health가 timeout-heavy면 다음 call에 한해서 adaptive extension을 적용하고 fallback 안내를 강화
 5. `/review models status`에서 role별 route health와 권장 변경을 보여준다.
 6. reviewer route가 없으면 `SingleModelReviewPolicy`를 적용한다.
    - `enabled=true`
@@ -2927,13 +2937,13 @@ Acceptance criteria:
    - `records_verification_obligations=true`
 7. reviewer route가 있지만 route health가 repeated timeout/empty/weak 상태이면 자동으로 단일 모델 모드로 몰래 전환하지 않는다.
    - pre-fix에서는 degraded cross reviewer 상태를 표시하고 main review 기준 repair를 허용할 수 있다.
-   - pre-write에서는 사용자에게 route 변경, timeout 확장, main-only fallback 중 하나를 선택하게 한다.
+   - pre-write에서는 사용자에게 같은 reviewer timeout 연장 재시도, reviewer route 변경, single-model mode, primary failure의 경우 main model 변경/복구 중 하나를 선택하게 한다.
 
 Acceptance criteria:
 
-1. DeepSeek 같은 느린 reviewer는 3분 hard failure 대신 capability 기반 timeout을 받는다.
+1. CLI/local reviewer는 3분 hard failure 대신 capability/provider 기반 timeout을 받는다.
 2. Sonnet처럼 compact but usable output을 내는 route는 불필요한 strict retry를 하지 않는다.
-3. 같은 route가 연속 실패하면 다음 pre-fix에서는 degraded warning으로 빠르게 진행하고 pre-write에서는 명확한 fallback/route-change 안내를 낸다.
+3. 같은 route가 연속 실패하면 다음 pre-fix에서는 degraded warning으로 빠르게 진행하고 pre-write에서는 adaptive one-call timeout extension과 명확한 fallback/route-change 안내를 낸다.
 4. reviewer route가 없는 설정은 실패가 아니라 single-model mode로 시작한다.
 5. single-model mode의 pre-write review는 frozen diff와 RF obligation status 없이는 approved를 만들 수 없다.
 
@@ -3165,7 +3175,7 @@ P2:
 49. 사용자 smoke - pre-write evidence gap을 코드 수리 루프로 반복시키는 문제 수정
    - 발견: focused line-range edit의 pre-write review에서 reviewer가 "함수 후반부 변경 결과를 확인할 증거가 부족함" low `evidence_gap`을 냈다. 실제 문제는 patch 자체가 아니라 하네스가 selection-focused preview 앞부분만 제공하고 `m_volumePathMap`, `FindNextVolume`, `FindVolumeClose`, `success` 계산 구간을 evidence에 싣지 않은 것이다.
    - 원칙: 하네스가 제공하지 않은 증거를 근거로 implementation model에게 반복 패치를 시키지 않는다. 함수 후반부, selection 이후 cleanup/success 경로, current file context 부족은 하네스 수집 문제로 보고 먼저 evidence pack을 보강한다. 실제 코드 누락, header/API surface 누락, member declaration 누락처럼 patch 자체의 결함을 가리키는 `evidence_gap`만 actionable warning으로 차단한다.
-   - 수정: pre-write review에서 provided diff가 evidence budget을 독점하지 않도록 diff excerpt 상한을 두고, `@file:start-end` 요청이면 current file context는 "선택 범위 + 함수 끝까지"를 우선 보장한다. 같은 파일에서 selection을 감싼 함수 body를 찾으면 `function_body_excerpt`를 별도 source로 추가하고, selection 이후 함수 끝까지의 map 갱신, `FindNextVolume`, `FindVolumeClose`, `GetLastError`, `success`, `return` 같은 cleanup/success 핵심 라인은 압축 후에도 남도록 별도 중요 라인 섹션으로 보존한다. 긴 selection 때문에 직후 cleanup/success 경로가 중간에서 잘리지 않도록 selected range와 immediate post-selection context를 별도 섹션으로 나누어 후자를 우선 보존한다. 하네스 증거 부족형 `evidence_gap` warning은 pre-write actionable warning block 대상에서 제외하되, `#include`, header, compile처럼 patch 자체 결함을 가리키는 evidence gap은 계속 차단한다.
+   - 수정: pre-write review에서 provided diff가 evidence budget을 독점하지 않도록 diff excerpt 상한을 두고, `@file:start-end` 요청이면 current file context는 "선택 범위 + 함수 끝까지"를 우선 보장한다. 같은 파일에서 selection을 감싼 함수 body를 찾으면 `function_body_excerpt`를 별도 source로 추가하고, selection 이후 함수 끝까지는 하네스가 중요 라인을 선별하지 않고 일반 tail excerpt로 보존한다. 긴 selection 때문에 직후 문맥이 중간에서 잘리지 않도록 selected range, immediate post-selection context, function tail excerpt를 나누어 제공한다. 하네스 증거 부족형 `evidence_gap` warning은 pre-write actionable warning block 대상에서 제외하되, compile/header처럼 patch 자체 결함을 가리키는 evidence gap은 계속 차단한다.
    - 회귀 테스트: `TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange`, `TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning`, `TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording`, 기존 `TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned`, `TestPreWriteReviewUsesDiffFirstContextBudget`.
    - 검증: `go test ./cmd/kernforge -run "TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange|TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning|TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording|TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned|TestPreWriteReviewUsesDiffFirstContextBudget" -count=1 -timeout 5m` 통과.
    - 최종 전체 회귀: `go test ./cmd/kernforge -count=1 -timeout 20m` 통과. (2026-05-13)
@@ -3187,9 +3197,259 @@ P2:
 52. 사용자 smoke - pre-fix local route 실패와 pre-write blocked patch delta 회귀 수정
    - 발견: Qwen/LM Studio pre-fix review route가 empty `content`와 reasoning output만 반환하면 Kernforge가 `insufficient_evidence`로 멈춰 구현 모델의 독립 source inspection 기회를 주지 않았다. 반대로 GPT 5.5 단일 모델 경로에서는 첫 pre-write patch가 차단된 뒤 다음 repair proposal이 `#include <vector>` 같은 missing-piece delta만 제출되어, 실제로 필요한 코드 hunk가 사라지는 회귀가 발생했다.
    - 원칙: local/degraded pre-fix review route 실패는 코드 승인도 아니고 write approval도 아니다. 그러나 요청이 "검토하고 버그를 수정"처럼 source bug hunt 성격이고 신뢰 가능한 code finding이 없을 때는, 구현 루프가 참조 파일을 직접 읽고 독립적으로 실제 버그를 확인할 수 있어야 한다. pre-write는 계속 hard gate이며, 차단된 patch는 파일에 적용되지 않았으므로 다음 proposal은 이전 patch의 delta가 아니라 현재 파일에 바로 적용 가능한 complete standalone patch여야 한다.
-   - 수정: `preFixReviewCanContinueWithIndependentInspection`와 local/degraded unreliable route 판정을 추가해 local pre-fix route failure를 non-blocking evidence-gap warning으로 낮추고, 구현 피드백에 "승인도 수정 금지도 아니며 독립 소스 확인 후 명확한 버그만 수정" 규칙을 넣었다. non-local strict route failure는 기존처럼 blocking evidence gap으로 남긴다. pre-write blocker/actionable warning feedback에는 "blocked patch was not applied"와 "include-only patch를 보내지 말고 코드 hunk와 보강 hunk를 함께 다시 제출" 규칙을 넣었다. 사용자 decision block은 최신 edit tool 호출이 include-only delta이고 최신 blocker가 본문 코드 수정을 요구하면, 그 이전의 의미 있는 code proposal을 보여준다.
-   - 회귀 테스트: `TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection`, `TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap`, `TestLatestEditProposalForUserDecisionSkipsIncludeOnlyDeltaForCodeBlocker`, `TestAutomaticReviewFeedbackOmitsArtifactPathsAndSteersPatchSize`.
-   - 검증: `go test ./cmd/kernforge -run "TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection|TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap|TestLatestEditProposalForUserDecisionSkipsIncludeOnlyDeltaForCodeBlocker|TestAutomaticReviewFeedbackOmitsArtifactPathsAndSteersPatchSize" -count=1 -timeout 5m` 통과. 추가 focused 회귀로 local reasoning/compact prompt, pre-write route failure, pending y/N continuation 계열 테스트를 각각 실행해 통과했다. 전체 패키지 테스트는 사용자가 요청할 때만 실행하는 정책에 따라 생략했다.
+   - 수정: `preFixReviewCanContinueWithIndependentInspection`와 local/degraded unreliable route 판정을 추가해 local pre-fix route failure를 non-blocking evidence-gap warning으로 낮추고, 구현 피드백에 "승인도 수정 금지도 아니며 독립 소스 확인 후 명확한 버그만 수정" 규칙을 넣었다. non-local strict route failure는 기존처럼 blocking evidence gap으로 남긴다. pre-write blocker/actionable warning feedback에는 "blocked patch was not applied"와 "다음 proposal은 delta가 아니라 현재 파일에 바로 적용 가능한 standalone patch" 규칙을 넣었다. 사용자 decision block은 current review boundary 안의 edit proposal만 사용하며, 최신 proposal이 include-only인데 최신 리뷰가 non-include code patch를 요구하는 경우에만 같은 boundary 안의 최신 non-include proposal을 보여준다. 이 판정은 diff shape와 review finding class만 사용하고 대상 API나 소스 의미를 해석하지 않는다.
+   - 회귀 테스트: `TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection`, `TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap`, `TestLatestEditProposalForUserDecisionShowsLatestEditProposal`, `TestAutomaticReviewFeedbackOmitsArtifactPathsAndSteersPatchSize`.
+   - 검증: `go test ./cmd/kernforge -run "TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection|TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap|TestLatestEditProposalForUserDecisionShowsLatestEditProposal|TestAutomaticReviewFeedbackOmitsArtifactPathsAndSteersPatchSize" -count=1 -timeout 5m` 통과. 추가 focused 회귀로 local reasoning/compact prompt, pre-write route failure, pending y/N continuation 계열 테스트를 각각 실행해 통과했다. 전체 패키지 테스트는 사용자가 요청할 때만 실행하는 정책에 따라 생략했다.
+
+53. 사용자 smoke - pre-write after-preview evidence gap과 `partial` 상태 혼동 수정
+   - 발견: GPT 5.5 단일 모델 PathConverter smoke에서 pre-write review가 `GetVolumePathNamesForVolumeName` 동적 버퍼 재시도 후반부를 확인하지 못해 RF-003을 `partial`로 표시했지만, gate는 `approved_with_warnings`로 diff preview를 허용했다. 실제 문제는 코드 미해결로 확정된 것이 아니라 큰 diff/file excerpt가 review prompt head-only 축약에 밀려 핵심 after-preview 줄을 보여주지 못한 evidence packaging/UX 문제였다.
+   - 원칙: pre-write reviewer가 RF 해결 여부를 판단해야 하는 코드는 generic file excerpt보다 proposed diff의 RF 관련 after-preview 줄이 우선이다. 하네스 evidence gap은 코드 blocker와 분리해 표시해야 하며, diff preview를 허용할 때는 남은 항목이 "코드 미해결"이 아니라 "증거 확인 부족"임을 사용자에게 직접 설명한다.
+   - 수정: pre-write evidence 수집 시 pre-fix RF title/evidence/required_fix/test 텍스트에서 일반 식별자 토큰을 뽑아 `Provided diff` 원문에서 주변 diff window를 별도 `repair_diff_excerpt` 섹션으로 추가한다. 이 섹션은 일반 file context보다 앞에 들어가므로 prompt budget이 줄어도 reviewer가 판단해야 하는 after-preview 줄이 남는다. single-model pre-write 상태 추론은 하네스 after-preview/evidence gap을 `partial` 대신 `evidence_unconfirmed`로 표시하고, visible summary/progress는 "코드 미해결 blocker가 아니라 evidence visibility warning"이라고 설명한다.
+   - 회귀 테스트: `TestPreWriteEvidenceIncludesRequiredRepairDiffExcerpts`, `TestPreWriteHarnessEvidenceGapMarksRepairEvidenceUnconfirmed`, `TestPreWriteVisibleSummaryExplainsHarnessEvidenceGapPreviewAllowed`, 기존 `TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange`, `TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal`, `TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning`, `TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording`, `TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned`.
+   - 검증: `go test ./cmd/kernforge -run "TestPreWriteEvidenceIncludesRequiredRepairDiffExcerpts|TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange|TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal|TestPreWriteHarnessEvidenceGapMarksRepairEvidenceUnconfirmed|TestPreWriteVisibleSummaryExplainsHarnessEvidenceGapPreviewAllowed|TestPreWriteReviewDoesNotBlockHarnessEvidenceGapWarning|TestPreWriteReviewBlocksActionableEvidenceGapDespiteEvidenceWording|TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned|TestPreWriteFinalVisibleReviewSummaryGolden" -count=1 -timeout 5m` 통과. 전체 패키지 테스트는 사용자가 요청할 때만 실행하는 정책에 따라 생략한다.
+
+54. 사용자 smoke - Qwen local repair handoff 품질 복구
+   - 발견: Qwen + Claude cross reviewer 조합에서는 reasoning channel 복구 덕분에 pre-fix review 자체는 usable로 살아났지만, 병합 결과가 중복 RF, `stability issue` 같은 비실행 finding, 인접 코드 과확장 RF를 모두 차단 항목으로 넘겼다. 그 결과 구현 모델이 좁은 수리 대신 함수 rewrite/인접 코드 재설계 방향으로 가고, `apply_patch` edit target mismatch 뒤에도 현재 파일 기준 single hunk로 회복하지 못했다.
+   - 원칙: local/degraded 모델에게는 review 결과를 더 많이 주는 것이 아니라 더 결정적으로 정규화해서 줘야 한다. 같은 호출/변수/실패 경로를 가리키는 RF는 하나의 수리 항목이어야 하며, 근거가 모호한 placeholder finding이나 코드 근거가 약한 인접 코드 재설계는 repair gate의 필수 항목이 되어서는 안 된다.
+   - 수정: review finding merge는 API명이나 수리 계약 종류가 아니라 모델 finding 텍스트의 일반 토큰 중복으로 RF를 압축한다. 모델 생성 placeholder finding은 weak로 강등해 repair blocker에서 제외한다. local/degraded primary route의 repair plan에는 "중복 RF는 하나의 코드 변경으로 처리", "리뷰 evidence에 직접 나온 코드 경로만 수정", "모호한 RF로 rewrite 확장 금지" 규칙을 추가했다. edit target mismatch 복구 문구도 현재 파일을 다시 읽은 뒤 하나의 좁은 standalone hunk로 재작성하라고 고정하고, 반복 실패 시 최신 리뷰 기준과 마지막 edit proposal을 보여준다.
+   - 회귀 테스트: `TestReviewMergeDeduplicatesGenericRepairContractFindings`, `TestVagueReviewerFindingDoesNotBecomeRepairBlocker`, `TestLocalRepairPlanCompressesDuplicatesAndRejectsSpeculativeBufferRewrite`, `TestAgentPromptsRereadAfterEditTargetMismatch`, `TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess`.
+   - 검증: `go test ./cmd/kernforge -run "TestReviewMergeDeduplicatesGenericRepairContractFindings|TestVagueReviewerFindingDoesNotBecomeRepairBlocker|TestLocalRepairPlanCompressesDuplicatesAndRejectsSpeculativeBufferRewrite|TestReviewRepairPlanIncludesActionableWarningsWithBlockers|TestAgentPromptsRereadAfterEditTargetMismatch|TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess" -count=1 -timeout 5m` 통과. 기존 GPT/pre-write evidence gap 및 local route recovery 회귀 묶음도 focused `go test`로 재확인했다. 전체 패키지 테스트는 사용자가 요청할 때만 실행하는 정책에 따라 생략한다.
+
+55. 사용자 smoke - Qwen reasoning-only 응답과 GPT after-preview 증거 부족 동시 개선
+   - 발견: Qwen/LM Studio route는 compact initial prompt를 써도 최종 content는 비우고 provider `reasoning_content`에만 리뷰를 작성할 수 있었다. 이 경우 이전 로직은 compact initial을 이미 사용했다는 이유로 추가 복구를 하지 않아 `review model returned empty content while reasoning_content was present`로 멈췄다. GPT 5.5 단일 모델 pre-write에서는 proposed diff가 크면 `GetVolumePathNamesForVolumeName` 동적 재시도 후반부가 prompt에서 밀려, 실제 수리는 되었어도 after-preview evidence gap 경고가 반복됐다.
+   - 원칙: high-quality GPT/Claude route의 strict schema는 느슨하게 만들지 않는다. 대신 local/degraded route에는 final content로 구조화 블록을 내보내도록 한 번 더 명시하고, pre-write evidence는 모델 종류와 무관하게 planned patch의 after 상태를 직접 보여준다. 구현 모델이 독립 점검으로 넘어갈 때는 첫 발견만 패치하지 말고, 같은 요청 범위 안에서 실제로 확인한 독립 문제를 함께 검토해야 한다.
+   - 수정: local/degraded review run에서 content가 비었고 `reasoning_content`가 존재하면, compact initial 사용 여부와 관계없이 한 번의 compact retry를 수행하며 final content에는 `REVIEW_RESULT` 블록만 출력하라고 요구한다. `EditProposal`과 `apply_patch` preview에 selection-aware `after_excerpt`를 추가하고, pre-write evidence 앞부분에 `after_excerpt` 섹션을 별도로 싣는다. 이 excerpt는 선택 범위의 enclosing function body 또는 changed-code window를 head/tail 보존 방식으로 축약해 함수 종료부와 multi-string 순회 후반부가 잘리지 않게 한다. 이 시점의 pre-fix local evidence-gap checklist 접근은 58번 설계에서 제거됐다.
+   - 회귀 테스트: `TestLocalReasoningOnlyCompactInitialPromptRetriesForFinalBlock`, `TestPreWriteEvidenceIncludesRequiredRepairAfterExcerpt`, 현재 fallback 문구 검증 테스트.
+   - 검증: `go test ./cmd/kernforge -run "TestPreWriteEvidenceIncludesRequiredRepairAfterExcerpt|TestLocalReasoningOnlyCompactInitialPromptRetriesForFinalBlock|TestPreFixLocalIndependentInspectionAddsGenericChecklist|TestPreWriteEvidenceIncludesRequiredRepairDiffExcerpts|TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange|TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal|TestPreWriteHarnessEvidenceGapMarksRepairEvidenceUnconfirmed|TestPreWriteVisibleSummaryExplainsHarnessEvidenceGapPreviewAllowed|TestPreWriteReviewModelFailureBlocksEditGate|TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate|TestReviewMergeDeduplicatesGenericRepairContractFindings|TestVagueReviewerFindingDoesNotBecomeRepairBlocker|TestLocalRepairPlanCompressesDuplicatesAndRejectsSpeculativeBufferRewrite|TestAgentPromptsRereadAfterEditTargetMismatch|TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess|TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection|TestLargeLocalReviewUsesCompactInitialPrompt|TestHighQualityReviewKeepsFullInitialPrompt" -count=1 -timeout 5m` 통과. 추가로 기존 agent retry/web-block 회귀 묶음과 `go test ./cmd/kernforge -count=1 -timeout 10m` 전체 패키지 테스트가 통과했다.
+
+56. 사용자 smoke - Qwen 독립 수리 부분 패치 차단 실험 폐기
+   - 발견: Qwen/LM Studio pre-fix route가 최종 content 없이 reasoning만 반환하면 Kernforge가 독립 source inspection으로 진행할 수는 있었지만, pre-fix 결과가 evidence gap뿐이라 pre-write의 필수 수리 항목이 비어 있었다. 이를 하네스가 보강하려 했지만, 이 접근은 결국 하네스가 코드 의미를 대신 판단하는 문제를 만들었다.
+   - 원칙: local/degraded pre-fix evidence-gap handoff는 코드 승인이 아니지만, 그렇다고 하네스가 evidence에서 대체 수리 항목을 발명해서도 안 된다.
+   - 수정: 이 항목의 deterministic repair-finding 생성과 after-state semantic checker는 58번 설계에서 제거됐다.
+   - 회귀 테스트: 이 방향의 semantic-contract 테스트는 58번 설계에서 폐기되고, 하네스가 대체 RF를 만들지 않는지 확인하는 테스트로 교체됐다.
+   - 검증: 당시 focused/전체 테스트는 통과했지만, 이 접근은 이후 smoke에서 과도한 하네스 의미 판정으로 판명되어 58번에서 제거했다.
+
+57. 사용자 smoke - strict path/local-derived semantic gate 분리 실험 폐기
+   - 발견: 56번 접근을 경로별로 나눠 보정해도, 모델 RF의 실제 요구보다 하네스의 의미 판정이 더 강해지는 회귀를 막지 못했다.
+   - 원칙: local/degraded 모델과 cloud 모델을 semantic gate policy로 나누지 않는다. 모델별 차이는 prompt/evidence/route recovery에서만 다루고, 코드 의미 판정은 리뷰 모델에게 맡긴다.
+   - 수정: 이 항목의 경로별 semantic gate 분기는 58번 설계에서 제거됐다.
+   - 회귀 테스트: 이 방향의 호출명별 semantic gate 테스트는 58번 설계에서 폐기되고, body semantic 판단을 reviewer에게 남기는 테스트로 교체됐다.
+   - 검증: 당시 focused 테스트는 통과했지만, 이 접근은 cloud/local 경로 모두에서 회귀 지점이 되어 58번에서 제거했다.
+
+58. 사용자 smoke - deterministic semantic repair gate 폐기
+   - 발견: API 이름을 직접 hard-code하지 않더라도, `unused gate`, `required-size retry`, `length guard` 같은 repair contract를 하네스가 추론하면 결국 같은 문제가 다른 형태로 반복된다. 특히 local/degraded route의 evidence-gap에서 하네스가 대체 RF를 만들면 메인 모델의 원래 코드 검토를 방해하고, cloud 모델이 낸 실제 RF보다 하네스 추론이 더 강한 요구로 변질될 수 있다.
+   - 원칙: 코드 의미 판단은 메인 모델과 리뷰 모델의 책임이다. 하네스는 원래 사용자 요청, 수집한 로컬 evidence, 모델이 만든 실제 finding, proposed diff, after excerpt를 안정적으로 전달하고, 파일 쓰기 전에 reviewer route/patch syntax/evidence packaging 같은 운영 조건만 강제한다. 코드 API, 호출명, 실패 분기, 버퍼 정책, 문자열 인덱싱 같은 의미 판단을 deterministic gate가 재구성하지 않는다.
+   - 수정: local evidence-gap에서 deterministic repair obligation을 생성하던 경로를 제거했다. pre-write deterministic gate의 source repair alignment checker도 제거하고, proposal 내용 유형을 deterministic하게 분류해 차단하던 경로도 제거했다. review merge는 hard-coded subject나 수리 계약 종류가 아니라 generic lexical token으로 중복을 압축한다. local/degraded pre-fix fallback 문구도 체크리스트 대신 "원래 요청을 기준으로 직접 소스 검토를 계속하고, 하네스는 대체 버그 목록을 만들지 않는다"는 지침으로 바꿨다.
+   - 회귀 테스트: `TestPreWriteRepairObligationsDoNotInventLocalIndependentContracts`, `TestPreWriteDeterministicGateDoesNotPerformSourceRepairJudgement`, `TestPreWriteDeterministicGateLeavesBodyJudgementToReviewer`, `TestPreWriteDeterministicGateDoesNotBlockBodyControlFlowJudgement`, `TestPreWriteDeterministicGateAllowsNonIncludeRepairProposal`, `TestPreFixLocalIndependentInspectionKeepsOriginalRequestWithoutGeneratedChecklist`.
+
+59. Codex App식 리뷰 모드 경계 적용
+   - 발견: Codex App의 "리뷰 모드로 검토해"는 code-review stance로 findings-first/read-only 응답을 만들지만, Kernforge Agent 경로에서는 자연어 리뷰가 일반 모델 루프로 흘러가거나, "수정은 하지 말고" 같은 부정 표현이 pre-fix repair intent로 오인될 수 있었다.
+   - 원칙: 리뷰 모드는 수정 전 리뷰가 아니라 독립 code review다. 파일 쓰기, patch guidance, repair handoff를 만들지 않고, finding을 먼저 보여준 뒤 요약을 붙인다. 같은 문장에 명시적 수정 요청이 있으면 기존 pre-fix review-and-repair flow로 간다.
+   - 수정: 자연어 라우터가 `리뷰 모드`, `검토 모드`, `review mode`, `reviewer stance` 표현을 일반 review command로 인식한다. Agent는 natural review request를 common review harness로 직접 실행하고 `formatCodexAppReviewModeReply`로 응답한 뒤 implementation loop를 종료한다. `수정하지 말고`, `without editing`, `do not patch` 같은 표현은 review-only로 처리해 repair intent를 만들지 않는다. review model prompt와 compact/cross prompt에는 read-only code review 규칙을 추가했다.
+   - 회귀 테스트: `TestNaturalLanguageReviewRoutesReviewModePhraseToAuto`, `TestNaturalLanguageReviewModeDoesNotSwallowReviewThenFix`, `TestNaturalLanguageReviewModeHonorsNoEditWording`, `TestAgentReplyReviewModeRunsReviewOnly`.
+
+60. pre-write 차단 이후 전체 RF carry-over 복구
+   - 발견: pre-write review가 이전 edit proposal을 차단한 뒤에도 다음 구현 프롬프트와 사용자 decision block이 최신 blocker 중심으로 보일 수 있었다. 이 경우 모델은 이전 patch가 파일에 적용되지 않았다는 사실을 놓치고, 원래 pre-fix RF 전체를 다시 만족하는 standalone patch 대신 마지막 blocker만 보강하는 delta를 만들 수 있었다.
+   - 원칙: 하네스는 코드 의미를 직접 판단하지 않는다. 대신 상태 전달을 정확히 해야 한다. pre-write에서 차단된 patch는 디스크에 적용되지 않았으므로, 이후 모든 재시도는 최신 blocker와 함께 원래 pre-fix 필수 RF 전체가 계속 유효하다는 사실을 모델과 사용자에게 명확히 보여줘야 한다.
+   - 수정: pre-write blocker/actionable warning feedback, 강제 edit-tool guidance, repeated-block user decision reply에 "계속 유효한 pre-fix 필수 RF" 섹션을 추가했다. 해당 섹션은 이전 edit proposal이 적용되지 않았고 다음 proposal이 최신 blocker delta가 아니라 현재 파일 기준 standalone patch여야 한다고 명시한다. single-model pre-write 상태 추론은 모델 finding이 특정 RF를 명시적으로 참조하지 않으면 기본 `resolved` 대신 `evidence_unconfirmed`로 표시한다.
+   - 회귀 테스트: `TestPreWriteFeedbackCarriesAllOriginalRepairObligations`, `TestPreWriteForceEditGuidanceCarriesAllOriginalRepairObligations`, `TestSingleModelPreWriteRepairStatusDefaultsToEvidenceUnconfirmed`.
+
+61. API/코드 의미별 하네스 규칙 제거 재점검
+   - 발견: 생산 코드에서는 API명을 직접 판정하는 경로가 제거됐지만, duplicate/evidence token 필터와 회귀 테스트 fixture에 특정 상수/함수명이 남아 있어 하네스가 특정 코드 의미를 알고 있다는 신호를 줄 수 있었다.
+   - 원칙: 하네스의 deterministic 경계는 provider 상태, structured output, patch syntax, evidence packaging, RF carry-over 같은 운영 조건에 한정한다. 함수 호출명, 버퍼 정책, 실패 분기, 문자열 인덱싱 같은 코드 의미는 reviewer model과 implementation model이 판단한다.
+   - 수정: review harness 생산 코드에서 특정 코드 상수명을 stopword처럼 다루던 항목을 제거하고, 새 회귀 테스트 fixture를 중립 pseudo-code 이름으로 바꿨다. 테스트도 특정 API 해결 여부가 아니라 "하네스가 source/after 상태를 판정하지 않고 reviewer에게 남기는가"를 검증한다.
+   - 회귀 테스트: `TestPreWriteDeterministicGateDoesNotPerformSourceRepairJudgement`, `TestPreWriteDeterministicGateLeavesBodyJudgementToReviewer`, `TestPreWriteDeterministicGateDoesNotBlockBodyControlFlowJudgement`, `TestPreWriteEvidenceIncludesRequiredRepairDiffExcerpts`, `TestPreWriteEvidenceIncludesRequiredRepairAfterExcerpt`.
+
+62. Codex App식 리뷰 모드 route/evidence 독립성 보강
+   - 발견: review-only mode를 자연어 intent로 감지하더라도, Agent 경로가 main chat client guard 뒤에 있으면 reviewer route만 설정된 환경에서 실행되지 못할 수 있었다. 또한 route 판단에는 원문이 필요하지만, reviewer evidence에는 `@file` mention 확장과 runtime context가 포함된 enriched request가 필요했다.
+   - 원칙: 리뷰 모드는 구현 루프가 아니라 독립 code-review path다. 원문은 intent/routing에만 쓰고, reviewer에는 실제로 사용자가 보는 expanded context를 전달한다. main chat model이 없어도 configured reviewer route가 있으면 읽기 전용 리뷰는 실행 가능해야 한다.
+   - 수정: `maybeRunCodexAppReviewMode`가 `userText`와 `enriched`를 분리해 받도록 바꾸고, review options의 `Request`/`RawArgs`에는 enriched text를 넣는다. review-only dispatch를 main client nil guard 앞에 배치하고, main role review client가 없으면 primary reviewer route로 fallback한다. 별도 임시 review-mode 파일은 제거하고 자연어 리뷰 구현에 통합했다.
+   - 회귀 테스트: `TestAgentReplyReviewModeRunsReviewOnly`, `TestAgentReplyReviewModeCanUseReviewerWithoutMainChatClient`, `TestMaybeHandleNaturalLanguageReviewAllowsNilRuntime`.
+
+63. mixed tool-call write isolation
+   - 발견: Qwen/LM Studio가 한 응답 안에서 `apply_patch`와 `read_file` 또는 shell 도구를 함께 호출하면, 하네스가 patch를 즉시 실행하거나 read/write 순서가 꼬여 edit target mismatch, 긴 대기, diff preview 누락 같은 위험을 만들 수 있었다. cache-only shell도 Go cache나 workspace 상태를 바꿀 수 있어 edit와 같은 batch에서 실행하면 안 된다.
+   - 원칙: edit tool은 isolated write turn에서만 실행한다. 한 model response에 edit tool과 다른 tool이 섞이면, 그 turn에는 엄격한 read-only inspection/plan tool만 실행하고, edit와 non-read-only tool은 `NOT_EXECUTED`로 미룬다.
+   - 수정: mixed edit batch detector를 추가하고, edit tool, non-read-only tool, cache-only shell command를 다음 model turn으로 연기한다. synthetic tool result에는 "edit tool을 단독으로 다시 호출하라"는 복구 지침을 넣는다. 이렇게 해도 read-only file inspection은 먼저 실행되므로 모델은 현재 파일 내용으로 patch를 다시 anchor할 수 있다.
+   - 회귀 테스트: `TestAgentDefersEditToolWhenMixedWithReadOnlyTool`, `TestAgentDefersNonReadOnlyToolWhenMixedWithEditTool`, `TestAgentDefersCacheOnlyShellWhenMixedWithEditTool`.
+
+64. review freshness/runtime gate scope 정리
+   - 발견: final/completion runtime gate가 전체 dirty tree를 기준으로 최신 review를 판정하면, 현재 patch transaction과 무관한 기존 수정 파일 때문에 stale review blocker가 반복될 수 있었다. 반대로 checked path의 content hash가 바뀌었는데도 pre-write freshness가 너무 넓게 pass하면 실제 stale review를 놓칠 수 있었다.
+   - 원칙: final/completion gate freshness는 현재 action의 changed path scope로 판단한다. git write gate는 전체 dirty tree를 봐야 하지만, final answer gate는 unrelated dirty file 때문에 멈추지 않는다. 단, review artifact의 path hash와 현재 파일 hash가 다르면 해당 path review는 stale이다.
+   - 수정: runtime gate changed-path 계산을 patch transaction scope로 제한하고, artifact integrity hash mismatch는 stale로 유지했다. final answer gate는 일반적인 "review" 단어가 아니라 blocker/stale/unresolved state를 명시적으로 disclosed 했는지를 확인한다.
+   - 회귀 테스트: `TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles`, `TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer`, `TestPreWriteLedgerConsistencyIgnoresUnrelatedDirtyGitPaths`, `TestRuntimeGateFinalAnswerRequiresExplicitBlockerDisclosure`.
+
+65. 자연어 리뷰 mention workspace containment
+   - 발견: 자연어 review mention parser가 `@../...` 또는 workspace 밖 absolute path를 정규화 없이 받아들이면, review evidence 수집 단계에서 workspace boundary 밖 파일을 읽을 수 있다.
+   - 원칙: review evidence mention은 workspace-contained local evidence다. 하네스가 보안/권한 경계를 넓히는 경로가 되어서는 안 된다.
+   - 수정: mention path를 workspace root 기준으로 정규화하고, root 밖으로 나가는 path-like mention은 review route로 전달하지 않는다. path-like mention token이 있었지만 전부 containment에 실패하면 natural review request로도 처리하지 않는다.
+   - 회귀 테스트: `TestNaturalLanguageReviewRejectsMentionsOutsideWorkspace`, `TestNaturalLanguageReviewAllowsCleanedMentionInsideWorkspace`.
+
+66. reviewer timeout과 사용자 복구 선택지 정리
+   - 발견: Qwen + Sonnet cross review에서 reviewer timeout이 발생하면 사용자에게는 `route failure`만 보이고, 같은 reviewer를 더 긴 timeout으로 재시도해야 하는지, reviewer를 바꿔야 하는지, single-model mode로 가도 되는지 판단하기 어려웠다.
+   - 원칙: timeout은 code finding이 아니라 route health 문제다. 하네스는 timeout 자체를 코드 blocker처럼 보이게 하지 말고, 모델 종류와 최근 health를 반영한 기본 시간과 다음 선택지를 표시해야 한다.
+   - 수정: cloud API reviewer 기본 timeout은 5분, CLI reviewer와 local reviewer 기본 timeout은 8분으로 정리했다. 최근 timeout route는 다음 reviewer call에만 adaptive extension을 적용하고, status/failure message에는 "같은 reviewer로 timeout을 늘려 재시도", "reviewer 모델 변경", "reviewer 없이 single-model mode 진행", "primary 실패 시 main model 변경/복구" 선택지를 사용자 액션으로 번역한다.
+   - 회귀 테스트: review model status/failure rendering 계열 테스트와 route health adaptive timeout focused 테스트로 검증한다.
+
+67. PathConverter GPT-5.5 단일 모델 smoke cycle
+   - 발견: `@SampleApp/SampleWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해` smoke는 pre-fix finding, pre-write block/retry, diff preview, post-change review, target file restore가 한 사이클 안에서 모두 연결되어야 한다. 이전 회귀는 특정 API 의미 gate, stale path scope, evidence gap, mixed edit sequencing 중 하나가 깨지면 반복적으로 드러났다.
+   - 원칙: smoke 대상 코드는 테스트마다 원본으로 복원한다. 하네스는 source-level semantic judgement를 하지 않고, review evidence/patch/review freshness/write isolation만 보장한다.
+   - 결과: 최신 GPT-5.5 단일 모델 cycle에서 첫 pre-write는 reviewer finding으로 차단됐고, 이후 standalone patch proposal은 pre-write `approved_with_warnings`를 거쳐 write approval/diff preview 경로로 진행됐다. post-change review도 `approved_with_warnings`로 끝났으며, warning은 미검증/빌드 증거 부족류였다. MSBuild는 interactive permission 조건 때문에 생략했고, `PathConverter.cpp`는 cycle 종료 후 원본 hash `5192F00CD9E72426093CA73DF7E5382D89558CBD8F372F476D8F3F4A2978974B`로 복원했다.
+   - 기록: `F:\kernullist\kernforge\.tmp\cycle-backups\gpt55-single-cycle-5-acceptEdits.log`, `F:\kernullist\kernforge\.tmp\cycle-backups\PathConverter-before-cycle.cpp`.
+
+68. GPT-5.5 single-model pre-write recovery hardening
+   - 발견: pre-fix visible summary guidance가 다음 pre-write review의 `objective`로 재사용되면 원래 사용자 프롬프트가 review artifact에서 사라질 수 있었다. 또한 `PathConverter.cpp:132-221` 같은 line-range mention이 artifact integrity에서 실제 파일명처럼 해시되어 불필요한 warning을 만들었고, pre-write block 이후 edit target mismatch stop summary가 실제 blocker 대신 낮은 test gap만 보여줄 수 있었다.
+   - 원칙: 하네스는 코드 의미를 판정하지 않는다. 대신 원래 사용자 요청, 현재 파일 경로, reviewer blocker, patch proposal 상태를 정확히 보존하고 전달해야 한다. line-range는 evidence selection metadata이지 파일 경로가 아니며, pre-write block 뒤 복구는 최신 blocker와 원래 pre-fix RF 전체를 함께 carry-over해야 한다.
+   - 수정: internal review-summary guidance를 user request 추출에서 제외하고, artifact integrity path resolution에서 trailing `:line`/`:line-line` suffix를 제거한다. pre-write block 직후 다음 model turn에는 `replace_in_file`을 숨기고 standalone `apply_patch` 복구 지침을 주며, repeated edit target mismatch stop reply는 `formatLatestPreWriteReviewForUserDecision`을 사용해 실제 pre-write blocker를 먼저 보여준다.
+   - 회귀 테스트: `TestPreWriteReviewUserRequestSkipsPreFixVisibleSummaryGuidance`, `TestReviewArtifactIntegrityStripsLineRangePseudoPath`, `TestEditTargetMismatchLoopLimitShowsPreWriteBlocker`, `TestPreWriteReviewBlockDisablesReplaceForNextRetry`.
+
+69. review evidence/context budget 확장
+   - 발견: GPT-5.5 단일 모델 smoke에서 pre-write evidence ordering은 개선됐지만, 기본/focused/pre-write context budget과 내부 excerpt budget이 서로 달라 일부 흐름은 여전히 작은 캡으로 잘릴 수 있었다. 특히 pre-write 전체 budget을 늘려도 diff excerpt, file context, after excerpt, local compact initial prompt limit가 작은 값으로 남아 있으면 reviewer가 실제 proposal 전체와 계속 유효한 RF를 동시에 보지 못한다.
+   - 원칙: 코드 의미를 deterministic하게 판정하지 않는다. 대신 reviewer가 판단할 수 있도록 원래 사용자 요청, provided diff, edit proposal, pre-fix RF, required repair after excerpt, 현재 파일 context를 충분히 크게 전달한다. 작은 budget이 필요한 경로는 명시적 `--max-context-chars` 같은 사용자 설정으로만 줄인다.
+   - 수정: 기본 review context를 120k, focused context를 60k, pre-write evidence를 source-analysis와 같은 180k로 올렸다. pre-write prompt/cross evidence limit는 120k로 올리고, local/degraded pre-write compact prompt도 같은 120k를 사용한다. pre-write diff excerpt는 50k, file/after context는 60k까지 허용하며, pre-fix explicit path/selection review는 source-analysis급 180k를 사용한다. 일반 `/review` command, 자연어 review, goal iteration review도 새 기본 budget을 사용한다.
+   - 회귀 테스트: `TestFocusedPreFixEvidenceKeepsFocusedBudget`, `TestPreFixLineRangeKeepsExplicitLargeEvidenceBudget`, `TestPreWriteEvidencePreservesProposalAndRepairFindingsWhenContextIsTight`, `TestPreWriteEvidenceIncludesPreFixRepairObligations`, `TestPreWriteEvidenceIncludesRequiredRepairDiffExcerpts`, `TestPreWriteEvidenceIncludesRequiredRepairAfterExcerpt`, `TestPreWriteEvidenceKeepsModerateProvidedDiffComplete`, `TestPreWritePromptTreatsProvidedDiffAsAuthoritative`, `TestLargeLocalReviewUsesCompactInitialPrompt`, `TestHighQualityReviewKeepsFullInitialPrompt`.
+
+70. verification freshness와 build approval 분리
+   - 발견: 같은 PathConverter smoke를 반복하면 이전 patch에서 남은 failed verification history나 session LastVerification이 다음 patch의 post-change review에 섞여, 이미 다른 수정안으로 넘어간 뒤에도 `Latest verification has failures`가 새 review blocker처럼 되살아났다. 또한 artifact를 만드는 build/test shell command는 사용자 확인 대상인데, 비대화형 skip이나 사용자의 거절이 "검증 실패를 고쳐야 한다"는 semantic repair loop로 번역될 수 있었다.
+   - 원칙: verification은 review/write와 별도 state machine이다. 하네스는 코드 의미를 대신 판정하지 않고, verification report가 현재 patch transaction 이후에 생성됐는지와 changed path를 덮는지만 일반 freshness 조건으로 확인한다. 오래된 report는 bug finding이 아니라 검증 gap이다.
+   - 수정: review evidence와 runtime gate가 session LastVerification 및 persisted verification_history를 사용할 때 현재 patch transaction timestamp와 changed path coverage를 확인한다. 오래됐거나 범위를 덮지 않는 report는 review blocker로 승격하지 않고 runtime gate warning과 `/verify --full` next action으로 기록한다. artifact-writing build/test shell command는 diff preview와 같은 pinned confirmation인 `자동 검증을 실행할까요? [y/N/a=자동 실행]` 경로를 사용하며, 비대화형 `-prompt -y`에서는 diff preview와 같은 자동 승인 정책을 따른다.
+   - 회귀 테스트: `TestPostChangeEvidenceExcludesVerificationHistoryPredatingCurrentPatch`, `TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning`, 기존 verification history/focused review 테스트.
+
+71. Codex식 build verification approval lifecycle
+   - 발견: 실제 PathConverter smoke에서 build/test background shell이 사용자 승인 확인 전에도 `백그라운드 shell 시작 중`처럼 표시되어, 거절/스킵된 검증이 실행된 것처럼 보일 수 있었다. 또한 한 번 거절한 검증을 같은 턴에서 다시 실행하거나 `latest` job poll로 이어가면 사용자는 어떤 조치를 취해야 하는지 알기 어렵다.
+   - 원칙: Codex의 `ExecApprovalRequestEvent`처럼 실행 요청, 사용자 결정, 실제 실행 결과를 분리한다. 빌드 검증은 코드 의미 판정이 아니라 command lifecycle이다. 승인 전 progress는 "검증 승인 확인 중"이어야 하고, 거절은 `verification_status=skipped`, `command_execution_status=declined`, `verification_evidence=false`인 terminal decision으로 남아야 한다. 실행이 시작된 background 검증은 아직 결과가 아니므로 `pending` evidence gap으로만 기록한다.
+   - 수정: `run_shell`, `run_shell_background`, `run_shell_bundle_background`가 build/test artifact 명령으로 분류되면 progress line을 실행 시작이 아니라 verification approval request로 표시한다. 거절 결과의 completion summary도 "started"가 아니라 "verification skipped"로 렌더링한다. 같은 턴 안에서 모델이 재시도하거나 background poll을 시도하면 synthetic `NOT_EXECUTED` 결과로 막고, 사용자가 명시적으로 검증을 승인하기 전에는 다시 시도하지 말라고 지시한다. 또한 거절/스킵이 확정된 뒤에는 남은 model request의 tool list에서 shell 검증 실행과 background poll 도구를 제거해 모델이 같은 회복 실수를 반복하지 않도록 한다.
+   - 회귀 테스트: `TestSummarizeToolInvocationVerificationRequestsApprovalNotExecution`, `TestSummarizeToolCompletionVerificationDeclineIsSkippedNotStarted`, `TestAgentBlocksVerificationRetryAndPollAfterDeclineInSameTurn`, `TestDeclinedBackgroundVerificationLeavesNoPollableLatestJob`.
+
+72. Codex repo 기반 approval/write recovery 구조 반영
+   - 참고: `F:\kernullist\codex\codex-rs\protocol\src\approvals.rs`의 `ExecApprovalRequestEvent`는 `call_id`, `approval_id`, `turn_id`, `started_at_ms`, `command`, `cwd`, `reason`, `available_decisions`, `parsed_cmd`를 가진 typed request다. `F:\kernullist\codex\codex-rs\core\src\session\mod.rs`의 `request_command_approval`은 pending approval을 먼저 등록한 뒤 request event를 보내고, 사용자 decision을 받은 뒤에만 실행 결과로 넘어간다.
+   - 원칙: Kernforge도 build/test verification을 shell 실행 텍스트가 아니라 request -> decision -> execution/result state machine으로 취급한다. 또한 stale-context recovery는 코드 의미 판단이 아니라 patch transaction shape 문제이므로, edit target mismatch나 pre-write block 이후 넓은 recovery patch는 실행하지 않고 현재 파일 기준 좁은 standalone patch 재발행을 요구한다.
+   - 수정: broad recovery `apply_patch` shape gate를 추가했다. pre-write block 또는 edit target mismatch 뒤에 multi-file 또는 multi-hunk recovery patch가 나오면 파일을 쓰지 않고 `NOT_EXECUTED` synthetic result로 defer한다. 반복되면 최신 review result와 마지막 edit proposal을 보여주고 멈춘다. 이 가드는 API명, 호출명, 버퍼 정책 같은 소스 의미를 판정하지 않는다.
+   - 추가 수정: noninteractive `-prompt`에서 write approval을 받을 수 없는 경우 process failure로 종료하지 않고 `Write canceled.`를 출력한 뒤 정상 종료한다. 파일을 쓰지 않은 사용자/환경 decision을 route failure나 code finding으로 오해하지 않게 하기 위함이다.
+   - 추가 수정: 실제 long smoke에서 10분 지점에 `request canceled by user`로 종료되는 경로를 확인했다. 원인은 비대화형 `-prompt` 실행에도 interactive ESC watcher가 설치되고, `confirmRequestCancel`이 비대화형 입력을 묵시 승인으로 처리할 수 있던 실행 모드 경계 문제였다. Codex repo의 command approval/cancellation 흐름처럼 명시 request/decision/event를 기준으로 삼기 위해, noninteractive 실행에서는 ambient keyboard watcher를 설치하지 않고 비대화형 cancel confirmation도 false로 고정했다.
+   - 실제 GPT-5.5 smoke: `F:\kernullist\kernforge\.tmp\model-smoke\gpt55-pathconverter-write-cancel-normalized-20260516-085628.log`에서 noninteractive write approval unavailable이 `Write canceled.`로 정리되고 exit 0으로 끝났다. `F:\kernullist\kernforge\.tmp\model-smoke\gpt55-pathconverter-autoapprove-write-20260516-090022.log`에서는 `-y` write path가 실제 patch write, post-change review, build verification approval request, verification skipped/declined 기록까지 통과했다. 두 cycle 모두 대상 `PathConverter.cpp`를 원본 hash `5192F00CD9E72426093CA73DF7E5382D89558CBD8F372F476D8F3F4A2978974B`로 복원했다.
+   - 회귀 테스트: `TestAgentDefersBroadApplyPatchAfterEditTargetMismatch`, `TestAgentStopsAfterRepeatedBroadApplyPatchRecovery`, `TestRunSinglePromptTreatsUnavailableWriteApprovalAsCanceled`, `TestRuntimeStateRequestCancelWatcherIsInteractiveOnly`, `TestAgentBlocksVerificationRetryAndPollAfterDeclineInSameTurn`, 기존 verification approval lifecycle 테스트.
+
+73. Runtime gate ledger의 patch transaction scope 분리
+   - 발견: 실제 PathConverter smoke의 post-change review ledger가 현재 patch transaction 외의 기존 dirty file까지 `Changed paths`에 섞어 표시했다. 이는 git write gate에서는 맞지만, review/final/completion gate에서는 현재 repair patch의 증거와 무관한 worktree 상태가 가짜 blocker나 stale reason처럼 보일 수 있다.
+   - 원칙: Codex의 patch/call/turn 식별 경계처럼, 현재 review가 평가하는 변경 단위와 repository 전체 dirty state를 분리한다. 코드 의미나 특정 API를 하네스가 판정하지 않고, 변경 범위 ledger만 올바르게 분리한다.
+   - 수정: patch transaction path가 있으면 review, final-answer, completion-audit ledger는 그 path만 사용한다. git write와 MCP write gate는 기존처럼 전체 dirty git state까지 포함한다.
+   - 회귀 테스트: `TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles`, `TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles`.
+
+74. noninteractive verification approval과 background evidence 상태 분리
+   - 발견: 실제 GPT-5.5 `-prompt -y` PathConverter smoke에서 diff preview는 비대화형으로 승인되어 patch가 적용됐지만, build verification confirmation은 별도 경로에서 `!interactive`를 곧바로 declined/skipped로 처리했다. 그 결과 사용자가 `-y`로 자동 실행을 의도한 smoke도 최종 답변에 "이전 msbuild 검증은 skipped/declined"와 "pending verification"을 남겼다.
+   - 원칙: verification confirmation도 code semantic 판단이 아니라 approval lifecycle이다. diff preview와 같은 사용자 결정 표면을 쓰되, 실행 시작과 성공 evidence는 분리해야 한다. 특히 background job start는 실행 결과가 아니므로 검증 성공으로 계산하면 안 된다.
+   - 수정: `promptConfirmAutoVerify`는 `alwaysApproveVerification`, `ModeBypass`, `-y`로 설정된 permission/session/config 상태를 공통 auto-approval으로 인식한다. 비대화형 bypass 실행에서는 verification prompt를 자동 승인하고, bypass가 아닌 비대화형 실행은 기존처럼 skipped로 남긴다. `buildBackgroundJobMeta`와 `buildBackgroundBundleMeta`는 verification-like background start를 `verification_status=pending`, `verification_evidence=false`로 기록하고, exit code 0 완료 상태만 `passed` evidence로 승격한다. `toolResultHasSuccessfulVerificationEvidence`도 `verification_like=true`만으로는 성공 evidence를 만들지 않는다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\tools\runtimes\shell.rs`와 `tools\handlers\shell.rs`의 shell runtime은 approval requirement, request, runtime output을 분리한다. 이 구조를 따라 Kernforge도 verification request/decision/result를 metadata 단계에서 분리했다.
+   - 회귀 테스트: `TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveBypassApproves`, `TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveDefaultDeclines`, `TestBackgroundVerificationStartIsPendingNotEvidence`, `TestCompletedBackgroundVerificationCanBeEvidence`, 기존 declined verification/background poll tests.
+
+75. automatic verification 실패의 patch-scope repair gate
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 `-prompt -y`로 자동 검증이 승인된 뒤, workspace-level MSBuild가 기존 프로젝트 전반의 C++ 표준/설정 오류를 대량으로 반환했다. 기존 하네스는 이 실패를 곧바로 "계속 고쳐라"는 semantic repair prompt로 바꿔 모델이 `PathConverter.cpp` 범위를 벗어나 여러 `.vcxproj`와 unrelated source를 읽고 고치려는 루프로 확장됐다.
+   - 원칙: 검증 실패는 먼저 현재 patch transaction과 연결되는지 판정해야 한다. 하네스는 특정 API나 코드 의미를 판단하지 않는다. 대신 Codex tool orchestrator처럼 request/decision/result와 retry 조건을 분리하고, retry는 실패 증거가 현재 작업 범위에 속할 때만 허용한다.
+   - 수정: 자동 검증 실패 후 repair prompt를 내기 전에 failed step의 `scope`, command/label/hint/failure line이 현재 patch changed path를 가리키는지 일반 경로 신호로 분류한다. `targeted` stage라는 사실만으로는 repair loop를 열지 않는다. 명령/scope가 변경 파일을 직접 대상으로 삼거나 실패 라인이 변경 path를 직접 가리키면 좁은 repair loop를 허용한다. workspace 또는 sibling-file failure가 변경 path와 연결되지 않으면 `Automatic verification failed outside the current patch scope` guidance로 전환하고, unrelated build/project/source 수정은 금지하며 final answer에서 verification risk를 명시하게 한다. C++/MSBuild adaptive verification은 변경 source를 포함하는 가장 가까운 `.vcxproj`를 먼저 선택하고, 솔루션 전체 빌드는 full verification에 남긴다.
+   - 추가 수정: out-of-scope 자동 검증 실패를 guidance만으로 처리하지 않고 tool execution loop의 terminal state로 남긴다. 다음 모델 요청에는 tool definition을 제공하지 않아 final-answer-only 상태로 전환하고, scripted/degraded route가 그래도 tool call을 내면 실제 shell/progress status를 내기 전에 `NOT_EXECUTED` synthetic tool result로 닫는다. final answer가 돌아오면 post-change review, final-answer review, completion-audit repair gate를 다시 열지 않고 검증 risk disclosure만 보강해 종료한다. 이 차단은 특정 API, 파일명, 빌드 시스템 의미가 아니라 앞 단계의 patch-scope 판정 결과와 generic verification command classification 및 terminal-state lifecycle만 사용한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\tools\orchestrator.rs`는 첫 attempt 실패 뒤에도 sandbox/network denial처럼 retry 조건이 명확한 경우에만 별도 approval과 두 번째 attempt로 넘어간다. Kernforge도 verification failure를 무조건 repair loop로 번역하지 않고, patch-scope 조건을 만족하는 경우에만 다음 model repair turn을 만든다.
+   - Codex 추가 참고: `F:\kernullist\codex\codex-rs\core\src\agent\control.rs`는 forked history에 assistant commentary/tool traffic을 남기지 않고 `MessagePhase::FinalAnswer`만 보존한다. Kernforge도 out-of-scope 검증 실패 이후의 답변을 같은 terminal answer boundary로 취급해, 이미 닫힌 검증 실패 상태가 후속 review/repair gate 입력으로 재활성화되지 않게 한다.
+   - 회귀 테스트: `TestAgentDoesNotBroadenRepairForOutOfScopeVerificationFailure`, `TestAgentBlocksVerificationRetryAfterOutOfScopeAutomaticFailure`, `TestAgentBlocksAllToolsAfterOutOfScopeAutomaticFailure`, `TestAgentReturnsFinalWithoutPostChangeReviewAfterOutOfScopeAutomaticFailure`, `TestVerificationRepairScopeDoesNotTreatProjectBuildSiblingFailureAsPatchScoped`, `TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer`, `TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass`, `TestBuildVerificationStepsForCppPrefersChangedProjectInAdaptiveMode`.
+
+76. verification artifact와 source/config mutation 분리
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 모델이 project build 실패 뒤 `msbuild ... /t:ClCompile /p:SelectedFiles=PathConverter.cpp`로 단일 파일 컴파일을 실행했고, 컴파일 자체는 성공했지만 MSBuild가 `x64/Debug/*.tlog` 같은 build artifact를 갱신했다. 기존 shell guard는 verification command 이후 workspace snapshot 변화가 있으면 모두 edit review gate 위반으로 처리해 성공한 검증도 실패처럼 보이게 했다.
+   - 원칙: 검증 명령은 산출물을 만들 수 있다. 하네스는 특정 API나 코드 의미를 판단하지 않고, 검증 산출물과 source/config mutation의 실행 경계를 분리해야 한다. build/test artifact churn은 검증 lifecycle의 부작용으로 기록할 수 있지만, source/config 파일 변경은 preview/write gate 밖에서 계속 차단해야 한다.
+   - 수정: `run_shell` verification-artifact 명령의 before/after snapshot 비교는 유지하되, 변경 경로를 source/config 파일과 build artifact로 나누어 source/config 변경이 있을 때만 오류로 반환한다. `bin`, `obj`, `build`, `target`, `.tlog`, `.obj`, `.pdb`, `.ilk`, `.lastbuildstate` 등 일반 build output은 허용하고, `.cpp`, `.h`, `.go`, `.json`, `.vcxproj`, `.sln`, `.props`, `.targets` 같은 source/config 변경은 여전히 차단한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\tools\handlers\shell.rs`와 `tools\runtimes\shell.rs`는 shell 실행의 approval, output, exit status를 분리한다. Kernforge도 verification 실행 결과와 build artifact side effect를 source edit gate와 분리한다.
+   - 회귀 테스트: `TestRunShellVerificationCommandAllowsBuildArtifacts`, `TestRunShellVerificationCommandReportsWorkspaceMutation`, `TestRunShellVerificationCommandRejectsExternalSymlinkWorkspace`.
+
+77. verification command shell boundary 정규화
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 자동 검증이 `-prompt -y`로 승인된 뒤, 저장된 tool path를 사용한 빌드 명령이 PowerShell에서 `"MSBuild.exe" "project.vcxproj"` 형태로 실행되어 `Unexpected token` 파싱 오류가 발생했다. 모델과 리뷰 하네스는 수리 범위를 잘 멈췄지만, 검증 명령 자체가 shell 경계에서 깨져 실제 build evidence를 만들지 못했다.
+   - 원칙: 검증 command 생성은 특정 코드 의미나 API별 repair가 아니라 command lifecycle의 일부다. Codex repo처럼 command를 구조화된 실행 요청으로 보존하고 shell wrapper/canonicalization을 별도 단계로 다루는 것이 이상적이며, Kernforge의 문자열 command 경로에서는 적어도 shell별 실행 문법을 마지막 경계에서 공통 정규화해야 한다.
+   - 수정: configured/detected verification tool path가 `msbuild`, `cmake`, `ctest`, `ninja` 같은 leading tool name을 대체할 때, PowerShell 계열 shell에서는 quoted executable 앞에 call operator `&`를 붙인다. `cmd`, `bash`, `sh` shell에서는 기존 quoted executable 형태를 유지한다. 이 변경은 build tool path 치환 규칙에만 적용되며 source-level finding이나 API 의미 판정에는 관여하지 않는다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\command_canonicalization.rs`와 `tools\handlers\shell.rs`는 command argv, approval requirement, shell runtime execution을 분리한다. Kernforge는 현재 문자열 command 기반이므로 `resolveVerificationCommandPath`에서 shell-specific executable invocation을 정규화한다.
+   - 회귀 테스트: `TestResolveVerificationCommandPathUsesConfiguredMSBuildPath`, `TestResolveVerificationCommandPathUsesConfiguredMSBuildPathForCmd`, `TestResolveVerificationCommandPathUsesConfiguredCTestAndNinjaPaths`.
+
+78. pre-write 차단 proposal의 committed-state re-anchor
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 첫 pre-write review가 안전하게 파일 쓰기를 막은 뒤, 다음 구현 turn이 차단된 proposal의 after-state를 현재 파일처럼 가정하고 즉시 새 patch를 제출해 `edit target mismatch`가 발생했다. 이후 모델이 다시 읽고 회복하긴 했지만, 같은 실수는 오래 걸리는 smoke마다 불필요한 회귀 루프를 만든다.
+   - 원칙: pre-write에서 차단된 proposal은 디스크에 쓰이지 않았고 committed workspace state가 아니다. 하네스는 코드 의미나 특정 API를 판단하지 않고, 실제로 적용된 tool result만 다음 edit의 기준으로 인정해야 한다.
+   - 수정: pre-write review가 edit을 차단하면 `preWriteReviewRequiresReanchor` terminal repair state를 세운다. 이 상태에서 다음 edit tool이 current file/diff re-anchor 없이 나오면 파일을 수정하지 않고 `NOT_EXECUTED` synthetic result로 닫는다. `read_file`, `grep`, `git_diff` 중 하나가 성공한 뒤에만 다음 standalone edit tool을 실행할 수 있다. 기존 mixed-tool isolation과 결합되어, 같은 assistant 응답에 `read_file`과 `apply_patch`가 함께 오면 read-only tool만 먼저 실행되고 edit은 다음 turn으로 미뤄진다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\turn_diff_tracker.rs`는 committed `apply_patch` delta만 current diff로 추적하고, 거절되거나 실행되지 않은 patch text를 workspace state로 취급하지 않는다. Kernforge도 pre-write blocked proposal을 같은 방식으로 non-committed proposal로 취급한다.
+   - 회귀 테스트: `TestAgentBlocksImmediateEditAfterPreWriteBlockUntilReanchor`, `TestAgentContinuesAfterDistinctPreWriteCodeFinding`, 기존 pre-write repair/user-decision 및 broad recovery patch tests.
+
+79. external verification callback report 정규화
+   - 발견: scripted/test 및 외부 verifier callback이 `VerificationReport.GeneratedAt`, `Trigger`, `Workspace`, `ChangedPaths`를 비워 반환하면, 실제 자동 검증은 실행됐는데도 review/runtime gate가 "현재 patch 이후 검증인지 확인 불가"로 보고 post-change review를 `insufficient_evidence`로 되돌릴 수 있었다.
+   - 원칙: 검증 callback은 실행 결과를 제공하고, Kernforge 런타임은 그 결과를 현재 turn/patch transaction의 state machine에 맞게 정규화해야 한다. 하네스는 특정 API나 코드 의미를 판단하지 않고, request -> execution/result boundary의 공통 메타데이터만 보정한다.
+   - 수정: `VerifyChanges` callback 결과가 성공적으로 반환되면 `GeneratedAt`이 비어 있을 때 현재 시각을 채우고, `Trigger`가 비어 있으면 `automatic`, `Workspace`가 비어 있으면 현재 workspace root, `ChangedPaths`가 비어 있으면 자동 검증을 트리거한 changed path를 채운다. 따라서 최신 검증 evidence 판단은 callback 구현 세부가 아니라 동일한 verification freshness 규칙에 따라 계산된다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\tools\tool_dispatch_trace.rs`와 shell handler 계층은 tool result를 런타임 trace/evidence 형태로 변환해 control flow와 관찰 가능성을 분리한다. Kernforge도 external verifier의 부분 report를 런타임 evidence 계약에 맞게 보정한다.
+   - 회귀 테스트: `TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger`는 `GeneratedAt` 없는 verifier callback을 사용해도 final-answer review prompt가 최신 edit/verification ledger를 포함하고 통과하는지 확인한다.
+
+80. MSBuild project configuration/platform 선택
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 C++ adaptive verification이 nearest `.vcxproj`까지는 좁혔지만, MSBuild command가 project의 `ProjectConfiguration`을 지정하지 않아 환경 기본값인 `Debug|Win32`로 떨어졌다. 해당 project가 `Debug|x64`만 지원하는 경우 `MSB8013`이 발생했고, 모델은 실제 코드 수리와 무관한 빌드 설정 문제를 다시 수리 루프로 오해할 수 있었다.
+   - 원칙: 빌드 검증 command 생성은 특정 API나 코드 의미를 해석하는 일이 아니라, workspace build metadata를 읽어 execution request를 정확하게 구성하는 공통 하네스 책임이다. Codex repo의 command canonicalization처럼 실행 요청을 shell에 넘기기 전 구조를 안정화해야 한다.
+   - 수정: adaptive C++ verification이 changed source의 nearest `.vcxproj`를 선택하면, 해당 project의 `ProjectConfiguration Include="Configuration|Platform"` 항목을 XML로 읽고 `Debug|x64`, `Release|x64`, `Debug|ARM64`, `Release|ARM64`, `Debug|Win32`, `Release|Win32`, first x64, first declared 순서로 선택한다. 선택된 값은 `msbuild "project.vcxproj" /m /p:Configuration=... /p:Platform=...`에 포함된다. 선언이 없으면 기존 command를 유지한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\command_canonicalization.rs`, `tools\runtimes\shell.rs`, `tools\handlers\shell.rs`는 승인/실행 command를 runtime 경계에서 안정화한다. Kernforge는 현재 문자열 command 기반이므로 MSBuild project metadata를 읽어 command string의 의미 없는 기본값 의존을 제거했다.
+   - 회귀 테스트: `TestBuildVerificationStepsForCppUsesProjectConfigurationPlatform`, 기존 `TestBuildVerificationStepsForCppPrefersChangedProjectInAdaptiveMode`.
+
+81. review finding line anchor 정식화
+   - 발견: Codex review prompt는 finding의 위치를 짧은 line range로 고정하도록 요구하지만, Kernforge의 `ReviewFinding`에는 `Line` 필드가 있어도 structured review schema와 parser가 `line:`을 명시적으로 다루지 않아 모델이 path 안의 `:line`을 그대로 path로 섞거나 line anchor를 잃을 수 있었다.
+   - 원칙: line anchor는 코드 의미/API별 판정이 아니라 review evidence 품질과 UI/수리 handoff의 공통 metadata다. 하네스가 코드를 판단하지 않더라도, 모델이 제공한 위치 정보는 구조화해 보존해야 한다.
+   - 수정: reviewer prompt schema에 `line: <1-based line number or 0>`를 추가하고, code finding에는 supplied evidence에 있는 가장 좁은 path/line을 쓰되 모르면 0 또는 empty로 두라고 지시한다. parser는 `path: file.cpp:123`과 별도 `line: 123-124`를 모두 인식해 `ReviewFinding.Path`와 `ReviewFinding.Line`으로 분리한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\review_prompt.md`의 finding 위치 규칙은 짧은 위치 범위와 diff-overlap을 강제한다. Kernforge는 기존 YAML-like `REVIEW_RESULT` 형식을 유지하되 line anchor를 정식 필드로 편입했다.
+   - 회귀 테스트: `TestReviewModelParserKeepsFindingLineAnchors`, 기존 structured finding parser tests.
+
+82. review category 계약, verification command evidence, final-answer 출력 안정화
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 reviewer가 production behavior bug를 `medium/test_gap`으로 잘못 라벨링하자, repair plan은 blocker만 포함했고 메인 모델은 경고로 내려간 코드 수리를 건너뛰었다. 별도 smoke에서는 MSBuild가 실제로 실행됐지만 final answer에는 논리 명령만 보여 command-not-found와 compile failure의 차이를 사용자가 확인하기 어려웠고, out-of-scope verification final answer 문장이 반복되거나 한국어 문장이 붙어 출력되는 경우도 있었다.
+   - 원칙: 하네스는 `QueryDosDevice`, `GetVolumePathNamesForVolumeName`, `FindNextVolume` 같은 API 의미를 판단하지 않는다. 대신 structured review field 계약, command execution boundary, final-answer rendering 같은 공통 harness 책임을 강화한다. `test_gap`은 테스트/검증 evidence 부족에만 사용해야 하며, production code 변경 `required_fix`가 들어간 항목은 모델이 category를 잘못 붙여도 수리 의무에서 빠지면 안 된다.
+   - 수정: review prompt에 "`test_gap`은 add/run tests 또는 verification evidence 제공에만 사용하고, production behavior defect와 implementation required_fix는 correctness/stability/security/performance/operational_risk로 분류하라"는 규칙을 추가했다. 게이트/repair plan은 `test_gap`이라도 medium 이상 severity, code path/symbol, implementation-style `required_fix`를 가진 항목은 실행 가능한 수리 의무로 유지한다. 순수 "run verification/add test/provide evidence" 항목은 계속 non-blocking test gap으로 남긴다.
+   - 추가 수정: `VerificationStep.ResolvedCommand`를 verification report에 보존하고, 논리 command와 resolved shell command가 다르면 `FailureSummary`, `RenderShort`, `RenderDetailed`, terminal render에 함께 표시한다. missing-tool classification은 resolved/original command의 primary executable과 출력의 missing term이 일치할 때만 `command_not_found`로 분류해, MSBuild가 실행된 뒤 나온 compiler/build 문구를 tool-missing으로 오분류하지 않는다.
+   - 추가 수정: assistant final text sanitizer를 공통화해 code fence 밖의 동일 sentence 반복 run은 한 번으로 collapse하고, `중단하겠습니다.수정 완료했습니다.`처럼 한국어 문장이 붙어 나오는 경우 sentence spacing을 보정한다. code fence 안의 텍스트와 `PathConverter.cpp` 같은 path-like dot은 보존한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\review_prompt.md`의 finding 위치/구체성 규칙, `command_canonicalization.rs`와 `tools\handlers\shell.rs`의 command boundary 분리, `tool_dispatch_trace.rs`의 tool result trace 원칙을 반영했다. source API별 판단이 아니라 review schema와 execution/rendering contract를 강화한 변경이다.
+   - 회귀 테스트: `TestReviewRepairPlanIncludesMislabeledTestGapImplementationWarning`, `TestReviewRepairPlanIncludesActionableWarningsWithBlockers`, `TestVerificationReportFailureSummaryIncludesResolvedCommand`, `TestClassifyVerificationFailureUsesPrimaryExecutableForMissingCommand`, `TestClassifyVerificationFailureDoesNotTreatBuildOutputAsMissingMSBuild`, `TestAssistantCollapsesRepeatedSentenceRun`, `TestAssistantSentenceSpacingPreservesCodeLikeDots`, `TestAssistantDoesNotCollapseCodeFenceRepeatedText`.
+
+83. verification manifest evidence와 executable command 분리
+   - 발견: 리뷰 모드가 `buildFuzzCampaignVerificationSteps`와 `buildAnalysisDocsVerificationSteps`에서 manifest/analysis/fuzz 결과 문자열을 `echo ...` command에 넣는 구조를 blocker로 지적했다. manifest 내용이 신뢰할 수 없는 입력이면 shell metacharacter가 verification command로 승격될 수 있었다.
+   - 원칙: 하네스는 특정 API나 대상 코드 의미를 판단하지 않고, evidence text와 executable request의 경계를 지켜야 한다. 사람에게 보여 줄 verification context와 실제 shell command는 같은 문자열 슬롯을 공유하면 안 된다.
+   - 수정: `VerificationStep.Informational`을 추가하고, generated analysis/fuzz/manifest evidence는 `Command`가 빈 informational step으로 만든다. 실행기는 informational step을 shell로 보내지 않고 `VerificationSkipped`와 output-only evidence로 기록한다. 표시용 문자열 정규화는 newline/control character 제거와 길이 제한만 수행하며 shell escaping 역할을 하지 않는다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\tools\handlers\unified_exec\exec_command.rs`, `codex_delegate.rs`, `client_common.rs`는 표시, 승인, 실행, patch 결과를 분리한다. Kernforge도 evidence report와 shell execution request를 같은 문자열로 합치지 않도록 맞췄다.
+   - 회귀 테스트: `TestVerificationManifestEvidenceDoesNotBecomeShellCommands`, `TestExecuteVerificationStepsSkipsInformationalCommands`, 기존 analysis/fuzz verification plan tests.
+
+84. skipped verification, reviewer role 축소, read-cache key, edit-loop evidence 회귀 보정
+   - 발견: 리뷰 모드가 skipped automatic verification을 `ok=true` report로 기록한 뒤 agent loop가 `HasFailures()==false`만 보고 완료 progress를 낼 수 있다고 지적했다. 또 `ui_polish` mode가 changed path가 비어 있거나 core harness file을 포함해도 design reviewer만 요구할 수 있었고, 반복 `read_file` key가 case-sensitive로 바뀌어 Windows workspace에서 같은 파일을 다른 대소문자로 반복 읽는 루프를 놓칠 수 있었다. 후속 리뷰에서는 skipped automatic verification 이후 같은 턴의 verification retry가 즉시 차단되지 않을 수 있고, 최종 답변이 "검증하지 않았다"고 고지하면 edit loop가 successful verification evidence 없이 completed로 닫힐 수 있으며, background job metadata의 `job_status`가 scalar status와 job list 양쪽 의미로 쓰인다고 지적했다. 추가 리뷰에서는 `ui.go`, `Button.tsx` 같은 실행 가능한 UI source가 design-only reviewer로 빠질 수 있고, non-Windows에서 ordinary backslash filename이 Windows path처럼 lowercasing될 수 있으며, displayed reviewer profile은 auxiliary reviewer를 보여주는데 interactive planning은 auxiliary reviewer를 쓰지 않는 불일치도 발견했다.
+   - 원칙: 하네스는 특정 API나 코드 의미를 판단하지 않고 state boundary를 정확히 표현해야 한다. skipped verification은 passed verification이 아니며, UI-only reviewer 축소는 evidence가 있을 때만 허용해야 하고, read-cache key는 workspace filesystem 특성을 반영해야 한다. UI-polish라는 intent만으로 executable source의 correctness review를 없애면 안 된다. 또한 disclosure와 evidence는 별개다. 모델이 미검증을 올바르게 고지해도 successful verification evidence가 생긴 것은 아니므로, edit-loop outcome은 risk를 보존해야 한다. job status와 job evidence list도 Codex식 tool result boundary처럼 서로 다른 metadata slot에 둔다. 사용자에게 표시하는 reviewer profile과 실제 reviewer client fallback도 같은 정책을 사용해야 한다.
+   - 수정: `VerificationReport.WasSkipped`와 `HasPassedStep`을 추가해 skipped-only report는 완료 progress/완료 decision으로 렌더링하지 않는다. declined 또는 prompt-failed verification은 skipped report로 세션/히스토리에 남고 pending verification check를 유지한다. skipped automatic verification report를 받은 agent turn은 `verificationDeclinedThisTurn`을 세워 같은 턴의 build/test/verification retry나 verification background poll을 `NOT_EXECUTED`로 닫는다. `ui_polish` review는 changed path가 비어 있거나 UI-only로 판정되지 않는 path가 있으면 `primary_reviewer`와 `design_reviewer`를 함께 요구한다. UI-only 판정은 style/asset/markup surface에만 적용하고 `.go`, `.ts`, `.tsx`, `.js`, `.cpp`, `.rs`, `.py` 등 executable source 확장자는 primary reviewer를 유지한다. `readFilePathKey`는 Windows 또는 drive/UNC로 식별되는 Windows-style path에서만 case-insensitive key를 사용하고, non-Windows ordinary backslash filename은 case를 보존한다. `finalizeEditLoopOnReturn`은 changed path가 있고 successful verification evidence가 없으면 final answer가 미검증을 고지했더라도 `No successful verification was recorded for the changed paths.` risk를 남기고 `risk_accepted`로 마감한다. background bundle metadata는 job 목록을 `job_entries`에 기록하고, 단일 job의 `job_status`는 scalar status로 유지한다. reader는 legacy `job_status` list도 log path recovery용으로만 허용한다. `ensureInteractiveReviewerClient`는 explicit reviewer가 없고 auxiliary reviewer가 있으면 displayed profile과 동일하게 auxiliary reviewer를 반환한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\tools\handlers\unified_exec\exec_command.rs`와 `session\mod.rs`의 approval/result event 분리, `turn_diff_tracker.rs`의 committed-state 추적 원칙을 반영했다. 사용자 거절, tool result, reviewer role decision을 서로 다른 상태로 보존한다.
+   - 회귀 테스트: `TestAgentAsksBeforeAutomaticVerificationAndSkipsOnNo`, `TestAgentBlocksVerificationRetryAfterSkippedAutomaticVerification`, `TestAgentRecordsAutomaticVerificationPromptErrorAsSkipped`, `TestFinalizeEditLoopRecordsMissingVerificationRiskWhenDisclosed`, `TestEditLoopLogPathsFromMetaSupportsScalarAndListContracts`, `TestUIPolishReviewRequiresPrimaryForCorePaths`, `TestUIPolishReviewRequiresPrimaryForEmptyPathSet`, `TestUIPolishReviewAllowsDesignOnlyForUIPaths`, `TestUIPolishReviewRequiresPrimaryForExecutableUIPaths`, `TestReadFilePathKeyNormalizesCaseInsensitivePaths`, `TestEnsureInteractiveReviewerClientUsesAuxReviewerFallback`.
+
+85. review model plan과 실제 실행 role 정렬
+   - 발견: 후속 리뷰에서 `ui_polish`의 UI-only path는 계획 단계에서 `design_reviewer`만 요구하도록 축소됐지만, 실제 `executeReviewModelRuns`는 main pass를 항상 `primary_reviewer` prompt와 reviewer run으로 실행했다. 그 결과 plan/report는 design-only처럼 보이는데 실제 model call은 primary role이 되어, role 축소가 사용자에게 체감되지 않고 reviewer plan과 gate ledger가 서로 어긋날 수 있었다.
+   - 원칙: 하네스는 코드 의미나 특정 API를 판단하지 않고, 이미 산출한 review model plan을 실행의 source of truth로 삼아야 한다. Codex App의 review thread가 resolved review request를 그대로 child turn에 전달하듯, Kernforge도 role plan을 만든 뒤에는 prompt role, progress role, reviewer run role, assigned model ledger가 같은 role을 가리켜야 한다.
+   - 수정: `reviewMainExecutionRole`을 추가해 required role이 하나뿐이면 그 role을 main pass role로 사용하고, primary가 required roles에 포함된 다중-role 계획에서는 기존처럼 primary를 main pass로 둔다. `prepareMainFirstReviewModelPlan`은 더 이상 required roles를 `primary_reviewer`로 덮어쓰지 않고, 실행한 role의 assigned model과 satisfied role만 갱신한다. 따라서 design-only UI polish review는 실제 prompt에 `Role: design_reviewer`가 들어가고, required role도 design으로 보존된다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\session\review.rs`와 `review_prompts.rs`는 review request resolve 결과를 별도 child turn의 입력으로 전달하고, 중간 하네스가 review 의미를 다른 role로 바꾸지 않는다. Kernforge도 model plan을 단순 표시용이 아니라 실행 계약으로 취급한다.
+   - 회귀 테스트: `TestExecuteReviewModelRunsUsesPlannedSingleRequiredRole`, 기존 `TestUIPolishReviewAllowsDesignOnlyForUIPaths`, `TestUIPolishReviewRequiresPrimaryForExecutableUIPaths`.
+
+86. review-mode/edit intent와 skipped verification risk 경계 보정
+   - 발견: GPT-5.5 리뷰 모드가 두 가지 상태 경계 문제를 지적했다. 첫째, `review mode` 문구와 `수정해` 같은 명시적 edit intent가 함께 있는 prompt에서 read-only review mode가 우선하면 사용자가 의도한 pre-fix review-and-repair flow가 눌릴 수 있다. 둘째, shell-tool verification 결과가 `verification_status=skipped`이면 `VerificationStatus`는 채워지지만 successful evidence는 없으므로 finalization에서 missing-verification risk를 유지해야 한다.
+   - 원칙: review mode는 사용자가 "수정하지 말고" 또는 순수 review-only를 명시한 경우에만 edit intent를 누른다. verification disclosure와 verification evidence도 분리한다. skipped, running, canceled 같은 상태는 실행 결과 metadata이지 성공 evidence가 아니므로 edit loop completion을 green으로 만들 수 없다.
+   - 수정: `resolveAgentRequestMode`를 추가해 explicit edit, repair negation, review-only mode, read-only analysis를 한 곳에서 계산한다. explicit edit intent가 있으면 review-mode wording만으로 read-only로 바꾸지 않고, repair negation이 있으면 edit intent를 제거해 read-only로 유지한다. `recordEditLoopToolResult`와 `finalizeEditLoopOnReturn`은 verification-like tool의 skipped/running/canceled 상태를 unresolved risk로 남기고, changed path에 successful verification evidence가 없으면 `risk_accepted`로 마감한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\session\review.rs`는 review turn을 별도 request로 명시해 일반 edit turn과 섞지 않고, `tools\tool_dispatch_trace.rs`와 shell handler 계층은 tool result status와 실제 성공 evidence를 분리한다. Kernforge도 사용자 intent와 verification result를 같은 문자열 신호로 뭉개지 않게 나눴다.
+   - 회귀 테스트: `TestNaturalLanguageReviewModeDoesNotSwallowReviewThenFix`, `TestNaturalLanguageReviewModeHonorsNoEditWording`, `TestFinalizeEditLoopKeepsSkippedShellVerificationRisk`.
+
+87. 비대화형 자동 검증 prompt 가시성
+   - 발견: 실제 GPT-5.5 PathConverter smoke에서 diff preview는 비대화형 `-prompt`에서도 pinned confirmation을 출력하고 pipe 답변을 읽었지만, 자동 검증은 `!interactive`이면 곧바로 skipped로 빠져 사용자가 빌드 검증을 승인/거절할 기회를 화면에서 확인할 수 없었다.
+   - 원칙: 빌드/테스트 검증은 코드 의미 판정이 아니라 Codex식 command approval lifecycle이다. diff preview와 마찬가지로 request를 먼저 보여주고, 사용자 결정 또는 EOF/취소를 execution result와 분리해 기록해야 한다.
+   - 수정: `promptConfirmAutoVerify`가 비대화형에서도 검증 계획과 `자동 검증을 실행할까요? [y/N/a=자동 실행]` label을 출력하고, pipe로 들어온 `y`/`n`/`a` 답변을 처리한다. stdin이 없거나 EOF/취소이면 오류나 암묵 승인으로 처리하지 않고 skipped/declined verification decision으로 기록한다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\apply_patch.rs`는 patch 승인을 runtime approval request로 위임하고, `app-server\src\bespoke_event_handling.rs`는 파일 변경/명령 실행 approval response의 decline/cancel을 실행 결과와 분리한다. Kernforge도 verification request, user decision, execution evidence를 같은 경계로 맞췄다.
+   - 회귀 테스트: `TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveDefaultDeclines`, `TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveReadsPipedAnswer`, `TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveEOFDeclinesAfterPrompt`.
+
+88. 단발 goal 실행의 interactive mode 경계 보정
+   - 발견: 리뷰 모드가 `-goal`과 `-goal-file` 단발 실행이 `promptFlag == "" && commandFlag == ""` 조건 때문에 interactive로 남는 경로를 지적했다. 이 경우 noninteractive 실행에서는 ambient keyboard watcher를 설치하지 않는다는 정책이 goal 실행에서만 우회될 수 있다.
+   - 원칙: interactive 여부는 특정 명령 문자열이 아니라 실행 모드의 명시성으로 결정한다. 사용자가 REPL session에 들어간 경우만 interactive이고, `-prompt`, `-command`, `-goal`, `-goal-file` 같은 단발 실행은 모두 explicit event/decision boundary로 처리해야 한다.
+   - 수정: `runtimeShouldUseInteractiveLoop` helper를 추가해 prompt, command, goal, goal-file flag가 모두 비어 있을 때만 interactive loop로 분류한다. `shouldInstallRequestCancelWatcher`와 `confirmRequestCancel`는 이 single source of truth를 따른다.
+   - Codex 참고: `F:\kernullist\codex\codex-rs\core\src\session\mod.rs`와 app-server approval handlers는 turn/request 단위의 명시 상태를 기준으로 진행하며, ambient input을 승인/취소 decision으로 승격하지 않는다. Kernforge도 one-shot goal을 REPL 입력 상태와 분리했다.
+   - 회귀 테스트: `TestRuntimeShouldUseInteractiveLoopOnlyForSessionMode`.
+
+89. diff preview one-shot approval 의미 고정
+   - 발견: 후속 리뷰에서 `autoAcceptPreviewOnce`가 현재 `a` 답변의 부작용으로만 소비되어, 사전에 one-shot approval flag가 세트된 경우에도 먼저 confirmation 입력을 요구할 수 있다고 지적했다.
+   - 원칙: approval state는 질문/응답 lifecycle과 분리된 runtime state여야 한다. one-shot approval flag가 이미 세트되어 있으면 다시 사용자 입력을 요구하지 않고 정확히 한 번만 소비해야 한다.
+   - 수정: `previewEdit`가 session-wide preview approval을 확인한 뒤, confirmation prompt를 띄우기 전에 `autoAcceptPreviewOnce`를 먼저 소비한다. 기존 `a` 답변 경로는 유지되며, 사전 flag와 현재 confirmation side effect 모두 같은 one-shot 의미를 가진다.
+   - Codex 참고: Codex app-server approval handlers가 approval response를 decision으로 정규화한 뒤 실행 단계에 전달하는 것처럼, Kernforge도 preview approval flag를 prompt side effect가 아니라 명시 state로 취급한다.
+   - 회귀 테스트: `TestRuntimeStatePreviewEditConsumesPreArmedAutoAcceptOnceWithoutPrompt`, 기존 `TestRuntimeStatePreviewEditAutoAcceptsCurrentDiffPreviewAlwaysAnswer`.
 
 남은 항목:
 

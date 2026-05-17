@@ -70,7 +70,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 		Action:      action,
 		Branch:      delegationGitBranch(root),
 	}
-	ledger.ChangedPaths = runtimeGateChangedPaths(root, session)
+	ledger.ChangedPaths = runtimeGateChangedPathsForAction(root, session, action)
 	if tx := latestRuntimeGatePatchTransaction(session); tx != nil {
 		ledger.PatchTransactionID = strings.TrimSpace(tx.ID)
 	}
@@ -245,9 +245,24 @@ func runtimeGateActionRequiresReview(action string) bool {
 }
 
 func runtimeGateChangedPaths(root string, session *Session) []string {
+	return runtimeGateChangedPathsForAction(root, session, "")
+}
+
+func runtimeGateChangedPathsForAction(root string, session *Session, action string) []string {
 	var paths []string
-	paths = append(paths, sessionPatchTransactionChangedPaths(session)...)
-	if strings.TrimSpace(root) != "" && reviewScopeGitStatusLooksUsable(root) {
+	patchPaths := sessionPatchTransactionChangedPaths(session)
+	paths = append(paths, patchPaths...)
+	action = normalizeRuntimeGateAction(action)
+	includeGitChanged := true
+	if len(patchPaths) > 0 {
+		switch action {
+		case runtimeGateActionGitWrite, runtimeGateActionMCPWrite:
+			includeGitChanged = true
+		default:
+			includeGitChanged = false
+		}
+	}
+	if includeGitChanged && strings.TrimSpace(root) != "" && reviewScopeGitStatusLooksUsable(root) {
 		paths = append(paths, filterReviewablePaths(delegationChangedFiles(root))...)
 	}
 	return normalizeCompletionAuditReviewPaths(paths)
@@ -282,7 +297,7 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 	}
 	freshness.CheckedAt = time.Now()
 	if !strings.EqualFold(ledger.Action, runtimeGateActionReview) {
-		freshness = reviewLatestFreshnessForRoot(root, review)
+		freshness = reviewLatestFreshnessAgainstPaths(root, review, ledger.ChangedPaths)
 		if missing := reviewUnreviewedChangedPaths(review.ChangeSet.ChangedPaths, ledger.ChangedPaths); len(missing) > 0 {
 			freshness.Stale = true
 			freshness.InvalidatedBy = analysisUniqueStrings(append(freshness.InvalidatedBy, "changed_paths"))
@@ -367,6 +382,19 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 		return
 	}
 	report := *session.LastVerification
+	if !verificationReportCoversCurrentPatch(session, report, time.Time{}, ledger.ChangedPaths) {
+		ledger.Warnings = append(ledger.Warnings, "latest verification predates or does not cover the current patch transaction")
+		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+			ID:             "verify",
+			Command:        "/verify --full",
+			Reason:         "latest verification is stale for current changed files",
+			Safety:         "safe_local",
+			When:           "before completion or git write",
+			ClientHint:     "Run verification for the current patch transaction, then repeat /review or /completion-audit.",
+			ExpectedResult: "A current verification report is linked into the runtime gate ledger.",
+		})
+		return
+	}
 	if report.HasFailures() {
 		ledger.Blockers = append(ledger.Blockers, "latest verification failed: "+compactPromptSection(report.FailureSummary(), 240))
 		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
@@ -385,8 +413,48 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 	}
 }
 
+func verificationReportCoversCurrentPatch(session *Session, report VerificationReport, recordedAt time.Time, changedPaths []string) bool {
+	changedPaths = normalizeTaskStateList(changedPaths, 64)
+	if len(changedPaths) > 0 && len(report.ChangedPaths) > 0 && !changedPathsCovered(changedPaths, report.ChangedPaths) {
+		return false
+	}
+	patchTime := runtimeGateLatestPatchChangeTime(session)
+	if patchTime.IsZero() {
+		return true
+	}
+	reportTime := verificationReportTimestamp(report, recordedAt)
+	if reportTime.IsZero() {
+		return false
+	}
+	return !reportTime.Before(patchTime.Add(-time.Second))
+}
+
+func verificationReportTimestamp(report VerificationReport, recordedAt time.Time) time.Time {
+	if !report.GeneratedAt.IsZero() {
+		return report.GeneratedAt
+	}
+	return recordedAt
+}
+
+func runtimeGateLatestPatchChangeTime(session *Session) time.Time {
+	tx := latestRuntimeGatePatchTransaction(session)
+	if tx == nil {
+		return time.Time{}
+	}
+	tx.Normalize()
+	for _, candidate := range []time.Time{tx.CompletedAt, tx.UpdatedAt, tx.StartedAt} {
+		if !candidate.IsZero() {
+			return candidate
+		}
+	}
+	return time.Time{}
+}
+
 func runtimeGateVerificationPassed(session *Session) bool {
 	if session == nil || session.LastVerification == nil {
+		return false
+	}
+	if !verificationReportCoversCurrentPatch(session, *session.LastVerification, time.Time{}, sessionPatchTransactionChangedPaths(session)) {
 		return false
 	}
 	report := *session.LastVerification
@@ -539,7 +607,8 @@ func runtimeGateFinalAnswerDisclosesBlockers(ledger RuntimeGateLedger, reply str
 	if strings.Contains(blockers, "review") || strings.Contains(blockers, "stale") || strings.Contains(blockers, "coding harness") {
 		return containsAny(reply,
 			"blocked", "blocker", "remaining", "unresolved", "incomplete", "cannot complete",
-			"review", "stale", "runtime gate", "gate", "차단", "남아", "미완료", "리뷰", "게이트")
+			"stale review", "missing review", "runtime gate blocked", "gate blocked",
+			"차단", "남아", "미완료", "리뷰 차단", "게이트 차단")
 	}
 	return containsAny(reply,
 		"blocked", "blocker", "remaining", "unresolved", "incomplete", "cannot complete",

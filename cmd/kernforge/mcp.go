@@ -1399,7 +1399,10 @@ func (t MCPResourceTool) Definition() ToolDefinition {
 }
 
 func (t MCPResourceTool) Execute(ctx context.Context, input any) (string, error) {
-	args, _ := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	_, text, err := t.client.readResource(ctx, stringValue(args, "uri"))
 	return text, err
 }
@@ -1423,7 +1426,10 @@ func (t MCPPromptTool) Definition() ToolDefinition {
 }
 
 func (t MCPPromptTool) Execute(ctx context.Context, input any) (string, error) {
-	args, _ := input.(map[string]any)
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return "", err
+	}
 	promptArgs := map[string]any{}
 	if raw, ok := args["arguments"].(map[string]any); ok {
 		promptArgs = raw

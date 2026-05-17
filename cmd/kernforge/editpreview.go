@@ -118,3 +118,94 @@ func buildSelectionAwareEditPreview(ws Workspace, path, before, after string) st
 	}
 	return selectionPreview + "\n\n" + full
 }
+
+func buildSelectionAwareAfterExcerpt(ws Workspace, path, before, after string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	after = normalizePreviewText(after)
+	if strings.TrimSpace(after) == "" {
+		return ""
+	}
+	selection := ws.Selection()
+	target := path
+	if filepath.IsAbs(target) {
+		target = relOrAbs(ws.Root, target)
+	}
+	if selection != nil && selection.HasSelection() {
+		selectedPath := selection.FilePath
+		if filepath.IsAbs(selectedPath) {
+			selectedPath = relOrAbs(ws.Root, selectedPath)
+		}
+		if strings.EqualFold(filepath.ToSlash(target), filepath.ToSlash(selectedPath)) {
+			return buildSelectionAfterExcerptForSelection(target, after, *selection, limit)
+		}
+	}
+	return buildChangedAfterExcerpt(target, before, after, limit)
+}
+
+func buildSelectionAfterExcerptForSelection(path string, after string, selection ViewerSelection, limit int) string {
+	if start, end, ok := reviewFunctionSpanForSelection(after, selection); ok {
+		body := preWriteFunctionBodyContextBody(after, selection, start, end, limit)
+		if strings.TrimSpace(body) != "" {
+			return fmt.Sprintf("After function body excerpt: %s:%d-%d\n%s", filepath.ToSlash(path), start, end, body)
+		}
+	}
+	lines := reviewNormalizedLines(after)
+	start := selection.StartLine - 12
+	if start < 1 {
+		start = 1
+	}
+	end := selection.EndLine + 120
+	if end > len(lines) {
+		end = len(lines)
+	}
+	if end < start {
+		return ""
+	}
+	body := preWriteSelectionFileContextBody(after, selection, start, end, limit)
+	if strings.TrimSpace(body) == "" {
+		return ""
+	}
+	return fmt.Sprintf("After selected-range excerpt: %s:%d-%d\n%s", filepath.ToSlash(path), start, end, body)
+}
+
+func buildChangedAfterExcerpt(path string, before string, after string, limit int) string {
+	before = normalizePreviewText(before)
+	after = normalizePreviewText(after)
+	oldLines := splitPreviewLines(before)
+	newLines := splitPreviewLines(after)
+	if len(newLines) == 0 {
+		return ""
+	}
+	prefix := 0
+	for prefix < len(oldLines) && prefix < len(newLines) && oldLines[prefix] == newLines[prefix] {
+		prefix++
+	}
+	oldSuffix := len(oldLines) - 1
+	newSuffix := len(newLines) - 1
+	for oldSuffix >= prefix && newSuffix >= prefix && oldLines[oldSuffix] == newLines[newSuffix] {
+		oldSuffix--
+		newSuffix--
+	}
+	if prefix >= len(newLines) && newSuffix < prefix {
+		return ""
+	}
+	start := prefix - 40
+	if start < 0 {
+		start = 0
+	}
+	end := newSuffix + 80
+	if end < prefix {
+		end = prefix + 80
+	}
+	if end >= len(newLines) {
+		end = len(newLines) - 1
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "After changed-code excerpt: %s:%d-%d\n", filepath.ToSlash(path), start+1, end+1)
+	for i := start; i <= end && i < len(newLines); i++ {
+		fmt.Fprintf(&b, "%5d | %s\n", i+1, newLines[i])
+	}
+	return compactPromptSectionPreserveHeadTail(b.String(), limit)
+}
