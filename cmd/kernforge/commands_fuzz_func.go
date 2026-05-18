@@ -216,6 +216,10 @@ type FunctionFuzzExecution struct {
 	ExecutablePath       string   `json:"executable_path,omitempty"`
 	CorpusDir            string   `json:"corpus_dir,omitempty"`
 	CrashDir             string   `json:"crash_dir,omitempty"`
+	DictionaryPath       string   `json:"dictionary_path,omitempty"`
+	CorpusManifestPath   string   `json:"corpus_manifest_path,omitempty"`
+	Profile              string   `json:"profile,omitempty"`
+	CrashInputPath       string   `json:"crash_input_path,omitempty"`
 	BackgroundJobID      string   `json:"background_job_id,omitempty"`
 	LastOutput           string   `json:"last_output,omitempty"`
 	CrashCount           int      `json:"crash_count,omitempty"`
@@ -518,6 +522,15 @@ func normalizeFunctionFuzzExecution(execState FunctionFuzzExecution) FunctionFuz
 	execState.ExecutablePath = functionFuzzNormalizeOptionalPath(execState.ExecutablePath)
 	execState.CorpusDir = functionFuzzNormalizeOptionalPath(execState.CorpusDir)
 	execState.CrashDir = functionFuzzNormalizeOptionalPath(execState.CrashDir)
+	execState.DictionaryPath = functionFuzzNormalizeOptionalPath(execState.DictionaryPath)
+	execState.CorpusManifestPath = functionFuzzNormalizeOptionalPath(execState.CorpusManifestPath)
+	execState.CrashInputPath = functionFuzzNormalizeOptionalPath(execState.CrashInputPath)
+	execState.Profile = strings.ToLower(strings.TrimSpace(execState.Profile))
+	switch execState.Profile {
+	case "", "smoke", "extended", "repro", "minimize":
+	default:
+		execState.Profile = "smoke"
+	}
 	execState.BackgroundJobID = strings.TrimSpace(execState.BackgroundJobID)
 	execState.LastOutput = compactPersistentMemoryText(execState.LastOutput, 260)
 	execState.BuildCommand = compactPersistentMemoryText(execState.BuildCommand, 1600)
@@ -1210,6 +1223,10 @@ func (rt *runtimeState) handleFuzzFuncCommand(args string) error {
 		return rt.handleFunctionFuzzList()
 	case "continue":
 		return rt.handleFunctionFuzzContinue(strings.TrimSpace(trimmed[len(fields[0]):]))
+	case "repro":
+		return rt.handleFunctionFuzzReplayProfile("repro", strings.TrimSpace(trimmed[len(fields[0]):]))
+	case "minimize", "min":
+		return rt.handleFunctionFuzzReplayProfile("minimize", strings.TrimSpace(trimmed[len(fields[0]):]))
 	default:
 		return rt.handleFunctionFuzzPlan(trimmed)
 	}
@@ -1253,7 +1270,7 @@ func (rt *runtimeState) showFunctionFuzzStatus() error {
 }
 
 func functionFuzzUsage() string {
-	return "/fuzz-func <function-name> [--file <path>|@<path>] [--source-scan off|focused|full] or /fuzz-func [--file <path>|@<path>]"
+	return "/fuzz-func <function-name> [--file <path>|@<path>] [--source-scan off|focused|full] | continue [<id>] [--profile smoke|extended|repro|minimize] | repro [<id>] [--input <crash>] | minimize [<id>] [--input <crash>]"
 }
 
 func parseFunctionFuzzSourceScanMode(query string, defaultMode functionFuzzSourceScanMode) (string, functionFuzzSourceScanMode, error) {
@@ -1764,7 +1781,10 @@ func (rt *runtimeState) handleFunctionFuzzContinue(args string) error {
 	if rt.functionFuzz == nil {
 		return fmt.Errorf("function fuzz store is not configured")
 	}
-	id := strings.TrimSpace(args)
+	id, profile, err := parseFunctionFuzzContinueArgs(args)
+	if err != nil {
+		return err
+	}
 	if id == "" || strings.EqualFold(id, "latest") {
 		items, err := rt.functionFuzz.ListRecent(workspaceSnapshotRoot(rt.workspace), 1)
 		if err != nil {
@@ -1782,8 +1802,14 @@ func (rt *runtimeState) handleFunctionFuzzContinue(args string) error {
 	if !ok {
 		return fmt.Errorf("function fuzz run not found: %s", id)
 	}
-	if !functionFuzzExecutionNeedsConfirmation(run.Execution) {
+	needsApproval := functionFuzzExecutionNeedsConfirmation(run.Execution)
+	if profile == "" && !needsApproval {
 		return fmt.Errorf("function fuzz run %s does not need confirmation; current auto_exec=%s", run.ID, valueOrUnset(run.Execution.Status))
+	}
+	if profile != "" {
+		if err := functionFuzzApplyProfile(&run, profile, ""); err != nil {
+			return err
+		}
 	}
 	functionFuzzApproveExecution(rt.cfg, &run, false)
 	rt.maybeLaunchFunctionFuzzExecution(&run)
@@ -1798,6 +1824,230 @@ func (rt *runtimeState) handleFunctionFuzzContinue(args string) error {
 	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, rt.cfg))
 	rt.printFunctionFuzzCampaignHandoff(saved)
 	return nil
+}
+
+func parseFunctionFuzzContinueArgs(args string) (string, string, error) {
+	fields := splitAnalysisCommandLine(strings.TrimSpace(args))
+	id := ""
+	profile := ""
+	for i := 0; i < len(fields); i++ {
+		token := strings.TrimSpace(fields[i])
+		lower := strings.ToLower(token)
+		switch {
+		case lower == "--profile":
+			if i+1 >= len(fields) {
+				return "", "", fmt.Errorf("--profile requires smoke|extended|repro|minimize")
+			}
+			value, err := parseFunctionFuzzProfileValue(fields[i+1])
+			if err != nil {
+				return "", "", err
+			}
+			profile = value
+			i++
+		case strings.HasPrefix(lower, "--profile="):
+			value, err := parseFunctionFuzzProfileValue(token[len("--profile="):])
+			if err != nil {
+				return "", "", err
+			}
+			profile = value
+		default:
+			if id == "" {
+				id = token
+			}
+		}
+	}
+	return id, profile, nil
+}
+
+func parseFunctionFuzzProfileValue(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "smoke", "":
+		return "smoke", nil
+	case "extended", "long":
+		return "extended", nil
+	case "repro", "reproduce":
+		return "repro", nil
+	case "minimize", "min", "shrink":
+		return "minimize", nil
+	default:
+		return "", fmt.Errorf("unsupported --profile value: %s", value)
+	}
+}
+
+func (rt *runtimeState) handleFunctionFuzzReplayProfile(profile string, args string) error {
+	if rt.functionFuzz == nil {
+		return fmt.Errorf("function fuzz store is not configured")
+	}
+	id, crashInput, err := parseFunctionFuzzReplayArgs(args)
+	if err != nil {
+		return err
+	}
+	if id == "" || strings.EqualFold(id, "latest") {
+		items, err := rt.functionFuzz.ListRecent(workspaceSnapshotRoot(rt.workspace), 1)
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			return fmt.Errorf("no function fuzz runs found for this workspace")
+		}
+		id = items[0].ID
+	}
+	run, ok, err := rt.functionFuzz.Get(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("function fuzz run not found: %s", id)
+	}
+	if !run.Execution.Eligible {
+		return fmt.Errorf("function fuzz run %s has no eligible execution plan; use /fuzz-func continue %s first", run.ID, run.ID)
+	}
+	resolvedCrash, err := functionFuzzResolveCrashInput(run, crashInput)
+	if err != nil {
+		return err
+	}
+	if err := functionFuzzApplyProfile(&run, profile, resolvedCrash); err != nil {
+		return err
+	}
+	rt.maybeLaunchFunctionFuzzExecution(&run)
+	if err := writeFunctionFuzzPlanJSON(&run); err != nil {
+		return err
+	}
+	saved, err := rt.functionFuzz.Upsert(run)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Function Fuzz"))
+	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, rt.cfg))
+	rt.printFunctionFuzzCampaignHandoff(saved)
+	return nil
+}
+
+func parseFunctionFuzzReplayArgs(args string) (string, string, error) {
+	fields := splitAnalysisCommandLine(strings.TrimSpace(args))
+	id := ""
+	crashInput := ""
+	for i := 0; i < len(fields); i++ {
+		token := strings.TrimSpace(fields[i])
+		lower := strings.ToLower(token)
+		switch {
+		case lower == "--input":
+			if i+1 >= len(fields) {
+				return "", "", fmt.Errorf("--input requires a crash file path")
+			}
+			crashInput = fields[i+1]
+			i++
+		case strings.HasPrefix(lower, "--input="):
+			crashInput = token[len("--input="):]
+		default:
+			if id == "" {
+				id = token
+			} else if crashInput == "" {
+				crashInput = token
+			}
+		}
+	}
+	return id, strings.TrimSpace(crashInput), nil
+}
+
+func functionFuzzResolveCrashInput(run FunctionFuzzRun, candidate string) (string, error) {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		crashDir := strings.TrimSpace(run.Execution.CrashDir)
+		if crashDir == "" {
+			return "", fmt.Errorf("crash input path is required (no crash directory recorded)")
+		}
+		entries, err := os.ReadDir(crashDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to read crash directory %s: %v", crashDir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			return filepath.Join(crashDir, entry.Name()), nil
+		}
+		return "", fmt.Errorf("no crash artifacts found under %s; pass an explicit crash file path", crashDir)
+	}
+	if filepath.IsAbs(candidate) {
+		if _, err := os.Stat(candidate); err != nil {
+			return "", fmt.Errorf("crash input not accessible: %v", err)
+		}
+		return candidate, nil
+	}
+	candidates := []string{
+		filepath.Join(run.Execution.CrashDir, candidate),
+		filepath.Join(run.ArtifactDir, candidate),
+		filepath.Join(run.Workspace, candidate),
+		candidate,
+	}
+	for _, path := range candidates {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err == nil {
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return path, nil
+			}
+			return absPath, nil
+		}
+	}
+	return "", fmt.Errorf("crash input not found: %s", candidate)
+}
+
+func functionFuzzApplyProfile(run *FunctionFuzzRun, profile string, crashInputPath string) error {
+	if run == nil {
+		return fmt.Errorf("run is nil")
+	}
+	normalizedProfile, err := parseFunctionFuzzProfileValue(profile)
+	if err != nil {
+		return err
+	}
+	switch normalizedProfile {
+	case "repro", "minimize":
+		if strings.TrimSpace(crashInputPath) == "" {
+			return fmt.Errorf("profile %s requires a crash input path", normalizedProfile)
+		}
+	}
+	run.Execution.Profile = normalizedProfile
+	run.Execution.CrashInputPath = strings.TrimSpace(crashInputPath)
+	runArgs := functionFuzzRunArgs(*run, run.Execution)
+	run.Execution.RunArgv = append([]string{run.Execution.ExecutablePath}, runArgs...)
+	run.Execution.RunCommand = functionFuzzRenderDisplayCommand(run.Execution.ExecutablePath, runArgs)
+	if strings.TrimSpace(run.Execution.BuildScriptPath) != "" && strings.TrimSpace(run.Execution.CompilerResolvedPath) != "" {
+		if err := functionFuzzWriteRunnerScript(run.Execution, stripLeading(run.Execution.BuildArgv), runArgs); err != nil {
+			return fmt.Errorf("failed to refresh runner script for profile %s: %v", normalizedProfile, err)
+		}
+	}
+	if run.Execution.Eligible {
+		run.Execution.Status = "planned"
+	}
+	switch normalizedProfile {
+	case "extended":
+		run.Execution.Reason = "Extended profile staged: long-running libFuzzer campaign with fork workers and dictionary."
+	case "repro":
+		run.Execution.Reason = "Repro profile staged: single-shot replay of the supplied crash input."
+	case "minimize":
+		run.Execution.Reason = "Minimize profile staged: libFuzzer crash minimization with -minimize_crash=1."
+	default:
+		run.Execution.Reason = "Smoke profile staged: short CI-friendly libFuzzer run."
+	}
+	run.Execution.BackgroundJobID = ""
+	run.Execution.LastOutput = ""
+	run.Execution.ExitCode = nil
+	run.Execution = normalizeFunctionFuzzExecution(run.Execution)
+	return nil
+}
+
+func stripLeading(items []string) []string {
+	if len(items) <= 1 {
+		return nil
+	}
+	out := make([]string, 0, len(items)-1)
+	out = append(out, items[1:]...)
+	return out
 }
 
 func (rt *runtimeState) printFunctionFuzzCampaignHandoff(run FunctionFuzzRun) {
@@ -8256,6 +8506,18 @@ func functionFuzzNativeExecutionDetailLinesWithConfig(cfg Config, run FunctionFu
 	if strings.EqualFold(strings.TrimSpace(run.Execution.Status), "pending_confirmation") && strings.TrimSpace(run.Execution.ContinueCommand) != "" {
 		lines = append(lines, functionFuzzLocalizedText(cfg, "Continue command: ", "계속 명령: ")+run.Execution.ContinueCommand)
 	}
+	if profile := strings.TrimSpace(run.Execution.Profile); profile != "" {
+		lines = append(lines, functionFuzzLocalizedText(cfg, "Run profile: ", "실행 프로파일: ")+profile)
+	}
+	if dict := strings.TrimSpace(run.Execution.DictionaryPath); dict != "" {
+		lines = append(lines, functionFuzzLocalizedText(cfg, "Source-derived dictionary: ", "소스 기반 dictionary: ")+filepath.ToSlash(dict))
+	}
+	if manifest := strings.TrimSpace(run.Execution.CorpusManifestPath); manifest != "" {
+		lines = append(lines, functionFuzzLocalizedText(cfg, "Corpus manifest: ", "Corpus manifest: ")+filepath.ToSlash(manifest))
+	}
+	if crashInput := strings.TrimSpace(run.Execution.CrashInputPath); crashInput != "" {
+		lines = append(lines, functionFuzzLocalizedText(cfg, "Crash input: ", "Crash 입력: ")+filepath.ToSlash(crashInput))
+	}
 	return uniqueStrings(lines)
 }
 
@@ -9376,6 +9638,11 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 	execState.RunLogPath = filepath.Join(run.ArtifactDir, "run.log")
 	execState.CorpusDir = filepath.Join(run.ArtifactDir, "corpus")
 	execState.CrashDir = filepath.Join(run.ArtifactDir, "crashes")
+	execState.DictionaryPath = filepath.Join(run.ArtifactDir, "dict.txt")
+	execState.CorpusManifestPath = filepath.Join(run.ArtifactDir, "corpus_manifest.json")
+	if strings.TrimSpace(execState.Profile) == "" {
+		execState.Profile = "smoke"
+	}
 	execState.MissingSettings = functionFuzzMissingCompileSettings(record)
 	execState.RecoveryNotes = functionFuzzCompileRecoveryNotes(cfg, run.Workspace, target, record)
 
@@ -9401,16 +9668,26 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 		setBlocked(err.Error())
 		return
 	}
+
+	if _, err := functionFuzzWriteDictionary(*run, execState.DictionaryPath); err != nil {
+		setBlocked(fmt.Sprintf("Failed to write source-derived dictionary: %v", err))
+		return
+	}
+	if _, statErr := os.Stat(execState.DictionaryPath); statErr != nil {
+		execState.DictionaryPath = ""
+	}
+
+	if err := functionFuzzWriteSeedCorpusWithProvenance(*run, execState.CorpusDir, execState.CorpusManifestPath, execState.DictionaryPath); err != nil {
+		setBlocked(fmt.Sprintf("Failed to seed corpus directory: %v", err))
+		return
+	}
+
 	runArgs := functionFuzzRunArgs(*run, execState)
 	execState.BuildArgv = append([]string{execState.CompilerResolvedPath}, buildArgs...)
 	execState.RunArgv = append([]string{execState.ExecutablePath}, runArgs...)
 	execState.BuildCommand = functionFuzzRenderDisplayCommand(execState.CompilerResolvedPath, buildArgs)
 	execState.RunCommand = functionFuzzRenderDisplayCommand(execState.ExecutablePath, runArgs)
 
-	if err := functionFuzzWriteSeedCorpus(execState.CorpusDir); err != nil {
-		setBlocked(fmt.Sprintf("Failed to seed corpus directory: %v", err))
-		return
-	}
 	if err := functionFuzzWriteRunnerScript(execState, buildArgs, runArgs); err != nil {
 		setBlocked(fmt.Sprintf("Failed to write PowerShell runner: %v", err))
 		return
@@ -9804,6 +10081,12 @@ func functionFuzzEnsureExecutionArtifactDirs(execState FunctionFuzzExecution) er
 		execState.CorpusDir,
 		execState.CrashDir,
 	}
+	if strings.TrimSpace(execState.DictionaryPath) != "" {
+		dirs = append(dirs, filepath.Dir(execState.DictionaryPath))
+	}
+	if strings.TrimSpace(execState.CorpusManifestPath) != "" {
+		dirs = append(dirs, filepath.Dir(execState.CorpusManifestPath))
+	}
 	for _, dir := range dirs {
 		if strings.TrimSpace(dir) == "" {
 			continue
@@ -9987,14 +10270,72 @@ func functionFuzzUniqueArgs(args []string) []string {
 }
 
 func functionFuzzRunArgs(run FunctionFuzzRun, execState FunctionFuzzExecution) []string {
-	return []string{
-		fmt.Sprintf("-max_total_time=%d", 20),
-		fmt.Sprintf("-max_len=%d", functionFuzzExecutionMaxLen(run.ParameterStrategies)),
-		"-timeout=5",
-		"-print_final_stats=1",
+	profile := strings.ToLower(strings.TrimSpace(execState.Profile))
+	if profile == "" {
+		profile = "smoke"
+	}
+	maxLen := functionFuzzExecutionMaxLen(run.ParameterStrategies)
+	artifactPrefix := "-artifact_prefix=" + filepath.Clean(execState.CrashDir) + string(os.PathSeparator)
+	dictArg := ""
+	if strings.TrimSpace(execState.DictionaryPath) != "" {
+		dictArg = "-dict=" + filepath.Clean(execState.DictionaryPath)
+	}
+	base := []string{
+		fmt.Sprintf("-max_len=%d", maxLen),
 		"-rss_limit_mb=4096",
-		"-artifact_prefix=" + filepath.Clean(execState.CrashDir) + string(os.PathSeparator),
-		execState.CorpusDir,
+		artifactPrefix,
+	}
+	if dictArg != "" {
+		base = append(base, dictArg)
+	}
+	switch profile {
+	case "extended":
+		args := append([]string{}, base...)
+		args = append(args,
+			"-max_total_time=600",
+			"-timeout=15",
+			"-print_final_stats=1",
+			"-print_corpus_stats=1",
+			"-ignore_crashes=1",
+			"-fork=2",
+		)
+		args = append(args, execState.CorpusDir)
+		return args
+	case "repro":
+		args := append([]string{}, base...)
+		args = append(args,
+			"-runs=1",
+			"-timeout=30",
+			"-error_exitcode=88",
+		)
+		if strings.TrimSpace(execState.CrashInputPath) != "" {
+			args = append(args, execState.CrashInputPath)
+		} else {
+			args = append(args, execState.CorpusDir)
+		}
+		return args
+	case "minimize":
+		args := append([]string{}, base...)
+		args = append(args,
+			"-minimize_crash=1",
+			"-runs=100000",
+			"-timeout=30",
+		)
+		if strings.TrimSpace(execState.CrashInputPath) != "" {
+			args = append(args, execState.CrashInputPath)
+		} else {
+			args = append(args, execState.CorpusDir)
+		}
+		return args
+	default:
+		args := append([]string{}, base...)
+		args = append(args,
+			"-max_total_time=20",
+			"-timeout=5",
+			"-print_final_stats=1",
+		)
+		args = append(args, execState.CorpusDir)
+		return args
 	}
 }
 
@@ -10013,28 +10354,6 @@ func functionFuzzExecutionMaxLen(items []FunctionFuzzParamStrategy) int {
 		}
 	}
 	return maxLen
-}
-
-func functionFuzzWriteSeedCorpus(corpusDir string) error {
-	if err := os.MkdirAll(corpusDir, 0o755); err != nil {
-		return err
-	}
-	seeds := map[string][]byte{
-		"seed-empty.bin":   {},
-		"seed-pattern.bin": {0x00, 0x01, 0x7f, 0x80, 0xff, 0x10, 0x20, 0x40},
-		"seed-structured.bin": {
-			0x04, 0x00, 0x00, 0x00,
-			0x10, 0x20, 0x30, 0x40,
-			0xff, 0xee, 0xdd, 0xcc,
-			0x00, 0x00, 0x00, 0x01,
-		},
-	}
-	for name, data := range seeds {
-		if err := os.WriteFile(filepath.Join(corpusDir, name), data, 0o644); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func functionFuzzWriteRunnerScript(execState FunctionFuzzExecution, buildArgs []string, runArgs []string) error {
