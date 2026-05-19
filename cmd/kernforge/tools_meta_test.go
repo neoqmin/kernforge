@@ -250,6 +250,17 @@ func TestApplyPatchExecuteDetailedReturnsChangedPathsMeta(t *testing.T) {
 	if toolMetaString(result.Meta, "effect") != "edit" {
 		t.Fatalf("expected edit effect, got %#v", result.Meta)
 	}
+	unifiedDiff := toolMetaString(result.Meta, "unified_diff")
+	for _, want := range []string{
+		"diff --git a/main.go b/main.go",
+		"--- a/main.go",
+		"+++ b/main.go",
+		"+func main() {}",
+	} {
+		if !strings.Contains(unifiedDiff, want) {
+			t.Fatalf("expected unified diff to contain %q, got %q", want, unifiedDiff)
+		}
+	}
 }
 
 func TestGitAddExecuteDetailedReturnsStructuredMeta(t *testing.T) {
