@@ -941,11 +941,6 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 						onTextDelta(deltaText)
 					} else if !sawToolCalls {
 						pendingText.WriteString(deltaText)
-						if shouldReleaseBufferedStreamText(pendingText.String()) {
-							onTextDelta(pendingText.String())
-							pendingText.Reset()
-							streamUnlocked = true
-						}
 					}
 				}
 			}

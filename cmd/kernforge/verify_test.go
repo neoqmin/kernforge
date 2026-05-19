@@ -236,6 +236,124 @@ func TestAutomaticVerificationPrefersSessionEditPathsOverDirtyGitWorktree(t *tes
 	}
 }
 
+func TestAutomaticVerificationSkipsGitFallbackForDocumentOnlyPatchTransaction(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := runGitCommand(ctx, root, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config user.email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	driverPath := filepath.Join(root, "drivers", "KernelDriver.cpp")
+	if err := os.MkdirAll(filepath.Dir(driverPath), 0o755); err != nil {
+		t.Fatalf("mkdir driver: %v", err)
+	}
+	if err := os.WriteFile(driverPath, []byte("int driver_before;\n"), 0o644); err != nil {
+		t.Fatalf("write driver: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "add", "drivers/KernelDriver.cpp"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if err := os.WriteFile(driverPath, []byte("int driver_after;\n"), 0o644); err != nil {
+		t.Fatalf("dirty driver: %v", err)
+	}
+
+	sess := &Session{
+		PatchTransactions: []PatchTransaction{{
+			ID:     "patch-doc",
+			Status: patchTransactionStatusCommitted,
+			Entries: []PatchTransactionEntry{{
+				ToolName: "write_file",
+				Status:   "success",
+				Paths: []PatchPathChange{{
+					Path:      "Tavern/BugReport.md",
+					Operation: "write_file",
+				}},
+			}},
+		}},
+	}
+	changed := collectAutomaticVerificationChangedPaths(DefaultConfig(root), root, sess)
+	if len(changed) != 0 {
+		t.Fatalf("document-only patch transaction should not fall back to unrelated dirty source paths, got %#v", changed)
+	}
+}
+
+func TestAutomaticVerificationPrefersActiveDocumentPatchOverArchivedCodePatch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := runGitCommand(ctx, root, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config user.email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	sourcePath := filepath.Join(root, "Tavern", "TavernWorker", "EngineBase.cpp")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("int before;\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "add", "Tavern/TavernWorker/EngineBase.cpp"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("int after;\n"), 0o644); err != nil {
+		t.Fatalf("dirty source: %v", err)
+	}
+
+	sess := &Session{
+		ActivePatchTransaction: &PatchTransaction{
+			ID:     "patch-active-doc",
+			Status: patchTransactionStatusActive,
+			Entries: []PatchTransactionEntry{{
+				ToolName: "replace_in_file",
+				Status:   "success",
+				Paths: []PatchPathChange{{
+					Path:      ".kernforge/reviews/bug-analysis-report.md",
+					Operation: "replace_in_file",
+				}},
+			}},
+		},
+		PatchTransactions: []PatchTransaction{{
+			ID:     "patch-stale-code",
+			Status: patchTransactionStatusCommitted,
+			Entries: []PatchTransactionEntry{{
+				ToolName: "apply_patch",
+				Status:   "success",
+				Paths: []PatchPathChange{{
+					Path:      "Tavern/TavernWorker/EngineBase.cpp",
+					Operation: "modify",
+				}},
+			}},
+		}},
+	}
+	changed := collectAutomaticVerificationChangedPaths(DefaultConfig(root), root, sess)
+	if len(changed) != 0 {
+		t.Fatalf("active document-only patch transaction should not verify stale archived or dirty code paths, got %#v", changed)
+	}
+}
+
 func TestSecurityVerificationDoesNotTreatUserModeProcessScannerAsDriverOrMemoryScan(t *testing.T) {
 	changed := []string{"SampleApp/SampleWorker/UnmountedProcessScanner.cpp"}
 	categories := classifySecurityVerificationCategories(changed)

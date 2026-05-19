@@ -1013,6 +1013,48 @@ func TestOpenAIClientSuppressesBufferedToolPreambleTextWhenToolCallsAppear(t *te
 	}
 }
 
+func TestOpenAIClientSuppressesLongBufferedToolPreambleTextWhenToolCallsAppear(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"I understand the system is deferring local tools, but this task is a local code review, so no external research is needed. Let me proceed with local inspection.\"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"list_files\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "lm-studio/qwen",
+		Messages: []Message{{
+			Role: "user",
+			Text: "각 파일들을 분석해서 문제점을 찾아서 별도 문서로 생성해",
+		}},
+		Tools: []ToolDefinition{{
+			Name: "list_files",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(deltas) != 0 {
+		t.Fatalf("expected long buffered tool preamble deltas to stay hidden, got %#v", deltas)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "list_files" {
+		t.Fatalf("expected streamed list_files tool call, got %#v", resp.Message.ToolCalls)
+	}
+}
+
 func TestOpenAIClientFlushesBufferedShortTextAtEndWhenNoToolCallArrives(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

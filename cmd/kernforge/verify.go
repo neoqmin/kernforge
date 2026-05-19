@@ -1157,9 +1157,13 @@ func collectVerificationChangedPaths(root string, sess *Session) []string {
 }
 
 func collectAutomaticVerificationChangedPaths(cfg Config, root string, sess *Session) []string {
-	sessionChanged := filterCodeLikePaths(collectRecentSessionChangedPaths(sess))
+	patchChanged := sessionPatchTransactionChangedPaths(sess)
+	if len(patchChanged) > 0 {
+		return filterCodeLikePaths(patchChanged)
+	}
+	sessionChanged := collectRecentSessionChangedPaths(sess)
 	if len(sessionChanged) > 0 {
-		return sessionChanged
+		return filterCodeLikePaths(sessionChanged)
 	}
 	return filterCodeLikePaths(collectGitChangedPaths(root))
 }

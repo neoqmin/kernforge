@@ -146,6 +146,25 @@ func TestNaturalLanguageReviewKeepsBugFindingWithoutFixAsReview(t *testing.T) {
 	}
 }
 
+func TestNaturalLanguageReviewSkipsSourceBugDocumentGeneration(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	if _, _, ok := rt.naturalLanguageReviewOptions(request, nil); ok {
+		t.Fatalf("source bug document generation should stay on normal agent path")
+	}
+	if looksLikeReviewBeforeFixIntent(request) {
+		t.Fatalf("source bug document generation should not run pre-fix review")
+	}
+	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+	if mode.ReadOnlyAnalysis || !mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
+		t.Fatalf("source bug document generation should be an editable artifact request, got %#v", mode)
+	}
+}
+
 func TestNaturalLanguageReviewSkipsNegatedReviewIntent(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "", "", "", "default")

@@ -229,6 +229,9 @@ func (rt *runtimeState) naturalLanguageReviewOptions(input string, images []Mess
 	if !hasNaturalReviewIntent(request) || hasNaturalReviewNegation(request) {
 		return ReviewHarnessOptions{}, nil, false
 	}
+	if looksLikeReviewArtifactAuthoringRequest(request) {
+		return ReviewHarnessOptions{}, nil, false
+	}
 	if looksLikeReviewBeforeFixIntent(request) {
 		return ReviewHarnessOptions{}, nil, false
 	}
@@ -310,10 +313,32 @@ func looksLikeReviewBeforeFixIntent(input string) bool {
 	if hasRepairActionNegation(lower) {
 		return false
 	}
+	if looksLikeReviewArtifactAuthoringRequest(lower) && !hasRepairActionIntent(lower) {
+		return false
+	}
 	if hasNaturalReviewIntent(lower) && hasRepairActionIntent(lower) {
 		return true
 	}
 	return looksLikeBugFindingFixIntent(lower)
+}
+
+func looksLikeReviewArtifactAuthoringRequest(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" || !looksLikeDocumentAuthoringIntent(lower) {
+		return false
+	}
+	hasAuditSignal := hasNaturalReviewIntent(lower) || containsAny(lower,
+		"analyze", "analyse", "analysis", "audit", "bug", "bugs", "defect", "defects", "inspect", "issue", "issues", "problem", "problems",
+		"검토", "리뷰", "분석", "감사", "문제", "문제점", "버그",
+	)
+	if !hasAuditSignal {
+		return false
+	}
+	return containsAny(lower,
+		"code", "file", "files", "source", "source code", "workspace",
+		"코드", "소스", "소스코드", "워크스페이스", "파일", "파일들",
+		"별도 문서", "문서로", "보고서로",
+	)
 }
 
 func hasRepairActionIntent(lower string) bool {

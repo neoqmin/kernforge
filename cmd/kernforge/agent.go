@@ -482,6 +482,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	manualEditHandoffRetries := 0
 	internalToolTranscriptFailureReplyRetries := 0
 	toolAvailabilityBlameReplyRetries := 0
+	localCodeToolAvailabilityBlameRetries := 0
 	abruptReplyRetries := 0
 	rawReviewResultReplyRetries := 0
 	finalAnswerReviewRevisions := 0
@@ -901,6 +902,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: toolAvailabilityAfterSkippedVerificationGuidance(a.Config),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				if localCodeToolPolicyForTurn &&
+					toolRegistryHasLocalInspectionTools(a.Tools) &&
+					replyBlamesLocalCodeToolAvailability(reply) &&
+					localCodeToolAvailabilityBlameRetries < 1 {
+					localCodeToolAvailabilityBlameRetries++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: localCodeToolAvailabilityBlameGuidance(a.Config),
 					})
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
@@ -1526,12 +1541,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					})
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
-				disabledTools["replace_in_file"] = true
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. Then build one narrow standalone apply_patch hunk anchored to exact current lines, including indentation and tabs. If the repair spans separate locations, submit only the first independent hunk and wait for the tool result before continuing. Do not broaden into a function rewrite or adjacent API redesign to recover from the mismatch. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
-				})
-				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response targeted stale file contents; retry from the next model turn.")
+				if readOnlyInspectionToolName(call.Name) {
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: "The last read-only inspection tool was blocked by editable ownership routing. This is not a stale patch problem. Retry the same local inspection without owner_node_id, or inspect the main workspace path directly with read_file, list_files, grep, git_status, or git_diff. Do not switch to web research, do not create a replacement report from partial evidence, and do not attempt an edit until local evidence reads succeed.",
+					})
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a read-only lookup was blocked by editable ownership routing; retry local inspection without owner_node_id from the next model turn.")
+				} else {
+					disabledTools["replace_in_file"] = true
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. Then build one narrow standalone apply_patch hunk anchored to exact current lines, including indentation and tabs. If the repair spans separate locations, submit only the first independent hunk and wait for the tool result before continuing. Do not broaden into a function rewrite or adjacent API redesign to recover from the mismatch. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
+					})
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response targeted stale file contents; retry from the next model turn.")
+				}
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -2051,6 +2074,93 @@ func toolAvailabilityAfterSkippedVerificationGuidance(cfg Config) string {
 	)
 }
 
+func toolRegistryHasLocalInspectionTools(registry *ToolRegistry) bool {
+	if registry == nil {
+		return false
+	}
+	for _, def := range registry.Definitions() {
+		switch strings.TrimSpace(def.Name) {
+		case "read_file", "list_files", "grep", "git_status", "git_diff":
+			return true
+		}
+	}
+	return false
+}
+
+func replyBlamesLocalCodeToolAvailability(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hasAvailabilityClaim := containsAny(lower,
+		"blocked by tool availability",
+		"tool availability/session error",
+		"tool availability error",
+		"not exposed in the callable tool namespace",
+		"enable/expose",
+		"local inspection tools are currently unavailable",
+		"local inspection/verification tools are currently returning",
+		"workspace tools are returning",
+		"cannot currently re-read",
+		"read-only analysis mode blocked",
+		"도구 가용성",
+		"도구를 사용할 수",
+		"노출되어 있지",
+		"워크스페이스 도구",
+		"읽기 전용 분석 모드",
+		"로컬 파일 분석 도구",
+		"로컬 검사 도구",
+		"로컬 도구",
+		"분석 모드 제한",
+	)
+	if !hasAvailabilityClaim {
+		return false
+	}
+	hasLocalToolClaim := containsAny(lower,
+		"read_file",
+		"list_files",
+		"grep",
+		"git_status",
+		"git_diff",
+		"local inspection",
+		"local file",
+		"workspace tool",
+		"로컬 파일",
+		"로컬 검사",
+		"로컬 도구",
+	)
+	hasWebOrPolicyClaim := containsAny(lower,
+		"web",
+		"mcp",
+		"browser",
+		"external research",
+		"read-only analysis",
+		"웹",
+		"외부 연구",
+		"외부 리서치",
+		"읽기 전용 분석",
+	)
+	hasBlockedClaim := containsAny(lower,
+		"blocked",
+		"unavailable",
+		"not exposed",
+		"cannot",
+		"차단",
+		"막혀",
+		"사용할 수",
+		"해제",
+		"허용 목록",
+	)
+	return hasLocalToolClaim && hasWebOrPolicyClaim && hasBlockedClaim
+}
+
+func localCodeToolAvailabilityBlameGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"Your previous answer treated the local-code web-research policy as a general tool outage. Do not ask the user to enable MCP/web tools. For local code review or repair, MCP web/search/browser tools may be blocked by design, but local inspection tools such as read_file, list_files, grep, git_status, and git_diff remain the correct path. Use those tools if more evidence is needed, or answer from already collected local evidence. If a specific local tool call actually failed, cite that exact tool error only.",
+		"이전 답변은 로컬 코드 작업의 웹 리서치 차단 정책을 전체 도구 장애처럼 잘못 해석했습니다. 사용자에게 MCP/web 도구를 활성화하라고 요구하지 마세요. 로컬 코드 리뷰/수정에서는 MCP web/search/browser 도구가 의도적으로 차단될 수 있지만 read_file, list_files, grep, git_status, git_diff 같은 로컬 검사 도구는 올바른 경로입니다. 근거가 더 필요하면 해당 로컬 도구를 사용하고, 이미 수집한 근거가 충분하면 그 근거로 답하세요. 특정 로컬 도구 호출이 실제로 실패한 경우에만 그 도구 이름과 정확한 오류를 인용하세요.",
+	)
+}
+
 func verificationFollowupBlockedGuidance(cfg Config) string {
 	return localizedText(cfg,
 		"A build, test, or verification command was already skipped or declined in this turn. Do not call run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, or check_shell_bundle for the same verification again unless the user explicitly approves verification. Use the existing code, diff, review, and tool-output evidence and provide the final answer now. State that verification was not run; do not describe it as a tool outage. Keep verification gaps separate from code findings: do not relabel resolved code-review findings as remaining bugs only because verification is missing.",
@@ -2326,9 +2436,21 @@ func isAssistantNarrationPreamble(text string) bool {
 	switch {
 	case strings.HasPrefix(lower, "let me "):
 		return true
+	case strings.HasPrefix(lower, "i understand "):
+		return true
 	case strings.HasPrefix(lower, "now let me "):
 		return true
 	case strings.HasPrefix(lower, "now i "):
+		return true
+	case strings.HasPrefix(lower, "the system is "):
+		return true
+	case strings.HasPrefix(lower, "there's a tool execution deadlock"):
+		return true
+	case strings.HasPrefix(lower, "there is a tool execution deadlock"):
+		return true
+	case strings.HasPrefix(lower, "i'm experiencing a tool execution deadlock"):
+		return true
+	case strings.HasPrefix(lower, "i am experiencing a tool execution deadlock"):
 		return true
 	case strings.HasPrefix(lower, "i'll "):
 		return true
@@ -3325,8 +3447,19 @@ func formatPreWriteReviewBlockedRetryGuidance(cfg Config, session *Session) stri
 
 func formatEditTargetMismatchLoopLimitReply(cfg Config, session *Session) string {
 	korean := localePrefersKorean(cfg)
+	lookupMismatch := sessionLastEditTargetMismatchWasLookup(session)
 	var b strings.Builder
-	if korean {
+	if korean && lookupMismatch {
+		b.WriteString("읽기 전용 조회 도구에서 editable ownership mismatch가 반복되어, 더 추측하며 진행하지 않고 중단했습니다.")
+		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
+		b.WriteString("\n- 원인: read_file/list_files/grep 같은 조회가 specialist 쓰기 소유권 라우팅에 묶였습니다. 이 문제는 stale patch 문제가 아닙니다.")
+		b.WriteString("\n- 다음 조건: owner_node_id 없이 같은 로컬 조회를 다시 실행하거나, main workspace 기준 경로를 직접 조회해야 합니다.")
+	} else if !korean && lookupMismatch {
+		b.WriteString("Read-only inspection tools repeatedly hit editable ownership routing, so I stopped instead of guessing from partial evidence.")
+		b.WriteString("\n\n- Result: no code changes were applied.")
+		b.WriteString("\n- Cause: read_file/list_files/grep was constrained by specialist edit ownership. This is not a stale patch problem.")
+		b.WriteString("\n- Next condition: retry the local lookup without owner_node_id, or inspect the main workspace path directly.")
+	} else if korean {
 		b.WriteString("파일 상태를 다시 확인한 뒤에도 edit target mismatch가 반복되어, 더 추측하며 진행하지 않고 중단했습니다.")
 		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
 		b.WriteString("\n- 원인: 마지막 patch가 현재 파일 내용에 고정되지 않았거나, 너무 넓은 rewrite 형태라 hunk를 안정적으로 맞출 수 없었습니다.")
@@ -3360,6 +3493,24 @@ func formatEditTargetMismatchLoopLimitReply(cfg Config, session *Session) string
 		b.WriteString(proposalText)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func sessionLastEditTargetMismatchWasLookup(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := session.Messages[i]
+		if msg.Role != "tool" || !msg.IsError {
+			continue
+		}
+		text := strings.ToLower(msg.Text)
+		if !strings.Contains(text, "outside editable ownership") && !strings.Contains(text, "edit target mismatch") {
+			continue
+		}
+		return readOnlyInspectionToolName(msg.ToolName)
+	}
+	return false
 }
 
 func formatBroadRecoveryPatchLoopLimitReply(cfg Config, session *Session) string {
@@ -5279,6 +5430,15 @@ func toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
 	}
 }
 
+func readOnlyInspectionToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle":
+		return true
+	default:
+		return false
+	}
+}
+
 func readOnlyAnalysisToolBlockedResult(cfg Config, call ToolCall) ToolExecutionResult {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
@@ -5770,7 +5930,10 @@ func requestLooksLikeLocalCodeWork(lowerLatestUser string) bool {
 	)
 	hasCodeAnalysisIntent := containsAny(lowerLatestUser, "code", "source code", "코드", "소스") &&
 		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "fix", "bug", "분석", "검토", "리뷰", "수정", "버그")
-	return (hasPathOrCodeToken && hasCodeIntent) || hasCodeAnalysisIntent
+	hasWorkspaceFileAuditIntent := containsAny(lowerLatestUser, "file", "files", "파일", "파일들") &&
+		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "problem", "problems", "issue", "issues", "bug", "bugs", "분석", "검토", "리뷰", "문제", "문제점", "버그") &&
+		containsAny(lowerLatestUser, "document", "report", "write-up", "writeup", "문서", "보고서", "정리")
+	return (hasPathOrCodeToken && hasCodeIntent) || hasCodeAnalysisIntent || hasWorkspaceFileAuditIntent
 }
 
 func requestLooksLikeLocalVerificationWork(lowerLatestUser string) bool {

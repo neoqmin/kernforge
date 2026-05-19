@@ -13,6 +13,33 @@ type EditRoutingRequest struct {
 	OwnerNodeID       string
 	ForLookup         bool
 	AllowBaseFallback bool
+	Intent            EditRoutingIntent
+}
+
+type EditRoutingIntent string
+
+const (
+	editRoutingIntentMutation EditRoutingIntent = "mutation"
+	editRoutingIntentLookup   EditRoutingIntent = "lookup"
+)
+
+func editRoutingIntentForLookup(forLookup bool) EditRoutingIntent {
+	if forLookup {
+		return editRoutingIntentLookup
+	}
+	return editRoutingIntentMutation
+}
+
+func (req EditRoutingRequest) normalized() EditRoutingRequest {
+	if req.Intent == "" {
+		req.Intent = editRoutingIntentForLookup(req.ForLookup)
+	}
+	req.ForLookup = req.Intent == editRoutingIntentLookup
+	return req
+}
+
+func (req EditRoutingRequest) lookupIntent() bool {
+	return req.normalized().Intent == editRoutingIntentLookup
 }
 
 type EditRoutingResult struct {
@@ -84,6 +111,14 @@ func (rt *runtimeState) resolveRoutableOwnerNodeID(ownerNodeID string) string {
 		return ""
 	}
 	return focused
+}
+
+func (rt *runtimeState) resolveEditRoutingOwnerNodeID(req EditRoutingRequest) string {
+	req = req.normalized()
+	if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) == "" {
+		return ""
+	}
+	return rt.resolveRoutableOwnerNodeID(req.OwnerNodeID)
 }
 
 func sessionOwnerNodeCanRouteExplicit(session *Session, ownerNodeID string) bool {
@@ -284,13 +319,14 @@ func (rt *runtimeState) ensureSpecialistWorktreeLease(nodeID string, assignment 
 }
 
 func (rt *runtimeState) resolveEditTarget(req EditRoutingRequest) (EditRoutingResult, error) {
+	req = req.normalized()
 	fallbackReq := req
 	fallbackReq.OwnerNodeID = ""
 	result, err := rt.workspace.resolveEditFallback(fallbackReq)
 	if err != nil {
 		return EditRoutingResult{}, err
 	}
-	ownerNodeID := rt.resolveRoutableOwnerNodeID(req.OwnerNodeID)
+	ownerNodeID := rt.resolveEditRoutingOwnerNodeID(req)
 	if ownerNodeID == "" {
 		return result, nil
 	}
@@ -300,19 +336,13 @@ func (rt *runtimeState) resolveEditTarget(req EditRoutingRequest) (EditRoutingRe
 		return result, nil
 	}
 	leasePaths := effectiveEditableLeasePaths(node, assignment.Profile)
-	explicitLeasePaths := normalizeTaskStateList(node.EditableLeasePaths, 32)
-	if req.ForLookup && len(leasePaths) > 0 {
+	if req.lookupIntent() && len(leasePaths) > 0 {
 		ownershipRoot := firstNonBlankString(result.DisplayRoot, rt.workspace.Root, rt.workspace.BaseRoot)
 		allowed, _, _, matchErr := editableOwnershipMatch(ownershipRoot, result.AbsolutePath, leasePaths)
 		if matchErr != nil {
 			return EditRoutingResult{}, matchErr
 		}
 		if !allowed {
-			if len(explicitLeasePaths) > 0 {
-				if err := enforceEditableOwnership(ownershipRoot, result.AbsolutePath, assignment.Profile.Name, leasePaths); err != nil {
-					return EditRoutingResult{}, err
-				}
-			}
 			return result, nil
 		}
 	}

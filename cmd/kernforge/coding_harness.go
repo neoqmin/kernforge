@@ -1290,14 +1290,17 @@ func sessionPatchTransactionChangedPaths(sess *Session) []string {
 	if sess == nil {
 		return nil
 	}
-	paths := make([]string, 0)
 	if sess.ActivePatchTransaction != nil {
-		paths = append(paths, sess.ActivePatchTransaction.ChangedPaths()...)
+		paths := sess.ActivePatchTransaction.ChangedPaths()
+		if len(paths) > 0 {
+			return normalizeTaskStateList(paths, 64)
+		}
+		return nil
 	}
 	if len(sess.PatchTransactions) > 0 {
-		paths = append(paths, sess.PatchTransactions[0].ChangedPaths()...)
+		return normalizeTaskStateList(sess.PatchTransactions[0].ChangedPaths(), 64)
 	}
-	return normalizeTaskStateList(paths, 64)
+	return nil
 }
 
 func hasPendingVerificationCheck(sess *Session) bool {
