@@ -676,6 +676,7 @@ func (t RunShellBundleBackgroundTool) Definition() ToolDefinition {
 					"items": map[string]any{"type": "string"},
 				},
 				"owner_node_id":     map[string]any{"type": "string"},
+				"workdir":           map[string]any{"type": "string"},
 				"verification_like": map[string]any{"type": "boolean"},
 			},
 			"required": []string{"commands"},
@@ -695,6 +696,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	}
 	commands := normalizeBackgroundCommandList(stringSliceValue(args, "commands"), 4)
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	workdir := strings.TrimSpace(stringValue(args, "workdir"))
 	verificationLike := boolValue(args, "verification_like", false)
 	if len(commands) == 0 {
 		return ToolExecutionResult{}, fmt.Errorf("commands are required")
@@ -705,11 +707,11 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	lines := make([]string, 0, len(commands)+3)
 	lines = append(lines, fmt.Sprintf("started background shell bundle with %d command(s)", len(commands)))
 	bundleJobs := make([]BackgroundShellJob, 0, len(commands))
-	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
+	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root)
+	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
 	for _, command := range commands {
 		assessment := assessShellCommandMutation(command)
 		if assessment.Class == shellMutationWorkspaceWrite {
@@ -734,11 +736,13 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			}
 		}
 		if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
-			"tool_name": "run_shell_bundle_background",
-			"tool_kind": "shell",
-			"command":   command,
-			"risk_tags": hookCommandRiskTags(command),
-			"file_tags": []string{},
+			"tool_name":     "run_shell_bundle_background",
+			"tool_kind":     "shell",
+			"command":       command,
+			"risk_tags":     hookCommandRiskTags(command),
+			"file_tags":     []string{},
+			"owner_node_id": effectiveOwnerNodeID,
+			"work_dir":      workDir,
 		}); err != nil {
 			return ToolExecutionResult{}, err
 		}
@@ -746,16 +750,18 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			return ToolExecutionResult{}, err
 		}
 		if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
-			if ownerNodeID != "" && reusable.OwnerNodeID == "" {
-				reusable.OwnerNodeID = ownerNodeID
+			if effectiveOwnerNodeID != "" && reusable.OwnerNodeID == "" {
+				reusable.OwnerNodeID = effectiveOwnerNodeID
 				t.ws.BackgroundJobs.session.UpsertBackgroundJob(reusable)
 			}
 			if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
-				"tool_name": "run_shell_bundle_background",
-				"tool_kind": "shell",
-				"command":   command,
-				"risk_tags": hookCommandRiskTags(command),
-				"output":    fmt.Sprintf("reused job=%s status=%s", reusable.ID, reusable.Status),
+				"tool_name":     "run_shell_bundle_background",
+				"tool_kind":     "shell",
+				"command":       command,
+				"risk_tags":     hookCommandRiskTags(command),
+				"output":        fmt.Sprintf("reused job=%s status=%s", reusable.ID, reusable.Status),
+				"owner_node_id": effectiveOwnerNodeID,
+				"work_dir":      workDir,
 			}); err != nil {
 				return ToolExecutionResult{}, err
 			}
@@ -763,16 +769,18 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			lines = append(lines, fmt.Sprintf("- reused %s [%s] %s", reusable.ID, reusable.Status, reusable.CommandSummary))
 			continue
 		}
-		job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, ownerNodeID)
+		job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, effectiveOwnerNodeID)
 		if err != nil {
 			return ToolExecutionResult{}, err
 		}
 		if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
-			"tool_name": "run_shell_bundle_background",
-			"tool_kind": "shell",
-			"command":   command,
-			"risk_tags": hookCommandRiskTags(command),
-			"output":    fmt.Sprintf("job=%s status=%s", job.ID, job.Status),
+			"tool_name":     "run_shell_bundle_background",
+			"tool_kind":     "shell",
+			"command":       command,
+			"risk_tags":     hookCommandRiskTags(command),
+			"output":        fmt.Sprintf("job=%s status=%s", job.ID, job.Status),
+			"owner_node_id": effectiveOwnerNodeID,
+			"work_dir":      workDir,
 		}); err != nil {
 			return ToolExecutionResult{}, err
 		}
@@ -797,7 +805,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			},
 		}, nil
 	}
-	bundle, err := t.ws.BackgroundJobs.RecordShellBundle(bundleJobs, ownerNodeID, BackgroundShellBundleOptions{
+	bundle, err := t.ws.BackgroundJobs.RecordShellBundle(bundleJobs, effectiveOwnerNodeID, BackgroundShellBundleOptions{
 		VerificationLike: verificationLike,
 	})
 	if err != nil {
@@ -813,6 +821,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			"plan_effect":       "progress",
 			"result_class":      "background_start",
 			"verification_like": bundle.VerificationLike,
+			"work_dir":          workDir,
 		}),
 	}, nil
 }
@@ -826,6 +835,7 @@ func (t RunBackgroundShellTool) Definition() ToolDefinition {
 			"properties": map[string]any{
 				"command":           map[string]any{"type": "string"},
 				"owner_node_id":     map[string]any{"type": "string"},
+				"workdir":           map[string]any{"type": "string"},
 				"verification_like": map[string]any{"type": "boolean"},
 			},
 			"required": []string{"command"},
@@ -845,6 +855,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	}
 	command := strings.TrimSpace(stringValue(args, "command"))
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	workdir := strings.TrimSpace(stringValue(args, "workdir"))
 	verificationLike := boolValue(args, "verification_like", false)
 	if command == "" {
 		return ToolExecutionResult{}, fmt.Errorf("command is required")
@@ -856,11 +867,11 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if assessment.Class == shellMutationWorkspaceWrite {
 		return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands")
 	}
-	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
+	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root)
+	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
 	if assessment.Class == shellMutationVerificationArtifacts {
 		ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
 			Mode:         VerificationAdaptive,
@@ -892,11 +903,13 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		}
 	}
 	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
-		"tool_name": "run_shell_background",
-		"tool_kind": "shell",
-		"command":   command,
-		"risk_tags": hookCommandRiskTags(command),
-		"file_tags": []string{},
+		"tool_name":     "run_shell_background",
+		"tool_kind":     "shell",
+		"command":       command,
+		"risk_tags":     hookCommandRiskTags(command),
+		"file_tags":     []string{},
+		"owner_node_id": effectiveOwnerNodeID,
+		"work_dir":      workDir,
 	}); err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -904,22 +917,24 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		return ToolExecutionResult{}, err
 	}
 	if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
-		if ownerNodeID != "" && reusable.OwnerNodeID == "" {
-			reusable.OwnerNodeID = ownerNodeID
+		if effectiveOwnerNodeID != "" && reusable.OwnerNodeID == "" {
+			reusable.OwnerNodeID = effectiveOwnerNodeID
 			t.ws.BackgroundJobs.session.UpsertBackgroundJob(reusable)
 		}
-		bundle, bundleErr := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{reusable}, ownerNodeID, BackgroundShellBundleOptions{
+		bundle, bundleErr := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{reusable}, effectiveOwnerNodeID, BackgroundShellBundleOptions{
 			VerificationLike: verificationLike,
 		})
 		if bundleErr != nil {
 			return ToolExecutionResult{}, bundleErr
 		}
 		if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
-			"tool_name": "run_shell_background",
-			"tool_kind": "shell",
-			"command":   command,
-			"risk_tags": hookCommandRiskTags(command),
-			"output":    fmt.Sprintf("reused job=%s status=%s", reusable.ID, reusable.Status),
+			"tool_name":     "run_shell_background",
+			"tool_kind":     "shell",
+			"command":       command,
+			"risk_tags":     hookCommandRiskTags(command),
+			"output":        fmt.Sprintf("reused job=%s status=%s", reusable.ID, reusable.Status),
+			"owner_node_id": effectiveOwnerNodeID,
+			"work_dir":      workDir,
 		}); err != nil {
 			return ToolExecutionResult{}, err
 		}
@@ -932,25 +947,28 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 				"plan_effect":       "progress",
 				"result_class":      "background_start",
 				"verification_like": bundle.VerificationLike,
+				"work_dir":          workDir,
 			}),
 		}, nil
 	}
-	job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, ownerNodeID)
+	job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, effectiveOwnerNodeID)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	bundle, err := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{job}, ownerNodeID, BackgroundShellBundleOptions{
+	bundle, err := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{job}, effectiveOwnerNodeID, BackgroundShellBundleOptions{
 		VerificationLike: verificationLike,
 	})
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
 	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
-		"tool_name": "run_shell_background",
-		"tool_kind": "shell",
-		"command":   command,
-		"risk_tags": hookCommandRiskTags(command),
-		"output":    fmt.Sprintf("job=%s status=%s", job.ID, job.Status),
+		"tool_name":     "run_shell_background",
+		"tool_kind":     "shell",
+		"command":       command,
+		"risk_tags":     hookCommandRiskTags(command),
+		"output":        fmt.Sprintf("job=%s status=%s", job.ID, job.Status),
+		"owner_node_id": effectiveOwnerNodeID,
+		"work_dir":      workDir,
 	}); err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -962,6 +980,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 			"plan_effect":       "progress",
 			"result_class":      "background_start",
 			"verification_like": bundle.VerificationLike,
+			"work_dir":          workDir,
 		}),
 	}, nil
 }
@@ -1368,6 +1387,9 @@ func buildBackgroundJobMeta(job BackgroundShellJob, bundle *BackgroundShellBundl
 	meta["job_status"] = job.Status
 	meta["command_summary"] = job.CommandSummary
 	meta["log_path"] = job.LogPath
+	if job.WorkDir != "" {
+		meta["work_dir"] = job.WorkDir
+	}
 	if job.MutationClass != "" {
 		meta["mutation_class"] = job.MutationClass
 	}

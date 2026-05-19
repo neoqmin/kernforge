@@ -407,6 +407,26 @@ func (w Workspace) ResolveShellWorkingDir(ownerNodeID string) (ShellRoutingResul
 	}, nil
 }
 
+func (w Workspace) ResolveShellWorkDir(ownerNodeID string, workdir string) (ShellRoutingResult, string, error) {
+	route, err := w.ResolveShellWorkingDir(ownerNodeID)
+	if err != nil {
+		return ShellRoutingResult{}, "", err
+	}
+	root := firstNonBlankString(route.Root, w.Root, w.BaseRoot)
+	if strings.TrimSpace(workdir) == "" {
+		return route, root, nil
+	}
+	resolved, err := w.resolveAgainstRoot(root, filepath.FromSlash(strings.TrimSpace(workdir)))
+	if err != nil {
+		return ShellRoutingResult{}, "", err
+	}
+	resolved, err = ensurePathWithinRoot(workdir, root, resolved)
+	if err != nil {
+		return ShellRoutingResult{}, "", err
+	}
+	return route, resolved, nil
+}
+
 func (w Workspace) ConfirmVerificationPlan(plan VerificationPlan) (bool, error) {
 	if w.ConfirmVerification == nil {
 		return true, nil
@@ -2225,6 +2245,7 @@ func (t RunShellTool) Definition() ToolDefinition {
 			"type": "object",
 			"properties": map[string]any{
 				"command":       map[string]any{"type": "string"},
+				"workdir":       map[string]any{"type": "string"},
 				"timeout_ms":    map[string]any{"type": "integer"},
 				"owner_node_id": map[string]any{"type": "string"},
 			},
@@ -2240,6 +2261,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	}
 	command := stringValue(args, "command")
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	workdir := strings.TrimSpace(stringValue(args, "workdir"))
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("command is required")
 	}
@@ -2252,11 +2274,11 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			return guidance, fmt.Errorf("run_shell command should use a dedicated workspace tool")
 		}
 	}
-	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
+	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
 	if err != nil {
 		return "", err
 	}
-	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root, t.ws.BaseRoot)
+	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
 	if assessment.Class == shellMutationWorkspaceWrite {
 		if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
 			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use apply_patch or apply_edit_proposal so edits stay reviewable (%s)", reason)
@@ -2298,7 +2320,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		"command":       command,
 		"risk_tags":     hookCommandRiskTags(command),
 		"file_tags":     []string{},
-		"owner_node_id": ownerNodeID,
+		"owner_node_id": effectiveOwnerNodeID,
 		"work_dir":      workDir,
 	}); err != nil {
 		return "", err
@@ -2323,7 +2345,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			"risk_tags":     hookCommandRiskTags(command),
 			"output":        text,
 			"error":         err.Error(),
-			"owner_node_id": ownerNodeID,
+			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
 		})
 		return text, err
@@ -2339,7 +2361,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			"risk_tags":     hookCommandRiskTags(command),
 			"output":        text,
 			"error":         workspaceErr.Error(),
-			"owner_node_id": ownerNodeID,
+			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
 		})
 		return text, workspaceErr
@@ -2350,7 +2372,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		"command":       command,
 		"risk_tags":     hookCommandRiskTags(command),
 		"output":        text,
-		"owner_node_id": ownerNodeID,
+		"owner_node_id": effectiveOwnerNodeID,
 		"work_dir":      workDir,
 	}); err != nil {
 		return "", err
@@ -2388,6 +2410,8 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 	}
 	command := stringValue(args, "command")
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	workdir := strings.TrimSpace(stringValue(args, "workdir"))
+	_, workDir, _ := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
 	assessment := assessShellCommandMutation(command)
 	text, err := t.Execute(ctx, input)
 	verificationLike := assessment.Class == shellMutationVerificationArtifacts || runShellOutputLooksLikeVerification(text) || runShellOutputLooksLikeSkippedVerification(text)
@@ -2396,6 +2420,7 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		"mutation_class":    string(assessment.Class),
 		"verification_like": verificationLike,
 		"owner_node_id":     ownerNodeID,
+		"work_dir":          workDir,
 		"changed_workspace": false,
 		"effect":            "execute",
 	}
