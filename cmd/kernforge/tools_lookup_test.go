@@ -475,6 +475,34 @@ func TestListFilesToolFallsBackToBaseRootWhenRelativePathMissingInCurrentDirecto
 	}
 }
 
+func TestListFilesToolReturnsFilePathWhenTargetIsFile(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "Tavern.cpp")
+	if err := os.WriteFile(target, []byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewListFilesTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path": "Tavern.cpp",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if strings.TrimSpace(result.DisplayText) != "Tavern.cpp" {
+		t.Fatalf("expected single file listing, got %q", result.DisplayText)
+	}
+	if toolMetaString(result.Meta, "path_type") != "file" {
+		t.Fatalf("expected path_type=file metadata, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "entry_count") != 1 {
+		t.Fatalf("expected entry_count=1, got %#v", result.Meta)
+	}
+}
+
 func TestWriteFileToolUpdatesFallbackTargetInsteadOfCreatingSiblingFile(t *testing.T) {
 	base := t.TempDir()
 	current := filepath.Join(base, "nested")

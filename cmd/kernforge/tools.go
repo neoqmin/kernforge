@@ -279,11 +279,12 @@ func (w Workspace) Resolve(path string) (string, error) {
 }
 
 func (w Workspace) resolveEditFallback(req EditRoutingRequest) (EditRoutingResult, error) {
+	req = req.normalized()
 	path := strings.TrimSpace(req.Path)
 	if path == "" {
 		path = "."
 	}
-	if !req.ForLookup {
+	if !req.lookupIntent() {
 		abs, err := w.resolveAgainstRoot(w.Root, path)
 		if err != nil {
 			return EditRoutingResult{}, err
@@ -371,6 +372,7 @@ func (w Workspace) ResolveEditPath(path string, ownerNodeID string, forLookup bo
 		Path:        path,
 		OwnerNodeID: ownerNodeID,
 		ForLookup:   forLookup,
+		Intent:      editRoutingIntentForLookup(forLookup),
 	}
 	if w.ResolveEditTarget != nil {
 		return w.ResolveEditTarget(req)
@@ -378,7 +380,17 @@ func (w Workspace) ResolveEditPath(path string, ownerNodeID string, forLookup bo
 	return w.resolveEditFallback(req)
 }
 
+func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRoutingResult, error) {
+	return w.ResolveEditPathWithOptions(EditRoutingRequest{
+		Path:        path,
+		OwnerNodeID: ownerNodeID,
+		ForLookup:   true,
+		Intent:      editRoutingIntentLookup,
+	})
+}
+
 func (w Workspace) ResolveEditPathWithOptions(req EditRoutingRequest) (EditRoutingResult, error) {
+	req = req.normalized()
 	if w.ResolveEditTarget != nil {
 		return w.ResolveEditTarget(req)
 	}
@@ -946,7 +958,7 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		return ToolExecutionResult{}, err
 	}
 	ownerNodeID := stringValue(args, "owner_node_id")
-	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
+	route, err := t.ws.ResolveLookupPath(stringValue(args, "path"), ownerNodeID)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -957,6 +969,22 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	}
 	recursive := boolValue(args, "recursive", false)
 	maxEntries := intValue(args, "max_entries", 200)
+	if info, err := os.Stat(root); err != nil {
+		return ToolExecutionResult{}, err
+	} else if !info.IsDir() {
+		displayPath := relOrAbs(displayRoot, root)
+		return ToolExecutionResult{
+			DisplayText: displayPath,
+			Meta: map[string]any{
+				"path":        displayPath,
+				"path_type":   "file",
+				"recursive":   recursive,
+				"max_entries": maxEntries,
+				"entry_count": 1,
+				"truncated":   false,
+			},
+		}, nil
+	}
 	var lines []string
 	if recursive {
 		stop := fmt.Errorf("max entries reached")
@@ -1097,7 +1125,7 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		return ToolExecutionResult{}, err
 	}
 	ownerNodeID := stringValue(args, "owner_node_id")
-	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
+	route, err := t.ws.ResolveLookupPath(stringValue(args, "path"), ownerNodeID)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -1613,7 +1641,7 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 		return ToolExecutionResult{}, err
 	}
 	ownerNodeID := stringValue(args, "owner_node_id")
-	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
+	route, err := t.ws.ResolveLookupPath(stringValue(args, "path"), ownerNodeID)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}

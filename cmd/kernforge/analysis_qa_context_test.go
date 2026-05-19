@@ -112,6 +112,20 @@ func TestDriverStructureQuestionIsAnalysisOnlyProjectKnowledge(t *testing.T) {
 	}
 }
 
+func TestKoreanDocumentGenerationRequestIsWriteIntent(t *testing.T) {
+	query := "각 파일들을 분석해서 문제점을 찾아서 별도 문서로 생성해"
+	if got := classifyTurnIntent(query); got != TurnIntentEditCode {
+		t.Fatalf("expected document generation to be an edit/write intent, got %s", got)
+	}
+	if prefersReadOnlyAnalysisIntent(query) {
+		t.Fatalf("document generation request must not be read-only analysis")
+	}
+	mode := resolveAgentRequestMode(query, classifyTurnIntent(query))
+	if mode.ReadOnlyAnalysis || !mode.ExplicitEditRequest {
+		t.Fatalf("expected editable request mode for document generation, got %#v", mode)
+	}
+}
+
 func TestDeepProjectAnalysisContextReinjectsAfterFailedUserTurn(t *testing.T) {
 	root := t.TempDir()
 	query := "이 드라이버 프로젝트 전체 구조를 자세히 설명해줘"

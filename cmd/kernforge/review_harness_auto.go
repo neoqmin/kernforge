@@ -24,7 +24,14 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 	if strings.TrimSpace(root) == "" {
 		return false, false, "", "", nil
 	}
-	if len(autoReviewChangedPaths(a.Session, root)) == 0 {
+	changedPaths := autoReviewChangedPaths(a.Session, root)
+	if len(changedPaths) == 0 {
+		return false, false, "", "", nil
+	}
+	if skipRequest := postChangeGeneratedDocumentArtifactRequest(a.Session, request, changedPaths); skipRequest != "" {
+		if a.EmitProgress != nil {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Skipping automatic post-change review because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 자동 변경 후 리뷰를 건너뜁니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다."))
+		}
 		return false, false, "", "", nil
 	}
 	if a.Session.LastReviewRun != nil &&
@@ -40,16 +47,17 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		if !needsRevision {
 			return false, false, "", lastFingerprint, nil
 		}
-		return true, true, formatPostChangeReviewFeedback(cachedRun, true), lastFingerprint, nil
+		return true, true, formatPostChangeReviewFeedback(a.Config, cachedRun, true), lastFingerprint, nil
 	}
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedText(a.Config, "Running automatic post-change review...", "자동 변경 후 리뷰를 실행합니다..."))
+		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic post-change review...", "자동 변경 후 리뷰를 실행합니다..."))
 	}
 	rt := a.reviewHarnessRuntime(root)
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
 		Trigger:         "post_change",
 		Target:          reviewTargetChange,
 		Request:         request,
+		Paths:           append([]string(nil), changedPaths...),
 		IncludeGitDiff:  true,
 		NoModel:         !reviewHarnessHasConfiguredModelRoute(a),
 		AutoTriggered:   true,
@@ -63,7 +71,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 	needsRevision := run.Gate.Verdict == reviewVerdictNeedsRevision ||
 		run.Gate.Verdict == reviewVerdictBlocked ||
 		run.Gate.Verdict == reviewVerdictInsufficientEvidence
-	feedback := formatPostChangeReviewFeedback(run, needsRevision)
+	feedback := formatPostChangeReviewFeedback(a.Config, run, needsRevision)
 	return true, needsRevision, feedback, fingerprint, nil
 }
 
@@ -94,7 +102,16 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	if diff == "" {
 		return nil
 	}
+	if paths := preWritePreviewCurrentEditPaths(preview); len(paths) > 0 {
+		preview.Paths = paths
+	}
 	request := preWriteReviewUserRequest(a.Session)
+	if skipRequest := preWriteGeneratedDocumentArtifactRequest(a.Session, preview, request); skipRequest != "" {
+		if a.EmitProgress != nil {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Skipping blocking pre-write review for generated document artifact; artifact quality checks will validate the saved report after writing.", "생성 문서 산출물은 차단형 쓰기 전 리뷰를 건너뜁니다. 저장 후 산출물 품질 검사로 보고서를 확인합니다."))
+		}
+		return nil
+	}
 	root := workspaceSnapshotRoot(a.Workspace)
 	if strings.TrimSpace(root) == "" {
 		root = a.Workspace.Root
@@ -178,6 +195,246 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, true))
 	}
 	return nil
+}
+
+func preWritePreviewLooksLikeGeneratedDocumentArtifact(preview EditPreview, request string) bool {
+	return preWriteGeneratedDocumentArtifactRequest(nil, preview, request) != ""
+}
+
+func preWriteGeneratedDocumentArtifactRequest(session *Session, preview EditPreview, request string) string {
+	contextRequest := generatedDocumentArtifactRequestContext(session, request)
+	if contextRequest == "" {
+		return ""
+	}
+	paths := preWritePreviewDocumentArtifactPaths(preview)
+	if len(paths) == 0 {
+		return ""
+	}
+	for _, path := range paths {
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+			return ""
+		}
+	}
+	return contextRequest
+}
+
+func preWriteRequestLooksLikeGeneratedDocumentArtifact(request string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))
+	if lower == "" {
+		return false
+	}
+	if looksLikeReviewArtifactAuthoringRequest(lower) {
+		return true
+	}
+	return looksLikeDocumentAuthoringIntent(lower) && requestLooksLikeLocalCodeWork(lower)
+}
+
+func preWritePreviewDocumentArtifactPaths(preview EditPreview) []string {
+	return preWritePreviewCurrentEditPaths(preview)
+}
+
+func preWritePreviewCurrentEditPaths(preview EditPreview) []string {
+	if paths := preWritePreviewProposalPaths(preview.Proposals); len(paths) > 0 {
+		return paths
+	}
+	if paths := preWritePreviewPathsFromText(preview.Preview); len(paths) > 0 {
+		return paths
+	}
+	return normalizeEditProposalPathList(preview.Paths, 0)
+}
+
+func preWritePreviewProposalPaths(proposals []EditProposal) []string {
+	proposals = normalizeEditProposals(proposals)
+	pathSet := map[string]struct{}{}
+	for _, proposal := range proposals {
+		if strings.TrimSpace(proposal.File) != "" {
+			pathSet[normalizeSessionRelativePath(proposal.File)] = struct{}{}
+		}
+		for _, file := range proposal.Files {
+			if strings.TrimSpace(file) != "" {
+				pathSet[normalizeSessionRelativePath(file)] = struct{}{}
+			}
+		}
+	}
+	var paths []string
+	for path := range pathSet {
+		paths = append(paths, path)
+	}
+	return uniqueStrings(paths)
+}
+
+func preWritePreviewPathsFromText(text string) []string {
+	var paths []string
+	appendPath := func(raw string) {
+		path := preWritePreviewCleanPathToken(raw)
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "Preview for "):
+			appendPath(strings.TrimSpace(strings.TrimPrefix(trimmed, "Preview for ")))
+		case strings.HasPrefix(trimmed, "*** Add File: "):
+			appendPath(strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Add File: ")))
+		case strings.HasPrefix(trimmed, "*** Update File: "):
+			appendPath(strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Update File: ")))
+		case strings.HasPrefix(trimmed, "*** Delete File: "):
+			appendPath(strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Delete File: ")))
+		case strings.HasPrefix(trimmed, "diff --git "):
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 4 {
+				appendPath(fields[2])
+				appendPath(fields[3])
+			}
+		case strings.HasPrefix(trimmed, "--- "):
+			appendPath(strings.TrimSpace(strings.TrimPrefix(trimmed, "--- ")))
+		case strings.HasPrefix(trimmed, "+++ "):
+			appendPath(strings.TrimSpace(strings.TrimPrefix(trimmed, "+++ ")))
+		}
+	}
+	return uniqueStrings(paths)
+}
+
+func preWritePreviewCleanPathToken(raw string) string {
+	token := strings.TrimSpace(raw)
+	token = strings.Trim(token, "\"'")
+	if token == "" {
+		return ""
+	}
+	if tab := strings.IndexByte(token, '\t'); tab >= 0 {
+		token = strings.TrimSpace(token[:tab])
+	}
+	if preWritePreviewIsNullDiffPath(token) {
+		return ""
+	}
+	for _, prefix := range []string{"a/", "b/", "before/", "after/"} {
+		token = strings.TrimPrefix(token, prefix)
+	}
+	token = preWritePreviewStripLineRangeSuffix(token)
+	if token == "" || preWritePreviewIsNullDiffPath(token) {
+		return ""
+	}
+	return normalizeSessionRelativePath(token)
+}
+
+func preWritePreviewIsNullDiffPath(path string) bool {
+	return strings.EqualFold(strings.TrimSpace(path), "/dev/null") ||
+		strings.EqualFold(strings.TrimSpace(path), "NUL")
+}
+
+func preWritePreviewStripLineRangeSuffix(path string) string {
+	idx := strings.LastIndex(path, ":")
+	if idx < 0 || idx == len(path)-1 {
+		return path
+	}
+	suffix := path[idx+1:]
+	if !preWritePreviewLooksLikeLineRange(suffix) {
+		return path
+	}
+	return path[:idx]
+}
+
+func preWritePreviewLooksLikeLineRange(suffix string) bool {
+	if suffix == "" {
+		return false
+	}
+	parts := strings.Split(suffix, "-")
+	if len(parts) > 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func preWritePathLooksLikeGeneratedDocumentArtifact(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return false
+	}
+	if isCodeLikePath(trimmed) {
+		return false
+	}
+	return pathLooksLikeDocumentArtifact(trimmed)
+}
+
+func postChangeReviewShouldSkipGeneratedDocumentArtifact(request string, changedPaths []string) bool {
+	return postChangeGeneratedDocumentArtifactRequest(nil, request, changedPaths) != ""
+}
+
+func postChangeGeneratedDocumentArtifactRequest(session *Session, request string, changedPaths []string) string {
+	contextRequest := generatedDocumentArtifactRequestContext(session, request)
+	if contextRequest == "" {
+		return ""
+	}
+	paths := normalizeTaskStateList(changedPaths, 64)
+	if len(paths) == 0 {
+		return ""
+	}
+	for _, path := range paths {
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+			return ""
+		}
+	}
+	return contextRequest
+}
+
+func generatedDocumentArtifactRequestContext(session *Session, request string) string {
+	for _, text := range generatedDocumentArtifactRequestCandidates(session, request) {
+		if preWriteRequestLooksLikeGeneratedDocumentArtifact(text) {
+			return text
+		}
+	}
+	return ""
+}
+
+func generatedDocumentArtifactRequestCandidates(session *Session, request string) []string {
+	var candidates []string
+	appendCandidate := func(text string) {
+		text = strings.TrimSpace(baseUserQueryText(text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			return
+		}
+		candidates = append(candidates, text)
+	}
+	appendCandidate(request)
+	if session == nil {
+		return uniqueStrings(candidates)
+	}
+	appendCandidate(preWriteReviewLastReviewRequest(session))
+	if session.AcceptanceContract != nil {
+		appendCandidate(session.AcceptanceContract.SourcePrompt)
+	}
+	if session.TaskState != nil {
+		appendCandidate(session.TaskState.Goal)
+	}
+	if session.ActivePatchTransaction != nil {
+		appendCandidate(session.ActivePatchTransaction.Goal)
+	}
+	for i, tx := range session.PatchTransactions {
+		if i >= 4 {
+			break
+		}
+		appendCandidate(tx.Goal)
+	}
+	for i := len(session.Messages) - 1; i >= 0 && len(candidates) < 12; i-- {
+		msg := session.Messages[i]
+		if !strings.EqualFold(msg.Role, "user") {
+			continue
+		}
+		appendCandidate(msg.Text)
+	}
+	return uniqueStrings(candidates)
 }
 
 func preWriteReviewUserRequest(session *Session) string {
@@ -513,7 +770,7 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	reviewed, needsRevision, reviewFeedback, fingerprint, err := a.maybeRunPostChangeReview(ctx, request, *lastFingerprint)
 	if err != nil {
 		if a.EmitProgress != nil {
-			a.EmitProgress("Automatic post-change review failed: " + err.Error())
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review failed: ", "자동 변경 후 리뷰 실패: ") + err.Error())
 		}
 		return false, nil
 	}
@@ -523,9 +780,9 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	*lastFingerprint = fingerprint
 	if a.EmitProgress != nil {
 		if needsRevision {
-			a.EmitProgress("Automatic post-change review found blockers. Asking the model to revise...")
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review found blockers. Asking the model to revise...", "자동 변경 후 리뷰에서 차단 항목을 발견했습니다. 모델에 수정안을 다시 요청합니다..."))
 		} else {
-			a.EmitProgress("Automatic post-change review completed.")
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review completed.", "자동 변경 후 리뷰가 완료되었습니다."))
 		}
 	}
 	if needsRevision && *revisionCount < configReviewHarness(a.Config).AutoRepairMaxRounds {
@@ -543,9 +800,12 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	}
 	if needsRevision && !*exhaustedNudge {
 		*exhaustedNudge = true
+		exhaustedInstruction := localizedTextForReviewRequest(a.Config, request,
+			"Automatic post-change review still has blockers, but the automatic repair limit is exhausted. Do not claim completion. Provide the final answer as blocked or incomplete, cite the review gate, and list the exact remaining actions.",
+			"자동 변경 후 리뷰에 아직 차단 항목이 있지만 자동 수정 한도에 도달했습니다. 완료됐다고 주장하지 말고, 최종 답변에서 차단 또는 미완료 상태를 명시하고 리뷰 게이트와 남은 조치를 정확히 나열하세요.")
 		a.Session.AddMessage(Message{
 			Role: "user",
-			Text: reviewFeedback + "\n\nAutomatic post-change review still has blockers, but the automatic repair limit is exhausted. Do not claim completion. Provide the final answer as blocked or incomplete, cite the review gate, and list the exact remaining actions.",
+			Text: reviewFeedback + "\n\n" + exhaustedInstruction,
 		})
 		if a.Store != nil {
 			if err := a.Store.Save(a.Session); err != nil {
@@ -695,47 +955,69 @@ func reviewHarnessCanUseAnyModel(a *Agent) bool {
 }
 
 func autoReviewChangedPaths(session *Session, root string) []string {
-	var paths []string
-	paths = append(paths, sessionPatchTransactionChangedPaths(session)...)
-	paths = append(paths, filterReviewablePaths(delegationChangedFiles(root))...)
-	return normalizeTaskStateList(paths, 128)
+	paths := sessionPatchTransactionChangedPaths(session)
+	if len(paths) > 0 {
+		return normalizeTaskStateList(paths, 128)
+	}
+	return normalizeTaskStateList(filterReviewablePaths(delegationChangedFiles(root)), 128)
 }
 
-func formatPostChangeReviewFeedback(run ReviewRun, needsRevision bool) string {
+func formatPostChangeReviewFeedback(cfg Config, run ReviewRun, needsRevision bool) string {
+	korean := reviewRunPrefersKorean(cfg, run)
 	var b strings.Builder
 	if needsRevision {
-		b.WriteString("Automatic post-change review found blockers. Fix them before final answer.")
+		if korean {
+			b.WriteString("자동 변경 후 리뷰가 차단 항목을 발견했습니다. 최종 답변 전에 수정하세요.")
+		} else {
+			b.WriteString("Automatic post-change review found blockers. Fix them before final answer.")
+		}
 	} else {
-		b.WriteString("Automatic post-change review completed.")
+		if korean {
+			b.WriteString("자동 변경 후 리뷰가 완료되었습니다.")
+		} else {
+			b.WriteString("Automatic post-change review completed.")
+		}
 	}
-	fmt.Fprintf(&b, "\n\nReview gate: %s", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	fmt.Fprintf(&b, "\n\n%s: %s", reviewRunLocalizedText(cfg, run, "Review gate", "검토 게이트"), valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
 	if strings.TrimSpace(run.MachineStatus) != "" {
 		fmt.Fprintf(&b, " (%s)", run.MachineStatus)
 	}
 	if strings.TrimSpace(run.Result.Summary) != "" {
-		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
+		fmt.Fprintf(&b, "\n%s: %s", reviewRunLocalizedText(cfg, run, "Summary", "요약"), run.Result.Summary)
 	}
 	if needsRevision {
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
 			b.WriteString("\n\n")
 			b.WriteString(run.RepairPlan.Prompt)
 		} else {
-			b.WriteString("\n\nInline review findings:\n")
-			b.WriteString(renderReviewInlineFindings(run, true))
+			if korean {
+				b.WriteString("\n\n인라인 리뷰 finding:\n")
+				b.WriteString(renderReviewInlineFindingsLocalized(run, true, true))
+			} else {
+				b.WriteString("\n\nInline review findings:\n")
+				b.WriteString(renderReviewInlineFindings(run, true))
+			}
 		}
-		b.WriteString("\n\nImplementation rules:\n")
-		b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
-		b.WriteString("- Revise only the changed code needed to satisfy the review gate.\n")
-		b.WriteString("- Run focused verification when the finding asks for it.")
+		if korean {
+			b.WriteString("\n\n구현 규칙:\n")
+			b.WriteString("- 리뷰 artifact 파일을 다시 읽지 마세요. 필요한 리뷰 지침은 여기 모두 포함되어 있습니다.\n")
+			b.WriteString("- 리뷰 게이트를 만족하는 데 필요한 변경 코드만 수정하세요.\n")
+			b.WriteString("- finding이 요구하면 집중 검증을 실행하세요.")
+		} else {
+			b.WriteString("\n\nImplementation rules:\n")
+			b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
+			b.WriteString("- Revise only the changed code needed to satisfy the review gate.\n")
+			b.WriteString("- Run focused verification when the finding asks for it.")
+		}
 		return strings.TrimSpace(b.String())
 	}
 	if len(run.Gate.WarningFindings) > 0 {
-		fmt.Fprintf(&b, "\nWarnings: %d", len(run.Gate.WarningFindings))
+		fmt.Fprintf(&b, "\n%s: %d", reviewRunLocalizedText(cfg, run, "Warnings", "경고"), len(run.Gate.WarningFindings))
 	}
 	if len(run.Gate.NextCommands) > 0 {
 		next := run.Gate.NextCommands[0]
 		if strings.TrimSpace(next.Command) != "" {
-			fmt.Fprintf(&b, "\nNext: %s", next.Command)
+			fmt.Fprintf(&b, "\n%s: %s", reviewRunLocalizedText(cfg, run, "Next", "다음"), next.Command)
 			if strings.TrimSpace(next.Reason) != "" {
 				fmt.Fprintf(&b, " (%s)", next.Reason)
 			}

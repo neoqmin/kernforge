@@ -2552,6 +2552,15 @@ func TestSanitizeAssistantMessageTextKeepsSubstantiveToolPlan(t *testing.T) {
 	}
 }
 
+func TestSanitizeAssistantMessageTextRemovesToolDeadlockNarration(t *testing.T) {
+	text := "There's a tool execution deadlock: the system requires web research before local inspection. Let me try reading files directly."
+
+	got := sanitizeAssistantMessageText(text, true)
+	if got != "" {
+		t.Fatalf("expected tool deadlock narration to be dropped, got %q", got)
+	}
+}
+
 func TestSanitizeAssistantMessageTextRemovesKoreanToolPreambleNarration(t *testing.T) {
 	text := "이제 템플릿 파일을 확인하겠습니다.\n먼저 main.py를 수정하겠습니다."
 
@@ -5310,6 +5319,66 @@ func TestLocalCodeToolPolicyAllowsCurrentRepairContinuation(t *testing.T) {
 	}
 }
 
+func TestLocalCodeToolPolicyCoversWorkspaceFileProblemReport(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "각 파일들을 분석해서 문제점을 찾아서 별도 문서로 생성해"})
+
+	if !shouldUseLocalCodeToolPolicy(session) {
+		t.Fatalf("workspace file problem report should keep local-code policy")
+	}
+}
+
+func TestAgentHidesWebResearchForWorkspaceFileProblemReport(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "Sample.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			{Message: Message{Role: "assistant", Text: "로컬 파일 목록을 기준으로 문서 생성을 계속합니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewListFilesTool(ws), NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		MCP: &MCPManager{
+			servers: []*MCPClient{{
+				config: MCPServerConfig{Name: "web_research"},
+				tools: []MCPToolDescriptor{{
+					Name:        "search_web",
+					Description: "Search the web for current articles and references",
+				}},
+			}},
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 파일들을 분석해서 문제점을 찾아서 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 파일") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("workspace file problem report should not execute web research, got %d calls", webTool.calls)
+	}
+	if len(provider.requests) == 0 || chatRequestHasTool(provider.requests[0], "mcp__web_research__search_web") {
+		t.Fatalf("workspace file problem report should hide web research tools")
+	}
+}
+
 func TestAgentRetriesFinalReplyThatBlamesSkippedVerificationOnToolAvailability(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
@@ -5469,6 +5538,57 @@ func TestAgentDoesNotRewriteToolAvailabilityReplyAsSkippedVerificationWithoutSki
 		if msg.Role == "user" && strings.Contains(msg.Text, "검증 생략 상태") {
 			t.Fatalf("unexpected skipped-verification guidance without skipped verification: %#v", msg)
 		}
+	}
+}
+
+func TestAgentRetriesLocalCodeToolAvailabilityBlameWhenInspectionToolsExist(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "현재 읽기 전용 분석 모드에서 외부 웹 연구 도구가 차단되어 있으며, 이로 인해 로컬 파일 분석 도구도 함께 차단된 상태입니다.\n\n해결 방안: MCP web-research 도구를 허용 목록에 추가해야 합니다."}},
+			{Message: Message{Role: "assistant", Text: "로컬 검사 도구로 계속 진행할 수 있습니다. 웹 리서치 활성화는 필요하지 않습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewListFilesTool(ws), NewGrepTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp 코드가 왜 실패하는지 분석해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "허용 목록") || strings.Contains(strings.ToLower(reply), "web-research") {
+		t.Fatalf("local-code tool availability blame leaked to final reply: %q", reply)
+	}
+	if !strings.Contains(reply, "로컬 검사 도구") {
+		t.Fatalf("expected corrected local inspection reply, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one retry after local-code tool availability blame, got %d requests", len(provider.requests))
+	}
+	guidance := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if guidance.Role != "user" ||
+		!strings.Contains(guidance.Text, "전체 도구 장애") ||
+		!strings.Contains(guidance.Text, "read_file") {
+		t.Fatalf("expected local-code tool availability guidance, got %#v", guidance)
 	}
 }
 
@@ -7176,6 +7296,26 @@ func TestEditTargetMismatchLoopLimitShowsPreWriteBlocker(t *testing.T) {
 		!strings.Contains(reply, "RF-001") ||
 		!strings.Contains(reply, "Dynamic buffer repair evidence is missing") {
 		t.Fatalf("expected mismatch stop reply to surface the pre-write blocker, got %q", reply)
+	}
+}
+
+func TestEditTargetMismatchLoopLimitDistinguishesLookupOwnership(t *testing.T) {
+	session := &Session{
+		Messages: []Message{
+			{
+				Role:     "tool",
+				ToolName: "list_files",
+				Text:     "edit target mismatch: path . is outside editable ownership for specialist driver-build-fixer",
+				IsError:  true,
+			},
+		},
+	}
+	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session)
+	if !strings.Contains(reply, "Read-only inspection tools") {
+		t.Fatalf("expected lookup ownership wording, got %q", reply)
+	}
+	if strings.Contains(reply, "stale patch problem") && strings.Contains(reply, "latest patch was not anchored") {
+		t.Fatalf("lookup ownership mismatch should not be described as stale patch anchoring, got %q", reply)
 	}
 }
 

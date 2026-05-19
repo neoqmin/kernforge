@@ -1046,8 +1046,8 @@ func looksLikeActionOrToolIntent(text string) bool {
 		return false
 	}
 	return containsAny(lower,
-		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
-		"리뷰", "검토", "고쳐", "구현", "만들", "변경", "빌드", "삭제", "수정", "실행", "적용", "작성", "추가", "테스트", "패치",
+		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "draft ", "edit ", "fix ", "generate ", "implement ", "modify ", "patch ", "prepare ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
+		"리뷰", "검토", "고쳐", "구현", "만들", "변경", "빌드", "삭제", "생성", "수정", "실행", "적용", "작성", "저장", "추가", "테스트", "패치",
 	)
 }
 
@@ -1089,8 +1089,8 @@ func looksLikeExplicitEditIntent(text string) bool {
 		return false
 	}
 	return containsAny(lower,
-		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
-		"고쳐", "구현", "만들", "변경", "빌드", "삭제", "수정", "실행", "적용", "작성", "추가", "테스트", "패치",
+		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "draft ", "edit ", "fix ", "generate ", "implement ", "modify ", "patch ", "prepare ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
+		"고쳐", "구현", "만들", "변경", "빌드", "삭제", "생성", "수정", "실행", "적용", "작성", "저장", "추가", "테스트", "패치",
 	)
 }
 

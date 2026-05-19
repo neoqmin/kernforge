@@ -276,6 +276,263 @@ func TestPostChangeReviewRunsAfterEditWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestPostChangeReviewSkipsGeneratedDocumentArtifact(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify unrelated dirty source: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "버그_검토_보고서.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this review should not run for generated report artifacts",
+			"severity: high",
+			"category: correctness",
+			"path: main.cpp",
+			"title: should not inspect unrelated source",
+			"evidence: generated report post-change review should be skipped",
+			"required_fix: do not call the reviewer",
+		}, "\n")},
+	}}}
+	var progress []string
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[0].Text, "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if reviewed || needsRevision || feedback != "" || fingerprint != "" {
+		t.Fatalf("expected generated document artifact to skip post-change review, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model call for generated report artifact, got %d", len(client.requests))
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") {
+		t.Fatalf("expected Korean skip progress, got %#v", progress)
+	}
+	if strings.Contains(joinedProgress, "Automatic post-change review") {
+		t.Fatalf("expected progress not to leak English post-change review text, got %#v", progress)
+	}
+}
+
+func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t *testing.T) {
+	root := t.TempDir()
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: originalRequest},
+		{Role: "assistant", Text: "Tavern/BugReport.md report generated."},
+		{Role: "user", Text: "The report is complete as a documentation artifact."},
+	}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc-report",
+		SourcePrompt: originalRequest,
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   originalRequest,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "replace_in_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "replace_in_file",
+			}},
+		}},
+	}}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this review should not run after document-only edits",
+			"severity: high",
+			"category: correctness",
+			"path: Tavern/BugReport.md",
+			"title: should not run",
+			"evidence: generated report post-change review should be skipped from acceptance contract context",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	var progress []string
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[len(session.Messages)-1].Text, "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if reviewed || needsRevision || feedback != "" || fingerprint != "" {
+		t.Fatalf("expected generated document artifact to skip post-change review from acceptance contract, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model call for generated report artifact, got %d", len(client.requests))
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") {
+		t.Fatalf("expected Korean skip progress from original request, got %#v", progress)
+	}
+	if strings.Contains(joinedProgress, "Automatic post-change review") {
+		t.Fatalf("expected progress not to leak English post-change review text, got %#v", progress)
+	}
+}
+
+func TestAutoReviewChangedPathsPrefersPatchTransactionScope(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify unrelated dirty source: %v", err)
+	}
+	session := NewSession(root, "", "", "", "default")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "버그_검토_보고서.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	paths := autoReviewChangedPaths(session, root)
+	if strings.Join(paths, ",") != "버그_검토_보고서.md" {
+		t.Fatalf("expected patch transaction scope to exclude unrelated dirty source, got %#v", paths)
+	}
+}
+
+func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify unrelated dirty source: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
+	}}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-active-doc",
+		Goal:   session.Messages[0].Text,
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "replace_in_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      ".kernforge/reviews/bug-analysis-report.md",
+				Operation: "replace_in_file",
+			}},
+		}},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-stale-code",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/TavernWorker/EngineBase.cpp",
+				Operation: "modify",
+			}},
+		}},
+	}}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: stale code transaction should not trigger post-change review",
+			"severity: high",
+			"category: correctness",
+			"path: Tavern/TavernWorker/EngineBase.cpp",
+			"title: should not run",
+			"evidence: active document transaction must dominate archived code transaction",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	paths := autoReviewChangedPaths(session, root)
+	if strings.Join(paths, ",") != ".kernforge/reviews/bug-analysis-report.md" {
+		t.Fatalf("expected active patch transaction to exclude stale archived code and dirty git paths, got %#v", paths)
+	}
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[0].Text, "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if reviewed || needsRevision || feedback != "" || fingerprint != "" {
+		t.Fatalf("expected active document artifact to skip post-change review, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model call for active generated report artifact, got %d", len(client.requests))
+	}
+}
+
 func TestPostChangeReviewCachedBlockerStillBlocksGate(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")
@@ -521,7 +778,7 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 			BlocksGate:         true,
 		}},
 	}
-	post := formatPostChangeReviewFeedback(run, true)
+	post := formatPostChangeReviewFeedback(Config{AutoLocale: boolPtr(false)}, run, true)
 	preWrite := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run)
 	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents", "traceably connected", "complete standalone patch", "standalone patch containing every required hunk"} {
 		if !strings.Contains(preWrite, want) {
@@ -3942,6 +4199,359 @@ func TestReviewProposedEditUsesKoreanBlockFeedbackFromOriginalRequest(t *testing
 		if strings.Contains(joinedProgress, banned) {
 			t.Fatalf("expected progress not to leak English text %q, got %#v", banned, progress)
 		}
+	}
+}
+
+func TestReviewProposedEditSkipsBlockingGateForGeneratedBugReport(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
+	}}
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this response should not be requested for generated document artifacts",
+			"severity: high",
+			"category: correctness",
+			"path: BugReport.md",
+			"title: should not run",
+			"evidence: pre-write gate should be skipped",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	var progress []string
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:     "Write BugReport.md",
+		Preview:   "+ # Bug Report\n+ - BUG-001: sample finding\n",
+		Paths:     []string{"BugReport.md"},
+		Operation: "write_file",
+	})
+	if err != nil {
+		t.Fatalf("expected generated bug report to skip blocking pre-write review, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model calls for generated bug report, got %d", len(client.requests))
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "생성 문서 산출물은 차단형 쓰기 전 리뷰를 건너뜁니다.") {
+		t.Fatalf("expected Korean skip progress, got %#v", progress)
+	}
+	if strings.Contains(joinedProgress, "자동 쓰기 전 리뷰를 실행합니다.") {
+		t.Fatalf("expected blocking pre-write review progress to be skipped, got %#v", progress)
+	}
+}
+
+func TestReviewProposedEditSkipsGeneratedBugReportFromAcceptanceContractAfterFeedback(t *testing.T) {
+	root := t.TempDir()
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: originalRequest},
+		{Role: "assistant", Text: "Tavern/BugReport.md report generated."},
+		{Role: "user", Text: "The report is complete as a documentation artifact."},
+	}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc-report",
+		SourcePrompt: originalRequest,
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   originalRequest,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this response should not be requested for generated document artifacts",
+			"severity: high",
+			"category: correctness",
+			"path: Tavern/BugReport.md",
+			"title: should not run",
+			"evidence: pre-write gate should be skipped from acceptance contract context",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	var progress []string
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:     "Update Tavern/BugReport.md",
+		Preview:   "- old overview\n+ new overview\n",
+		Paths:     []string{"Tavern/BugReport.md"},
+		Operation: "replace_in_file",
+	})
+	if err != nil {
+		t.Fatalf("expected generated bug report to skip blocking pre-write review from acceptance contract, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model calls for generated bug report, got %d", len(client.requests))
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "생성 문서 산출물은 차단형 쓰기 전 리뷰를 건너뜁니다.") {
+		t.Fatalf("expected Korean skip progress, got %#v", progress)
+	}
+	if strings.Contains(joinedProgress, "Running automatic pre-write review") {
+		t.Fatalf("expected progress not to leak English pre-write review text, got %#v", progress)
+	}
+}
+
+func TestReviewProposedEditSkipsGeneratedBugReportWhenPreviewPathsArePolluted(t *testing.T) {
+	root := t.TempDir()
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: originalRequest,
+	}}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc-report",
+		SourcePrompt: originalRequest,
+	}
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this response should not be requested for generated document artifacts",
+			"severity: high",
+			"category: correctness",
+			"path: Tavern/BugReport.md",
+			"title: should not run",
+			"evidence: current edit paths should come from the preview body",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title: "Write Tavern/BugReport.md",
+		Preview: strings.Join([]string{
+			"Preview for Tavern/BugReport.md",
+			"--- before/Tavern/BugReport.md",
+			"+++ after/Tavern/BugReport.md",
+			"+   1 | # Bug Report",
+			"+   2 | BUG-001: sample finding",
+		}, "\n"),
+		Paths: []string{
+			"Tavern/BugReport.md",
+			"Tavern/TavernWorker/EngineBase.cpp",
+			"kernforge/",
+		},
+		Operation: "write_file",
+	})
+	if err != nil {
+		t.Fatalf("expected generated bug report to skip blocking pre-write review despite polluted preview paths, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model calls for generated bug report, got %d", len(client.requests))
+	}
+}
+
+func TestReviewProposedEditSkipsGeneratedBugReportWhenPreviewPathsMissingButDiffNamesMarkdown(t *testing.T) {
+	root := t.TempDir()
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: originalRequest,
+	}}
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this response should not be requested for generated document artifacts",
+			"severity: high",
+			"category: correctness",
+			"path: Tavern/BugReport.md",
+			"title: should not run",
+			"evidence: preview text names the markdown artifact",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:     "Write generated report",
+		Preview:   "*** Add File: Tavern/BugReport.md\n+# Bug Report\n+- BUG-001: sample finding\n",
+		Operation: "write_file",
+	})
+	if err != nil {
+		t.Fatalf("expected generated bug report to skip blocking pre-write review from preview text, got %v", err)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model calls for generated bug report, got %d", len(client.requests))
+	}
+}
+
+func TestReviewProposedEditKeepsBlockingGateForCodeWhenRequestGeneratesReport(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
+	}}
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: code edits still require blocking pre-write review",
+			"severity: medium",
+			"category: correctness",
+			"path: main.cpp",
+			"title: code edit still gated",
+			"evidence: generated report policy must not cover source edits.",
+			"required_fix: keep the code write blocked.",
+		}, "\n")},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:     "patch main.cpp",
+		Preview:   "-     return 0;\n+     return 1;\n",
+		Paths:     []string{"main.cpp"},
+		Operation: "modify",
+	})
+	if err == nil {
+		t.Fatalf("expected code edit to remain blocked by pre-write review")
+	}
+	if len(client.requests) == 0 {
+		t.Fatalf("expected review model call for code edit")
+	}
+	if !strings.Contains(err.Error(), "자동 쓰기 전 리뷰가 파일 쓰기를 차단했습니다:") {
+		t.Fatalf("expected Korean pre-write block feedback, got %v", err)
+	}
+}
+
+func TestReviewProposedEditKeepsBlockingGateForCodeWhenPreviewPathsMissingButDiffNamesCode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
+	}}
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: code edits still require blocking pre-write review",
+			"severity: medium",
+			"category: correctness",
+			"path: main.cpp",
+			"title: code edit still gated",
+			"evidence: generated report policy must not cover source edits.",
+			"required_fix: keep the code write blocked.",
+		}, "\n")},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title: "patch main.cpp",
+		Preview: strings.Join([]string{
+			"Preview for main.cpp",
+			"--- before/main.cpp",
+			"+++ after/main.cpp",
+			"    1 | int main()",
+			"    2 | {",
+			"-   3 |     return 0;",
+			"+   3 |     return 1;",
+			"    4 | }",
+		}, "\n"),
+		Operation: "modify",
+	})
+	if err == nil {
+		t.Fatalf("expected code edit to remain blocked by pre-write review")
+	}
+	if len(client.requests) == 0 {
+		t.Fatalf("expected review model call for code edit")
+	}
+	if !strings.Contains(err.Error(), "자동 쓰기 전 리뷰가 파일 쓰기를 차단했습니다:") {
+		t.Fatalf("expected Korean pre-write block feedback, got %v", err)
 	}
 }
 
