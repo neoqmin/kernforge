@@ -72,6 +72,115 @@ func buildEditPreview(path, before, after string) string {
 	return strings.Join(lines, "\n")
 }
 
+func buildUnifiedDiff(path, before, after string) string {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		path = "file"
+	}
+	before = normalizePreviewText(before)
+	after = normalizePreviewText(after)
+	if before == after {
+		return ""
+	}
+	oldLines := splitPreviewLines(before)
+	newLines := splitPreviewLines(after)
+	if before == "" {
+		return buildUnifiedDiffAllAdded(path, newLines)
+	}
+	if after == "" {
+		return buildUnifiedDiffAllDeleted(path, oldLines)
+	}
+
+	prefix := 0
+	for prefix < len(oldLines) && prefix < len(newLines) && oldLines[prefix] == newLines[prefix] {
+		prefix++
+	}
+	oldSuffix := len(oldLines) - 1
+	newSuffix := len(newLines) - 1
+	for oldSuffix >= prefix && newSuffix >= prefix && oldLines[oldSuffix] == newLines[newSuffix] {
+		oldSuffix--
+		newSuffix--
+	}
+
+	contextStart := prefix - 3
+	if contextStart < 0 {
+		contextStart = 0
+	}
+	oldContextEnd := oldSuffix + 3
+	if oldContextEnd >= len(oldLines) {
+		oldContextEnd = len(oldLines) - 1
+	}
+	newContextEnd := newSuffix + 3
+	if newContextEnd >= len(newLines) {
+		newContextEnd = len(newLines) - 1
+	}
+
+	contextBeforeCount := prefix - contextStart
+	if contextBeforeCount < 0 {
+		contextBeforeCount = 0
+	}
+	removedCount := 0
+	if prefix <= oldSuffix {
+		removedCount = oldSuffix - prefix + 1
+	}
+	addedCount := 0
+	if prefix <= newSuffix {
+		addedCount = newSuffix - prefix + 1
+	}
+	contextAfterCount := newContextEnd - newSuffix
+	if contextAfterCount < 0 {
+		contextAfterCount = 0
+	}
+	oldCount := contextBeforeCount + removedCount + contextAfterCount
+	newCount := contextBeforeCount + addedCount + contextAfterCount
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("diff --git a/%s b/%s", path, path))
+	lines = append(lines, fmt.Sprintf("--- a/%s", path))
+	lines = append(lines, fmt.Sprintf("+++ b/%s", path))
+	lines = append(lines, fmt.Sprintf("@@ -%d,%d +%d,%d @@", contextStart+1, oldCount, contextStart+1, newCount))
+	for i := contextStart; i < prefix; i++ {
+		lines = append(lines, " "+oldLines[i])
+	}
+	for i := prefix; i <= oldSuffix; i++ {
+		lines = append(lines, "-"+oldLines[i])
+	}
+	for i := prefix; i <= newSuffix; i++ {
+		lines = append(lines, "+"+newLines[i])
+	}
+	afterStart := newSuffix + 1
+	for i := afterStart; i <= newContextEnd && i < len(newLines); i++ {
+		lines = append(lines, " "+newLines[i])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildUnifiedDiffAllAdded(path string, lines []string) string {
+	var out []string
+	out = append(out, fmt.Sprintf("diff --git a/%s b/%s", path, path))
+	out = append(out, "new file mode 100644")
+	out = append(out, "--- /dev/null")
+	out = append(out, fmt.Sprintf("+++ b/%s", path))
+	out = append(out, fmt.Sprintf("@@ -0,0 +1,%d @@", len(lines)))
+	for _, line := range lines {
+		out = append(out, "+"+line)
+	}
+	return strings.Join(out, "\n")
+}
+
+func buildUnifiedDiffAllDeleted(path string, lines []string) string {
+	var out []string
+	out = append(out, fmt.Sprintf("diff --git a/%s b/%s", path, path))
+	out = append(out, "deleted file mode 100644")
+	out = append(out, fmt.Sprintf("--- a/%s", path))
+	out = append(out, "+++ /dev/null")
+	out = append(out, fmt.Sprintf("@@ -1,%d +0,0 @@", len(lines)))
+	for _, line := range lines {
+		out = append(out, "-"+line)
+	}
+	return strings.Join(out, "\n")
+}
+
 func normalizePreviewText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")

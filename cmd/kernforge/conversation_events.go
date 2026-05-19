@@ -24,6 +24,7 @@ const (
 	conversationEventKindExecCommandEnd   = "exec_command_end"
 	conversationEventKindPatchApplyBegin  = "patch_apply_begin"
 	conversationEventKindPatchApplyEnd    = "patch_apply_end"
+	conversationEventKindTurnDiff         = "turn_diff"
 	conversationEventKindVerification     = "verification"
 	conversationEventKindHandoff          = "handoff"
 	conversationEventKindDashboard        = "dashboard"
@@ -352,8 +353,37 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 			CorrelationID: strings.TrimSpace(call.ID),
 			Entities:      entities,
 		})
+		a.appendCodexStyleTurnDiffEvent(call, result, entities)
 	default:
 	}
+}
+
+func (a *Agent) appendCodexStyleTurnDiffEvent(call ToolCall, result ToolExecutionResult, lifecycleEntities map[string]string) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	unifiedDiff := strings.TrimSpace(toolMetaString(result.Meta, "unified_diff"))
+	if unifiedDiff == "" {
+		return
+	}
+	entities := map[string]string{
+		"tool": strings.TrimSpace(call.Name),
+	}
+	for key, value := range lifecycleEntities {
+		if strings.TrimSpace(value) != "" {
+			entities[key] = strings.TrimSpace(value)
+		}
+	}
+	entities["line_count"] = strconv.Itoa(textLineCount(unifiedDiff))
+	entities["file_count"] = strconv.Itoa(unifiedDiffFileCount(unifiedDiff))
+	a.Session.AppendConversationEvent(ConversationEvent{
+		Kind:          conversationEventKindTurnDiff,
+		Severity:      conversationSeverityInfo,
+		Summary:       "turn_diff: " + compactPromptSection(firstNonEmptyRuntimeString(entities["changed_paths"], strings.TrimSpace(call.Name)), 220),
+		Raw:           compactPromptSection(unifiedDiff, 12000),
+		CorrelationID: strings.TrimSpace(call.ID),
+		Entities:      entities,
+	})
 }
 
 func toolCallIsExecCommandLike(name string) bool {
@@ -753,6 +783,16 @@ func toolMetaEntities(meta map[string]any) map[string]string {
 		}
 	}
 	return entities
+}
+
+func unifiedDiffFileCount(diff string) int {
+	count := 0
+	for _, line := range strings.Split(strings.ReplaceAll(strings.TrimSpace(diff), "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "diff --git ") {
+			count++
+		}
+	}
+	return count
 }
 
 func addPatchArgumentEntities(entities map[string]string, patch string) {

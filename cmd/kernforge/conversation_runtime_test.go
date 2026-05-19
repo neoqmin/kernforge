@@ -318,12 +318,21 @@ func TestApplyPatchRecordsCodexStyleLifecycleEvents(t *testing.T) {
 			"changed_paths":         []string{"main.go"},
 			"changed_count":         1,
 			"patch_operation_count": 1,
-			"success":               true,
+			"unified_diff": strings.Join([]string{
+				"diff --git a/main.go b/main.go",
+				"new file mode 100644",
+				"--- /dev/null",
+				"+++ b/main.go",
+				"@@ -0,0 +1,1 @@",
+				"+package main",
+			}, "\n"),
+			"success": true,
 		},
 	})
 
 	begins := latestEventsByKind(session.ConversationEvents, conversationEventKindPatchApplyBegin)
 	ends := latestEventsByKind(session.ConversationEvents, conversationEventKindPatchApplyEnd)
+	turnDiffs := latestEventsByKind(session.ConversationEvents, conversationEventKindTurnDiff)
 	if len(begins) != 1 || begins[0].CorrelationID != "call-patch" {
 		t.Fatalf("expected one patch begin event paired to call id, got %#v", begins)
 	}
@@ -335,6 +344,12 @@ func TestApplyPatchRecordsCodexStyleLifecycleEvents(t *testing.T) {
 	}
 	if ends[0].Entities["changed_paths"] != "main.go" || ends[0].Entities["changed_count"] != "1" {
 		t.Fatalf("expected patch end changed path/count entities, got %#v", ends[0].Entities)
+	}
+	if len(turnDiffs) != 1 || !strings.Contains(turnDiffs[0].Raw, "diff --git a/main.go b/main.go") {
+		t.Fatalf("expected turn diff event with unified diff, got %#v", turnDiffs)
+	}
+	if turnDiffs[0].Entities["file_count"] != "1" || turnDiffs[0].Entities["line_count"] == "" {
+		t.Fatalf("expected turn diff file/line counts, got %#v", turnDiffs[0].Entities)
 	}
 }
 

@@ -54,7 +54,7 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if len(doc.ops) == 0 {
 		return ToolExecutionResult{}, fmt.Errorf("%w: No files were modified.", ErrInvalidPatchFormat)
 	}
-	text, changedWorkspace, changedPaths, err := applyPatchDocument(ctx, ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
+	text, changedWorkspace, changedPaths, unifiedDiff, err := applyPatchDocument(ctx, ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
 	meta := map[string]any{
 		"changed_workspace":     false,
 		"requires_verification": false,
@@ -66,11 +66,17 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 		meta["changed_count"] = len(normalizedChangedPaths)
 		meta["changed_workspace"] = changedWorkspace
 		meta["requires_verification"] = changedWorkspace
+		if strings.TrimSpace(unifiedDiff) != "" {
+			meta["unified_diff"] = unifiedDiff
+		}
 	} else if changedWorkspace {
 		meta = map[string]any{
 			"changed_workspace":     true,
 			"requires_verification": true,
 			"changed_paths":         normalizeWorkspaceSignaturePathList(changedPaths),
+		}
+		if strings.TrimSpace(unifiedDiff) != "" {
+			meta["unified_diff"] = unifiedDiff
 		}
 	}
 	return ToolExecutionResult{
@@ -327,13 +333,13 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 	return op, nil
 }
 
-func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ownerNodeID string) (string, bool, []string, error) {
+func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ownerNodeID string) (string, bool, []string, string, error) {
 	planned, err := planPatchDocument(ws, doc, ownerNodeID)
 	if err != nil {
-		return "", false, nil, err
+		return "", false, nil, "", err
 	}
 	if len(planned) == 0 {
-		return "No patch operations to apply.", false, nil, nil
+		return "No patch operations to apply.", false, nil, "", nil
 	}
 	var previewBlocks []string
 	var previewPaths []string
@@ -363,69 +369,79 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 		Proposals: normalizeEditProposals(proposals),
 	}
 	if err := ws.ReviewProposedEdit(ctx, preview); err != nil {
-		return "", false, nil, err
+		return "", false, nil, "", err
 	}
 	if err := ws.ConfirmEdit(preview); err != nil {
-		return "", false, nil, err
+		return "", false, nil, "", err
 	}
 	if err := ensurePlannedPatchWrites(ws, planned); err != nil {
-		return "", false, nil, err
+		return "", false, nil, "", err
 	}
 	editRoot := ws.Root
 	if len(planned) > 0 {
 		editRoot = firstNonBlankString(planned[0].displayRoot, ws.Root)
 	}
 	if err := ws.BeforeEditForRoot(fmt.Sprintf("apply patch (%d file(s))", len(planned)), editRoot); err != nil {
-		return "", false, nil, err
+		return "", false, nil, "", err
 	}
 
 	var summaries []string
 	var previews []string
+	var unifiedDiffs []string
 	mutated := false
 	var changedPaths []string
 	for _, change := range planned {
 		select {
 		case <-ctx.Done():
-			return "", mutated, changedPaths, ctx.Err()
+			return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), ctx.Err()
 		default:
 		}
 		switch change.kind {
 		case "add":
 			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
-				return "", mutated, changedPaths, err
+				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
 			}
 			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
-				return "", mutated, changedPaths, err
+				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
 			}
 			mutated = true
 			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.destPath))
 			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), "", change.after))
+			if diff := buildUnifiedDiff(relOrAbs(change.displayRoot, change.destPath), "", change.after); strings.TrimSpace(diff) != "" {
+				unifiedDiffs = append(unifiedDiffs, diff)
+			}
 		case "delete":
 			ws.Progress("Deleting " + relOrAbs(change.displayRoot, change.srcPath) + "...")
 			if err := os.Remove(change.srcPath); err != nil {
-				return "", mutated, changedPaths, err
+				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
 			}
 			mutated = true
 			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.srcPath))
 			ws.Progress("Deleted " + relOrAbs(change.displayRoot, change.srcPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.srcPath), change.before, ""))
+			if diff := buildUnifiedDiff(relOrAbs(change.displayRoot, change.srcPath), change.before, ""); strings.TrimSpace(diff) != "" {
+				unifiedDiffs = append(unifiedDiffs, diff)
+			}
 		case "update":
 			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
-				return "", mutated, changedPaths, err
+				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
 			}
 			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
-				return "", mutated, changedPaths, err
+				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
 			}
 			mutated = true
 			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.destPath))
+			if diff := buildUnifiedDiff(relOrAbs(change.displayRoot, change.destPath), change.before, change.after); strings.TrimSpace(diff) != "" {
+				unifiedDiffs = append(unifiedDiffs, diff)
+			}
 			if change.destPath != change.srcPath {
 				if err := os.Remove(change.srcPath); err != nil {
-					return "", mutated, changedPaths, err
+					return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
 				}
 				mutated = true
 				changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.srcPath))
@@ -434,10 +450,10 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), change.before, change.after))
 		default:
-			return "", mutated, changedPaths, fmt.Errorf("unsupported patch operation: %s", change.kind)
+			return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), fmt.Errorf("unsupported patch operation: %s", change.kind)
 		}
 	}
-	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), mutated, changedPaths, nil
+	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), nil
 }
 
 func ensurePlannedPatchWrites(ws Workspace, planned []plannedPatchChange) error {

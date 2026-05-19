@@ -96,7 +96,7 @@ func (s *Session) RefreshConversationState() {
 			if state.CurrentWorkflow == "" {
 				state.CurrentWorkflow = strings.TrimSpace(event.Entities["tool"])
 			}
-		case conversationEventKindExecCommandEnd, conversationEventKindPatchApplyEnd:
+		case conversationEventKindExecCommandEnd, conversationEventKindPatchApplyEnd, conversationEventKindTurnDiff:
 			if state.LastResult == "" {
 				state.LastResult = compactPromptSection(event.Summary, 260)
 			}
