@@ -372,6 +372,14 @@ func postChangeReviewShouldSkipGeneratedDocumentArtifact(request string, changed
 	return postChangeGeneratedDocumentArtifactRequest(nil, request, changedPaths) != ""
 }
 
+func sessionChangesAreGeneratedDocumentArtifacts(session *Session, request string) bool {
+	return changedPathsAreGeneratedDocumentArtifacts(session, request, sessionPatchTransactionChangedPaths(session))
+}
+
+func changedPathsAreGeneratedDocumentArtifacts(session *Session, request string, changedPaths []string) bool {
+	return postChangeGeneratedDocumentArtifactRequest(session, request, changedPaths) != ""
+}
+
 func postChangeGeneratedDocumentArtifactRequest(session *Session, request string, changedPaths []string) string {
 	contextRequest := generatedDocumentArtifactRequestContext(session, request)
 	if contextRequest == "" {

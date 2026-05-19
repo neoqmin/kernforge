@@ -55,6 +55,127 @@ func TestArtifactQualityAllowsPathOnlyArtifactRequest(t *testing.T) {
 	}
 }
 
+func TestArtifactQualityBlocksBugReportCountMismatch(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportText := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"총 3개 버그를 문서화했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern.cpp",
+		"",
+		"## BUG-002",
+		"- File: RuntimeManager.cpp",
+		"",
+		"## BUG-003",
+		"- File: TavernWorkerManager.cpp",
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(reportText), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &contract
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 3 bugs.", false, false)
+	if report.Approved {
+		t.Fatalf("expected inconsistent bug report counts to block approval: %#v", report.ArtifactQuality)
+	}
+	feedback := report.BlockingFeedback()
+	for _, want := range []string{
+		"Artifact total does not match bug IDs",
+		"Artifact severity summary does not match bug IDs",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected %q in feedback, got %q", want, feedback)
+		}
+	}
+}
+
+func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportText := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
+		"",
+		"총 2개 버그를 문서화했습니다.",
+		"",
+		"| Severity | Bug IDs |",
+		"|----------|---------|",
+		"| Critical | BUG-001, BUG-002 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: RuntimeManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(reportText), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &contract
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 2 bugs.", false, false)
+	if !report.Approved {
+		t.Fatalf("expected bug ID list table to pass without count-column false positive: %s", report.BlockingFeedback())
+	}
+}
+
 func TestScenarioReplayBlocksFixedClaimWithoutScenarioStatus(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

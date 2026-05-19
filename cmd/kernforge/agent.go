@@ -1005,6 +1005,23 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
+				if a.shouldFinalizeGeneratedDocumentArtifactReply(latestUser, reply, unresolvedVerification) {
+					if a.Session.TaskState != nil {
+						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
+							a.Session.TaskState.SetPhase("done")
+							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+							a.Session.TaskState.ClearExecutorFocus()
+							a.Session.completeSharedPlan()
+						}
+					}
+					a.finalizePatchTransactionOnReturn()
+					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
+				}
 				if successfulEditTool && !a.shouldSkipPostChangeReviewForKnownFinalBlocker(reply, unresolvedVerification) {
 					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
 					if err != nil {
@@ -1969,6 +1986,20 @@ func (a *Agent) attachProgressEventHandler(req ChatRequest) ChatRequest {
 		a.emitProgressEvent(event)
 	}
 	return req
+}
+
+func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, reply string, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if unresolvedVerification || strings.TrimSpace(reply) == "" {
+		return false
+	}
+	if !sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
+		return false
+	}
+	report := a.Session.LastCodingHarnessReport
+	return report != nil && report.Approved
 }
 
 func (a *Agent) shouldCompleteSharedPlanOnReturn(unresolvedVerification bool) bool {
