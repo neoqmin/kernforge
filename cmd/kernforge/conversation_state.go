@@ -89,6 +89,24 @@ func (s *Session) RefreshConversationState() {
 			if state.LastCommand == "" {
 				state.LastCommand = conversationCommandFromEvent(event)
 			}
+		case conversationEventKindExecCommandBegin, conversationEventKindPatchApplyBegin:
+			if state.LastCommand == "" {
+				state.LastCommand = conversationCommandFromEvent(event)
+			}
+			if state.CurrentWorkflow == "" {
+				state.CurrentWorkflow = strings.TrimSpace(event.Entities["tool"])
+			}
+		case conversationEventKindExecCommandEnd, conversationEventKindPatchApplyEnd:
+			if state.LastResult == "" {
+				state.LastResult = compactPromptSection(event.Summary, 260)
+			}
+			if state.LastCommand == "" {
+				state.LastCommand = conversationCommandFromEvent(event)
+			}
+			if event.Severity == conversationSeverityError && state.LastError == "" {
+				state.LastError = compactPromptSection(event.Summary, 360)
+				state.LastErrorEventID = strings.TrimSpace(event.ID)
+			}
 		case conversationEventKindAssistantReply:
 			if state.LastResult == "" {
 				state.LastResult = compactPromptSection(event.Summary, 260)
