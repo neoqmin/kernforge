@@ -1531,6 +1531,53 @@ func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 	}
 }
 
+func TestRunShellWorkdirExecutesFromRequestedDirectoryLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	command := `basename "$PWD"`
+	if runtime.GOOS == "windows" {
+		command = `$PWD.Path | Split-Path -Leaf`
+	}
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"command": command,
+		"workdir": "subdir",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "subdir") {
+		t.Fatalf("expected command to run from subdir, got %q", result.DisplayText)
+	}
+	if got := toolMetaString(result.Meta, "work_dir"); !sameFilePath(got, subdir) {
+		t.Fatalf("expected work_dir meta to resolve subdir, got %#v", result.Meta)
+	}
+}
+
+func TestRunShellRejectsWorkdirOutsideActiveRootLikeCodexSandbox(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command": "echo hello",
+		"workdir": "..",
+	})
+	if err == nil {
+		t.Fatalf("expected outside workdir to be rejected")
+	}
+	if !strings.Contains(err.Error(), "outside the active workspace root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRunShellGuidesGitStatusToDedicatedTool(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2453,6 +2500,111 @@ func TestRunBackgroundShellStartsAndCanBePolled(t *testing.T) {
 	}
 	if !strings.Contains(status, "ready") {
 		t.Fatalf("expected background job output to contain ready, got %q", status)
+	}
+}
+
+func TestRunBackgroundShellWorkdirIsRecordedAndUsedForReuse(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+	}
+	runTool := NewRunBackgroundShellTool(ws)
+	command := "sleep 1"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 1"
+	}
+
+	first, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
+		"command": command,
+		"workdir": "subdir",
+	})
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if got := toolMetaString(first.Meta, "work_dir"); !sameFilePath(got, subdir) {
+		t.Fatalf("expected first work_dir meta to resolve subdir, got %#v", first.Meta)
+	}
+	jobID := jobs.LatestJobID()
+	if jobID == "" {
+		t.Fatalf("expected background job")
+	}
+	job, ok := session.BackgroundJob(jobID)
+	if !ok {
+		t.Fatalf("expected recorded job %s", jobID)
+	}
+	if !sameFilePath(job.WorkDir, subdir) {
+		t.Fatalf("expected job workdir %q, got %q", subdir, job.WorkDir)
+	}
+
+	second, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
+		"command": command,
+		"workdir": "subdir",
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if reused, _ := second.Meta["reused"].(bool); !reused {
+		t.Fatalf("expected matching workdir command to reuse background job, meta=%#v", second.Meta)
+	}
+}
+
+func TestRunShellBundleBackgroundWorkdirIsRecorded(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+	}
+	runTool := NewRunShellBundleBackgroundTool(ws)
+	command := "sleep 1"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 1"
+	}
+
+	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
+		"commands": []string{command},
+		"workdir":  "subdir",
+	})
+	if err != nil {
+		t.Fatalf("bundle run: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "work_dir"); !sameFilePath(got, subdir) {
+		t.Fatalf("expected bundle work_dir meta to resolve subdir, got %#v", result.Meta)
+	}
+	jobID := jobs.LatestJobID()
+	if jobID == "" {
+		t.Fatalf("expected background job")
+	}
+	job, ok := session.BackgroundJob(jobID)
+	if !ok {
+		t.Fatalf("expected recorded job %s", jobID)
+	}
+	if !sameFilePath(job.WorkDir, subdir) {
+		t.Fatalf("expected job workdir %q, got %q", subdir, job.WorkDir)
 	}
 }
 
