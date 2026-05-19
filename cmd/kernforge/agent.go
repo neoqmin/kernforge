@@ -1376,6 +1376,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			sawToolResultThisTurn = true
 			if err == nil && !blockedToolResult {
 				a.noteToolConversationResult(call, result)
+			} else {
+				a.noteToolConversationFailureResult(call, result, err, blockedToolResult)
 			}
 			toolMsg := Message{
 				Role:       "tool",
@@ -1597,7 +1599,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				break
 			}
 			if err != nil {
-				a.noteToolConversationError(call.Name, err, toolMsg.Text)
+				a.noteToolConversationError(call, err, toolMsg.Text)
 				toolMsg.IsError = true
 				if result.DisplayText == "" {
 					toolMsg.Text = err.Error()

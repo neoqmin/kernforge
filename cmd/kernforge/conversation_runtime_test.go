@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,6 +249,127 @@ func TestToolSuccessIsRecordedInConversationEvents(t *testing.T) {
 	}
 }
 
+func TestShellToolRecordsCodexStyleLifecycleEvents(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	call := ToolCall{
+		ID:        "call-shell",
+		Name:      "run_shell",
+		Arguments: `{"command":"go test ./...","workdir":"pkg"}`,
+	}
+	agent.noteToolConversationStart(call)
+	agent.noteToolConversationResult(call, ToolExecutionResult{
+		DisplayText: "ok",
+		Meta: map[string]any{
+			"command":                  "go test ./...",
+			"work_dir":                 filepath.Join(root, "pkg"),
+			"command_execution_status": "completed",
+			"success":                  true,
+		},
+	})
+
+	begins := latestEventsByKind(session.ConversationEvents, conversationEventKindExecCommandBegin)
+	ends := latestEventsByKind(session.ConversationEvents, conversationEventKindExecCommandEnd)
+	if len(begins) != 1 || begins[0].CorrelationID != "call-shell" {
+		t.Fatalf("expected one exec begin event paired to call id, got %#v", begins)
+	}
+	if begins[0].Entities["command"] != "go test ./..." || begins[0].Entities["workdir"] != "pkg" {
+		t.Fatalf("expected exec begin command/workdir entities, got %#v", begins[0].Entities)
+	}
+	if len(ends) != 1 || ends[0].CorrelationID != "call-shell" {
+		t.Fatalf("expected one exec end event paired to call id, got %#v", ends)
+	}
+	if ends[0].Entities["status"] != "completed" || ends[0].Entities["work_dir"] != filepath.Join(root, "pkg") {
+		t.Fatalf("expected exec end status/work_dir entities, got %#v", ends[0].Entities)
+	}
+}
+
+func TestApplyPatchRecordsCodexStyleLifecycleEvents(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: main.go",
+		"+package main",
+		"*** End Patch",
+		"",
+	}, "\n")
+	call := ToolCall{
+		ID:        "call-patch",
+		Name:      "apply_patch",
+		Arguments: mustJSON(map[string]any{"patch": patch}),
+	}
+	agent.noteToolConversationStart(call)
+	agent.noteToolConversationResult(call, ToolExecutionResult{
+		DisplayText: "Patch applied: added main.go",
+		Meta: map[string]any{
+			"changed_paths":         []string{"main.go"},
+			"changed_count":         1,
+			"patch_operation_count": 1,
+			"success":               true,
+		},
+	})
+
+	begins := latestEventsByKind(session.ConversationEvents, conversationEventKindPatchApplyBegin)
+	ends := latestEventsByKind(session.ConversationEvents, conversationEventKindPatchApplyEnd)
+	if len(begins) != 1 || begins[0].CorrelationID != "call-patch" {
+		t.Fatalf("expected one patch begin event paired to call id, got %#v", begins)
+	}
+	if begins[0].Entities["changed_paths"] != "main.go" || begins[0].Entities["patch_operation_count"] != "1" {
+		t.Fatalf("expected parsed patch begin entities, got %#v", begins[0].Entities)
+	}
+	if len(ends) != 1 || ends[0].Entities["status"] != "completed" {
+		t.Fatalf("expected one completed patch end event, got %#v", ends)
+	}
+	if ends[0].Entities["changed_paths"] != "main.go" || ends[0].Entities["changed_count"] != "1" {
+		t.Fatalf("expected patch end changed path/count entities, got %#v", ends[0].Entities)
+	}
+}
+
+func TestToolFailureRecordsCodexStyleEndEvent(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	call := ToolCall{
+		ID:        "call-shell-failed",
+		Name:      "run_shell",
+		Arguments: `{"command":"go test ./..."}`,
+	}
+	agent.noteToolConversationStart(call)
+	err := errors.New("exit status 1")
+	agent.noteToolConversationFailureResult(call, ToolExecutionResult{DisplayText: "FAIL"}, err, false)
+	agent.noteToolConversationError(call, err, "FAIL")
+
+	ends := latestEventsByKind(session.ConversationEvents, conversationEventKindExecCommandEnd)
+	errors := latestEventsByKind(session.ConversationEvents, conversationEventKindCommandError)
+	if len(ends) != 1 || ends[0].Entities["status"] != "failed" || ends[0].Severity != conversationSeverityError {
+		t.Fatalf("expected failed exec end event, got %#v", ends)
+	}
+	if len(errors) != 1 || errors[0].CorrelationID != "call-shell-failed" {
+		t.Fatalf("expected paired command error event, got %#v", errors)
+	}
+	if session.ConversationState == nil || !strings.Contains(session.ConversationState.LastError, "exec_command end: failed") {
+		t.Fatalf("expected failed lifecycle event to refresh last error state, got %#v", session.ConversationState)
+	}
+}
+
 func TestCompactPreservesConversationWorkingMemoryForResume(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
@@ -309,4 +432,12 @@ func (p *providerErrorClient) Complete(ctx context.Context, req ChatRequest) (Ch
 	_ = ctx
 	_ = req
 	return ChatResponse{}, p.err
+}
+
+func mustJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }

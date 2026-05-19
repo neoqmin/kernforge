@@ -13,24 +13,28 @@ import (
 )
 
 const (
-	conversationEventKindUserMessage     = "user_message"
-	conversationEventKindAssistantReply  = "assistant_reply"
-	conversationEventKindToolCall        = "tool_call"
-	conversationEventKindToolResult      = "tool_result"
-	conversationEventKindToolError       = "tool_error"
-	conversationEventKindProviderError   = "provider_error"
-	conversationEventKindCommandError    = "command_error"
-	conversationEventKindVerification    = "verification"
-	conversationEventKindHandoff         = "handoff"
-	conversationEventKindDashboard       = "dashboard"
-	conversationEventKindAutomation      = "automation"
-	conversationEventKindContinuity      = "continuity"
-	conversationEventKindCompletionAudit = "completion_audit"
-	conversationEventKindRecovery        = "recovery"
-	conversationEventKindEventStream     = "event_stream"
-	conversationEventKindGoal            = "goal"
-	conversationEventKindReview          = "review"
-	conversationEventKindExternalLookup  = "external_lookup"
+	conversationEventKindUserMessage      = "user_message"
+	conversationEventKindAssistantReply   = "assistant_reply"
+	conversationEventKindToolCall         = "tool_call"
+	conversationEventKindToolResult       = "tool_result"
+	conversationEventKindToolError        = "tool_error"
+	conversationEventKindProviderError    = "provider_error"
+	conversationEventKindCommandError     = "command_error"
+	conversationEventKindExecCommandBegin = "exec_command_begin"
+	conversationEventKindExecCommandEnd   = "exec_command_end"
+	conversationEventKindPatchApplyBegin  = "patch_apply_begin"
+	conversationEventKindPatchApplyEnd    = "patch_apply_end"
+	conversationEventKindVerification     = "verification"
+	conversationEventKindHandoff          = "handoff"
+	conversationEventKindDashboard        = "dashboard"
+	conversationEventKindAutomation       = "automation"
+	conversationEventKindContinuity       = "continuity"
+	conversationEventKindCompletionAudit  = "completion_audit"
+	conversationEventKindRecovery         = "recovery"
+	conversationEventKindEventStream      = "event_stream"
+	conversationEventKindGoal             = "goal"
+	conversationEventKindReview           = "review"
+	conversationEventKindExternalLookup   = "external_lookup"
 
 	conversationSeverityInfo  = "info"
 	conversationSeverityWarn  = "warn"
@@ -197,14 +201,16 @@ func (a *Agent) noteAssistantConversationEvent(text string) {
 	}
 }
 
-func (a *Agent) noteToolConversationError(toolName string, err error, displayText string) {
+func (a *Agent) noteToolConversationError(call ToolCall, err error, displayText string) {
 	if a == nil || a.Session == nil || err == nil {
 		return
 	}
+	toolName := strings.TrimSpace(call.Name)
 	raw := strings.TrimSpace(strings.Join([]string{displayText, err.Error()}, "\n"))
 	normalized := normalizeRuntimeError(err)
 	normalized.Kind = conversationEventKindToolError
 	normalized.Tool = strings.TrimSpace(toolName)
+	normalized.CorrelationID = strings.TrimSpace(call.ID)
 	if strings.EqualFold(normalized.Tool, "run_shell") || strings.EqualFold(normalized.Tool, "shell") {
 		normalized.Kind = conversationEventKindCommandError
 	}
@@ -238,6 +244,7 @@ func (a *Agent) noteToolConversationStart(call ToolCall) {
 		CorrelationID: strings.TrimSpace(call.ID),
 		Entities:      entities,
 	})
+	a.appendCodexStyleToolLifecycleBegin(call)
 }
 
 func (a *Agent) noteToolConversationResult(call ToolCall, result ToolExecutionResult) {
@@ -269,6 +276,146 @@ func (a *Agent) noteToolConversationResult(call ToolCall, result ToolExecutionRe
 		CorrelationID: strings.TrimSpace(call.ID),
 		Entities:      entities,
 	})
+	a.appendCodexStyleToolLifecycleEnd(call, result, nil, false)
+}
+
+func (a *Agent) noteToolConversationFailureResult(call ToolCall, result ToolExecutionResult, err error, blocked bool) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	if err == nil && !blocked {
+		return
+	}
+	a.appendCodexStyleToolLifecycleEnd(call, result, err, blocked)
+}
+
+func (a *Agent) appendCodexStyleToolLifecycleBegin(call ToolCall) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	name := strings.TrimSpace(call.Name)
+	entities := toolLifecycleEntities(call, nil)
+	switch {
+	case toolCallIsExecCommandLike(name):
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:          conversationEventKindExecCommandBegin,
+			Severity:      conversationSeverityInfo,
+			Summary:       "exec_command begin: " + compactPromptSection(firstNonEmptyRuntimeString(entities["command"], entities["commands"], name), 220),
+			Raw:           compactPromptSection(call.Arguments, 1200),
+			CorrelationID: strings.TrimSpace(call.ID),
+			Entities:      entities,
+		})
+	case toolCallIsPatchApplyLike(name):
+		entities["auto_approved"] = "true"
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:          conversationEventKindPatchApplyBegin,
+			Severity:      conversationSeverityInfo,
+			Summary:       "patch_apply begin: " + compactPromptSection(firstNonEmptyRuntimeString(entities["changed_paths"], name), 220),
+			Raw:           compactPromptSection(call.Arguments, 1200),
+			CorrelationID: strings.TrimSpace(call.ID),
+			Entities:      entities,
+		})
+	default:
+	}
+}
+
+func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecutionResult, err error, blocked bool) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	name := strings.TrimSpace(call.Name)
+	entities := toolLifecycleEntities(call, result.Meta)
+	status := toolLifecycleStatus(result.Meta, err, blocked)
+	entities["status"] = status
+	if err != nil {
+		entities["error"] = compactPromptSection(err.Error(), 220)
+	}
+	if blocked {
+		entities["blocked"] = "true"
+	}
+	switch {
+	case toolCallIsExecCommandLike(name):
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:          conversationEventKindExecCommandEnd,
+			Severity:      lifecycleEventSeverity(status),
+			Summary:       "exec_command end: " + status + " | " + compactPromptSection(firstNonEmptyRuntimeString(entities["command"], entities["commands"], name), 180),
+			Raw:           compactPromptSection(result.DisplayText, 1600),
+			CorrelationID: strings.TrimSpace(call.ID),
+			Entities:      entities,
+		})
+	case toolCallIsPatchApplyLike(name):
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:          conversationEventKindPatchApplyEnd,
+			Severity:      lifecycleEventSeverity(status),
+			Summary:       "patch_apply end: " + status + " | " + compactPromptSection(firstNonEmptyRuntimeString(entities["changed_paths"], name), 180),
+			Raw:           compactPromptSection(result.DisplayText, 1600),
+			CorrelationID: strings.TrimSpace(call.ID),
+			Entities:      entities,
+		})
+	default:
+	}
+}
+
+func toolCallIsExecCommandLike(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "run_shell", "run_shell_background", "run_shell_bundle_background":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolCallIsPatchApplyLike(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "apply_patch")
+}
+
+func toolLifecycleEntities(call ToolCall, meta map[string]any) map[string]string {
+	entities := map[string]string{
+		"tool": strings.TrimSpace(call.Name),
+	}
+	for key, value := range toolArgumentEntities(call.Arguments) {
+		entities[key] = value
+	}
+	for key, value := range toolMetaEntities(meta) {
+		entities[key] = value
+	}
+	return entities
+}
+
+func toolLifecycleStatus(meta map[string]any, err error, blocked bool) string {
+	if status := strings.ToLower(strings.TrimSpace(toolMetaString(meta, "command_execution_status"))); status != "" {
+		switch status {
+		case "completed", "failed", "declined":
+			return status
+		}
+	}
+	if status := strings.ToLower(strings.TrimSpace(toolMetaString(meta, "patch_apply_status"))); status != "" {
+		switch status {
+		case "completed", "failed", "declined":
+			return status
+		}
+	}
+	if boolValue(meta, "verification_declined", false) || boolValue(meta, "verification_skipped", false) {
+		return "declined"
+	}
+	if blocked || err != nil {
+		if errors.Is(err, ErrWriteDenied) || errors.Is(err, ErrEditCanceled) {
+			return "declined"
+		}
+		return "failed"
+	}
+	return "completed"
+}
+
+func lifecycleEventSeverity(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed":
+		return conversationSeverityError
+	case "declined":
+		return conversationSeverityWarn
+	default:
+		return conversationSeverityInfo
+	}
 }
 
 func (a *Agent) noteProviderConversationError(err error, req ChatRequest, final bool) {
@@ -547,8 +694,15 @@ func toolArgumentEntities(raw string) map[string]string {
 	}
 	add("path", stringValue(args, "path"))
 	add("command", stringValue(args, "command"))
+	add("workdir", stringValue(args, "workdir"))
 	add("pattern", stringValue(args, "pattern"))
 	add("owner_node_id", stringValue(args, "owner_node_id"))
+	if commands := normalizeTaskStateList(stringSliceValue(args, "commands"), 8); len(commands) > 0 {
+		add("commands", strings.Join(commands, " | "))
+	}
+	if patch := stringValue(args, "patch"); strings.TrimSpace(patch) != "" {
+		addPatchArgumentEntities(entities, patch)
+	}
 	return entities
 }
 
@@ -562,18 +716,94 @@ func toolMetaEntities(meta map[string]any) map[string]string {
 			entities[key] = strings.TrimSpace(value)
 		}
 	}
-	for _, key := range []string{"effect", "path", "command", "branch", "commit_sha", "pr_url"} {
+	for _, key := range []string{
+		"effect",
+		"path",
+		"command",
+		"workdir",
+		"work_dir",
+		"branch",
+		"commit_sha",
+		"pr_url",
+		"owner_node_id",
+		"job_id",
+		"bundle_id",
+		"mutation_class",
+		"verification_status",
+		"command_execution_status",
+		"patch_apply_status",
+	} {
 		if value, ok := meta[key]; ok {
 			add(key, strings.TrimSpace(fmt.Sprintf("%v", value)))
 		}
 	}
-	if value, ok := meta["changed_count"]; ok {
-		add("changed_count", strings.TrimSpace(fmt.Sprintf("%v", value)))
+	for _, key := range []string{"paths", "commands", "changed_paths"} {
+		if values := toolMetaStringSlice(meta, key); len(values) > 0 {
+			add(key, strings.Join(values, ", "))
+		}
 	}
-	if value, ok := meta["success"]; ok {
-		add("success", strings.TrimSpace(fmt.Sprintf("%v", value)))
+	for _, key := range []string{"changed_count", "patch_operation_count", "add_count", "update_count", "delete_count", "move_count"} {
+		if value, ok := meta[key]; ok {
+			add(key, strings.TrimSpace(fmt.Sprintf("%v", value)))
+		}
+	}
+	for _, key := range []string{"success", "clean", "changed_workspace", "requires_verification", "verification_like", "verification_evidence", "verification_approved", "verification_declined"} {
+		if value, ok := meta[key]; ok {
+			add(key, strings.TrimSpace(fmt.Sprintf("%v", value)))
+		}
 	}
 	return entities
+}
+
+func addPatchArgumentEntities(entities map[string]string, patch string) {
+	if entities == nil {
+		return
+	}
+	doc, err := parsePatchDocument(patch)
+	if err != nil {
+		return
+	}
+	if len(doc.ops) == 0 {
+		return
+	}
+	paths := make([]string, 0, len(doc.ops)*2)
+	added := 0
+	updated := 0
+	deleted := 0
+	moved := 0
+	for _, op := range doc.ops {
+		if path := strings.TrimSpace(op.path); path != "" {
+			paths = append(paths, path)
+		}
+		switch strings.ToLower(strings.TrimSpace(op.kind)) {
+		case "add":
+			added++
+		case "delete":
+			deleted++
+		case "update":
+			updated++
+			if moveTo := strings.TrimSpace(op.moveTo); moveTo != "" {
+				moved++
+				paths = append(paths, moveTo)
+			}
+		}
+	}
+	if normalized := normalizeTaskStateList(paths, 32); len(normalized) > 0 {
+		entities["changed_paths"] = strings.Join(normalized, ", ")
+	}
+	entities["patch_operation_count"] = strconv.Itoa(len(doc.ops))
+	if added > 0 {
+		entities["add_count"] = strconv.Itoa(added)
+	}
+	if updated > 0 {
+		entities["update_count"] = strconv.Itoa(updated)
+	}
+	if deleted > 0 {
+		entities["delete_count"] = strconv.Itoa(deleted)
+	}
+	if moved > 0 {
+		entities["move_count"] = strconv.Itoa(moved)
+	}
 }
 
 func messageTextLooksLikeRuntimeError(text string) bool {
