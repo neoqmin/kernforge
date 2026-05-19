@@ -8311,6 +8311,114 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValidation(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "1. Inspect source files\n2. Write Tavern/BugReport.md\n3. Summarize the document artifact",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    mainProvider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("expected final document summary, got %q", reply)
+	}
+	if len(mainProvider.requests) != 3 {
+		t.Fatalf("expected the shell-validation response to remain unrequested, got %d main requests", len(mainProvider.requests))
+	}
+	if session.ActivePatchTransaction != nil {
+		t.Fatalf("expected document patch transaction to finalize, got %#v", session.ActivePatchTransaction)
+	}
+	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].ChangedPaths()[0] != "Tavern/BugReport.md" {
+		t.Fatalf("expected archived document patch transaction, got %#v", session.PatchTransactions)
+	}
+}
+
+func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "create generated report"}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Mode:         "edit_code",
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+		t.Fatalf("expected generated document artifact final answer to skip reviewer")
+	}
+}
+
 func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 	root := t.TempDir()
 	mainProvider := &scriptedProviderClient{

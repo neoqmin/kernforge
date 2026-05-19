@@ -71,6 +71,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 		Branch:      delegationGitBranch(root),
 	}
 	ledger.ChangedPaths = runtimeGateChangedPathsForAction(root, session, action)
+	documentArtifactOnly := runtimeGateDocumentArtifactOnly(session, action, ledger.ChangedPaths)
 	if tx := latestRuntimeGatePatchTransaction(session); tx != nil {
 		ledger.PatchTransactionID = strings.TrimSpace(tx.ID)
 	}
@@ -81,7 +82,10 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	ledger.FinalAnswerReviewID = runtimeGateFinalAnswerReviewID(session)
 
 	reviewRun, ok := runtimeGateReviewRun(root, session, review)
-	if ok {
+	if documentArtifactOnly {
+		// Generated document artifacts are guarded by deterministic artifact
+		// quality checks, not the code-review freshness ledger.
+	} else if ok {
 		runtimeGateAttachReview(root, &ledger, reviewRun)
 	} else if len(ledger.ChangedPaths) > 0 {
 		message := "no latest review run covers current changed files"
@@ -107,6 +111,16 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	runtimeGateAttachCodingHarness(session, &ledger)
 	ledger.Normalize()
 	return ledger
+}
+
+func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPaths []string) bool {
+	action = normalizeRuntimeGateAction(action)
+	switch action {
+	case runtimeGateActionFinalAnswer, runtimeGateActionCompletionAudit:
+	default:
+		return false
+	}
+	return changedPathsAreGeneratedDocumentArtifacts(session, "", changedPaths)
 }
 
 func (l *RuntimeGateLedger) Normalize() {
@@ -364,6 +378,9 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 
 func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) {
 	if session == nil || ledger == nil {
+		return
+	}
+	if changedPathsAreGeneratedDocumentArtifacts(session, "", ledger.ChangedPaths) {
 		return
 	}
 	if session.LastVerification == nil {

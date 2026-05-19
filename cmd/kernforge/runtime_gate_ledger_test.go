@@ -51,6 +51,62 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir Tavern: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte("# Bug Report\n"), 0o644); err != nil {
+		t.Fatalf("write BugReport.md: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Mode:         "edit_code",
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-stale-code",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Trigger:           "post_change",
+		Branch:            delegationGitBranch(root),
+		ReviewFingerprint: "fp-1",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"main.go"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-1",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("expected document artifact final answer to be ready without stale review blockers, got %#v", ledger)
+	}
+	if strings.Contains(strings.Join(ledger.Blockers, " "), "review") ||
+		strings.Contains(strings.Join(ledger.StaleReasons, " "), "BugReport.md") {
+		t.Fatalf("expected generated document artifact to bypass stale review blockers, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
