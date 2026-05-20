@@ -332,7 +332,9 @@ func run(args []string) error {
 	}
 	rt.printLegacyConfigMigrationNotices(legacyMigrations)
 
+	userInputRequests := NewUserInputRequestTracker()
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
+	rt.perms.SetUserInputRequestTracker(userInputRequests)
 	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(sessionBaseWorkingDir(sess), userConfigDirName, "jobs"), sess, store)
 	rt.workspace = Workspace{
 		BaseRoot:              sessionBaseWorkingDir(sess),
@@ -343,6 +345,7 @@ func run(args []string) error {
 		ReadCacheEntries:      configReadCacheEntries(cfg),
 		VerificationToolPaths: buildVerificationToolPaths(cfg),
 		Perms:                 rt.perms,
+		UserInputRequests:     userInputRequests,
 		PrepareEdit:           rt.prepareEdit,
 		PrepareEditAtRoot:     rt.prepareEditAtRoot,
 		ReviewEdit:            rt.reviewProposedEdit,

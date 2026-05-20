@@ -110,6 +110,7 @@ type MCPPromptTool struct {
 type mcpTurnMetadataContextKey struct{}
 
 const mcpTurnMetadataMetaKey = "x-codex-turn-metadata"
+const mcpTurnMetadataUserInputRequestedKey = "user_input_requested_during_turn"
 
 func contextWithMCPTurnMetadata(ctx context.Context, metadata map[string]any) context.Context {
 	if ctx == nil {
