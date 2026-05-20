@@ -9269,10 +9269,9 @@ func TestAgentDropsStaleFinalAnswerCandidateBeforeNewUserTurn(t *testing.T) {
 	}
 }
 
-func TestAgentContinuesAfterCommentaryOnlyAssistantMessage(t *testing.T) {
+func TestAgentAcceptsCommentaryOnlyAssistantMessageLikeCodex(t *testing.T) {
 	root := t.TempDir()
 	commentary := "검토 결과를 정리하는 중입니다."
-	finalReply := "검토 보고서를 생성했고 추가 작업은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			{
@@ -9280,13 +9279,6 @@ func TestAgentContinuesAfterCommentaryOnlyAssistantMessage(t *testing.T) {
 					Role:  "assistant",
 					Phase: messagePhaseCommentary,
 					Text:  commentary,
-				},
-				StopReason: "stop",
-			},
-			{
-				Message: Message{
-					Role: "assistant",
-					Text: finalReply,
 				},
 				StopReason: "stop",
 			},
@@ -9311,18 +9303,17 @@ func TestAgentContinuesAfterCommentaryOnlyAssistantMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != finalReply {
-		t.Fatalf("expected final reply, got %q", reply)
+	if reply != commentary {
+		t.Fatalf("expected commentary reply to complete the turn, got %q", reply)
 	}
-	if len(provider.requests) != 2 {
-		t.Fatalf("expected commentary-only reply to trigger another model turn, got %d requests", len(provider.requests))
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected commentary-only reply to complete without another model turn, got %d requests", len(provider.requests))
 	}
-	if !scriptedRequestsContainText(provider.requests[1:2], "commentary/progress") {
-		t.Fatalf("expected second request to include commentary-only guidance, got %#v", provider.requests[1].Messages)
+	if scriptedRequestsContainText(provider.requests, "commentary/progress") {
+		t.Fatalf("commentary-only completion should not inject synthetic commentary guidance: %#v", provider.requests[0].Messages)
 	}
 
 	foundCommentary := false
-	foundFinal := false
 	for _, msg := range session.Messages {
 		if msg.Role == "assistant" && msg.Text == commentary {
 			foundCommentary = true
@@ -9330,18 +9321,9 @@ func TestAgentContinuesAfterCommentaryOnlyAssistantMessage(t *testing.T) {
 				t.Fatalf("commentary message phase was not preserved: %#v", msg)
 			}
 		}
-		if msg.Role == "assistant" && msg.Text == finalReply {
-			foundFinal = true
-			if msg.Phase != messagePhaseFinalAnswer {
-				t.Fatalf("final reply was not promoted to final phase: %#v", msg)
-			}
-		}
 	}
 	if !foundCommentary {
 		t.Fatalf("commentary-only assistant message was not retained")
-	}
-	if !foundFinal {
-		t.Fatalf("final answer was not retained")
 	}
 }
 
