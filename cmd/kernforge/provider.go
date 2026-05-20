@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -66,6 +67,9 @@ type ChatRequest struct {
 	JSONMode        bool
 	OnTextDelta     func(string)
 	OnProgressEvent func(ProgressEvent)
+	TurnState       *ProviderTurnState
+	SessionID       string
+	ThreadID        string
 }
 
 type ChatResponse struct {
@@ -73,6 +77,53 @@ type ChatResponse struct {
 	StopReason string
 	EndTurn    *bool
 	RawBody    string
+}
+
+const codexTurnStateHeader = "x-codex-turn-state"
+
+type ProviderTurnState struct {
+	mu    sync.Mutex
+	value string
+}
+
+func (s *ProviderTurnState) Value() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.TrimSpace(s.value)
+}
+
+func (s *ProviderTurnState) Capture(value string) {
+	if s == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(s.value) == "" {
+		s.value = trimmed
+	}
+}
+
+func applyProviderTurnStateHeader(httpReq *http.Request, state *ProviderTurnState) {
+	if httpReq == nil || state == nil {
+		return
+	}
+	if value := state.Value(); value != "" {
+		httpReq.Header.Set(codexTurnStateHeader, value)
+	}
+}
+
+func captureProviderTurnStateHeader(resp *http.Response, state *ProviderTurnState) {
+	if resp == nil || state == nil {
+		return
+	}
+	state.Capture(resp.Header.Get(codexTurnStateHeader))
 }
 
 type ProgressEvent struct {
@@ -844,12 +895,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	if strings.TrimSpace(c.apiKey) != "" {
 		httpReq.Header.Set("authorization", "Bearer "+strings.TrimSpace(c.apiKey))
 	}
+	applyProviderTurnStateHeader(httpReq, req.TurnState)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return ChatResponse{}, err
 	}
 	defer resp.Body.Close()
+	captureProviderTurnStateHeader(resp, req.TurnState)
 
 	if resp.StatusCode >= 300 {
 		data, err := io.ReadAll(resp.Body)

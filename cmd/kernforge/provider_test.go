@@ -101,6 +101,48 @@ func TestLocalOpenAICompatibleClientOmitsAuthorizationWithoutAPIKey(t *testing.T
 	}
 }
 
+func TestOpenAIClientReplaysCodexTurnStateWithinRequestState(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get(codexTurnStateHeader); got != "" {
+				t.Fatalf("first request should not send turn state, got %q", got)
+			}
+			w.Header().Set(codexTurnStateHeader, "sticky-turn")
+		case 2:
+			if got := r.Header.Get(codexTurnStateHeader); got != "sticky-turn" {
+				t.Fatalf("second request should replay turn state, got %q", got)
+			}
+		default:
+			t.Fatalf("unexpected request %d", requestCount)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	state := &ProviderTurnState{}
+	for i := 0; i < 2; i++ {
+		_, err := client.Complete(context.Background(), ChatRequest{
+			Model:     "openai/gpt-4.1",
+			TurnState: state,
+			Messages: []Message{{
+				Role: "user",
+				Text: "hello",
+			}},
+		})
+		if err != nil {
+			t.Fatalf("Complete %d: %v", i+1, err)
+		}
+	}
+	if state.Value() != "sticky-turn" {
+		t.Fatalf("expected captured turn state, got %q", state.Value())
+	}
+}
+
 func TestLocalOpenAICompatibleClientPreservesReasoningContentWhenContentEmpty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
