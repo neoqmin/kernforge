@@ -39,6 +39,39 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	return resp, nil
 }
 
+type turnStateObservingProviderClient struct {
+	mu       sync.Mutex
+	replies  []ChatResponse
+	states   []*ProviderTurnState
+	values   []string
+	requests []ChatRequest
+	index    int
+}
+
+func (s *turnStateObservingProviderClient) Name() string { return "turn-state-observer" }
+
+func (s *turnStateObservingProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, cloneChatRequestForTest(req))
+	s.states = append(s.states, req.TurnState)
+	value := ""
+	if req.TurnState != nil {
+		value = req.TurnState.Value()
+	}
+	s.values = append(s.values, value)
+	if s.index == 0 && req.TurnState != nil {
+		req.TurnState.Capture("sticky-turn")
+	}
+	if s.index >= len(s.replies) {
+		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
+	}
+	resp := s.replies[s.index]
+	s.index++
+	return resp, nil
+}
+
 func chatRequestHasTool(req ChatRequest, name string) bool {
 	for _, tool := range req.Tools {
 		if tool.Name == name {
@@ -2832,6 +2865,65 @@ func TestAgentContinuesSameTurnWhenProviderEndTurnFalse(t *testing.T) {
 	}
 	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
 		t.Fatalf("expected second assistant message to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
+func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
+	root := t.TempDir()
+	provider := &turnStateObservingProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("grep", map[string]any{"pattern": "BUG"}),
+			{
+				Message:    Message{Role: "assistant", Text: "첫 번째 턴 완료"},
+				StopReason: "stop",
+			},
+			{
+				Message:    Message{Role: "assistant", Text: "두 번째 턴 완료"},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(&staticTool{name: "grep", output: "found"}),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	if reply, err := agent.Reply(context.Background(), "첫 번째 작업"); err != nil || reply != "첫 번째 턴 완료" {
+		t.Fatalf("first Reply = %q, %v", reply, err)
+	}
+	if len(provider.states) != 2 {
+		t.Fatalf("expected first turn to make two model requests, got %d", len(provider.states))
+	}
+	if provider.requests[0].SessionID != session.ID || provider.requests[0].ThreadID != session.ID {
+		t.Fatalf("expected agent to attach stable provider session metadata, got session=%q thread=%q want=%q", provider.requests[0].SessionID, provider.requests[0].ThreadID, session.ID)
+	}
+	if provider.states[0] == nil || provider.states[1] == nil || provider.states[0] != provider.states[1] {
+		t.Fatalf("expected first turn requests to share provider turn state, got %#v", provider.states[:2])
+	}
+	if provider.values[0] != "" || provider.values[1] != "sticky-turn" {
+		t.Fatalf("expected sticky state to be replayed within turn, got %#v", provider.values[:2])
+	}
+
+	if reply, err := agent.Reply(context.Background(), "두 번째 작업"); err != nil || reply != "두 번째 턴 완료" {
+		t.Fatalf("second Reply = %q, %v", reply, err)
+	}
+	if len(provider.states) != 3 {
+		t.Fatalf("expected second turn to make one model request, got %d", len(provider.states))
+	}
+	if provider.states[2] == nil || provider.states[2] == provider.states[0] {
+		t.Fatalf("expected second external turn to get fresh provider turn state")
+	}
+	if provider.values[2] != "" {
+		t.Fatalf("expected sticky state not to leak into next turn, got %q", provider.values[2])
 	}
 }
 

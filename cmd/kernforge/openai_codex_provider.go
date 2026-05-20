@@ -112,8 +112,12 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	httpReq.Header.Set("originator", "codex_cli_rs")
 	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
 	requestID := newOpenAICodexRequestID()
-	httpReq.Header.Set("session_id", requestID)
-	httpReq.Header.Set("x-client-request-id", requestID)
+	sessionID := firstNonBlankString(req.SessionID, requestID)
+	threadID := firstNonBlankString(req.ThreadID, sessionID)
+	httpReq.Header.Set("session-id", sessionID)
+	httpReq.Header.Set("thread-id", threadID)
+	httpReq.Header.Set("x-client-request-id", threadID)
+	applyProviderTurnStateHeader(httpReq, req.TurnState)
 
 	httpClient := c.httpClient
 	if httpClient == nil {
@@ -124,6 +128,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		return ChatResponse{}, err
 	}
 	defer resp.Body.Close()
+	captureProviderTurnStateHeader(resp, req.TurnState)
 
 	if resp.StatusCode >= 300 {
 		data, err := io.ReadAll(resp.Body)

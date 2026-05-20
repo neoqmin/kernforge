@@ -542,6 +542,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	postChangeReviewExhaustedNudge := false
 	lastPostChangeReviewFingerprint := ""
 	lastReviewedFinalAnswer := ""
+	providerTurnState := &ProviderTurnState{}
 	attemptedEditTool := false
 	successfulEditTool := false
 	sawToolResultThisTurn := false
@@ -647,6 +648,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			Temperature: a.Config.Temperature,
 			WorkingDir:  a.Session.WorkingDir,
 			OnTextDelta: onTextDelta,
+			TurnState:   providerTurnState,
 		}
 		resp, err := a.completeModelTurn(ctx, turnReq)
 		if err != nil && readOnlyAnalysis && isToolUseUnsupportedError(err) && len(turnReq.Tools) > 0 {
@@ -3067,6 +3069,7 @@ func isAssistantNarrationPreamble(text string) bool {
 }
 
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	req = a.attachProviderRequestMetadata(req)
 	req = a.attachProgressEventHandler(req)
 	maxRetries := configMaxRequestRetries(a.Config)
 	totalAttempts := maxRetries + 1
@@ -3142,6 +3145,20 @@ func (a *Agent) completeModelTurnOnce(ctx context.Context, req ChatRequest) (Cha
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
 	return completeModelTurnOnceWithModelRoutes(ctx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, a.Client, req)
+}
+
+func (a *Agent) attachProviderRequestMetadata(req ChatRequest) ChatRequest {
+	if a == nil || a.Session == nil {
+		return req
+	}
+	sessionID := strings.TrimSpace(a.Session.ID)
+	if strings.TrimSpace(req.SessionID) == "" {
+		req.SessionID = sessionID
+	}
+	if strings.TrimSpace(req.ThreadID) == "" {
+		req.ThreadID = sessionID
+	}
+	return req
 }
 
 func toolCallSignature(calls []ToolCall) string {

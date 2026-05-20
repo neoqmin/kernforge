@@ -801,6 +801,7 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
+	req = a.attachProviderRequestMetadata(req)
 	req = a.attachProgressEventHandler(req)
 	maxRetries := configMaxRequestRetries(a.Config)
 	totalAttempts := maxRetries + 1

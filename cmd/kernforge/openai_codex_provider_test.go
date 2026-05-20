@@ -590,6 +590,61 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get(codexTurnStateHeader); got != "" {
+				t.Fatalf("first request should not send turn state, got %q", got)
+			}
+			if got := r.Header.Get("session-id"); got != "session-123" {
+				t.Fatalf("unexpected session-id: %q", got)
+			}
+			if got := r.Header.Get("thread-id"); got != "thread-456" {
+				t.Fatalf("unexpected thread-id: %q", got)
+			}
+			if got := r.Header.Get("x-client-request-id"); got != "thread-456" {
+				t.Fatalf("unexpected x-client-request-id: %q", got)
+			}
+			w.Header().Set(codexTurnStateHeader, "codex-sticky")
+		case 2:
+			if got := r.Header.Get(codexTurnStateHeader); got != "codex-sticky" {
+				t.Fatalf("second request should replay turn state, got %q", got)
+			}
+		default:
+			t.Fatalf("unexpected request %d", requestCount)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	state := &ProviderTurnState{}
+	for i := 0; i < 2; i++ {
+		_, err := client.Complete(context.Background(), ChatRequest{
+			Model:     "gpt-5.5",
+			TurnState: state,
+			SessionID: "session-123",
+			ThreadID:  "thread-456",
+			Messages: []Message{{
+				Role: "user",
+				Text: "hello",
+			}},
+		})
+		if err != nil {
+			t.Fatalf("Complete %d: %v", i+1, err)
+		}
+	}
+	if state.Value() != "codex-sticky" {
+		t.Fatalf("expected captured turn state, got %q", state.Value())
+	}
+}
+
 func TestParseOpenAICodexResponsePreservesMessagePhase(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
