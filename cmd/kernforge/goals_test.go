@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -448,7 +449,7 @@ func TestParseGoalReviewDecisionRecognizesRevisionWording(t *testing.T) {
 	}
 }
 
-func TestGoalTokenBudgetBlocksBeforeAgentPrompt(t *testing.T) {
+func TestGoalTokenBudgetLimitsBeforeAgentPrompt(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -476,14 +477,14 @@ func TestGoalTokenBudgetBlocksBeforeAgentPrompt(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected active goal")
 	}
-	if goal.Status != goalStatusBlocked || !strings.Contains(goal.LastError, "token budget") {
-		t.Fatalf("expected token budget blocker, got %#v", goal)
+	if goal.Status != goalStatusBudgetLimited || !strings.Contains(goal.LastError, "token budget") {
+		t.Fatalf("expected token budget limited goal, got %#v", goal)
 	}
 	if goal.TokenBudget != 1 || goal.TokenUsedEstimate <= goal.TokenBudget {
 		t.Fatalf("expected token estimate over budget, got budget=%d used=%d", goal.TokenBudget, goal.TokenUsedEstimate)
 	}
 	if replyCount != 0 {
-		t.Fatalf("expected no agent prompt before token budget block, got %d", replyCount)
+		t.Fatalf("expected no agent prompt before token budget limit, got %d", replyCount)
 	}
 }
 
@@ -523,6 +524,89 @@ func TestGoalLoopStopsOnBlockedGoalUntilExplicitResume(t *testing.T) {
 	}
 	if current.Status != goalStatusBlocked || current.LastError != goal.LastError {
 		t.Fatalf("expected blocked goal to remain stopped, got %#v", current)
+	}
+}
+
+func TestGoalLoopStopsOnUsageLimitedGoalUntilExplicitResume(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{
+		ID:        "goal-usage-limited",
+		Objective: "finish usage limited objective",
+		Status:    goalStatusUsageLimited,
+		LastError: "usage limit reached",
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			t.Fatalf("usage-limited goal should not continue automatically: %s", prompt)
+			return "", nil
+		},
+	}
+
+	if err := rt.runGoalLoop(context.Background(), goal.ID); err != nil {
+		t.Fatalf("runGoalLoop: %v", err)
+	}
+	current, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if current.Status != goalStatusUsageLimited || current.LastError != goal.LastError {
+		t.Fatalf("expected usage-limited goal to remain stopped, got %#v", current)
+	}
+}
+
+func TestGoalProviderUsageLimitMarksGoalUsageLimited(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	replyCount := 0
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			replyCount++
+			return "", &ProviderAPIError{
+				Provider:   "openai",
+				StatusCode: http.StatusTooManyRequests,
+				Message:    "Usage limit reached",
+				Code:       "usage_limit_exceeded",
+			}
+		},
+	}
+
+	err := rt.handleGoalCommand("start --run finish sample objective")
+	if err == nil || !strings.Contains(err.Error(), "Usage limit reached") {
+		t.Fatalf("expected usage limit error, got %v", err)
+	}
+	if replyCount != 1 {
+		t.Fatalf("expected one goal prompt, got %d", replyCount)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusUsageLimited || !strings.Contains(goal.LastError, "Usage limit reached") {
+		t.Fatalf("expected usage-limited goal, got %#v", goal)
+	}
+	if len(goal.Iterations) != 1 || goal.Iterations[0].Status != goalStatusUsageLimited {
+		t.Fatalf("expected usage-limited iteration, got %#v", goal.Iterations)
 	}
 }
 

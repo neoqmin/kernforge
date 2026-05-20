@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -134,7 +135,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		return rt.finishGoalIterationError(goal, iteration, err)
 	}
 	if goal.TimeBudgetSeconds > 0 && !goal.CreatedAt.IsZero() && time.Since(goal.CreatedAt) > time.Duration(goal.TimeBudgetSeconds)*time.Second {
-		goal.Status = goalStatusBlocked
+		goal.Status = goalStatusBudgetLimited
 		goal.LastError = fmt.Sprintf("goal exceeded time budget (%ds)", goal.TimeBudgetSeconds)
 		goal.Touch()
 		rt.session.UpsertGoal(goal)
@@ -147,7 +148,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	}
 	goal.updateUsageTelemetry(rt.session)
 	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
-		goal.Status = goalStatusBlocked
+		goal.Status = goalStatusBudgetLimited
 		goal.LastError = fmt.Sprintf("goal exceeded token budget estimate (%d > %d)", goal.TokenUsedEstimate, goal.TokenBudget)
 		goal.Touch()
 		rt.session.UpsertGoal(goal)
@@ -324,9 +325,12 @@ func (rt *runtimeState) finishGoalIterationError(goal GoalState, iteration GoalI
 	}
 	iteration.Error = err.Error()
 	iteration.Status = goalStatusBlocked
+	if goalErrorLooksUsageLimited(err) {
+		iteration.Status = goalStatusUsageLimited
+	}
 	iteration.FinishedAt = time.Now()
 	goal.Iteration = iteration.Index
-	goal.Status = goalStatusBlocked
+	goal.Status = iteration.Status
 	goal.LastError = err.Error()
 	goal.Iterations = append(goal.Iterations, iteration)
 	goal.Touch()
@@ -415,8 +419,55 @@ func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIterat
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Goal complete: "+goal.ID))
 	} else if goal.Status == goalStatusBlocked {
 		fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal blocked: "+goal.LastError))
+	} else if goal.Status == goalStatusUsageLimited {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal usage-limited: "+goal.LastError))
+	} else if goal.Status == goalStatusBudgetLimited {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal budget-limited: "+goal.LastError))
 	}
 	return goal
+}
+
+func goalErrorLooksUsageLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *ProviderAPIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusTooManyRequests {
+			return true
+		}
+		text := strings.ToLower(strings.Join([]string{
+			apiErr.Message,
+			apiErr.ErrorType,
+			apiErr.Code,
+			apiErr.RawBody,
+		}, " "))
+		if containsAny(text,
+			"usage_limit",
+			"usage limit",
+			"quota",
+			"insufficient_quota",
+			"insufficient credits",
+			"spend limit",
+			"billing limit",
+			"rate_limit",
+			"rate limit",
+		) {
+			return true
+		}
+	}
+	text := strings.ToLower(err.Error())
+	return containsAny(text,
+		"usage_limit",
+		"usage limit",
+		"quota",
+		"insufficient_quota",
+		"insufficient credits",
+		"spend limit",
+		"billing limit",
+		"rate_limit",
+		"rate limit",
+	)
 }
 
 func (rt *runtimeState) goalWorkspaceRoot() string {
