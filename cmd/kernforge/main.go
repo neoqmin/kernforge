@@ -9086,10 +9086,11 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	if normalizeProfileBaseURL(rt.session.Provider, activeBaseURL) == normalizeProfileBaseURL(rt.cfg.Provider, rt.cfg.BaseURL) {
 		activeBaseURL = loaded.BaseURL
 	}
-	activePermission := rt.session.PermissionMode
-	if strings.TrimSpace(activePermission) == strings.TrimSpace(rt.cfg.PermissionMode) {
+	activePermission := rt.activePermissionModeSnapshot()
+	if samePermissionMode(activePermission, rt.cfg.PermissionMode) {
 		activePermission = loaded.PermissionMode
 	}
+	activePermission = string(ParseMode(activePermission))
 
 	rt.cfg = loaded
 	rt.session.Provider = activeProvider
@@ -9116,6 +9117,20 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	rt.reloadExtensions()
 	rt.syncClientFromConfig()
 	return rt.store.Save(rt.session)
+}
+
+func samePermissionMode(a, b string) bool {
+	return ParseMode(a) == ParseMode(b)
+}
+
+func (rt *runtimeState) activePermissionModeSnapshot() string {
+	if rt != nil && rt.perms != nil {
+		return string(rt.perms.Mode())
+	}
+	if rt != nil && rt.session != nil {
+		return rt.session.PermissionMode
+	}
+	return ""
 }
 
 func (rt *runtimeState) reloadExtensions() {

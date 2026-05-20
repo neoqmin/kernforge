@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,6 +109,96 @@ func TestSaveUserConfigDoesNotLetSessionPermissionOverwriteActiveConfig(t *testi
 	}
 	if loaded.MaxToolIterations != 41 {
 		t.Fatalf("expected role replacement save to persist unrelated setting, got %d", loaded.MaxToolIterations)
+	}
+}
+
+func TestReloadRuntimeConfigUsesLivePermissionSnapshotOverStaleSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := t.TempDir()
+	cfg := DefaultConfig(workspace)
+	cfg.PermissionMode = " " + string(ModeDefault) + " "
+	cfg.MCPServers = nil
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig initial: %v", err)
+	}
+
+	session := NewSession(workspace, cfg.Provider, cfg.Model, cfg.BaseURL, string(ModeBypass))
+	rt := newReloadPermissionTestRuntime(workspace, cfg, session, ModeDefault)
+
+	loaded := cfg
+	loaded.PermissionMode = string(ModeAcceptEdits)
+	if err := SaveUserConfig(loaded); err != nil {
+		t.Fatalf("SaveUserConfig reloaded: %v", err)
+	}
+
+	if err := rt.reloadRuntimeConfig(); err != nil {
+		t.Fatalf("reloadRuntimeConfig: %v", err)
+	}
+	if rt.cfg.PermissionMode != string(ModeAcceptEdits) {
+		t.Fatalf("expected loaded config permission %q, got %q", ModeAcceptEdits, rt.cfg.PermissionMode)
+	}
+	if rt.session.PermissionMode != string(ModeAcceptEdits) {
+		t.Fatalf("expected stale session permission to adopt loaded config, got %q", rt.session.PermissionMode)
+	}
+	if rt.perms.Mode() != ModeAcceptEdits {
+		t.Fatalf("expected live permission manager to adopt loaded config, got %q", rt.perms.Mode())
+	}
+}
+
+func TestReloadRuntimeConfigPreservesLivePermissionOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := t.TempDir()
+	cfg := DefaultConfig(workspace)
+	cfg.PermissionMode = string(ModeDefault)
+	cfg.MCPServers = nil
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig initial: %v", err)
+	}
+
+	session := NewSession(workspace, cfg.Provider, cfg.Model, cfg.BaseURL, string(ModeDefault))
+	rt := newReloadPermissionTestRuntime(workspace, cfg, session, ModeBypass)
+
+	loaded := cfg
+	loaded.PermissionMode = string(ModeAcceptEdits)
+	if err := SaveUserConfig(loaded); err != nil {
+		t.Fatalf("SaveUserConfig reloaded: %v", err)
+	}
+
+	if err := rt.reloadRuntimeConfig(); err != nil {
+		t.Fatalf("reloadRuntimeConfig: %v", err)
+	}
+	if rt.cfg.PermissionMode != string(ModeAcceptEdits) {
+		t.Fatalf("expected loaded config permission %q, got %q", ModeAcceptEdits, rt.cfg.PermissionMode)
+	}
+	if rt.session.PermissionMode != string(ModeBypass) {
+		t.Fatalf("expected live permission override to be persisted to session, got %q", rt.session.PermissionMode)
+	}
+	if rt.perms.Mode() != ModeBypass {
+		t.Fatalf("expected live permission override to survive reload, got %q", rt.perms.Mode())
+	}
+}
+
+func newReloadPermissionTestRuntime(workspace string, cfg Config, session *Session, mode Mode) *runtimeState {
+	store := NewSessionStore(cfg.SessionDir)
+	perms := NewPermissionManager(mode, nil)
+	return &runtimeState{
+		cfg:     cfg,
+		writer:  io.Discard,
+		ui:      NewUI(),
+		store:   store,
+		session: session,
+		perms:   perms,
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+			Perms:    perms,
+		},
 	}
 }
 
