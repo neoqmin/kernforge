@@ -131,6 +131,20 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
   - 제목/body에 보안 체크리스트 누락 시 경고
   - unsigned artifact 포함 시 차단
 
+10. `PreCompact`
+- conversation compaction 직전
+- 용도:
+  - manual/auto compaction trigger별 정책 적용
+  - compaction 전 transcript/checkpoint 정책 확인
+  - 중요한 runtime evidence가 누락된 상태의 compaction 차단
+
+11. `PostCompact`
+- conversation compaction 성공 직후
+- 용도:
+  - compaction 이후 요약/메시지 수 감소 확인
+  - compacted state 기준 후속 context 또는 verification hint 추가
+  - legacy compact와 remote/local compact 경로의 hook parity 유지
+
 ### 3.2 P1 이벤트
 
 1. `SessionStart`
@@ -255,7 +269,36 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 }
 ```
 
-### 4.6 `PreGitPush` / `PreCreatePR` payload
+### 4.6 `PreCompact` / `PostCompact` payload
+
+```json
+{
+  "trigger": "manual",
+  "implementation": "local",
+  "reason": "user_requested",
+  "instructions": "Auto-compacted due to context growth.",
+  "messages_before": 24,
+  "approx_chars_before": 64000,
+  "summary_chars_before": 1200,
+  "status": "success",
+  "messages_after": 12,
+  "approx_chars_after": 28000,
+  "summary_chars_after": 3600
+}
+```
+
+필드 의미:
+1. `trigger`: `manual` 또는 `auto`
+2. `implementation`: 현재 compaction 구현 경로
+3. `reason`: `user_requested`, `context_growth`, `tool_budget_extension` 같은 세부 사유
+4. `instructions`: compaction summary에 전달된 instruction
+5. `messages_before`, `approx_chars_before`, `summary_chars_before`: compaction 전 상태
+6. `status`: `PostCompact` 성공 시 `success`
+7. `messages_after`, `approx_chars_after`, `summary_chars_after`: compaction 후 상태
+
+`PreCompact` hook이 차단하면 compaction 전 상태가 그대로 유지되어야 한다. `PostCompact` hook이 차단하면 Codex와 동일하게 해당 turn을 중단 상태로 취급한다.
+
+### 4.7 `PreGitPush` / `PreCreatePR` payload
 
 ```json
 {
@@ -346,6 +389,7 @@ MVP에서 지원할 조건:
 9. `interactive`
 10. `providers`
 11. `models`
+12. `triggers`
 
 예시:
 

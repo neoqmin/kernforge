@@ -448,10 +448,29 @@ func formatNoActionableReviewerGateRepairReply(cfg Config) string {
 }
 
 func (a *Agent) Compact(instructions string) string {
+	summary, err := a.CompactWithTrigger(context.Background(), instructions, "manual", "user_requested")
+	if err != nil {
+		return "compaction blocked: " + err.Error()
+	}
+	return summary
+}
+
+func (a *Agent) CompactWithTrigger(ctx context.Context, instructions string, trigger string, reason string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	a.discardStaleFinalAnswerCandidates()
 	cut := compactCutIndex(a.Session.Messages, 12, 4)
 	if cut <= 0 {
-		return "conversation is already compact"
+		return "conversation is already compact", nil
+	}
+	trigger = normalizeCompactTrigger(trigger)
+	reason = strings.TrimSpace(reason)
+	beforeMessages := len(a.Session.Messages)
+	beforeChars := a.Session.ApproxChars()
+	beforeSummaryChars := len(a.Session.Summary)
+	if _, err := a.Workspace.Hook(ctx, HookPreCompact, compactHookPayload(a, HookPreCompact, instructions, trigger, reason, "", beforeMessages, beforeChars, beforeSummaryChars, 0, 0, 0)); err != nil {
+		return "", err
 	}
 	older := a.Session.Messages[:cut]
 	a.Session.Messages = append([]Message(nil), a.Session.Messages[cut:]...)
@@ -464,8 +483,52 @@ func (a *Agent) Compact(instructions string) string {
 	} else {
 		a.Session.Summary = strings.TrimSpace(a.Session.Summary) + "\n\n" + summary
 	}
-	_ = a.Store.Save(a.Session)
-	return summary
+	afterMessages := len(a.Session.Messages)
+	afterChars := a.Session.ApproxChars()
+	afterSummaryChars := len(a.Session.Summary)
+	if a.Store != nil {
+		_ = a.Store.Save(a.Session)
+	}
+	if _, err := a.Workspace.Hook(ctx, HookPostCompact, compactHookPayload(a, HookPostCompact, instructions, trigger, reason, "success", beforeMessages, beforeChars, beforeSummaryChars, afterMessages, afterChars, afterSummaryChars)); err != nil {
+		return "", err
+	}
+	return summary, nil
+}
+
+func normalizeCompactTrigger(trigger string) string {
+	switch strings.ToLower(strings.TrimSpace(trigger)) {
+	case "auto":
+		return "auto"
+	default:
+		return "manual"
+	}
+}
+
+func compactHookPayload(a *Agent, event HookEvent, instructions string, trigger string, reason string, status string, beforeMessages int, beforeChars int, beforeSummaryChars int, afterMessages int, afterChars int, afterSummaryChars int) HookPayload {
+	payload := HookPayload{
+		"hook_event_name":      string(event),
+		"trigger":              normalizeCompactTrigger(trigger),
+		"implementation":       "local",
+		"instructions":         strings.TrimSpace(instructions),
+		"messages_before":      beforeMessages,
+		"approx_chars_before":  beforeChars,
+		"summary_chars_before": beforeSummaryChars,
+	}
+	if strings.TrimSpace(reason) != "" {
+		payload["reason"] = strings.TrimSpace(reason)
+	}
+	if strings.TrimSpace(status) != "" {
+		payload["status"] = strings.TrimSpace(status)
+		payload["messages_after"] = afterMessages
+		payload["approx_chars_after"] = afterChars
+		payload["summary_chars_after"] = afterSummaryChars
+	}
+	if a != nil && a.Session != nil {
+		payload["session_id"] = a.Session.ID
+		payload["model"] = a.Session.Model
+		payload["provider"] = a.Session.Provider
+	}
+	return payload
 }
 
 func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) (string, error) {
@@ -577,7 +640,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					toolBudgetExtensions++
 					toolBudgetLimit += extraTurns
 					if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars/2 {
-						a.Compact("Auto-compacted to preserve important context while extending the tool budget after sustained progress.")
+						if _, err := a.CompactWithTrigger(ctx, "Auto-compacted to preserve important context while extending the tool budget after sustained progress.", "auto", "tool_budget_extension"); err != nil {
+							return "", err
+						}
 					}
 					recoveryRecent := summarizeRecentToolTurns(a.Session.Messages, 4)
 					if a.EmitProgress != nil {
@@ -620,7 +685,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		turnCount++
 		lastIteration = turnCount
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
-			a.Compact("Auto-compacted due to context growth.")
+			if _, err := a.CompactWithTrigger(ctx, "Auto-compacted due to context growth.", "auto", "context_growth"); err != nil {
+				return "", err
+			}
 		}
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,139 @@ func TestHookRuntimeAskDenied(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected hook denial")
+	}
+}
+
+func TestHookEngineMatchesCompactTrigger(t *testing.T) {
+	engine := &HookEngine{
+		Enabled: true,
+		Rules: []HookRule{
+			{
+				ID:     "manual-compact",
+				Events: []HookEvent{HookPreCompact},
+				Match: HookMatch{
+					Triggers: []string{"manual"},
+				},
+				Action: HookAction{Type: "warn", Message: "manual compact"},
+			},
+		},
+	}
+
+	verdict, err := engine.Evaluate(context.Background(), HookPreCompact, HookPayload{
+		"trigger": "manual",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate manual: %v", err)
+	}
+	if len(verdict.Warns) != 1 {
+		t.Fatalf("expected manual trigger warning, got %#v", verdict)
+	}
+
+	verdict, err = engine.Evaluate(context.Background(), HookPreCompact, HookPayload{
+		"trigger": "auto",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate auto: %v", err)
+	}
+	if len(verdict.Warns) != 0 {
+		t.Fatalf("expected auto trigger to be ignored, got %#v", verdict)
+	}
+}
+
+func TestAgentCompactRunsPreAndPostHooks(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "mock", "model-x", "", "ask")
+	addCompactTestMessages(session, 24)
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save session: %v", err)
+	}
+
+	var events []HookEvent
+	var postStatus string
+	agent := &Agent{
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+				events = append(events, event)
+				if got := stringsValueFromAny(payload["hook_event_name"]); got != string(event) {
+					t.Fatalf("unexpected hook_event_name for %s: %q", event, got)
+				}
+				if got := stringsValueFromAny(payload["trigger"]); got != "manual" {
+					t.Fatalf("unexpected compact trigger for %s: %q", event, got)
+				}
+				if event == HookPostCompact {
+					postStatus = stringsValueFromAny(payload["status"])
+					if intValueFromAny(payload["messages_after"]) >= intValueFromAny(payload["messages_before"]) {
+						t.Fatalf("expected compact to reduce messages, payload=%#v", payload)
+					}
+				}
+				return HookVerdict{Allow: true}, nil
+			},
+		},
+		Session: session,
+		Store:   store,
+	}
+
+	summary, err := agent.CompactWithTrigger(context.Background(), "manual compact", "manual", "user_requested")
+	if err != nil {
+		t.Fatalf("CompactWithTrigger: %v", err)
+	}
+	if !strings.Contains(summary, "manual compact") {
+		t.Fatalf("expected compact summary to include instructions, got %q", summary)
+	}
+	if got, want := events, []HookEvent{HookPreCompact, HookPostCompact}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("unexpected compact hook order: got %#v want %#v", got, want)
+	}
+	if postStatus != "success" {
+		t.Fatalf("expected post compact success status, got %q", postStatus)
+	}
+}
+
+func TestAgentCompactPreHookCanBlockMutation(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "mock", "model-x", "", "ask")
+	addCompactTestMessages(session, 24)
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save session: %v", err)
+	}
+	beforeMessages := append([]Message(nil), session.Messages...)
+	beforeSummary := session.Summary
+	agent := &Agent{
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+				if event == HookPreCompact {
+					return HookVerdict{}, fmt.Errorf("pre compact denied")
+				}
+				return HookVerdict{Allow: true}, nil
+			},
+		},
+		Session: session,
+		Store:   store,
+	}
+
+	_, err := agent.CompactWithTrigger(context.Background(), "manual compact", "manual", "user_requested")
+	if err == nil || !strings.Contains(err.Error(), "pre compact denied") {
+		t.Fatalf("expected pre compact denial, got %v", err)
+	}
+	if fmt.Sprint(session.Messages) != fmt.Sprint(beforeMessages) {
+		t.Fatalf("expected messages to remain unchanged after pre hook denial")
+	}
+	if session.Summary != beforeSummary {
+		t.Fatalf("expected summary to remain unchanged after pre hook denial")
+	}
+}
+
+func addCompactTestMessages(session *Session, count int) {
+	for i := 0; i < count; i++ {
+		session.AddMessage(Message{
+			Role: "user",
+			Text: fmt.Sprintf("compact test message %02d", i),
+		})
 	}
 }
 
