@@ -356,6 +356,12 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	} else if goal.MaxIterations < 0 {
 		goal.MaxIterations = defaultGoalMaxIterations
 	}
+	if strings.EqualFold(goal.Status, goalStatusBlocked) {
+		goal.NoProgressCount = 0
+		goal.RepeatedFailureCount = 0
+		goal.LastProgressFingerprint = ""
+		goal.LastFailureSignature = ""
+	}
 	goal.Status = goalStatusRunning
 	goal.Touch()
 	rt.primeGoalRuntimeState(&goal, "run")
@@ -601,6 +607,11 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 	b.WriteString("- Match verification scope to requirement scope; do not use a narrow check to support a broad claim.\n")
 	b.WriteString("- Treat uncertain, stale, indirect, or merely consistent evidence as incomplete and keep working.\n")
 	b.WriteString("- The audit must prove completion, not merely fail to find obvious remaining work.\n\n")
+	b.WriteString("Blocked audit discipline:\n")
+	b.WriteString("- Do not treat the first blocker as final; keep working through recoverable blockers.\n")
+	b.WriteString("- A blocked state is justified only after the same blocking condition repeats for at least three consecutive goal iterations and no meaningful progress is possible without user input or an external-state change.\n")
+	b.WriteString("- If a previously blocked goal was resumed, treat the resumed run as a fresh blocked audit.\n")
+	b.WriteString("- Never stop merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\n\n")
 	b.WriteString("Return a concise engineering status only after you have made the concrete next change or verified with current evidence that no change is needed.")
 	return b.String()
 }

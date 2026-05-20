@@ -107,6 +107,7 @@ func TestBuildGoalImplementationPromptUsesCodexContinuationDiscipline(t *testing
 		"Treat the current worktree, command output, generated artifacts, runtime state, and external state as authoritative.",
 		"Treat completion as unproven until current evidence covers every explicit requirement",
 		"The audit must prove completion, not merely fail to find obvious remaining work.",
+		"If a previously blocked goal was resumed, treat the resumed run as a fresh blocked audit.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected goal implementation prompt to contain %q, got:\n%s", want, prompt)
@@ -486,6 +487,50 @@ func TestGoalLoopStopsOnBlockedGoalUntilExplicitResume(t *testing.T) {
 	}
 	if current.Status != goalStatusBlocked || current.LastError != goal.LastError {
 		t.Fatalf("expected blocked goal to remain stopped, got %#v", current)
+	}
+}
+
+func TestGoalResumeResetsBlockedAuditCounters(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{
+		ID:                      "goal-blocked",
+		Objective:               "finish blocked objective",
+		Status:                  goalStatusBlocked,
+		LastError:               "same blocker",
+		NoProgressCount:         4,
+		RepeatedFailureCount:    4,
+		LastProgressFingerprint: "stale-progress",
+		LastFailureSignature:    "same blocker",
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:    &output,
+		ui:        NewUI(),
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		clientErr: errors.New("provider offline"),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleGoalCommand("resume " + goal.ID); err == nil || !strings.Contains(err.Error(), "provider offline") {
+		t.Fatalf("expected provider error after resume setup, got %v", err)
+	}
+	current, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if current.NoProgressCount != 0 || current.RepeatedFailureCount != 0 ||
+		current.LastProgressFingerprint != "" || current.LastFailureSignature != "" {
+		t.Fatalf("expected blocked audit counters to reset on resume, got %#v", current)
+	}
+	if current.Status != goalStatusBlocked {
+		t.Fatalf("expected provider error to leave goal blocked, got %#v", current)
 	}
 }
 
