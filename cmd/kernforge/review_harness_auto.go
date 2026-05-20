@@ -554,6 +554,12 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 		strings.HasPrefix(lower, "수정 전에 리뷰를 완료했습니다.") ||
 		strings.HasPrefix(lower, "수정 전 리뷰 finding을 사용자에게 먼저 보여줘야 합니다.") ||
 		strings.HasPrefix(lower, "직전 리뷰의 차단 finding을 수정하는 후속 요청입니다.")
+	hasGoalContextPrefix := strings.HasPrefix(lower, "autonomous goal iteration ") ||
+		strings.HasPrefix(lower, "autonomous goal repair pass ") ||
+		strings.HasPrefix(lower, "autonomous final-goal repair pass ") ||
+		strings.HasPrefix(lower, "final semantic goal review for autonomous goal ") ||
+		strings.HasPrefix(lower, "continue working toward the active thread goal.") ||
+		strings.HasPrefix(lower, "<goal_context>")
 
 	return strings.HasPrefix(lower, "automatic pre-write review ") ||
 		strings.HasPrefix(lower, "automatic post-change review ") ||
@@ -567,6 +573,7 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 		strings.HasPrefix(lower, "자동 검증") ||
 		strings.HasPrefix(lower, "리뷰어 피드백:") ||
 		strings.HasPrefix(lower, "도구 경로 업데이트 후 자동 검증") ||
+		hasGoalContextPrefix ||
 		hasInternalReviewPrefix ||
 		hasToolFailurePrefix ||
 		looksLikePreWriteInternalContextMessage(text) ||

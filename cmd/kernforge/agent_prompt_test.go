@@ -69,6 +69,27 @@ func TestSystemPromptUsesExternalUserRequestAfterInternalSteering(t *testing.T) 
 	}
 }
 
+func TestSystemPromptUsesExternalUserRequestAfterGoalSteering(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Fix the RuntimeManager.cpp bug."})
+	session.AddMessage(Message{Role: "user", Text: buildGoalImplementationPrompt(GoalState{
+		Objective: "Codex repo와 kernforge 전체 코드를 비교 분석해",
+	}, 2)})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "explicitly asks for a fix") {
+		t.Fatalf("expected system prompt to preserve external edit intent after goal steering, got %q", prompt)
+	}
+	if strings.Contains(prompt, "Respond in Korean because the latest user request is written in Korean") {
+		t.Fatalf("goal steering should not become the latest external language request, got %q", prompt)
+	}
+}
+
 func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

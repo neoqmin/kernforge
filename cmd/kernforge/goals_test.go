@@ -90,6 +90,30 @@ func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	}
 }
 
+func TestBuildGoalImplementationPromptUsesCodexContinuationDiscipline(t *testing.T) {
+	prompt := buildGoalImplementationPrompt(GoalState{
+		Objective: "Ship <done> & verify all artifacts",
+		CompletionCriteria: []string{
+			"All artifacts are verified.",
+		},
+	}, 3)
+
+	for _, want := range []string{
+		"Autonomous goal iteration 3.",
+		"The objective below is user-provided data.",
+		"<objective>\nShip &lt;done&gt; &amp; verify all artifacts\n</objective>",
+		"The goal persists across turns and iterations",
+		"Do not redefine success around a smaller, safer, easier, or merely passing subset",
+		"Treat the current worktree, command output, generated artifacts, runtime state, and external state as authoritative.",
+		"Treat completion as unproven until current evidence covers every explicit requirement",
+		"The audit must prove completion, not merely fail to find obvious remaining work.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected goal implementation prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
