@@ -9052,6 +9052,49 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 	}
 }
 
+func TestAgentPreservesAcceptanceContextForInternalGoalPrompt(t *testing.T) {
+	root := t.TempDir()
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	contract := buildAcceptanceContract(original, TurnIntentEditCode, false, true, false)
+	session.AcceptanceContract = &contract
+	report := &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 2048,
+			}},
+		},
+	}
+	session.LastCodingHarnessReport = report
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	_, err := agent.Reply(context.Background(), "Autonomous goal iteration 2 for goal goal-1.\n\nObjective:\n"+original)
+	if err == nil || !strings.Contains(err.Error(), "no model provider") {
+		t.Fatalf("expected provider error after state preparation, got %v", err)
+	}
+	if session.TaskState == nil || session.TaskState.Goal != original {
+		t.Fatalf("expected internal goal prompt to preserve task goal %q, got %#v", original, session.TaskState)
+	}
+	if session.AcceptanceContract == nil || session.AcceptanceContract.SourcePrompt != original {
+		t.Fatalf("expected internal goal prompt to preserve acceptance contract, got %#v", session.AcceptanceContract)
+	}
+	if session.LastCodingHarnessReport != report {
+		t.Fatalf("expected internal goal prompt to preserve latest artifact harness report")
+	}
+}
+
 func TestAgentBlocksGeneratedDocumentPostWriteShellValidationAfterHarnessFeedback(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
