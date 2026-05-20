@@ -9317,6 +9317,87 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 	}
 }
 
+func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), readTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+		t.Fatalf("expected corrected final answer, got %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("read_file should be blocked after artifact content quality is accepted, got %d calls", readTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "additional inspection") {
+		t.Fatalf("expected blocked inspection guidance, messages=%#v", session.Messages)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected blocked inspection to request only the corrected final answer, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected final harness report to be approved, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
 func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

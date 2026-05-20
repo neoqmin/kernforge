@@ -60,6 +60,57 @@ func TestSaveUserConfigDoesNotLetStaleSessionOverwriteActiveModel(t *testing.T) 
 	}
 }
 
+func TestSaveUserConfigDoesNotLetSessionPermissionOverwriteActiveConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := t.TempDir()
+	cfg := DefaultConfig(workspace)
+	cfg.PermissionMode = "default"
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig initial: %v", err)
+	}
+
+	session := NewSession(workspace, cfg.Provider, cfg.Model, cfg.BaseURL, "bypassPermissions")
+	rt := &runtimeState{
+		cfg:     cfg,
+		session: session,
+	}
+	rt.cfg.MaxToolIterations = 37
+	if err := rt.saveUserConfig(); err != nil {
+		t.Fatalf("saveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.PermissionMode != "default" {
+		t.Fatalf("expected global permission mode to remain default, got %q", loaded.PermissionMode)
+	}
+	if loaded.MaxToolIterations != 37 {
+		t.Fatalf("expected unrelated setting to persist, got %d", loaded.MaxToolIterations)
+	}
+
+	rt.session.PermissionMode = "acceptEdits"
+	rt.cfg.MaxToolIterations = 41
+	if err := rt.saveUserConfigReplacingReviewRoleModels(); err != nil {
+		t.Fatalf("saveUserConfigReplacingReviewRoleModels: %v", err)
+	}
+
+	loaded, err = LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig after role replacement save: %v", err)
+	}
+	if loaded.PermissionMode != "default" {
+		t.Fatalf("expected role replacement save to keep global permission mode default, got %q", loaded.PermissionMode)
+	}
+	if loaded.MaxToolIterations != 41 {
+		t.Fatalf("expected role replacement save to persist unrelated setting, got %d", loaded.MaxToolIterations)
+	}
+}
+
 func TestActivateProviderPersistsNewActiveModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

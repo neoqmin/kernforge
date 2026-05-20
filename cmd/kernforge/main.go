@@ -4204,20 +4204,10 @@ func (rt *runtimeState) configuredInteractiveReviewModel() (ReviewModelConfig, b
 }
 
 func (rt *runtimeState) saveUserConfig() error {
-	if rt != nil && rt.session != nil {
-		if strings.TrimSpace(rt.session.PermissionMode) != "" {
-			rt.cfg.PermissionMode = rt.session.PermissionMode
-		}
-	}
 	return SaveUserConfig(rt.cfg)
 }
 
 func (rt *runtimeState) saveUserConfigReplacingReviewRoleModels() error {
-	if rt != nil && rt.session != nil {
-		if strings.TrimSpace(rt.session.PermissionMode) != "" {
-			rt.cfg.PermissionMode = rt.session.PermissionMode
-		}
-	}
 	return SaveUserConfigReplacingReviewRoleModels(rt.cfg)
 }
 
