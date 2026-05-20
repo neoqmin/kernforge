@@ -9168,6 +9168,103 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 	}
 }
 
+func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	request := "Reviewer feedback: revise the final answer before concluding."
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !agent.shouldFinalizeGeneratedDocumentArtifactReply(request, "Tavern/BugReport.md 생성 완료", false) {
+		t.Fatalf("expected approved document artifact harness to allow finalization without original request context")
+	}
+	for _, call := range []ToolCall{
+		{Name: "run_shell", Arguments: `{"command":"echo validate"}`},
+		{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
+		{Name: "list_files", Arguments: `{"path":"Tavern"}`},
+	} {
+		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
+			t.Fatalf("expected approved document artifact harness to block post-completion call %#v", call)
+		}
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+		t.Fatalf("expected approved document artifact harness to skip interactive final-answer review")
+	}
+}
+
+func TestAgentDoesNotTreatApprovedMixedArtifactHarnessAsGeneratedDocumentOnly(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	request := "Reviewer feedback: revise the final answer before concluding."
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-mixed",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-mixed-001",
+			Status: "success",
+			Paths: []PatchPathChange{
+				{
+					Path:      "Tavern/BugReport.md",
+					Operation: "write_file",
+				},
+				{
+					Path:      "cmd/kernforge/agent.go",
+					Operation: "modify",
+				},
+			},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if agent.shouldFinalizeGeneratedDocumentArtifactReply(request, "Tavern/BugReport.md 생성 완료", false) {
+		t.Fatalf("expected mixed code/doc changes not to use document-only finalization")
+	}
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
+		t.Fatalf("expected mixed code/doc changes not to block normal follow-up tools as document-only churn")
+	}
+}
+
 func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
