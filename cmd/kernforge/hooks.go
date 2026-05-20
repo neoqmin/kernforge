@@ -15,6 +15,8 @@ const (
 	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
 	HookPreToolUse       HookEvent = "PreToolUse"
 	HookPostToolUse      HookEvent = "PostToolUse"
+	HookPreCompact       HookEvent = "PreCompact"
+	HookPostCompact      HookEvent = "PostCompact"
 	HookPreEdit          HookEvent = "PreEdit"
 	HookPostEdit         HookEvent = "PostEdit"
 	HookPreVerification  HookEvent = "PreVerification"
@@ -59,6 +61,7 @@ type HookMatch struct {
 	Interactive             *bool    `json:"interactive,omitempty"`
 	Providers               []string `json:"providers,omitempty"`
 	Models                  []string `json:"models,omitempty"`
+	Triggers                []string `json:"triggers,omitempty"`
 }
 
 type HookRule struct {
@@ -201,6 +204,7 @@ func (rt *HookRuntime) enrichPayload(event HookEvent, payload HookPayload) HookP
 		payload = HookPayload{}
 	}
 	payload["event"] = string(event)
+	payload["hook_event_name"] = string(event)
 	payload["timestamp"] = time.Now().Format(time.RFC3339)
 	payload["interactive"] = rt.Workspace.Perms != nil && rt.Workspace.Perms.prompt != nil
 	if rt.Session != nil {
@@ -395,6 +399,9 @@ func hookRuleMatches(rule HookRule, payload HookPayload) (bool, error) {
 		return false, nil
 	}
 	if !hookMatchStringList(rule.Match.Models, stringsValueFromAny(payload["model"])) {
+		return false, nil
+	}
+	if !hookMatchStringList(rule.Match.Triggers, stringsValueFromAny(payload["trigger"])) {
 		return false, nil
 	}
 	if !hookMatchPatternList(rule.Match.Paths, collectPayloadPaths(payload)) {

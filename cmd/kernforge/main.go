@@ -6274,7 +6274,11 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Conversation cleared"))
 	case "compact":
 		fmt.Fprintln(rt.writer, rt.ui.section("Compact"))
-		fmt.Fprintln(rt.writer, rt.agent.Compact(cmd.Args))
+		summary, err := rt.agent.CompactWithTrigger(context.Background(), cmd.Args, "manual", "user_requested")
+		if err != nil {
+			return false, err
+		}
+		fmt.Fprintln(rt.writer, summary)
 	case "context":
 		fmt.Fprintln(rt.writer, rt.ui.section("Context"))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("approx_chars", fmt.Sprintf("%d", rt.session.ApproxChars())))
