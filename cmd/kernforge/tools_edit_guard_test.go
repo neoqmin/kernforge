@@ -1531,6 +1531,36 @@ func TestRunShellRejectsPowerShellStopParsingForms(t *testing.T) {
 	}
 }
 
+func TestRunShellRejectsRipgrepExternalCommandOptions(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"pre_split":           "rg --pre ./hook pattern .",
+		"pre_equals":          "rg --pre=./hook pattern .",
+		"hostname_bin_split":  "rg --hostname-bin ./hostname pattern .",
+		"hostname_bin_equals": "rg --hostname-bin=./hostname pattern .",
+		"search_zip":          "rg --search-zip pattern .",
+		"short_zip":           "rg -z pattern .",
+		"quoted_pre":          `rg "--pre" docs`,
+		"powershell_pre":      `powershell -NoProfile -Command "rg --pre ./hook pattern ."`,
+		"bash_lc_pre":         `bash -lc "rg --pre=./hook pattern ."`,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected unsafe ripgrep command to be rejected")
+			}
+			if !strings.Contains(err.Error(), "read-only-looking tool form") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestRunShellRejectsManualFileWriteEvenWithScopedWritePaths(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2419,6 +2449,15 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                  shellMutationUnsupported,
 		`rg "--%" docs`: shellMutationReadOnly,
 		`powershell -NoProfile -Command "Write-Output '--%'"`: shellMutationReadOnly,
+		`rg --pre ./hook pattern .`:                           shellMutationUnsafe,
+		`rg --pre=./hook pattern .`:                           shellMutationUnsafe,
+		`rg --hostname-bin ./hostname foo .`:                  shellMutationUnsafe,
+		`rg --hostname-bin=./hostname foo .`:                  shellMutationUnsafe,
+		`rg --search-zip foo .`:                               shellMutationUnsafe,
+		`rg -z foo .`:                                         shellMutationUnsafe,
+		`rg "--pre" docs`:                                     shellMutationUnsafe,
+		`powershell -Command "rg --pre ./p ."`:                shellMutationUnsafe,
+		`bash -lc "rg --pre=./p foo ."`:                       shellMutationUnsafe,
 	}
 
 	for command, want := range cases {

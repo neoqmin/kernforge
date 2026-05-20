@@ -2230,6 +2230,7 @@ const (
 	shellMutationCacheOnly             shellMutationClass = "cache_only"
 	shellMutationExternalInstall       shellMutationClass = "external_install"
 	shellMutationGitMutation           shellMutationClass = "git_mutation"
+	shellMutationUnsafe                shellMutationClass = "unsafe"
 	shellMutationUnsupported           shellMutationClass = "unsupported"
 	shellMutationVerificationArtifacts shellMutationClass = "verification_artifacts"
 	shellMutationWorkspaceWrite        shellMutationClass = "workspace_write"
@@ -2301,6 +2302,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		return guidance, fmt.Errorf("shell command is incompatible with the active shell")
 	}
 	assessment := assessShellCommandMutation(command)
+	if assessment.Class == shellMutationUnsafe {
+		return "", shellCommandUnsafeError("run_shell", assessment)
+	}
 	if assessment.Class == shellMutationUnsupported {
 		return "", shellCommandUnsupportedSyntaxError("run_shell", assessment)
 	}
@@ -2918,6 +2922,9 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
 		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: reason}
 	}
+	if reason := shellCommandUnsafeReadOnlyToolReason(command); reason != "" {
+		return shellCommandAssessment{Class: shellMutationUnsafe, Reason: reason}
+	}
 
 	tokens := shellCommandAssessmentTokens(command)
 	if len(tokens) == 0 {
@@ -3043,6 +3050,54 @@ func shellCommandUnsupportedSyntaxError(toolName string, assessment shellCommand
 	return fmt.Errorf("%s command uses unsupported shell syntax that cannot be safely analyzed (%s)", toolName, assessment.Reason)
 }
 
+func shellCommandUnsafeError(toolName string, assessment shellCommandAssessment) error {
+	return fmt.Errorf("%s command uses a read-only-looking tool form that can execute external commands; use an explicit shell command only after reviewing the risk (%s)", toolName, assessment.Reason)
+}
+
+func shellCommandUnsafeReadOnlyToolReason(command string) string {
+	if reason := shellCommandUnsafeRipgrepReason(command); reason != "" {
+		return reason
+	}
+	return ""
+}
+
+func shellCommandUnsafeRipgrepReason(command string) string {
+	tokens := shellCommandRawInspectionTokens(command)
+	for start := 0; start < len(tokens); {
+		for start < len(tokens) && shellCommandTokenIsSegmentDelimiter(tokens[start]) {
+			start++
+		}
+		end := start
+		for end < len(tokens) && !shellCommandTokenIsSegmentDelimiter(tokens[end]) {
+			end++
+		}
+		if start < end {
+			if reason := shellCommandUnsafeRipgrepSegmentReason(tokens[start:end]); reason != "" {
+				return reason
+			}
+		}
+		start = end + 1
+	}
+	return ""
+}
+
+func shellCommandUnsafeRipgrepSegmentReason(tokens []string) string {
+	if len(tokens) == 0 || shellTokenBaseName(tokens[0]) != "rg" {
+		return ""
+	}
+	for _, arg := range tokens[1:] {
+		switch {
+		case arg == "--pre" || strings.HasPrefix(arg, "--pre="):
+			return "ripgrep --pre can execute an arbitrary preprocessor command"
+		case arg == "--hostname-bin" || strings.HasPrefix(arg, "--hostname-bin="):
+			return "ripgrep --hostname-bin can execute an arbitrary command"
+		case arg == "--search-zip" || arg == "-z":
+			return "ripgrep archive search can invoke external helper programs"
+		}
+	}
+	return ""
+}
+
 func shellCommandManualWorkspaceWriteReason(command string) string {
 	unquotedLower := strings.ToLower(shellCommandWithoutQuotedLiterals(command))
 	if shellCommandHasWorkspaceWriteRedirection(unquotedLower) || strings.Contains(unquotedLower, "| tee ") || strings.HasPrefix(unquotedLower, "tee ") {
@@ -3121,14 +3176,20 @@ func shellCommandInvokesNestedShell(command string) bool {
 func shellCommandAssessmentTokens(command string) []string {
 	unquoted := strings.ToLower(strings.TrimSpace(shellCommandWithoutQuotedLiterals(command)))
 	tokens := splitShellCommandWords(unquoted)
-	rawTokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
-	rawTokens = unwrapShellCommandWrapperTokens(rawTokens)
-	rawTokens = retokenizeNestedShellPayload(rawTokens)
+	rawTokens := shellCommandRawInspectionTokens(command)
 	unwrappedTokens := unwrapShellCommandWrapperTokens(tokens)
 	if len(rawTokens) > 0 && shellCommandShouldPreferRawTokens(unwrappedTokens) {
 		return rawTokens
 	}
 	return unwrappedTokens
+}
+
+func shellCommandRawInspectionTokens(command string) []string {
+	rawTokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
+	rawTokens = unwrapShellCommandWrapperTokens(rawTokens)
+	rawTokens = unwrapShellCommandLCWrapperTokens(rawTokens)
+	rawTokens = retokenizeNestedShellPayload(rawTokens)
+	return rawTokens
 }
 
 func shellCommandContainsPowerShellStopParsing(command string) bool {
@@ -3273,6 +3334,26 @@ unwrap:
 		}
 		return tokens
 	}
+}
+
+func unwrapShellCommandLCWrapperTokens(tokens []string) []string {
+	if len(tokens) < 3 {
+		return tokens
+	}
+	base := shellTokenBaseName(tokens[0])
+	if base != "bash" && base != "sh" && base != "zsh" {
+		return tokens
+	}
+	for i := 1; i < len(tokens); i++ {
+		switch tokens[i] {
+		case "-c", "-lc":
+			if i+1 < len(tokens) {
+				return tokens[i+1 : i+2]
+			}
+			return nil
+		}
+	}
+	return tokens
 }
 
 func retokenizeNestedShellPayload(tokens []string) []string {
