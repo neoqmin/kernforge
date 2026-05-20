@@ -861,6 +861,24 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
+			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
+				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written."
+				if a.shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, unresolvedVerification) {
+					reply, err := a.finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(resp.Message.ToolCalls, attemptedEditTool, unresolvedVerification, reason)
+					if err != nil {
+						return "", err
+					}
+					return reply, nil
+				}
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					reason,
+					generatedDocumentArtifactValidationToolGuidance(),
+				); err != nil {
+					return "", err
+				}
+				continue
+			}
 			if block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls(resp.Message.ToolCalls, a.Session); block {
 				if err := a.addToolCallRedirectGuidance(
 					resp.Message.ToolCalls,
@@ -876,16 +894,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: this is a read-only analysis turn; edit tools are blocked.",
 					"This request is analysis-only. Do not edit files or call edit tools. Investigate the current code and logs, then answer with the root cause or findings.",
-				); err != nil {
-					return "", err
-				}
-				continue
-			}
-			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
-				if err := a.addToolCallRedirectGuidance(
-					resp.Message.ToolCalls,
-					"NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written.",
-					generatedDocumentArtifactValidationToolGuidance(),
 				); err != nil {
 					return "", err
 				}
@@ -2324,6 +2332,59 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	}
 	report := a.Session.LastCodingHarnessReport
 	return report != nil && report.Approved
+}
+
+func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCalls(request string, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return false
+	}
+	if a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() && !a.Session.LastVerification.WasSkipped() {
+		return false
+	}
+	if unresolvedVerification && (a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped()) {
+		return false
+	}
+	report := a.Session.LastCodingHarnessReport
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) {
+		return false
+	}
+	if copyReport.Approved {
+		return true
+	}
+	return a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, report, false)
+}
+
+func (a *Agent) finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(calls []ToolCall, attemptedEditTool bool, unresolvedVerification bool, reason string) (string, error) {
+	if err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
+		return "", err
+	}
+	reply := a.synthesizeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport)
+	synthesizedReport := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+	a.Session.LastCodingHarnessReport = &synthesizedReport
+	a.Session.LastTestImpactReport = &synthesizedReport.TestImpact
+	a.Session.LastJobSupervisorReport = &synthesizedReport.JobSupervisor
+	if !synthesizedReport.Approved {
+		reply = generatedDocumentArtifactHarnessBlockedReply(&synthesizedReport)
+	}
+	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
+	a.finalizePatchTransactionOnReturn()
+	a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+	a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+	if a.Store != nil {
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+	}
+	return reply, nil
 }
 
 func (a *Agent) shouldRouteCommentaryReplyThroughFinalGates(request string, reply string, attemptedEditTool bool, successfulEditTool bool, unresolvedVerification bool) bool {
