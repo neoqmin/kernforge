@@ -9949,6 +9949,92 @@ func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *te
 	}
 }
 
+func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	readArgs, _ := json.Marshal(map[string]any{"path": "Tavern/BugReport.md"})
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-read-after-final",
+						Name:      "read_file",
+						Arguments: string(readArgs),
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), readTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected generated document final reply, got %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("read_file should not execute when final-looking document preamble has tool calls, got %d calls", readTool.calls)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected runtime to finish without post-final tool churn, got %d request(s)", len(provider.requests))
+	}
+	if !sessionContainsToolResultText(session, "call-read-after-final", "generated document artifact turns do not run shell or review validation") {
+		t.Fatalf("expected blocked read tool result to be recorded, messages=%#v", session.Messages)
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected final preamble harness report to approve, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
 func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

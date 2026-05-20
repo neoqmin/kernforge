@@ -862,6 +862,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
+			if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(latestUser, resp.Message.ToolCalls, resp.Message.Text, attemptedEditTool, unresolvedVerification); err != nil {
+				return "", err
+			} else if finalized {
+				return reply, nil
+			}
 			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
 				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written."
 				if a.shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, unresolvedVerification) {
@@ -2401,6 +2406,56 @@ func (a *Agent) finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(calls []T
 		}
 	}
 	return reply, nil
+}
+
+func (a *Agent) maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(request string, calls []ToolCall, reply string, attemptedEditTool bool, unresolvedVerification bool) (string, bool, error) {
+	if a == nil || a.Session == nil || len(calls) == 0 {
+		return "", false, nil
+	}
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return "", false, nil
+	}
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return "", false, nil
+	}
+	if a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() && !a.Session.LastVerification.WasSkipped() {
+		return "", false, nil
+	}
+
+	report := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+	a.Session.LastCodingHarnessReport = &report
+	a.Session.LastTestImpactReport = &report.TestImpact
+	a.Session.LastJobSupervisorReport = &report.JobSupervisor
+	if !report.Approved {
+		if !a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, unresolvedVerification) {
+			return "", false, nil
+		}
+		reply = a.synthesizeGeneratedDocumentArtifactFinalReply(&report)
+		report = a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+		a.Session.LastCodingHarnessReport = &report
+		a.Session.LastTestImpactReport = &report.TestImpact
+		a.Session.LastJobSupervisorReport = &report.JobSupervisor
+		if !report.Approved {
+			reply = generatedDocumentArtifactHarnessBlockedReply(&report)
+		}
+	}
+
+	reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written."
+	if err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
+		return "", false, err
+	}
+	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
+	a.finalizePatchTransactionOnReturn()
+	a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+	a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+	if a.Store != nil {
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", false, err
+		}
+	}
+	return reply, true, nil
 }
 
 func (a *Agent) shouldRouteCommentaryReplyThroughFinalGates(request string, reply string, attemptedEditTool bool, successfulEditTool bool, unresolvedVerification bool) bool {
