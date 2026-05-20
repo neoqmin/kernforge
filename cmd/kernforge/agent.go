@@ -817,7 +817,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
 				if err := a.addToolCallRedirectGuidance(
 					resp.Message.ToolCalls,
-					"NOT_EXECUTED: generated document artifact turns do not run shell or review validation after the document is written.",
+					"NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written.",
 					generatedDocumentArtifactValidationToolGuidance(),
 				); err != nil {
 					return "", err
@@ -2313,11 +2313,12 @@ func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request 
 		return false
 	}
 	artifactApproved := a.generatedDocumentArtifactQualityApproved()
+	artifactContentAccepted := a.generatedDocumentArtifactContentQualityAccepted()
 	for _, call := range calls {
 		if generatedDocumentArtifactValidationToolCall(call) {
 			return true
 		}
-		if artifactApproved && generatedDocumentArtifactPostCompletionToolCall(call) {
+		if (artifactApproved || artifactContentAccepted) && generatedDocumentArtifactPostCompletionToolCall(call) {
 			return true
 		}
 	}
@@ -2329,6 +2330,18 @@ func (a *Agent) generatedDocumentArtifactQualityApproved() bool {
 		return false
 	}
 	return a.Session.LastCodingHarnessReport.Approved
+}
+
+func (a *Agent) generatedDocumentArtifactContentQualityAccepted() bool {
+	if a == nil || a.Session == nil || a.Session.LastCodingHarnessReport == nil {
+		return false
+	}
+	report := *a.Session.LastCodingHarnessReport
+	report.Normalize()
+	if len(report.ArtifactQuality.Artifacts) == 0 {
+		return false
+	}
+	return !codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings)
 }
 
 func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
@@ -2352,7 +2365,7 @@ func generatedDocumentArtifactPostCompletionToolCall(call ToolCall) bool {
 }
 
 func generatedDocumentArtifactValidationToolGuidance() string {
-	return "This is a generated document artifact turn. Do not run shell, review, or additional inspection tools after the report is written and artifact-quality checks have accepted it. Deterministic artifact-quality checks are the post-write gate here. If those checks reported blockers, inspect or edit the document artifact itself; otherwise provide the final answer."
+	return "This is a generated document artifact turn. Do not run shell, review, or additional inspection tools after the report is written and artifact-quality content checks have accepted it. Deterministic artifact-quality checks are the post-write gate here. If those checks reported blockers, inspect or edit the document artifact itself; otherwise revise only the final answer and conclude."
 }
 
 func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool {
