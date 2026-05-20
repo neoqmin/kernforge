@@ -677,6 +677,12 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	if got := turnMeta["provider"]; got != "scripted" {
 		t.Fatalf("expected provider metadata, got %#v in %#v", got, turnMeta)
 	}
+	if got := turnMeta["session_id"]; got != session.ID {
+		t.Fatalf("expected session id metadata %q, got %#v in %#v", session.ID, got, turnMeta)
+	}
+	if got, ok := turnMeta["turn_started_at_unix_ms"].(float64); !ok || got <= 0 {
+		t.Fatalf("expected positive turn start metadata, got %#v in %#v", turnMeta["turn_started_at_unix_ms"], turnMeta)
+	}
 	if got := turnMeta["permission_mode"]; got != "default" {
 		t.Fatalf("expected permission mode metadata, got %#v in %#v", got, turnMeta)
 	}
@@ -706,7 +712,11 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 		Session:   NewSession(baseRoot, "scripted", "model-a", "", "full-access"),
 	}
 
-	turnMeta := agent.mcpTurnMetadataForToolCall()
+	startedAt := time.UnixMilli(1_700_000_000_123)
+	turnMeta := agent.mcpTurnMetadataForToolCall(startedAt)
+	if got := turnMeta["turn_started_at_unix_ms"]; got != int64(1_700_000_000_123) {
+		t.Fatalf("expected deterministic turn start metadata, got %#v in %#v", got, turnMeta)
+	}
 	if got := turnMeta["cwd"]; got != activeRoot {
 		t.Fatalf("expected cwd to use active workspace root %q, got %#v in %#v", activeRoot, got, turnMeta)
 	}

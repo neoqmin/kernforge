@@ -176,13 +176,19 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	images := appendUniqueImages(nil, mentionImages...)
 	images = appendUniqueImages(images, extraImages...)
-	a.initializeTaskState(userText)
-	contract := buildAcceptanceContract(userText, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
-	a.Session.AcceptanceContract = &contract
-	a.Session.LastCodingHarnessReport = nil
-	a.Session.LastUserChangeIsolationReport = nil
-	a.Session.LastTestImpactReport = nil
-	a.Session.LastJobSupervisorReport = nil
+	if a.shouldStartNewExternalAcceptanceContext(userText) {
+		a.initializeTaskState(userText)
+		contract := buildAcceptanceContract(userText, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
+		a.Session.AcceptanceContract = &contract
+		a.Session.LastCodingHarnessReport = nil
+		a.Session.LastUserChangeIsolationReport = nil
+		a.Session.LastTestImpactReport = nil
+		a.Session.LastJobSupervisorReport = nil
+	} else if a.Session.TaskState == nil {
+		if prompt := a.preservableExternalAcceptancePrompt(); prompt != "" {
+			a.initializeTaskState(prompt)
+		}
+	}
 	a.startUserChangeIsolation()
 	a.Session.AddMessage(Message{
 		Role:   "user",
@@ -340,6 +346,41 @@ func (a *Agent) pendingReviewRepairConfirmationMode() string {
 		return reviewRepairConfirmationModeRepair
 	}
 	return mode
+}
+
+func (a *Agent) shouldStartNewExternalAcceptanceContext(userText string) bool {
+	if a == nil || a.Session == nil {
+		return true
+	}
+	text := strings.TrimSpace(baseUserQueryText(userText))
+	if text == "" {
+		return true
+	}
+	if looksLikeInternalReviewFeedbackUserMessage(text) {
+		return !a.hasPreservableExternalAcceptanceContext()
+	}
+	return true
+}
+
+func (a *Agent) hasPreservableExternalAcceptanceContext() bool {
+	return a.preservableExternalAcceptancePrompt() != ""
+}
+
+func (a *Agent) preservableExternalAcceptancePrompt() string {
+	if a == nil || a.Session == nil {
+		return ""
+	}
+	if a.Session.AcceptanceContract != nil {
+		if prompt := strings.TrimSpace(baseUserQueryText(a.Session.AcceptanceContract.SourcePrompt)); prompt != "" && !looksLikeInternalReviewFeedbackUserMessage(prompt) {
+			return prompt
+		}
+	}
+	if a.Session.TaskState != nil {
+		if goal := strings.TrimSpace(baseUserQueryText(a.Session.TaskState.Goal)); goal != "" && !looksLikeInternalReviewFeedbackUserMessage(goal) {
+			return goal
+		}
+	}
+	return latestExternalUserMessageText(a.Session.Messages)
 }
 
 func parseReviewRepairConfirmationInput(input string) reviewRepairConfirmationDecision {
@@ -510,6 +551,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	repeatedToolFailureRecoveryTurns := 0
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
+	turnStartedAt := time.Now()
 	maxToolIterations := configMaxToolIterations(a.Config)
 	toolBudgetLimit := maxToolIterations
 	toolBudgetExtensions := 0
@@ -1473,7 +1515,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				patchProbe := a.beginPatchTransactionToolProbe(call)
 				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
-				toolCtx = contextWithMCPTurnMetadata(toolCtx, a.mcpTurnMetadataForToolCall())
+				toolCtx = contextWithMCPTurnMetadata(toolCtx, a.mcpTurnMetadataForToolCall(turnStartedAt))
 				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
@@ -6298,11 +6340,14 @@ func pathLooksLikeDocumentArtifact(path string) bool {
 	)
 }
 
-func (a *Agent) mcpTurnMetadataForToolCall() map[string]any {
+func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]any {
 	if a == nil || a.Session == nil {
 		return nil
 	}
 	metadata := map[string]any{}
+	if sessionID := strings.TrimSpace(a.Session.ID); sessionID != "" {
+		metadata["session_id"] = sessionID
+	}
 	if provider := strings.TrimSpace(a.Session.Provider); provider != "" {
 		metadata["provider"] = provider
 	}
@@ -6311,6 +6356,9 @@ func (a *Agent) mcpTurnMetadataForToolCall() map[string]any {
 	}
 	if effort := normalizeReasoningEffort(a.Config.ReasoningEffort); effort != "" {
 		metadata["reasoning_effort"] = effort
+	}
+	if !turnStartedAt.IsZero() {
+		metadata["turn_started_at_unix_ms"] = turnStartedAt.UnixMilli()
 	}
 	if permissionMode := strings.TrimSpace(a.Session.PermissionMode); permissionMode != "" {
 		metadata["permission_mode"] = permissionMode
