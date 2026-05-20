@@ -917,7 +917,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			reply := strings.TrimSpace(resp.Message.Text)
 			if resp.Message.Phase == messagePhaseCommentary {
-				if a.shouldRouteCommentaryGeneratedDocumentReplyThroughFinalGates(latestUser, reply) {
+				if a.shouldRouteCommentaryReplyThroughFinalGates(latestUser, reply, attemptedEditTool, successfulEditTool, unresolvedVerification) {
 					resp.Message.Phase = messagePhaseFinalAnswerCandidate
 					if len(a.Session.Messages) > 0 {
 						a.Session.Messages[len(a.Session.Messages)-1].Phase = messagePhaseFinalAnswerCandidate
@@ -2217,14 +2217,23 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	return report != nil && report.Approved
 }
 
-func (a *Agent) shouldRouteCommentaryGeneratedDocumentReplyThroughFinalGates(request string, reply string) bool {
+func (a *Agent) shouldRouteCommentaryReplyThroughFinalGates(request string, reply string, attemptedEditTool bool, successfulEditTool bool, unresolvedVerification bool) bool {
 	if a == nil || a.Session == nil {
 		return false
 	}
 	if strings.TrimSpace(reply) == "" {
 		return false
 	}
-	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
+	if a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return true
+	}
+	if unresolvedVerification {
+		return true
+	}
+	if attemptedEditTool || successfulEditTool {
+		return true
+	}
+	return len(sessionPatchTransactionChangedPaths(a.Session)) > 0
 }
 
 func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, resp ChatResponse) bool {
