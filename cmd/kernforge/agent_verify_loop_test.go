@@ -3514,6 +3514,68 @@ func TestSummarizeMessagesIncludesCompactToolErrorDetails(t *testing.T) {
 	}
 }
 
+func TestSummarizeMessagesSkipsAssistantCommentaryAndFinalCandidates(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "original user request"},
+		{Role: "assistant", Phase: messagePhaseCommentary, Text: "progress update that should not be replayed"},
+		{Role: "assistant", Phase: messagePhaseFinalAnswerCandidate, Text: "unaccepted final answer candidate"},
+		{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: "accepted final answer"},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseCommentary,
+			ToolCalls: []ToolCall{{
+				Name:      "read_file",
+				Arguments: `{"path":"a.cpp"}`,
+			}},
+		},
+		{Role: "tool", ToolName: "read_file", Text: "ok"},
+	}
+
+	summary := summarizeMessages(messages, "Auto-compacted due to context growth.")
+	if strings.Contains(summary, "progress update that should not be replayed") {
+		t.Fatalf("assistant commentary leaked into compact summary: %q", summary)
+	}
+	if strings.Contains(summary, "unaccepted final answer candidate") {
+		t.Fatalf("final-answer candidate leaked into compact summary: %q", summary)
+	}
+	if !strings.Contains(summary, "original user request") {
+		t.Fatalf("expected user request to remain in compact summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "accepted final answer") {
+		t.Fatalf("expected accepted final answer to remain in compact summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "tool turn: read_file[a.cpp]:ok") {
+		t.Fatalf("expected assistant tool evidence to remain in compact summary, got %q", summary)
+	}
+}
+
+func TestCompactDropsStaleFinalAnswerCandidatesBeforeSummarizing(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "older user request"})
+	session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswerCandidate, Text: "stale final candidate"})
+	for i := 0; i < 20; i++ {
+		session.AddMessage(Message{Role: "user", Text: fmt.Sprintf("message %02d", i)})
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	summary := agent.Compact("test compact")
+	if strings.Contains(summary, "stale final candidate") {
+		t.Fatalf("stale final-answer candidate leaked into compact summary: %q", summary)
+	}
+	for _, msg := range agent.Session.Messages {
+		if msg.Role == "assistant" && msg.Phase == messagePhaseFinalAnswerCandidate {
+			t.Fatalf("stale final-answer candidate remained after compact: %#v", msg)
+		}
+	}
+}
+
 func TestSummarizeMessagesKeepsPinnedVerificationSnippet(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Text: "Automatic verification results:\n- msbuild failed\n- ctest skipped\n- rerun needed"},

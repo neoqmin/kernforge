@@ -403,6 +403,7 @@ func formatNoActionableReviewerGateRepairReply(cfg Config) string {
 }
 
 func (a *Agent) Compact(instructions string) string {
+	a.discardStaleFinalAnswerCandidates()
 	cut := compactCutIndex(a.Session.Messages, 12, 4)
 	if cut <= 0 {
 		return "conversation is already compact"
@@ -6533,6 +6534,9 @@ func summarizeMessages(messages []Message, instructions string) string {
 			i += countFollowingToolMessages(messages, i)
 			continue
 		}
+		if !messageShouldAppearInCompactSummary(msg) {
+			continue
+		}
 		text := compactMessageSummaryText(msg)
 		if text == "" && len(msg.Images) > 0 {
 			text = fmt.Sprintf("attached %d image(s)", len(msg.Images))
@@ -6659,6 +6663,21 @@ func compactMessageSummaryText(msg Message) string {
 		return text
 	}
 	return compactPinnedMessageSnippet(text, 6)
+}
+
+func messageShouldAppearInCompactSummary(msg Message) bool {
+	role := strings.TrimSpace(strings.ToLower(msg.Role))
+	if role != "assistant" {
+		return true
+	}
+	if len(msg.ToolCalls) > 0 {
+		return true
+	}
+	phase := strings.TrimSpace(msg.Phase)
+	if phase == messagePhaseCommentary || phase == messagePhaseFinalAnswerCandidate {
+		return false
+	}
+	return true
 }
 
 func messageShouldPinForCompact(msg Message) bool {
