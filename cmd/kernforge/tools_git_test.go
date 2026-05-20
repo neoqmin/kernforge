@@ -33,6 +33,48 @@ func TestGitAddAndCommitTool(t *testing.T) {
 	}
 }
 
+func TestGitStatusToolDisablesConfiguredHooksPath(t *testing.T) {
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	argsPath := filepath.Join(t.TempDir(), "git_args.txt")
+	envPath := filepath.Join(t.TempDir(), "git_env.txt")
+	installFakeGit(t, binDir)
+	t.Setenv("GIT_ARGS_FILE", argsPath)
+	t.Setenv("GIT_ENV_FILE", envPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	root := t.TempDir()
+	ws := Workspace{Root: root, BaseRoot: root}
+	out, err := NewGitStatusTool(ws).Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("git_status: %v\n%s", err, out)
+	}
+
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read git args: %v", err)
+	}
+	argsText := strings.TrimSpace(string(argsBytes))
+	for _, want := range []string{
+		"-c",
+		"core.hooksPath=" + disabledGitHooksPath(),
+		"status --short --branch",
+	} {
+		if !strings.Contains(argsText, want) {
+			t.Fatalf("expected fake git args to contain %q, got %q", want, argsText)
+		}
+	}
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read git env: %v", err)
+	}
+	if strings.TrimSpace(string(envBytes)) != "0" {
+		t.Fatalf("expected GIT_OPTIONAL_LOCKS=0, got %q", string(envBytes))
+	}
+}
+
 func TestGitPushToolSetsUpstream(t *testing.T) {
 	repo := initTestGitRepo(t)
 	remote := initBareRemote(t)
@@ -180,5 +222,28 @@ func installFakeGh(t *testing.T, binDir string) {
 		"printf '%s\n' 'https://github.com/example/repo/pull/123'\n"
 	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
+	}
+}
+
+func installFakeGit(t *testing.T, binDir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(binDir, "git.cmd")
+		text := "@echo off\r\n" +
+			"echo %* > \"%GIT_ARGS_FILE%\"\r\n" +
+			"echo %GIT_OPTIONAL_LOCKS% > \"%GIT_ENV_FILE%\"\r\n" +
+			"echo ## main\r\n"
+		if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
+			t.Fatalf("write fake git: %v", err)
+		}
+		return
+	}
+	path := filepath.Join(binDir, "git")
+	text := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" > \"$GIT_ARGS_FILE\"\n" +
+		"printf '%s\\n' \"$GIT_OPTIONAL_LOCKS\" > \"$GIT_ENV_FILE\"\n" +
+		"printf '%s\\n' '## main'\n"
+	if err := os.WriteFile(path, []byte(text), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
 	}
 }

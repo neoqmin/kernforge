@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1041,7 +1040,7 @@ func gitChangedPaths(root string) []string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "status", "--short")
+	cmd := newGitHelperCommand(ctx, root, "status", "--short")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
