@@ -9223,6 +9223,79 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 	}
 }
 
+func TestAgentGeneratedDocumentIgnoresEndTurnFalseCommentaryPhaseAfterArtifactWrite(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	endTurnFalse := false
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role:  "assistant",
+					Text:  finalReply,
+					Phase: messagePhaseCommentary,
+				},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	shellTool := &staticTool{name: "run_shell", output: "shell should not run"}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), shellTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected generated document final reply, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected generated document commentary-phase end_turn=false text to finalize without another request, got %d", len(provider.requests))
+	}
+	if shellTool.calls != 0 {
+		t.Fatalf("post-final shell validation should not execute, got %d call(s)", shellTool.calls)
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected commentary-phase generated document reply to be promoted to final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
 func TestAgentGeneratedDocumentSkippedVerificationCompletesSelfDrivingState(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
