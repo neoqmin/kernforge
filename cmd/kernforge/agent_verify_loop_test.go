@@ -9381,20 +9381,17 @@ func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *te
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "검증은 실행하지 않았습니다") {
-		t.Fatalf("expected corrected final answer, got %q", reply)
+	if !strings.Contains(reply, "Build/test verification was not run") {
+		t.Fatalf("expected synthesized safe final answer, got %q", reply)
 	}
 	if readTool.calls != 0 {
 		t.Fatalf("read_file should be blocked after artifact content quality is accepted, got %d calls", readTool.calls)
 	}
-	if !sessionContainsToolResultText(session, "call-1", "additional inspection") {
-		t.Fatalf("expected blocked inspection guidance, messages=%#v", session.Messages)
-	}
-	if len(provider.requests) != 4 {
-		t.Fatalf("expected blocked inspection to request only the corrected final answer, got %d requests", len(provider.requests))
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected runtime to synthesize the safe final answer without another model/tool turn, got %d requests", len(provider.requests))
 	}
 	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
-		t.Fatalf("expected final harness report to be approved, got %#v", session.LastCodingHarnessReport)
+		t.Fatalf("expected synthesized final answer to refresh an approved harness report, got %#v", session.LastCodingHarnessReport)
 	}
 }
 
@@ -9733,11 +9730,11 @@ func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *t
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "검증은 실행하지 않았습니다") {
-		t.Fatalf("expected corrected final answer, got %q with harness %#v", reply, session.LastCodingHarnessReport)
+	if !strings.Contains(reply, "Build/test verification was not run") {
+		t.Fatalf("expected synthesized safe final answer, got %q with harness %#v", reply, session.LastCodingHarnessReport)
 	}
-	if len(provider.requests) != 4 {
-		t.Fatalf("expected corrected final answer to finish without an extra validation turn, got %d requests", len(provider.requests))
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected synthesized final answer to finish without extra model turns, got %d requests", len(provider.requests))
 	}
 	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
 		t.Fatalf("expected final harness report to be refreshed and approved, got %#v", session.LastCodingHarnessReport)
