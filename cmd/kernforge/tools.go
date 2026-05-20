@@ -3468,7 +3468,11 @@ func shellCommandAssessmentTokens(command string) []string {
 func shellCommandRawInspectionTokens(command string) []string {
 	rawTokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
 	rawTokens = unwrapShellCommandWrapperTokens(rawTokens)
-	rawTokens = unwrapShellCommandLCWrapperTokens(rawTokens)
+	if shellCommandTokensStartPOSIXShell(rawTokens) {
+		rawTokens = unwrapShellCommandLCWrapperInspectionTokens(rawTokens)
+	} else {
+		rawTokens = unwrapShellCommandLCWrapperTokens(rawTokens)
+	}
 	rawTokens = retokenizeNestedShellPayload(rawTokens)
 	return rawTokens
 }
@@ -3670,6 +3674,30 @@ func unwrapShellCommandLCWrapperTokens(tokens []string) []string {
 	return tokens
 }
 
+func shellCommandTokensStartPOSIXShell(tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	base := shellTokenBaseName(tokens[0])
+	return base == "bash" || base == "sh" || base == "zsh"
+}
+
+func unwrapShellCommandLCWrapperInspectionTokens(tokens []string) []string {
+	if len(tokens) < 3 || !shellCommandTokensStartPOSIXShell(tokens) {
+		return tokens
+	}
+	for i := 1; i < len(tokens); i++ {
+		switch tokens[i] {
+		case "-c", "-lc":
+			if i+1 < len(tokens) {
+				return splitPOSIXShellCommandWords(shellCommandSeparatorsForTokenizing(tokens[i+1]))
+			}
+			return nil
+		}
+	}
+	return tokens
+}
+
 func retokenizeNestedShellPayload(tokens []string) []string {
 	if len(tokens) != 1 {
 		return tokens
@@ -3679,6 +3707,79 @@ func retokenizeNestedShellPayload(tokens []string) []string {
 		return tokens
 	}
 	return splitShellCommandWords(shellCommandSeparatorsForTokenizing(payload))
+}
+
+func splitPOSIXShellCommandWords(command string) []string {
+	var tokens []string
+	var current strings.Builder
+	quote := byte(0)
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, strings.ToLower(current.String()))
+		current.Reset()
+	}
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if quote == '\'' {
+			if ch == quote {
+				quote = 0
+				continue
+			}
+			current.WriteByte(ch)
+			continue
+		}
+		if ch == '"' {
+			if quote == '"' {
+				quote = 0
+			} else if quote == 0 {
+				quote = '"'
+			} else {
+				current.WriteByte(ch)
+			}
+			continue
+		}
+		if ch == '\'' && quote == 0 {
+			quote = '\''
+			continue
+		}
+		if ch == '\\' {
+			if i+1 >= len(command) {
+				current.WriteByte(ch)
+				continue
+			}
+			next := command[i+1]
+			i++
+			if quote == '"' {
+				if next == '\n' {
+					current.WriteByte(ch)
+					current.WriteByte(next)
+					continue
+				}
+				switch next {
+				case '"', '\\', '$', '`':
+					current.WriteByte(next)
+				default:
+					current.WriteByte(ch)
+					current.WriteByte(next)
+				}
+				continue
+			}
+			current.WriteByte(next)
+			continue
+		}
+		if quote == 0 {
+			switch ch {
+			case ' ', '\t', '\r', '\n':
+				flush()
+				continue
+			}
+		}
+		current.WriteByte(ch)
+	}
+	flush()
+	return tokens
 }
 
 func shellCommandSeparatorsForTokenizing(command string) string {
@@ -3907,6 +4008,11 @@ func splitShellCommandWords(command string) []string {
 	for i := 0; i < len(command); i++ {
 		ch := command[i]
 		if quote != 0 {
+			if ch == '\\' && i+1 < len(command) && command[i+1] == quote {
+				current.WriteByte(command[i+1])
+				i++
+				continue
+			}
 			if ch == quote {
 				quote = 0
 				continue
