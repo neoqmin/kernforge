@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	goalStatusPending  = "pending"
-	goalStatusRunning  = "running"
-	goalStatusComplete = "complete"
-	goalStatusBlocked  = "blocked"
-	goalStatusCanceled = "canceled"
+	goalStatusPending       = "pending"
+	goalStatusRunning       = "running"
+	goalStatusComplete      = "complete"
+	goalStatusBlocked       = "blocked"
+	goalStatusUsageLimited  = "usage_limited"
+	goalStatusBudgetLimited = "budget_limited"
+	goalStatusCanceled      = "canceled"
 
 	defaultGoalMaxIterations = 0
 )
@@ -375,6 +377,9 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	}
 	if rt.clientErr != nil && rt.goalReply == nil {
 		goal.Status = goalStatusBlocked
+		if goalErrorLooksUsageLimited(rt.clientErr) {
+			goal.Status = goalStatusUsageLimited
+		}
 		goal.LastError = rt.clientErr.Error()
 		goal.Touch()
 		rt.session.UpsertGoal(goal)
@@ -982,7 +987,7 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 	rt.session.UpsertGoal(goal)
 	goal.updateUsageTelemetry(rt.session)
 	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
-		goal.Status = goalStatusBlocked
+		goal.Status = goalStatusBudgetLimited
 		goal.LastError = fmt.Sprintf("goal exceeded token budget estimate (%d > %d)", goal.TokenUsedEstimate, goal.TokenBudget)
 		goal.Touch()
 		rt.session.UpsertGoal(goal)
@@ -1648,7 +1653,7 @@ func goalStatusTerminal(status string) bool {
 
 func goalStatusStopsAutonomousLoop(status string) bool {
 	switch strings.TrimSpace(strings.ToLower(status)) {
-	case goalStatusComplete, goalStatusCanceled, goalStatusBlocked:
+	case goalStatusComplete, goalStatusCanceled, goalStatusBlocked, goalStatusUsageLimited, goalStatusBudgetLimited:
 		return true
 	default:
 		return false
@@ -1661,6 +1666,8 @@ func goalEventSeverity(goal GoalState) string {
 		return conversationSeverityInfo
 	case goalStatusBlocked:
 		return conversationSeverityError
+	case goalStatusUsageLimited, goalStatusBudgetLimited:
+		return conversationSeverityWarn
 	default:
 		return conversationSeverityWarn
 	}
