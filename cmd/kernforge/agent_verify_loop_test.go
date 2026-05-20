@@ -9614,6 +9614,55 @@ func TestAgentAcceptsCommentaryOnlyAssistantMessageLikeCodex(t *testing.T) {
 	}
 }
 
+func TestAgentRoutesPostEditCommentaryReplyThroughFinalGates(t *testing.T) {
+	root := t.TempDir()
+	commentary := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{
+				Message: Message{
+					Role:  "assistant",
+					Phase: messagePhaseCommentary,
+					Text:  commentary,
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "main.go 파일을 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != commentary {
+		t.Fatalf("expected commentary reply to complete after final gates, got %q", reply)
+	}
+	if session.LastCodingHarnessReport == nil {
+		t.Fatalf("expected post-edit commentary reply to run final coding harness")
+	}
+	if !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected post-edit commentary harness to approve, got %#v", session.LastCodingHarnessReport)
+	}
+	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].Status != patchTransactionStatusCommitted {
+		t.Fatalf("expected post-edit commentary reply to finalize patch transaction, got %#v", session.PatchTransactions)
+	}
+}
+
 func TestAgentContinuesAfterHiddenOnlyAssistantMessage(t *testing.T) {
 	root := t.TempDir()
 	hidden := "<oai-mem-citation>hidden only</oai-mem-citation>"
