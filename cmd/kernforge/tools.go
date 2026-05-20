@@ -2242,8 +2242,6 @@ const (
 	shellOutputProgressEvery  = 2 * time.Second
 )
 
-var shellFileWriteRedirectionTargetPattern = regexp.MustCompile(`(?i)(^|[\s;(|&])(?:\*|\d+)?>>?\s*([^\s;|&)]+)`)
-var shellGitMutationPattern = regexp.MustCompile(`(?i)(^|[;&|()])\s*git\s+(add|am|apply|branch|checkout|cherry-pick|clean|clone|commit|config|init|merge|mv|pull|push|rebase|reset|restore|revert|rm|stash|switch|tag)\b`)
 var shellManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[;|&(){}])\s*(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
 var shellNestedManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[\s;|&(){}"'` + "`" + `])(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
 
@@ -3275,8 +3273,11 @@ func shellCommandUnsafeRipgrepSegmentReason(tokens []string) string {
 
 func shellCommandManualWorkspaceWriteReason(command string) string {
 	unquotedLower := strings.ToLower(shellCommandWithoutQuotedLiterals(command))
-	if shellCommandHasWorkspaceWriteRedirection(unquotedLower) || strings.Contains(unquotedLower, "| tee ") || strings.HasPrefix(unquotedLower, "tee ") {
+	if shellCommandHasWorkspaceWriteRedirection(command) || strings.Contains(unquotedLower, "| tee ") || strings.HasPrefix(unquotedLower, "tee ") {
 		return "output redirection or tee can create workspace files"
+	}
+	if reason := shellCommandNestedWorkspaceWriteRedirectionReason(command); reason != "" {
+		return reason
 	}
 	if shellManualWorkspaceWriteCommandPattern.MatchString(unquotedLower) {
 		return "manual shell file-write primitive can modify workspace files"
@@ -3327,6 +3328,50 @@ func shellCommandManualWorkspaceWriteReason(command string) string {
 	return ""
 }
 
+func shellCommandNestedWorkspaceWriteRedirectionReason(command string) string {
+	tokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
+	for start := 0; start < len(tokens); {
+		for start < len(tokens) && shellCommandTokenIsSegmentDelimiter(tokens[start]) {
+			start++
+		}
+		end := start
+		for end < len(tokens) && !shellCommandTokenIsSegmentDelimiter(tokens[end]) {
+			end++
+		}
+		if start < end {
+			payload := shellCommandNestedShellPayload(tokens[start:end])
+			if payload != "" && shellCommandHasWorkspaceWriteRedirection(payload) {
+				return "nested shell command contains output redirection"
+			}
+		}
+		start = end + 1
+	}
+	return ""
+}
+
+func shellCommandNestedShellPayload(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	base := shellTokenBaseName(tokens[0])
+	switch base {
+	case "cmd", "powershell", "pwsh":
+		unwrapped := unwrapShellCommandWrapperTokens(tokens)
+		if len(unwrapped) == len(tokens) {
+			return ""
+		}
+		return strings.Join(unwrapped, " ")
+	case "bash", "sh", "zsh":
+		unwrapped := unwrapShellCommandLCWrapperTokens(tokens)
+		if len(unwrapped) == len(tokens) {
+			return ""
+		}
+		return strings.Join(unwrapped, " ")
+	default:
+		return ""
+	}
+}
+
 func shellCommandContainsOutFileArgument(command string) bool {
 	tokens := splitShellCommandWords(command)
 	for _, token := range tokens {
@@ -3341,7 +3386,7 @@ func shellCommandInvokesNestedShell(command string) bool {
 	tokens := splitShellCommandWords(command)
 	for _, token := range tokens {
 		switch strings.TrimSuffix(token, ".exe") {
-		case "powershell", "pwsh", "cmd":
+		case "powershell", "pwsh", "cmd", "bash", "sh", "zsh":
 			return true
 		}
 	}
@@ -3702,26 +3747,89 @@ func shellCommandGitSubcommandIndex(tokens []string) int {
 }
 
 func shellCommandHasWorkspaceWriteRedirection(command string) bool {
-	cleaned := strings.ToLower(strings.TrimSpace(command))
+	cleaned := strings.TrimSpace(command)
 	if cleaned == "" {
 		return false
 	}
-	matches := shellFileWriteRedirectionTargetPattern.FindAllStringSubmatch(cleaned, -1)
-	for _, match := range matches {
-		if len(match) < 3 {
+	quote := byte(0)
+	for i := 0; i < len(cleaned); i++ {
+		ch := cleaned[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
 			continue
 		}
-		target := strings.TrimSpace(match[2])
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch != '>' {
+			continue
+		}
+		target, ok := shellCommandRedirectionTarget(cleaned, i+1)
+		if !ok {
+			return true
+		}
+		target = strings.ToLower(strings.TrimSpace(strings.Trim(target, `"'`)))
 		switch target {
 		case "/dev/null", "$null", "nul":
 			continue
+		default:
+			if strings.HasPrefix(target, "&") {
+				continue
+			}
+			return true
 		}
-		if strings.HasPrefix(target, "&") {
-			continue
-		}
-		return true
 	}
 	return false
+}
+
+func shellCommandRedirectionTarget(command string, start int) (string, bool) {
+	i := start
+	if i < len(command) && command[i] == '>' {
+		i++
+	}
+	for i < len(command) && (command[i] == ' ' || command[i] == '\t' || command[i] == '\r' || command[i] == '\n') {
+		i++
+	}
+	if i >= len(command) {
+		return "", false
+	}
+	if command[i] == '\'' || command[i] == '"' {
+		quote := command[i]
+		i++
+		targetStart := i
+		for i < len(command) && command[i] != quote {
+			i++
+		}
+		if i >= len(command) {
+			return strings.TrimSpace(command[targetStart:]), true
+		}
+		return strings.TrimSpace(command[targetStart:i]), true
+	}
+	if command[i] == '&' {
+		targetStart := i
+		i++
+		for i < len(command) && !shellCommandRedirectionTargetBoundary(command[i]) {
+			i++
+		}
+		return strings.TrimSpace(command[targetStart:i]), true
+	}
+	targetStart := i
+	for i < len(command) && !shellCommandRedirectionTargetBoundary(command[i]) {
+		i++
+	}
+	return strings.TrimSpace(command[targetStart:i]), true
+}
+
+func shellCommandRedirectionTargetBoundary(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\n', ';', '|', '&', '(', ')':
+		return true
+	default:
+		return false
+	}
 }
 
 func splitShellCommandWords(command string) []string {
