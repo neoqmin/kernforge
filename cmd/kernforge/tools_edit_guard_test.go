@@ -1561,6 +1561,53 @@ func TestRunShellRejectsRipgrepExternalCommandOptions(t *testing.T) {
 	}
 }
 
+func TestRunShellRejectsUnsafeGitReadOnlyForms(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"global_c_split":    "git -C . status",
+		"global_c_inline":   "git -C. status",
+		"global_config":     "git -c core.pager=cat log -n 1",
+		"global_config_in":  "git -ccore.pager=cat status",
+		"global_paginate":   "git --paginate log -1",
+		"global_p":          "git -p log -1",
+		"config_env":        "git --config-env=core.pager=PAGER show HEAD",
+		"git_dir":           "git --git-dir=.evil-git diff HEAD~1..HEAD",
+		"work_tree":         "git --work-tree=. status",
+		"exec_path":         "git --exec-path=.git/helpers show HEAD",
+		"namespace":         "git --namespace=attacker show HEAD",
+		"super_prefix":      "git --super-prefix=attacker/ show HEAD",
+		"diff_output":       "git diff --output codex_poc.txt",
+		"log_output_equals": "git log --output=codex_poc.txt -n 1",
+		"show_output":       "git show --output=codex_poc.txt HEAD",
+		"diff_ext":          "git diff --ext-diff HEAD",
+		"log_textconv":      "git log --textconv -1",
+		"log_exec":          "git log --exec=helper -1",
+		"cat_file_filters":  "git cat-file --filters HEAD:a.txt",
+		"branch_create":     "git branch feature/test",
+		"branch_delete":     "git branch -d feature/test",
+		"powershell_git":    `powershell -NoProfile -Command "git --paginate log -1"`,
+		"bash_lc_git":       `bash -lc "git --git-dir=.evil-git diff HEAD~1..HEAD"`,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected unsafe git command to be rejected")
+			}
+			if !strings.Contains(err.Error(), "read-only-looking tool form") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "codex_poc.txt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected codex_poc.txt to remain absent, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
 func TestRunShellRejectsManualFileWriteEvenWithScopedWritePaths(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2448,16 +2495,45 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		`powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`: shellMutationUnsupported,
 		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                  shellMutationUnsupported,
 		`rg "--%" docs`: shellMutationReadOnly,
-		`powershell -NoProfile -Command "Write-Output '--%'"`: shellMutationReadOnly,
-		`rg --pre ./hook pattern .`:                           shellMutationUnsafe,
-		`rg --pre=./hook pattern .`:                           shellMutationUnsafe,
-		`rg --hostname-bin ./hostname foo .`:                  shellMutationUnsafe,
-		`rg --hostname-bin=./hostname foo .`:                  shellMutationUnsafe,
-		`rg --search-zip foo .`:                               shellMutationUnsafe,
-		`rg -z foo .`:                                         shellMutationUnsafe,
-		`rg "--pre" docs`:                                     shellMutationUnsafe,
-		`powershell -Command "rg --pre ./p ."`:                shellMutationUnsafe,
-		`bash -lc "rg --pre=./p foo ."`:                       shellMutationUnsafe,
+		`powershell -NoProfile -Command "Write-Output '--%'"`:    shellMutationReadOnly,
+		`rg --pre ./hook pattern .`:                              shellMutationUnsafe,
+		`rg --pre=./hook pattern .`:                              shellMutationUnsafe,
+		`rg --hostname-bin ./hostname foo .`:                     shellMutationUnsafe,
+		`rg --hostname-bin=./hostname foo .`:                     shellMutationUnsafe,
+		`rg --search-zip foo .`:                                  shellMutationUnsafe,
+		`rg -z foo .`:                                            shellMutationUnsafe,
+		`rg "--pre" docs`:                                        shellMutationUnsafe,
+		`powershell -Command "rg --pre ./p ."`:                   shellMutationUnsafe,
+		`bash -lc "rg --pre=./p foo ."`:                          shellMutationUnsafe,
+		`git -C . status`:                                        shellMutationUnsafe,
+		`git -C. status`:                                         shellMutationUnsafe,
+		`git -c core.pager=cat log -n 1`:                         shellMutationUnsafe,
+		`git -ccore.pager=cat status`:                            shellMutationUnsafe,
+		`git --paginate log -1`:                                  shellMutationUnsafe,
+		`git -p log -1`:                                          shellMutationUnsafe,
+		`git --config-env=core.pager=PAGER show HEAD`:            shellMutationUnsafe,
+		`git --git-dir=.evil-git diff HEAD~1..HEAD`:              shellMutationUnsafe,
+		`git --work-tree=. status`:                               shellMutationUnsafe,
+		`git --exec-path=.git/helpers show HEAD`:                 shellMutationUnsafe,
+		`git --namespace=attacker show HEAD`:                     shellMutationUnsafe,
+		`git --super-prefix=attacker/ show HEAD`:                 shellMutationUnsafe,
+		`git log --output=codex_poc.txt -n 1`:                    shellMutationUnsafe,
+		`git diff --output codex_poc.txt`:                        shellMutationUnsafe,
+		`git show --output=codex_poc.txt HEAD`:                   shellMutationUnsafe,
+		`git diff --ext-diff HEAD`:                               shellMutationUnsafe,
+		`git log --textconv -1`:                                  shellMutationUnsafe,
+		`git log --exec=helper -1`:                               shellMutationUnsafe,
+		`git cat-file --filters HEAD:a.txt`:                      shellMutationUnsafe,
+		`git branch feature/test`:                                shellMutationUnsafe,
+		`git branch -d feature/test`:                             shellMutationUnsafe,
+		`powershell -NoProfile -Command "git --paginate log -1"`: shellMutationUnsafe,
+		`bash -lc "git --git-dir=.evil-git diff HEAD~1..HEAD"`:   shellMutationUnsafe,
+		`git log -p -1`:                                          shellMutationReadOnly,
+		`git show -p HEAD`:                                       shellMutationReadOnly,
+		`git branch`:                                             shellMutationReadOnly,
+		`git branch --list`:                                      shellMutationReadOnly,
+		`git branch --format=%(refname)`:                         shellMutationReadOnly,
+		`git diff -p`:                                            shellMutationCacheOnly,
 	}
 
 	for command, want := range cases {
