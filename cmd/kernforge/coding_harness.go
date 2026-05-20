@@ -662,6 +662,107 @@ func generatedDocumentArtifactHarnessBlockedReply(report *CodingHarnessReport) s
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalReply(request string, report *CodingHarnessReport, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil || report == nil {
+		return false
+	}
+	if unresolvedVerification {
+		return false
+	}
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if copyReport.Approved {
+		return false
+	}
+	if len(copyReport.ArtifactQuality.Artifacts) == 0 {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(copyReport.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.ScenarioReplay.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.SubagentOrchestration.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.TestImpact.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.JobSupervisor.Findings) {
+		return false
+	}
+	if !generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.Acceptance.Findings) {
+		return false
+	}
+	if !generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.DiffReview.Findings) {
+		return false
+	}
+	if !generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.Outcome.Findings) {
+		return false
+	}
+	return true
+}
+
+func generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(findings []CodingHarnessFinding) bool {
+	for _, finding := range findings {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		switch strings.TrimSpace(finding.Title) {
+		case "Required verification has no outcome",
+			"Final answer contradicts the patch transaction",
+			"Verification claim has no recorded evidence":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport) string {
+	paths := generatedDocumentArtifactPathsFromHarnessReport(report)
+	if len(paths) == 0 && a != nil && a.Session != nil {
+		for _, path := range sessionPatchTransactionChangedPaths(a.Session) {
+			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+				paths = append(paths, normalizeSessionRelativePath(path))
+			}
+		}
+		paths = normalizeTaskStateList(paths, 8)
+	}
+	target := "the generated document artifact"
+	if len(paths) > 0 {
+		quoted := make([]string, 0, len(paths))
+		for _, path := range paths {
+			quoted = append(quoted, "`"+path+"`")
+		}
+		target = strings.Join(quoted, ", ")
+	}
+	cfg := Config{}
+	if a != nil {
+		cfg = a.Config
+	}
+	english := fmt.Sprintf("%s is complete. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run because this turn only produced a generated document artifact.", target)
+	korean := fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.", target)
+	return localizedText(cfg, english, korean)
+}
+
+func generatedDocumentArtifactPathsFromHarnessReport(report *CodingHarnessReport) []string {
+	if report == nil {
+		return nil
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	paths := make([]string, 0, len(copyReport.ArtifactQuality.Artifacts))
+	for _, artifact := range copyReport.ArtifactQuality.Artifacts {
+		path := normalizeSessionRelativePath(artifact.Path)
+		if path == "" || !preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return normalizeTaskStateList(paths, 8)
+}
+
 func (r CodingHarnessReport) allFindings() []CodingHarnessFinding {
 	out := make([]CodingHarnessFinding, 0)
 	out = append(out, r.Findings...)

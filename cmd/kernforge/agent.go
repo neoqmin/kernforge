@@ -1140,6 +1140,33 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return reply, nil
 				}
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
+				if !harnessApproved && a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(latestUser, a.Session.LastCodingHarnessReport, unresolvedVerification) {
+					a.discardRecentFinalAnswerCandidate(reply)
+					reply = a.synthesizeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport)
+					synthesizedReport := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+					a.Session.LastCodingHarnessReport = &synthesizedReport
+					a.Session.LastTestImpactReport = &synthesizedReport.TestImpact
+					a.Session.LastJobSupervisorReport = &synthesizedReport.JobSupervisor
+					if !synthesizedReport.Approved {
+						reply = generatedDocumentArtifactHarnessBlockedReply(&synthesizedReport)
+					}
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					if a.Session.TaskState != nil {
+						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
+							a.Session.TaskState.SetPhase("done")
+							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+							a.Session.TaskState.ClearExecutorFocus()
+							a.Session.completeSharedPlan()
+						}
+					}
+					a.finalizePatchTransactionOnReturn()
+					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
+				}
 				if !harnessApproved && a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) && finalHarnessRevisions >= 2 {
 					a.discardRecentFinalAnswerCandidate(reply)
 					reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
