@@ -6511,7 +6511,7 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 	if !turnStartedAt.IsZero() {
 		metadata["turn_started_at_unix_ms"] = turnStartedAt.UnixMilli()
 	}
-	if permissionMode := strings.TrimSpace(a.Session.PermissionMode); permissionMode != "" {
+	if permissionMode := a.activePermissionModeSnapshot(); permissionMode != "" {
 		metadata["permission_mode"] = permissionMode
 		if sandbox := mcpTurnMetadataSandboxTag(permissionMode); sandbox != "" {
 			metadata["sandbox"] = sandbox
@@ -6550,6 +6550,16 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 		return nil
 	}
 	return metadata
+}
+
+func (a *Agent) activePermissionModeSnapshot() string {
+	if a != nil && a.Workspace.Perms != nil {
+		return string(a.Workspace.Perms.Mode())
+	}
+	if a != nil && a.Session != nil {
+		return strings.TrimSpace(a.Session.PermissionMode)
+	}
+	return ""
 }
 
 func providerTurnMetadataFromMCP(metadata map[string]any) map[string]any {
