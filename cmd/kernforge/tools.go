@@ -3106,22 +3106,33 @@ func shellCommandPOSIXShellPayload(tokens []string) string {
 
 func shellCommandContainsUnquotedShellExpansion(command string) bool {
 	quote := byte(0)
+	atWordStart := true
 	for i := 0; i < len(command); i++ {
 		ch := command[i]
 		if quote != 0 {
 			if ch == quote {
 				quote = 0
 			}
+			atWordStart = false
 			continue
 		}
 		if ch == '\'' || ch == '"' {
 			quote = ch
+			atWordStart = false
 			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+			atWordStart = true
+			continue
+		}
+		if ch == '~' && atWordStart {
+			return true
 		}
 		switch ch {
 		case '*', '?', '[', ']', '{', '}':
 			return true
 		}
+		atWordStart = false
 	}
 	return false
 }

@@ -1650,6 +1650,7 @@ func TestRunShellRejectsPOSIXShellExpansionForms(t *testing.T) {
 		"brace_expansion":       `bash -lc "echo -{o,}"`,
 		"bracket_glob":          `sh -lc "cat [ab].txt"`,
 		"zsh_question_glob":     `zsh -lc "cat file?.txt"`,
+		"tilde_expansion":       `bash -lc "echo ~/loot"`,
 	}
 	for name, command := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -2642,7 +2643,9 @@ EOF"`: shellMutationWorkspaceWrite,
 		`bash -lc "echo -{o,}"`:                                  shellMutationUnsafe,
 		`sh -lc "cat [ab].txt"`:                                  shellMutationUnsafe,
 		`zsh -lc "cat file?.txt"`:                                shellMutationUnsafe,
+		`bash -lc "echo ~/loot"`:                                 shellMutationUnsafe,
 		`bash -lc "echo '-*' '*.rs' '-{o,}'"`:                    shellMutationReadOnly,
+		`bash -lc "echo '~'"`:                                    shellMutationReadOnly,
 		`git log -p -1`:                                          shellMutationReadOnly,
 		`git show -p HEAD`:                                       shellMutationReadOnly,
 		`git branch`:                                             shellMutationReadOnly,
