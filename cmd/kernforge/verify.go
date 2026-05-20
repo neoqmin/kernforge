@@ -1306,8 +1306,7 @@ func collectGitChangedPaths(root string) []string {
 	for _, args := range [][]string{
 		{"-c", "core.quotePath=false", "status", "--short"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = root
+		cmd := newGitHelperCommand(context.Background(), root, args...)
 		data, err := cmd.Output()
 		if err != nil {
 			continue

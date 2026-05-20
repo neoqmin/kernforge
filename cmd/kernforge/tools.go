@@ -3942,8 +3942,7 @@ func (t GitStatusTool) Execute(ctx context.Context, input any) (string, error) {
 	if _, err := requireToolInputObject(input, t.Definition().Name); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "git", "status", "--short", "--branch")
-	cmd.Dir = t.ws.Root
+	cmd := newGitHelperCommand(ctx, t.ws.Root, "status", "--short", "--branch")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
@@ -4020,8 +4019,7 @@ func (t GitDiffTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		cmdArgs = append(cmdArgs, "--", path)
 	}
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
-	cmd.Dir = t.ws.Root
+	cmd := newGitHelperCommand(ctx, t.ws.Root, cmdArgs...)
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
@@ -4084,6 +4082,22 @@ func runGitCommand(ctx context.Context, dir string, args ...string) (string, err
 	return out, nil
 }
 
+func runGitHelperCommand(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := newGitHelperCommand(ctx, dir, args...)
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return text, fmt.Errorf("git command failed: %w", err)
+	}
+	if text == "" {
+		return "(no output)", nil
+	}
+	return text, nil
+}
+
 func summarizeExec(name string, args ...string) string {
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, name)
@@ -4092,7 +4106,7 @@ func summarizeExec(name string, args ...string) string {
 }
 
 func gitCurrentBranch(ctx context.Context, dir string) (string, error) {
-	branch, err := runGitCommand(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	branch, err := runGitHelperCommand(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -4103,8 +4117,7 @@ func gitCurrentBranch(ctx context.Context, dir string) (string, error) {
 }
 
 func gitHasUpstream(ctx context.Context, dir string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-	cmd.Dir = dir
+	cmd := newGitHelperCommand(ctx, dir, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(out))
@@ -4120,8 +4133,7 @@ func gitHasUpstream(ctx context.Context, dir string) (bool, error) {
 }
 
 func gitChangedFiles(ctx context.Context, dir string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-c", "core.quotePath=false", "status", "--short")
-	cmd.Dir = dir
+	cmd := newGitHelperCommand(ctx, dir, "-c", "core.quotePath=false", "status", "--short")
 	data, err := cmd.CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(data))

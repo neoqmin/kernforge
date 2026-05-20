@@ -1781,8 +1781,7 @@ func runGitText(root string, args ...string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = root
+	cmd := newGitHelperCommand(ctx, root, args...)
 	cmd.WaitDelay = time.Second
 	data, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {

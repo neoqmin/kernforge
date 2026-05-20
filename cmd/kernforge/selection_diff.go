@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -21,8 +20,7 @@ func renderSelectionGitDiff(root string, selection ViewerSelection) (string, err
 		path = filepath.Join(root, path)
 	}
 	rel := relOrAbs(root, path)
-	cmd := exec.CommandContext(context.Background(), "git", "diff", "--", rel)
-	cmd.Dir = root
+	cmd := newGitHelperCommand(context.Background(), root, "diff", "--", rel)
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil && text == "" {
