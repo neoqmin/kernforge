@@ -747,6 +747,26 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 	}
 }
 
+func TestAgentMCPTurnMetadataUsesLivePermissionSnapshot(t *testing.T) {
+	root := t.TempDir()
+	agent := &Agent{
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Perms:    NewPermissionManager(ModePlan, nil),
+		},
+		Session: NewSession(root, "scripted", "model-a", "", string(ModeBypass)),
+	}
+
+	turnMeta := agent.mcpTurnMetadataForToolCall(time.UnixMilli(1_700_000_000_123))
+	if got := turnMeta["permission_mode"]; got != string(ModePlan) {
+		t.Fatalf("expected live permission mode metadata %q, got %#v in %#v", ModePlan, got, turnMeta)
+	}
+	if got := turnMeta["sandbox"]; got != "none" {
+		t.Fatalf("expected sandbox metadata from live permission mode, got %#v in %#v", got, turnMeta)
+	}
+}
+
 func TestAgentMCPTurnMetadataIncludesWorkspaceGitMetadata(t *testing.T) {
 	repo := t.TempDir()
 	mustRunGit(t, repo, "init")
