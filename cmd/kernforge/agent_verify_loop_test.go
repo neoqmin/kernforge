@@ -9472,6 +9472,105 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 	}
 }
 
+func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: len(reportContent),
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "Build/test verification was not run") {
+		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("read_file should not execute after generated document artifact approval, got %d call(s)", readTool.calls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected runtime to finish without a follow-up model request, got %d request(s)", len(provider.requests))
+	}
+	if !sessionContainsToolResultText(session, "call-1", "generated document artifact turns do not run shell or review validation") {
+		t.Fatalf("expected blocked tool result to be recorded, messages=%#v", session.Messages)
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected synthesized reply to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
 func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
