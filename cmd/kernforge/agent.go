@@ -2498,6 +2498,9 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
 		return true
 	}
+	if sessionHasDocumentArtifactContentAcceptedHarness(a.Session) {
+		return true
+	}
 	if sessionHasApprovedDocumentArtifactOnlyHarness(a.Session) {
 		return true
 	}
@@ -2515,6 +2518,42 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 		return false
 	}
 	return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, autoReviewChangedPaths(a.Session, root))
+}
+
+func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {
+	if session == nil || session.LastCodingHarnessReport == nil {
+		return false
+	}
+	report := *session.LastCodingHarnessReport
+	report.Normalize()
+	if len(report.ArtifactQuality.Artifacts) == 0 {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
+		return false
+	}
+	artifactPaths := make(map[string]bool)
+	for _, artifact := range report.ArtifactQuality.Artifacts {
+		path := normalizeSessionRelativePath(artifact.Path)
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+			return false
+		}
+		artifactPaths[strings.ToLower(path)] = true
+	}
+	changedPaths := sessionPatchTransactionChangedPaths(session)
+	if len(changedPaths) == 0 {
+		return false
+	}
+	for _, path := range changedPaths {
+		normalized := normalizeSessionRelativePath(path)
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(normalized) {
+			return false
+		}
+		if len(artifactPaths) > 0 && !artifactPaths[strings.ToLower(normalized)] {
+			return false
+		}
+	}
+	return true
 }
 
 func sessionHasApprovedDocumentArtifactOnlyHarness(session *Session) bool {

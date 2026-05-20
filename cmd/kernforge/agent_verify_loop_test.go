@@ -9824,6 +9824,62 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 	}
 }
 
+func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		Goal: "Reviewer feedback: revise the final answer before concluding.",
+	}
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "Reviewer feedback: revise the final answer before concluding.",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+		Acceptance: AcceptanceContractReport{
+			Findings: []CodingHarnessFinding{{
+				Severity: "blocker",
+				Title:    "Final answer has inconsistent bug counts",
+				Detail:   "The answer says 27 bugs but its severity rows add up to 26.",
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   "Reviewer feedback: revise the final answer before concluding.",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "apply_patch",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !agent.changesAreGeneratedDocumentArtifactsForTurn("") {
+		t.Fatalf("expected content-accepted artifact harness to preserve document-artifact turn state")
+	}
+	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply("", session.LastCodingHarnessReport, false) {
+		t.Fatalf("expected answer-only final blocker to synthesize a safe document-artifact final reply")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("The answer says 27 bugs but the report is complete.", true, false) {
+		t.Fatalf("expected content-accepted document artifact to skip interactive final-answer review")
+	}
+}
+
 func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
