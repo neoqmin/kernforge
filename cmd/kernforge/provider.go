@@ -876,10 +876,8 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 				}
 				for _, image := range encodedImages {
 					parts = append(parts, map[string]any{
-						"type": "image_url",
-						"image_url": map[string]any{
-							"url": imageDataURI(image),
-						},
+						"type":      "image_url",
+						"image_url": openAIChatImageURLPayload(image),
 					})
 				}
 				content = parts
@@ -1382,6 +1380,19 @@ func flattenOpenAIContentSegments(value any, kind string) []openAITextSegment {
 		}
 	}
 	return nil
+}
+
+func openAIChatImageURLPayload(image EncodedImage) map[string]any {
+	payload := map[string]any{
+		"url": imageDataURI(image),
+	}
+	if detail := encodedImageDetail(image); detail != "" {
+		if detail == imageDetailOriginal {
+			detail = imageDetailHigh
+		}
+		payload["detail"] = detail
+	}
+	return payload
 }
 
 func joinOpenAITextSegments(segments []openAITextSegment) string {

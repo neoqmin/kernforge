@@ -65,6 +65,86 @@ func TestOpenAIClientOmitsToolChoiceWithoutTools(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientMapsImageDetailInChatCompletions(t *testing.T) {
+	dir := t.TempDir()
+	originalImage := writeTestImage(t, dir, "original.png")
+	defaultImage := writeTestImage(t, dir, "default.png")
+
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{
+			{
+				Role: "user",
+				Text: "inspect",
+				Images: []MessageImage{
+					{Path: originalImage, MediaType: "image/png", Detail: imageDetailOriginal},
+					{Path: defaultImage, MediaType: "image/png"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("unexpected messages payload: %#v", body["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected message payload: %#v", messages[0])
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 3 {
+		t.Fatalf("unexpected content payload: %#v", message["content"])
+	}
+
+	originalPayload := openAIChatImagePayloadFromContent(t, content[1])
+	if originalPayload["detail"] != imageDetailHigh {
+		t.Fatalf("original image detail = %#v, want %q; payload=%#v", originalPayload["detail"], imageDetailHigh, originalPayload)
+	}
+	if url, _ := originalPayload["url"].(string); !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("original image url should be data URI, got %#v", originalPayload["url"])
+	}
+
+	defaultPayload := openAIChatImagePayloadFromContent(t, content[2])
+	if defaultPayload["detail"] != imageDetailHigh {
+		t.Fatalf("default image detail = %#v, want %q; payload=%#v", defaultPayload["detail"], imageDetailHigh, defaultPayload)
+	}
+	if url, _ := defaultPayload["url"].(string); !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Fatalf("default image url should be data URI, got %#v", defaultPayload["url"])
+	}
+}
+
+func openAIChatImagePayloadFromContent(t *testing.T, part any) map[string]any {
+	t.Helper()
+	partMap, ok := part.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected content part: %#v", part)
+	}
+	if partMap["type"] != "image_url" {
+		t.Fatalf("content part type = %#v, want image_url; part=%#v", partMap["type"], partMap)
+	}
+	payload, ok := partMap["image_url"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected image_url payload: %#v", partMap["image_url"])
+	}
+	return payload
+}
+
 func TestLocalOpenAICompatibleClientOmitsAuthorizationWithoutAPIKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("authorization"); got != "" {
