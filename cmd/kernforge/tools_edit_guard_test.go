@@ -1656,6 +1656,35 @@ func TestRunShellRejectsManualFileWriteEvenWithScopedWritePaths(t *testing.T) {
 	}
 }
 
+func TestRunShellRejectsNestedShellOutputRedirection(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"bash_lc_redirect":       `bash -lc "echo hello > codex_poc.txt"`,
+		"bash_lc_quoted_target":  `bash -lc "echo hello > 'codex poc.txt'"`,
+		"bash_lc_heredoc_target": "bash -lc \"cat <<'EOF' > codex_poc.txt\nhello\nEOF\"",
+		"powershell_redirect":    `powershell -NoProfile -Command "Write-Output hello > codex_poc.txt"`,
+		"cmd_redirect":           `cmd /c "echo hello > codex_poc.txt"`,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected nested shell redirection to be rejected")
+			}
+			if !strings.Contains(err.Error(), "manual workspace file writes") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "codex_poc.txt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected codex_poc.txt to remain absent, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
 func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2513,13 +2542,21 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		`$content = Get-Content file.txt; [System.IO.File]::WriteAllText("file.txt", $content)`: shellMutationWorkspaceWrite,
 		`Get-Content file.txt | Set-Content other.txt`:                                          shellMutationWorkspaceWrite,
 		`Invoke-WebRequest https://example.test/file.txt -OutFile file.txt`:                     shellMutationWorkspaceWrite,
-		`gofmt -w main.go`:                         shellMutationWorkspaceWrite,
-		`rg "Set-Content" docs`:                    shellMutationReadOnly,
-		`rg Set-Content docs`:                      shellMutationReadOnly,
-		`rg "[System.IO.File]::WriteAllText" docs`: shellMutationReadOnly,
-		`Get-Command tee`:                          shellMutationReadOnly,
-		`Get-Command copy`:                         shellMutationReadOnly,
-		`git log --% HEAD --output=codex_poc.txt`:  shellMutationUnsupported,
+		`gofmt -w main.go`:                shellMutationWorkspaceWrite,
+		`echo hello > "out file.txt"`:     shellMutationWorkspaceWrite,
+		`bash -lc "echo hello > out.txt"`: shellMutationWorkspaceWrite,
+		`bash -lc "cat <<'EOF' > out.txt
+hello
+EOF"`: shellMutationWorkspaceWrite,
+		`powershell -NoProfile -Command "Write-Output hello > out.txt"`: shellMutationWorkspaceWrite,
+		`cmd /c "echo hello > out.txt"`:                                 shellMutationWorkspaceWrite,
+		`rg "Set-Content" docs`:                                         shellMutationReadOnly,
+		`rg Set-Content docs`:                                           shellMutationReadOnly,
+		`rg "[System.IO.File]::WriteAllText" docs`:                      shellMutationReadOnly,
+		`bash -lc "echo '>'"`:                                           shellMutationReadOnly,
+		`Get-Command tee`:                                               shellMutationReadOnly,
+		`Get-Command copy`:                                              shellMutationReadOnly,
+		`git log --% HEAD --output=codex_poc.txt`:                       shellMutationUnsupported,
 		`powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`:                                       shellMutationUnsupported,
 		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                                                        shellMutationUnsupported,
 		`powershell -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`: shellMutationUnsupported,
