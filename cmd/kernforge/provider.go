@@ -985,6 +985,15 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 	sawDone := false
 	streamUnlocked := !bufferLeadingText
 	sawToolCalls := false
+	deltaFilter := hiddenAssistantMarkupDeltaFilter{}
+	emitVisibleTextDelta := func(delta string) {
+		if onTextDelta == nil || delta == "" {
+			return
+		}
+		if visible := deltaFilter.Push(delta); visible != "" {
+			onTextDelta(visible)
+		}
+	}
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -1018,7 +1027,7 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 				textBuilder.WriteString(deltaText)
 				if onTextDelta != nil {
 					if streamUnlocked && !sawToolCalls {
-						onTextDelta(deltaText)
+						emitVisibleTextDelta(deltaText)
 					} else if !sawToolCalls {
 						pendingText.WriteString(deltaText)
 					}
@@ -1086,8 +1095,15 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 		}
 		return ChatResponse{}, ctxErr
 	}
+	if onTextDelta != nil && !sawToolCalls && streamUnlocked {
+		if visible := deltaFilter.Flush(); visible != "" {
+			onTextDelta(visible)
+		}
+	}
 	if onTextDelta != nil && !sawToolCalls && pendingText.Len() > 0 {
-		onTextDelta(pendingText.String())
+		if visible := stripHiddenAssistantMarkup(pendingText.String()); visible != "" {
+			onTextDelta(visible)
+		}
 	}
 
 	out := Message{

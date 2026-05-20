@@ -906,6 +906,89 @@ func TestOpenAIClientStreamsTextDeltas(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientStreamsTextDeltasWithoutHiddenAssistantMarkup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"<oai\"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"-mem-citation>hidden</oai-mem-citation>\"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"world\"},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if strings.Join(deltas, "") != "hello world" {
+		t.Fatalf("unexpected visible deltas: %#v", deltas)
+	}
+	if strings.Contains(strings.Join(deltas, ""), "oai-mem-citation") {
+		t.Fatalf("hidden assistant markup leaked through deltas: %#v", deltas)
+	}
+	if resp.Message.Text != "hello <oai-mem-citation>hidden</oai-mem-citation>world" {
+		t.Fatalf("unexpected raw streamed text: %q", resp.Message.Text)
+	}
+}
+
+func TestOpenAIClientPreservesIncompleteHiddenTagPrefixAtStreamEnd(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello <oai-mem-\"},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if strings.Join(deltas, "") != "hello <oai-mem-" {
+		t.Fatalf("expected incomplete hidden tag prefix to remain visible, got %#v", deltas)
+	}
+	if resp.Message.Text != "hello <oai-mem-" {
+		t.Fatalf("unexpected raw streamed text: %q", resp.Message.Text)
+	}
+}
+
 func TestOpenAIClientStreamsToolCallArguments(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
@@ -1092,6 +1175,46 @@ func TestOpenAIClientFlushesBufferedShortTextAtEndWhenNoToolCallArrives(t *testi
 	}
 	if resp.Message.Text != "short final answer" {
 		t.Fatalf("unexpected response text: %q", resp.Message.Text)
+	}
+}
+
+func TestOpenAIClientFlushesBufferedShortTextWithoutHiddenAssistantMarkup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"short <proposed_plan>hidden</proposed_plan>final\"},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		Tools: []ToolDefinition{{
+			Name: "read_file",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if strings.Join(deltas, "") != "short final" {
+		t.Fatalf("expected buffered hidden markup to stay hidden, got %#v", deltas)
+	}
+	if resp.Message.Text != "short <proposed_plan>hidden</proposed_plan>final" {
+		t.Fatalf("unexpected raw response text: %q", resp.Message.Text)
 	}
 }
 

@@ -2635,6 +2635,30 @@ func TestSanitizeAssistantMessageTextKeepsSubstantiveKoreanToolPlan(t *testing.T
 	}
 }
 
+func TestSanitizeAssistantMessageTextRemovesHiddenAssistantMarkup(t *testing.T) {
+	text := strings.Join([]string{
+		"완료했습니다.",
+		"<oai-mem-citation><citation_entries>MEMORY.md:1-2|note=[x]</citation_entries></oai-mem-citation>",
+		"<proposed_plan>",
+		"- hidden step",
+		"</proposed_plan>",
+	}, "\n")
+
+	got := sanitizeAssistantMessageText(text, false)
+	if got != "완료했습니다." {
+		t.Fatalf("expected hidden assistant markup to be stripped, got %q", got)
+	}
+}
+
+func TestSanitizeAssistantMessageTextDropsHiddenOnlyMarkup(t *testing.T) {
+	text := "<oai-mem-citation>hidden only</oai-mem-citation>\n<proposed_plan>\n- hidden\n</proposed_plan>"
+
+	got := sanitizeAssistantMessageText(text, false)
+	if got != "" {
+		t.Fatalf("expected hidden-only assistant markup to be dropped, got %q", got)
+	}
+}
+
 func TestReplyLooksAbruptlyTruncatedDetectsCutoffTail(t *testing.T) {
 	if !replyLooksAbruptlyTruncated("현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이") {
 		t.Fatalf("expected abrupt cutoff to be detected")
@@ -9048,6 +9072,63 @@ func TestAgentContinuesAfterCommentaryOnlyAssistantMessage(t *testing.T) {
 	}
 	if !foundFinal {
 		t.Fatalf("final answer was not retained")
+	}
+}
+
+func TestAgentContinuesAfterHiddenOnlyAssistantMessage(t *testing.T) {
+	root := t.TempDir()
+	hidden := "<oai-mem-citation>hidden only</oai-mem-citation>"
+	finalReply := "검토 보고서를 생성했고 추가 작업은 없습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: hidden,
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: finalReply,
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "상태를 확인해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected final reply, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected hidden-only reply to trigger another model turn, got %d requests", len(provider.requests))
+	}
+	if !scriptedRequestsContainText(provider.requests[1:2], "Please provide the final answer") {
+		t.Fatalf("expected second request to include empty-final guidance, got %#v", provider.requests[1].Messages)
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && strings.Contains(msg.Text, "oai-mem-citation") {
+			t.Fatalf("hidden assistant markup leaked into session history: %#v", msg)
+		}
 	}
 }
 
