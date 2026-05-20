@@ -2592,6 +2592,10 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 	if trimmed == "" {
 		return ""
 	}
+	trimmed = stripHiddenAssistantMarkup(trimmed)
+	if trimmed == "" {
+		return ""
+	}
 	trimmed = suppressInternalRoutingMarkers(trimmed)
 	if trimmed == "" {
 		return ""
@@ -2617,6 +2621,144 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 		return ""
 	}
 	return strings.Join(kept, "\n")
+}
+
+var hiddenAssistantMarkupPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)<oai-mem-citation\b[^>]*>.*?</oai-mem-citation>`),
+	regexp.MustCompile(`(?is)<oai-mem-citation\b[^>]*>.*`),
+	regexp.MustCompile(`(?is)<proposed_plan\b[^>]*>.*?</proposed_plan>`),
+	regexp.MustCompile(`(?is)<proposed_plan\b[^>]*>.*`),
+}
+
+func stripHiddenAssistantMarkup(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	for _, pattern := range hiddenAssistantMarkupPatterns {
+		trimmed = pattern.ReplaceAllString(trimmed, "")
+	}
+	return strings.TrimSpace(trimmed)
+}
+
+type hiddenAssistantMarkupDeltaFilter struct {
+	pending string
+	hiding  string
+}
+
+func (f *hiddenAssistantMarkupDeltaFilter) Push(delta string) string {
+	if f == nil {
+		return delta
+	}
+	if delta == "" {
+		return ""
+	}
+	f.pending += delta
+	var out strings.Builder
+	for {
+		if f.hiding != "" {
+			closeTag := "</" + f.hiding + ">"
+			if index := strings.Index(f.pending, closeTag); index >= 0 {
+				f.pending = f.pending[index+len(closeTag):]
+				f.hiding = ""
+				continue
+			}
+			keep := longestSuffixPrefix(f.pending, closeTag, false)
+			if keep > 0 {
+				f.pending = f.pending[len(f.pending)-keep:]
+			} else {
+				f.pending = ""
+			}
+			return out.String()
+		}
+		index, tagName := earliestHiddenAssistantOpenTag(f.pending)
+		if index >= 0 {
+			out.WriteString(f.pending[:index])
+			openEnd := strings.Index(f.pending[index:], ">")
+			if openEnd < 0 {
+				f.pending = f.pending[index:]
+				return out.String()
+			}
+			f.pending = f.pending[index+openEnd+1:]
+			f.hiding = tagName
+			continue
+		}
+		keep := longestHiddenAssistantOpenSuffix(f.pending)
+		if keep > 0 {
+			out.WriteString(f.pending[:len(f.pending)-keep])
+			f.pending = f.pending[len(f.pending)-keep:]
+		} else {
+			out.WriteString(f.pending)
+			f.pending = ""
+		}
+		return out.String()
+	}
+}
+
+func (f *hiddenAssistantMarkupDeltaFilter) Flush() string {
+	if f == nil {
+		return ""
+	}
+	if f.hiding != "" {
+		f.pending = ""
+		f.hiding = ""
+		return ""
+	}
+	out := f.pending
+	f.pending = ""
+	return out
+}
+
+type hiddenAssistantMarkupTag struct {
+	Name      string
+	OpenStart string
+}
+
+var hiddenAssistantMarkupTags = []hiddenAssistantMarkupTag{
+	{Name: "oai-mem-citation", OpenStart: "<oai-mem-citation"},
+	{Name: "proposed_plan", OpenStart: "<proposed_plan"},
+}
+
+func earliestHiddenAssistantOpenTag(text string) (int, string) {
+	bestIndex := -1
+	bestName := ""
+	for _, tag := range hiddenAssistantMarkupTags {
+		index := strings.Index(text, tag.OpenStart)
+		if index < 0 {
+			continue
+		}
+		if bestIndex < 0 || index < bestIndex {
+			bestIndex = index
+			bestName = tag.Name
+		}
+	}
+	return bestIndex, bestName
+}
+
+func longestHiddenAssistantOpenSuffix(text string) int {
+	best := 0
+	for _, tag := range hiddenAssistantMarkupTags {
+		if n := longestSuffixPrefix(text, tag.OpenStart, true); n > best {
+			best = n
+		}
+	}
+	return best
+}
+
+func longestSuffixPrefix(text string, prefix string, allowFullPrefix bool) int {
+	limit := len(prefix) - 1
+	if allowFullPrefix {
+		limit = len(prefix)
+	}
+	if len(text) < limit {
+		limit = len(text)
+	}
+	for n := limit; n > 0; n-- {
+		if strings.HasSuffix(text, prefix[:n]) {
+			return n
+		}
+	}
+	return 0
 }
 
 func suppressInternalRoutingMarkers(text string) string {
