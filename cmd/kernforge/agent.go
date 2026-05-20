@@ -126,7 +126,6 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		}
 	}
 	intent := classifyTurnIntent(userText)
-	a.noteUserConversationEvent(userText)
 	requestMode := resolveAgentRequestMode(userText, intent)
 	intent = requestMode.Intent
 	readOnlyAnalysis := requestMode.ReadOnlyAnalysis
@@ -176,6 +175,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	images := appendUniqueImages(nil, mentionImages...)
 	images = appendUniqueImages(images, extraImages...)
+	a.noteUserConversationEvent(userText, images)
 	if a.shouldStartNewExternalAcceptanceContext(userText) {
 		a.initializeTaskState(userText)
 		contract := buildAcceptanceContract(userText, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
@@ -402,7 +402,7 @@ func (a *Agent) finishPendingReviewRepairConfirmation(userText string, images []
 	if clearPending {
 		a.Session.PendingReviewRepairConfirm = nil
 	}
-	a.noteUserConversationEvent(userText)
+	a.noteUserConversationEvent(userText, images)
 	a.Session.AddMessage(Message{
 		Role:   "user",
 		Text:   userText,

@@ -161,7 +161,7 @@ func normalizeConversationSeverity(value string) string {
 	}
 }
 
-func (a *Agent) noteUserConversationEvent(text string) {
+func (a *Agent) noteUserConversationEvent(text string, images []MessageImage) {
 	if a == nil || a.Session == nil {
 		return
 	}
@@ -178,7 +178,42 @@ func (a *Agent) noteUserConversationEvent(text string) {
 			"provider": strings.TrimSpace(a.Session.Provider),
 			"model":    strings.TrimSpace(a.Session.Model),
 		},
+		Metadata: userConversationImageMetadata(images),
 	})
+}
+
+func userConversationImageMetadata(images []MessageImage) map[string]any {
+	if len(images) == 0 {
+		return nil
+	}
+	localImages := make([]string, 0, len(images))
+	localImageDetails := make([]any, 0, len(images))
+	for _, image := range images {
+		path := strings.TrimSpace(image.Path)
+		if path == "" {
+			continue
+		}
+		localImages = append(localImages, path)
+		switch detail := normalizedKnownImageDetail(image.Detail); detail {
+		case imageDetailHigh, imageDetailOriginal:
+			localImageDetails = append(localImageDetails, detail)
+		default:
+			localImageDetails = append(localImageDetails, nil)
+		}
+	}
+	if len(localImages) == 0 {
+		return nil
+	}
+	for len(localImageDetails) > 0 && localImageDetails[len(localImageDetails)-1] == nil {
+		localImageDetails = localImageDetails[:len(localImageDetails)-1]
+	}
+	metadata := map[string]any{
+		"local_images": localImages,
+	}
+	if len(localImageDetails) > 0 {
+		metadata["local_image_details"] = localImageDetails
+	}
+	return metadata
 }
 
 func (a *Agent) noteAssistantConversationEvent(text string) {

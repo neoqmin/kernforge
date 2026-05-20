@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -88,6 +89,73 @@ func TestReplyWithNilLongMemDoesNotPanic(t *testing.T) {
 	}
 	if !strings.Contains(reply, "ok") {
 		t.Fatalf("expected scripted reply, got %q", reply)
+	}
+}
+
+func TestUserConversationEventPreservesImageDetails(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "ok"},
+		}},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	_, err := agent.ReplyWithImages(context.Background(), "inspect images", []MessageImage{
+		{Path: "first.png", Detail: imageDetailOriginal},
+		{Path: "second.png"},
+		{Path: "third.png", Detail: imageDetailHigh},
+	})
+	if err != nil {
+		t.Fatalf("ReplyWithImages: %v", err)
+	}
+	events := latestEventsByKind(session.ConversationEvents, conversationEventKindUserMessage)
+	if len(events) != 1 {
+		t.Fatalf("expected one user conversation event, got %#v", events)
+	}
+	paths, ok := events[0].Metadata["local_images"].([]string)
+	if !ok {
+		t.Fatalf("expected local_images metadata, got %#v", events[0].Metadata)
+	}
+	if !reflect.DeepEqual(paths, []string{"first.png", "second.png", "third.png"}) {
+		t.Fatalf("local_images = %#v", paths)
+	}
+	details, ok := events[0].Metadata["local_image_details"].([]any)
+	if !ok {
+		t.Fatalf("expected local_image_details metadata, got %#v", events[0].Metadata)
+	}
+	if len(details) != 3 || details[0] != imageDetailOriginal || details[1] != nil || details[2] != imageDetailHigh {
+		t.Fatalf("local_image_details = %#v", details)
+	}
+}
+
+func TestUserConversationImageMetadataTrimsUnspecifiedTrailingDetails(t *testing.T) {
+	metadata := userConversationImageMetadata([]MessageImage{
+		{Path: "first.png", Detail: imageDetailOriginal},
+		{Path: "second.png"},
+	})
+	details, ok := metadata["local_image_details"].([]any)
+	if !ok {
+		t.Fatalf("expected explicit original detail to be retained, got %#v", metadata)
+	}
+	if len(details) != 1 || details[0] != imageDetailOriginal {
+		t.Fatalf("local_image_details = %#v", details)
+	}
+
+	defaultOnly := userConversationImageMetadata([]MessageImage{
+		{Path: "first.png"},
+		{Path: "second.png"},
+	})
+	if _, ok := defaultOnly["local_image_details"]; ok {
+		t.Fatalf("expected unspecified details to be omitted, got %#v", defaultOnly)
 	}
 }
 
