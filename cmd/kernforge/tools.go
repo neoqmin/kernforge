@@ -3058,7 +3058,179 @@ func shellCommandUnsafeReadOnlyToolReason(command string) string {
 	if reason := shellCommandUnsafeRipgrepReason(command); reason != "" {
 		return reason
 	}
+	if reason := shellCommandUnsafeGitReason(command); reason != "" {
+		return reason
+	}
 	return ""
+}
+
+func shellCommandUnsafeGitReason(command string) string {
+	tokens := shellCommandRawInspectionTokens(command)
+	for start := 0; start < len(tokens); {
+		for start < len(tokens) && shellCommandTokenIsSegmentDelimiter(tokens[start]) {
+			start++
+		}
+		end := start
+		for end < len(tokens) && !shellCommandTokenIsSegmentDelimiter(tokens[end]) {
+			end++
+		}
+		if start < end {
+			if reason := shellCommandUnsafeGitSegmentReason(tokens[start:end]); reason != "" {
+				return reason
+			}
+		}
+		start = end + 1
+	}
+	return ""
+}
+
+func shellCommandUnsafeGitSegmentReason(tokens []string) string {
+	if len(tokens) == 0 || shellTokenBaseName(tokens[0]) != "git" {
+		return ""
+	}
+
+	subcommandIndex := -1
+	for i := 1; i < len(tokens); i++ {
+		arg := tokens[i]
+		if shellCommandGitHasUnsafeGlobalOption(arg) {
+			return fmt.Sprintf("git global option %s can redirect repository, config, helper, or pager behavior", arg)
+		}
+		if shellCommandGitGlobalOptionHasInlineValue(arg) {
+			continue
+		}
+		if shellCommandGitGlobalOptionTakesValue(arg) {
+			i++
+			continue
+		}
+		if arg == "--" || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		subcommandIndex = i
+		break
+	}
+
+	if subcommandIndex == -1 {
+		return ""
+	}
+
+	subcommand := tokens[subcommandIndex]
+	args := tokens[subcommandIndex+1:]
+	switch subcommand {
+	case "status", "log", "diff", "show":
+		if reason := shellCommandUnsafeGitSubcommandOptionReason(args); reason != "" {
+			return reason
+		}
+	case "cat-file":
+		if reason := shellCommandUnsafeGitSubcommandOptionReason(args); reason != "" {
+			return reason
+		}
+		for _, arg := range args {
+			if arg == "--filters" || strings.HasPrefix(arg, "--filters=") {
+				return "git cat-file --filters can invoke configured content filters"
+			}
+		}
+	case "branch":
+		if reason := shellCommandUnsafeGitSubcommandOptionReason(args); reason != "" {
+			return reason
+		}
+		if !shellCommandGitBranchArgsReadOnly(args) {
+			return "git branch arguments can create, rename, or delete branches"
+		}
+	}
+	return ""
+}
+
+func shellCommandUnsafeGitSubcommandOptionReason(args []string) string {
+	for _, arg := range args {
+		switch {
+		case arg == "--output" || strings.HasPrefix(arg, "--output="):
+			return "git --output can write command output to a file"
+		case arg == "--ext-diff":
+			return "git --ext-diff can execute an external diff command"
+		case arg == "--textconv":
+			return "git --textconv can execute configured text conversion filters"
+		case arg == "--exec" || strings.HasPrefix(arg, "--exec="):
+			return "git --exec can redirect helper execution"
+		}
+	}
+	return ""
+}
+
+func shellCommandGitHasUnsafeGlobalOption(arg string) bool {
+	switch {
+	case arg == "-c" || strings.HasPrefix(arg, "-c"):
+		return true
+	case arg == "-C" || strings.HasPrefix(arg, "-C"):
+		return true
+	case arg == "-p":
+		return true
+	case arg == "--config-env" || strings.HasPrefix(arg, "--config-env="):
+		return true
+	case arg == "--exec-path" || strings.HasPrefix(arg, "--exec-path="):
+		return true
+	case arg == "--git-dir" || strings.HasPrefix(arg, "--git-dir="):
+		return true
+	case arg == "--namespace" || strings.HasPrefix(arg, "--namespace="):
+		return true
+	case arg == "--paginate":
+		return true
+	case arg == "--super-prefix" || strings.HasPrefix(arg, "--super-prefix="):
+		return true
+	case arg == "--work-tree" || strings.HasPrefix(arg, "--work-tree="):
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandGitGlobalOptionTakesValue(arg string) bool {
+	switch arg {
+	case "-c", "-C", "--config-env", "--exec-path", "--git-dir", "--namespace", "--super-prefix", "--work-tree":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandGitGlobalOptionHasInlineValue(arg string) bool {
+	switch {
+	case (strings.HasPrefix(arg, "-c") || strings.HasPrefix(arg, "-C")) && len(arg) > 2:
+		return true
+	case strings.HasPrefix(arg, "--config-env="):
+		return true
+	case strings.HasPrefix(arg, "--exec-path="):
+		return true
+	case strings.HasPrefix(arg, "--git-dir="):
+		return true
+	case strings.HasPrefix(arg, "--namespace="):
+		return true
+	case strings.HasPrefix(arg, "--super-prefix="):
+		return true
+	case strings.HasPrefix(arg, "--work-tree="):
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandGitBranchArgsReadOnly(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	sawReadOnlyFlag := false
+	for _, arg := range args {
+		switch arg {
+		case "--list", "-l", "--show-current", "-a", "--all", "-r", "--remotes", "-v", "-vv", "--verbose":
+			sawReadOnlyFlag = true
+		default:
+			if strings.HasPrefix(arg, "--format=") {
+				sawReadOnlyFlag = true
+				continue
+			}
+			return false
+		}
+	}
+	return sawReadOnlyFlag
 }
 
 func shellCommandUnsafeRipgrepReason(command string) string {
@@ -3433,11 +3605,64 @@ func shellCommandWithoutQuotedLiterals(command string) string {
 }
 
 func shellCommandMutatesGitState(command string) bool {
-	lower := strings.ToLower(strings.TrimSpace(command))
-	if lower == "" {
+	tokens := shellCommandRawInspectionTokens(command)
+	if len(tokens) == 0 {
 		return false
 	}
-	return shellGitMutationPattern.MatchString(lower)
+	for start := 0; start < len(tokens); {
+		for start < len(tokens) && shellCommandTokenIsSegmentDelimiter(tokens[start]) {
+			start++
+		}
+		end := start
+		for end < len(tokens) && !shellCommandTokenIsSegmentDelimiter(tokens[end]) {
+			end++
+		}
+		if start < end && shellCommandGitSegmentMutatesState(tokens[start:end]) {
+			return true
+		}
+		start = end + 1
+	}
+	return false
+}
+
+func shellCommandGitSegmentMutatesState(tokens []string) bool {
+	if len(tokens) == 0 || shellTokenBaseName(tokens[0]) != "git" {
+		return false
+	}
+	subcommandIndex := shellCommandGitSubcommandIndex(tokens)
+	if subcommandIndex == -1 {
+		return false
+	}
+	subcommand := tokens[subcommandIndex]
+	switch subcommand {
+	case "add", "am", "apply", "checkout", "cherry-pick", "clean", "clone", "commit", "config", "init", "merge", "mv", "pull", "push", "rebase", "reset", "restore", "revert", "rm", "stash", "switch", "tag":
+		return true
+	case "branch":
+		return !shellCommandGitBranchArgsReadOnly(tokens[subcommandIndex+1:])
+	default:
+		return false
+	}
+}
+
+func shellCommandGitSubcommandIndex(tokens []string) int {
+	if len(tokens) == 0 || shellTokenBaseName(tokens[0]) != "git" {
+		return -1
+	}
+	for i := 1; i < len(tokens); i++ {
+		arg := tokens[i]
+		if shellCommandGitGlobalOptionHasInlineValue(arg) {
+			continue
+		}
+		if shellCommandGitGlobalOptionTakesValue(arg) {
+			i++
+			continue
+		}
+		if arg == "--" || strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 func shellCommandHasWorkspaceWriteRedirection(command string) bool {
