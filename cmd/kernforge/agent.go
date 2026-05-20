@@ -2422,9 +2422,6 @@ func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, r
 	if len(resp.Message.ToolCalls) > 0 || strings.TrimSpace(resp.Message.Text) == "" {
 		return false
 	}
-	if strings.TrimSpace(resp.Message.Phase) == messagePhaseCommentary {
-		return false
-	}
 	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
