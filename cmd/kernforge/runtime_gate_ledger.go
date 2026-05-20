@@ -120,6 +120,9 @@ func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPat
 	default:
 		return false
 	}
+	if sessionHasApprovedDocumentArtifactOnlyHarness(session) {
+		return true
+	}
 	return changedPathsAreGeneratedDocumentArtifacts(session, "", changedPaths)
 }
 
@@ -378,6 +381,9 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 
 func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) {
 	if session == nil || ledger == nil {
+		return
+	}
+	if sessionHasApprovedDocumentArtifactOnlyHarness(session) {
 		return
 	}
 	if changedPathsAreGeneratedDocumentArtifacts(session, "", ledger.ChangedPaths) {

@@ -107,6 +107,66 @@ func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *t
 	}
 }
 
+func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutRequestContext(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "Reviewer feedback: revise the final answer before concluding.",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-stale-code",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Trigger:           "post_change",
+		Branch:            delegationGitBranch(root),
+		ReviewFingerprint: "fp-1",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"main.go"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-1",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("expected approved document artifact harness to bypass stale review blockers, got %#v", ledger)
+	}
+	if strings.Contains(strings.Join(ledger.Blockers, " "), "review") ||
+		strings.Contains(strings.Join(ledger.StaleReasons, " "), "BugReport.md") {
+		t.Fatalf("expected approved document artifact harness to bypass review freshness, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
