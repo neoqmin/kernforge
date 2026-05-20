@@ -261,6 +261,7 @@ type Workspace struct {
 	VerificationToolPaths map[string]string
 	ToolHints             *ToolHints
 	Perms                 *PermissionManager
+	UserInputRequests     *UserInputRequestTracker
 	PrepareEdit           func(string) error
 	PrepareEditAtRoot     func(string, string) error
 	ReviewEdit            func(context.Context, EditPreview) error
@@ -461,6 +462,9 @@ func (w Workspace) ResolveShellWorkDir(ownerNodeID string, workdir string) (Shel
 func (w Workspace) ConfirmVerificationPlan(plan VerificationPlan) (bool, error) {
 	if w.ConfirmVerification == nil {
 		return true, nil
+	}
+	if w.UserInputRequests != nil {
+		w.UserInputRequests.MarkRequested()
 	}
 	return w.ConfirmVerification(plan)
 }
@@ -856,6 +860,9 @@ func (w Workspace) defaultShellTimeout() time.Duration {
 func (w Workspace) ConfirmEdit(preview EditPreview) error {
 	if w.PreviewEdit == nil {
 		return nil
+	}
+	if w.UserInputRequests != nil {
+		w.UserInputRequests.MarkRequested()
 	}
 	ok, err := w.PreviewEdit(preview)
 	if err != nil {

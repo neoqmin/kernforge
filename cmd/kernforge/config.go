@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -3257,11 +3258,44 @@ const (
 
 type PromptFunc func(question string) (bool, error)
 
+type UserInputRequestTracker struct {
+	mu       sync.Mutex
+	callback func()
+}
+
+func NewUserInputRequestTracker() *UserInputRequestTracker {
+	return &UserInputRequestTracker{}
+}
+
+func (t *UserInputRequestTracker) SetCallback(callback func()) func() {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	previous := t.callback
+	t.callback = callback
+	t.mu.Unlock()
+	return previous
+}
+
+func (t *UserInputRequestTracker) MarkRequested() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	callback := t.callback
+	t.mu.Unlock()
+	if callback != nil {
+		callback()
+	}
+}
+
 type PermissionManager struct {
-	mode         Mode
-	prompt       PromptFunc
-	shellAllowed bool
-	gitAllowed   bool
+	mode              Mode
+	prompt            PromptFunc
+	userInputRequests *UserInputRequestTracker
+	shellAllowed      bool
+	gitAllowed        bool
 }
 
 func ParseMode(value string) Mode {
@@ -3289,6 +3323,13 @@ func (m *PermissionManager) Mode() Mode {
 
 func (m *PermissionManager) SetMode(mode Mode) {
 	m.mode = mode
+}
+
+func (m *PermissionManager) SetUserInputRequestTracker(tracker *UserInputRequestTracker) {
+	if m == nil {
+		return
+	}
+	m.userInputRequests = tracker
 }
 
 func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
@@ -3322,6 +3363,9 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 	question := permissionQuestion(action, detail)
 	if permissionActionSupportsAlwaysApproval(action) {
 		question += " (add 'always' to allow for entire session)"
+	}
+	if m.userInputRequests != nil {
+		m.userInputRequests.MarkRequested()
 	}
 	allowed, err := m.prompt(question)
 	if allowed && action == ActionShell {

@@ -619,6 +619,21 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	turnStartedAt := time.Now()
 	mcpTurnMetadata := a.mcpTurnMetadataForToolCall(turnStartedAt)
 	providerTurnMetadata := providerTurnMetadataFromMCP(mcpTurnMetadata)
+	markUserInputRequestedDuringTurn := func() {
+		if mcpTurnMetadata != nil {
+			mcpTurnMetadata[mcpTurnMetadataUserInputRequestedKey] = true
+		}
+	}
+	if userInputRequests := a.ensureUserInputRequestTracker(); userInputRequests != nil {
+		var previous func()
+		previous = userInputRequests.SetCallback(func() {
+			if previous != nil {
+				previous()
+			}
+			markUserInputRequestedDuringTurn()
+		})
+		defer userInputRequests.SetCallback(previous)
+	}
 	maxToolIterations := configMaxToolIterations(a.Config)
 	toolBudgetLimit := maxToolIterations
 	toolBudgetExtensions := 0
@@ -1850,6 +1865,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							return reply, nil
 						}
 						promptText := formatReviewerGateUnavailableUserDecisionPrompt(a.Config, a.Session)
+						markUserInputRequestedDuringTurn()
 						continueRepair, promptErr := a.PromptContinueReviewRepair(promptText)
 						if promptErr != nil {
 							return "", promptErr
@@ -2076,6 +2092,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					if autoVerifyInfraFailureCount >= 1 && !autoVerifyDisablePrompted && a.PromptResolveAutoVerifyFailure != nil {
 						autoVerifyDisablePrompted = true
+						markUserInputRequestedDuringTurn()
 						resolution, promptErr := a.PromptResolveAutoVerifyFailure(report)
 						if promptErr != nil {
 							return "", promptErr
@@ -6656,6 +6673,21 @@ func pathLooksLikeDocumentArtifact(path string) bool {
 	return containsAny(lower,
 		"/analysis/", "/document/", "/documents/", "/docs/", "/legal/", "/notes/", "/report/", "/reports/", "/research/",
 	)
+}
+
+func (a *Agent) ensureUserInputRequestTracker() *UserInputRequestTracker {
+	if a == nil {
+		return nil
+	}
+	tracker := a.Workspace.UserInputRequests
+	if tracker == nil {
+		tracker = NewUserInputRequestTracker()
+		a.Workspace.UserInputRequests = tracker
+	}
+	if a.Workspace.Perms != nil {
+		a.Workspace.Perms.SetUserInputRequestTracker(tracker)
+	}
+	return tracker
 }
 
 func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]any {
