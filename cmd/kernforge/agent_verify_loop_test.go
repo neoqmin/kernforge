@@ -4933,6 +4933,71 @@ func TestAgentBlocksDocumentReadBeforeParentListing(t *testing.T) {
 	}
 }
 
+func TestAgentBlocksDocumentReadWhenParentListedButTargetMissing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "Other.md"), []byte("# Other\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "Tavern"}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("write_file", map[string]any{
+				"path": "Tavern/BugReport.md",
+				"content": strings.Join([]string{
+					"# Tavern Bug Report",
+					"",
+					"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+					"",
+					"| Severity | Count |",
+					"|----------|-------|",
+					"| Critical | 1 |",
+					"| Total | 1 |",
+					"",
+					"## BUG-001",
+					"- File: Tavern/Tavern/RuntimeManager.cpp",
+					"- Impact: crash risk.",
+				}, "\n"),
+			}),
+			{Message: Message{Role: "assistant", Text: "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewListFilesTool(ws), NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected missing document read to be blocked after parent listing, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "If the parent directory is empty or the file is absent") {
+		t.Fatalf("expected absent-file document guidance, got %#v", lastMessage)
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "read_file" && !msg.IsError {
+			t.Fatalf("read_file must not execute successfully for a listed-but-absent generated document path: %#v", msg)
+		}
+	}
+}
+
 func TestAgentBlocksLocalInspectionBeforeWebResearchWhenCapabilityAvailable(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
@@ -10233,6 +10298,9 @@ func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *test
 	}
 	if agent.shouldReviewInteractiveFinalAnswer("The answer says 27 bugs but the report is complete.", true, false) {
 		t.Fatalf("expected content-accepted document artifact to skip interactive final-answer review")
+	}
+	if !agent.shouldSkipInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(session.AcceptanceContract.SourcePrompt, false) {
+		t.Fatalf("expected generated document artifact finalization to bypass the optional final-answer reviewer")
 	}
 }
 
