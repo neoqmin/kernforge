@@ -822,6 +822,101 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 	}
 }
 
+func TestApplyNamedConfigProfileActivatesSavedProfile(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-default"
+	cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "stale-worker", Provider: "openai", Model: "gpt-stale-worker"}
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:        "planner",
+		Description: "keep planner metadata",
+		Provider:    "openai",
+		Model:       "gpt-stale-specialist",
+	}}
+	selected := Profile{
+		Name:            "work",
+		Provider:        "openrouter",
+		Model:           "deepseek/deepseek-v4-pro",
+		BaseURL:         normalizeOpenRouterBaseURL(""),
+		ReasoningEffort: "high",
+		RoleModels: &ProfileRoleModels{
+			AnalysisWorker: &Profile{Provider: "openrouter", Model: "deepseek/deepseek-r1", ReasoningEffort: "medium"},
+			Specialists: []SpecialistSubagentProfile{{
+				Name:            "planner",
+				Provider:        "openai-codex",
+				Model:           "gpt-5.5",
+				ReasoningEffort: "xhigh",
+			}},
+		},
+	}
+	cfg.Profiles = []Profile{
+		{Name: "default", Provider: "openai", Model: "gpt-default"},
+		selected,
+	}
+
+	if err := applyNamedConfigProfile(&cfg, "work"); err != nil {
+		t.Fatalf("applyNamedConfigProfile: %v", err)
+	}
+	if cfg.Provider != selected.Provider || cfg.Model != selected.Model || cfg.BaseURL != selected.BaseURL {
+		t.Fatalf("expected selected main profile, got provider=%q model=%q base=%q", cfg.Provider, cfg.Model, cfg.BaseURL)
+	}
+	if cfg.ActiveProfileKey != configProfileKey(selected) {
+		t.Fatalf("expected active profile key %q, got %q", configProfileKey(selected), cfg.ActiveProfileKey)
+	}
+	if cfg.ProjectAnalysis.WorkerProfile == nil || cfg.ProjectAnalysis.WorkerProfile.Model != "deepseek/deepseek-r1" || cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "medium" {
+		t.Fatalf("expected selected analysis worker role, got %#v", cfg.ProjectAnalysis.WorkerProfile)
+	}
+	if len(cfg.Specialists.Profiles) != 1 || cfg.Specialists.Profiles[0].Model != "gpt-5.5" || cfg.Specialists.Profiles[0].Description != "keep planner metadata" {
+		t.Fatalf("expected specialist profile role with preserved metadata, got %#v", cfg.Specialists.Profiles)
+	}
+}
+
+func TestApplyNamedConfigProfileReportsAvailableProfiles(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Profiles = []Profile{
+		{Name: "zeta", Provider: "openai", Model: "gpt-z"},
+		{Name: "alpha", Provider: "openai", Model: "gpt-a"},
+	}
+
+	err := applyNamedConfigProfile(&cfg, "missing")
+	if err == nil {
+		t.Fatalf("expected missing profile error")
+	}
+	if !strings.Contains(err.Error(), `profile "missing" not found`) || !strings.Contains(err.Error(), "alpha, zeta") {
+		t.Fatalf("expected available profile names in error, got %v", err)
+	}
+}
+
+func TestMCPServerConfigOverridesApplyNamedProfile(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Profiles = []Profile{{
+		Name:     "mcp-work",
+		Provider: "openrouter",
+		Model:    "deepseek/deepseek-v4-pro",
+		BaseURL:  normalizeOpenRouterBaseURL(""),
+	}}
+
+	err := (mcpServerConfigOverrides{
+		Profile: "mcp-work",
+		Model:   "runtime-model",
+	}).apply(&cfg)
+	if err != nil {
+		t.Fatalf("apply overrides: %v", err)
+	}
+	if cfg.Provider != "openrouter" || cfg.Model != "runtime-model" || cfg.BaseURL != normalizeOpenRouterBaseURL("") {
+		t.Fatalf("expected profile provider/base with model override, got provider=%q model=%q base=%q", cfg.Provider, cfg.Model, cfg.BaseURL)
+	}
+	if cfg.ActiveProfileKey == "" {
+		t.Fatalf("expected active profile key to be set")
+	}
+}
+
+func TestKernforgeCLIHelpConsumesProfileValue(t *testing.T) {
+	if !kernforgeFlagConsumesHelpValue("-profile") {
+		t.Fatalf("expected -profile to consume its value")
+	}
+}
+
 func TestLoadConfigEnvReasoningEffortOverridesActiveProfile(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
