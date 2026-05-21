@@ -1046,6 +1046,21 @@ func (w Workspace) ResolveForLookup(path string) (string, error) {
 	return primary, nil
 }
 
+func (w Workspace) ResolveForActiveLookup(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		path = "."
+	}
+	activeRoot := strings.TrimSpace(w.Root)
+	if activeRoot == "" {
+		activeRoot = strings.TrimSpace(w.BaseRoot)
+	}
+	abs, err := w.resolveAgainstRoot(activeRoot, path)
+	if err != nil {
+		return "", err
+	}
+	return ensureResolvedPathWithinRoot(activeRoot, abs)
+}
+
 func (w Workspace) resolveAgainstRoot(root, path string) (string, error) {
 	var abs string
 	if filepath.IsAbs(path) {

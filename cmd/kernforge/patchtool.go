@@ -49,7 +49,7 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 		return ToolExecutionResult{}, err
 	}
 	originalPatchText := patchText
-	verdict, err := ws.Hook(ctx, HookPreToolUse, HookPayload{
+	hookPayload := HookPayload{
 		"tool_name":     "apply_patch",
 		"tool_kind":     "edit",
 		"command":       originalPatchText,
@@ -57,7 +57,9 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 		"file_tags":     []string{},
 		"owner_node_id": ownerNodeID,
 		"work_dir":      ws.Root,
-	})
+	}
+	addEffectiveExecutionContextMetadata(hookPayload, ws, nil)
+	verdict, err := ws.Hook(ctx, HookPreToolUse, hookPayload)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -99,6 +101,10 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 			meta["unified_diff"] = unifiedDiff
 		}
 	}
+	if ownerNodeID != "" {
+		meta["owner_node_id"] = ownerNodeID
+	}
+	addEffectiveExecutionContextMetadata(meta, ws, nil)
 	return ToolExecutionResult{
 		DisplayText: text,
 		Meta:        meta,

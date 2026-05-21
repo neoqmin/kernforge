@@ -657,6 +657,109 @@ func TestApplyPatchExecuteDetailedReturnsChangedPathsMeta(t *testing.T) {
 	}
 }
 
+func TestApplyPatchExecuteDetailedIncludesEffectiveWorkspaceRoots(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(activeRoot, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: baseRoot,
+		Root:     activeRoot,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"owner_node_id": "worker-a",
+		"patch": strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: main.go",
+			"@@",
+			" package main",
+			"+func main() {}",
+			"*** End Patch",
+			"",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "owner_node_id"); got != "worker-a" {
+		t.Fatalf("expected owner_node_id metadata, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "workspace_root"); !sameFilePath(got, baseRoot) {
+		t.Fatalf("expected base workspace_root %q, got %#v", baseRoot, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected active workspace root %q, got %#v", activeRoot, result.Meta)
+	}
+	roots := toolMetaStringSlice(result.Meta, "workspace_roots")
+	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
+		t.Fatalf("expected effective workspace_roots [%q %q], got %#v", baseRoot, activeRoot, result.Meta)
+	}
+}
+
+func TestApplyPatchHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(activeRoot, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var prePayload HookPayload
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: baseRoot,
+		Root:     activeRoot,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event == HookPreToolUse {
+				prePayload = payload
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: main.go",
+			"@@",
+			" package main",
+			"+func main() {}",
+			"*** End Patch",
+			"",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(prePayload, "workspace_root"); !sameFilePath(got, baseRoot) {
+		t.Fatalf("expected hook base workspace_root %q, got %#v", baseRoot, prePayload)
+	}
+	if got := toolMetaString(prePayload, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected hook active workspace root %q, got %#v", activeRoot, prePayload)
+	}
+	if got := toolMetaString(prePayload, "work_dir"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected hook work_dir %q, got %#v", activeRoot, prePayload)
+	}
+	roots := toolMetaStringSlice(prePayload, "workspace_roots")
+	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
+		t.Fatalf("expected hook workspace_roots [%q %q], got %#v", baseRoot, activeRoot, prePayload)
+	}
+}
+
 func TestGitAddExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	repo := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "feature.txt"), []byte("hello\n"), 0o644); err != nil {

@@ -86,7 +86,7 @@ func (t ViewImageTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			detail = imageDetailHigh
 		}
 	}
-	absPath, err := t.ws.ResolveForLookup(filepath.FromSlash(rawPath))
+	absPath, err := t.ws.ResolveForActiveLookup(filepath.FromSlash(rawPath))
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -113,6 +113,7 @@ func (t ViewImageTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"width":      image.Width,
 		"height":     image.Height,
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{
 		DisplayText: string(display),
 		ContentItems: []ToolContentItem{{
