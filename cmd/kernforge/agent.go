@@ -893,7 +893,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
 				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written."
-				if a.shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, unresolvedVerification) {
+				if a.prepareGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, attemptedEditTool, unresolvedVerification) {
 					reply, err := a.finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(resp.Message.ToolCalls, attemptedEditTool, unresolvedVerification, reason)
 					if err != nil {
 						return "", err
@@ -2417,7 +2417,7 @@ func (a *Agent) shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerificati
 	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
-func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCalls(request string, unresolvedVerification bool) bool {
+func (a *Agent) prepareGeneratedDocumentArtifactFinalAfterBlockedToolCalls(request string, attemptedEditTool bool, unresolvedVerification bool) bool {
 	if a == nil || a.Session == nil {
 		return false
 	}
@@ -2430,9 +2430,15 @@ func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCa
 	if unresolvedVerification && (a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped()) {
 		return false
 	}
+
 	report := a.Session.LastCodingHarnessReport
-	if report == nil {
-		return false
+	if report == nil || !codingHarnessReportHasArtifactQuality(*report) {
+		seedReply := a.generatedDocumentArtifactSeedFinalReply()
+		freshReport := a.buildCodingHarnessReport(seedReply, attemptedEditTool, unresolvedVerification)
+		a.Session.LastCodingHarnessReport = &freshReport
+		a.Session.LastTestImpactReport = &freshReport.TestImpact
+		a.Session.LastJobSupervisorReport = &freshReport.JobSupervisor
+		report = &freshReport
 	}
 	copyReport := *report
 	copyReport.Normalize()
@@ -2442,7 +2448,45 @@ func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCa
 	if copyReport.Approved {
 		return true
 	}
-	return a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, report, false)
+	return a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, report, unresolvedVerification)
+}
+
+func codingHarnessReportHasArtifactQuality(report CodingHarnessReport) bool {
+	report.Normalize()
+	return len(report.ArtifactQuality.Artifacts) > 0 || len(report.ArtifactQuality.Findings) > 0
+}
+
+func (a *Agent) generatedDocumentArtifactSeedFinalReply() string {
+	paths := make([]string, 0)
+	if a != nil && a.Session != nil {
+		for _, path := range sessionPatchTransactionChangedPaths(a.Session) {
+			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+				paths = append(paths, normalizeSessionRelativePath(path))
+			}
+		}
+	}
+	paths = normalizeTaskStateList(paths, 8)
+	target := "the generated document artifact"
+	if len(paths) > 0 {
+		quoted := make([]string, 0, len(paths))
+		for _, path := range paths {
+			quoted = append(quoted, "`"+path+"`")
+		}
+		target = strings.Join(quoted, ", ")
+	}
+	cfg := Config{}
+	sourcePrompt := ""
+	if a != nil {
+		cfg = a.Config
+		if a.Session != nil {
+			sourcePrompt = codingHarnessSourcePrompt(a.Session)
+		}
+	}
+	language, _ := inferResponseLanguageForUserText(sourcePrompt, cfg)
+	if language == "ko" {
+		return fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사로 내용을 확인했습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.", target)
+	}
+	return fmt.Sprintf("%s is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact.", target)
 }
 
 func (a *Agent) finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(calls []ToolCall, attemptedEditTool bool, unresolvedVerification bool, reason string) (string, error) {
@@ -2568,6 +2612,9 @@ func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request 
 	artifactApproved := a.generatedDocumentArtifactQualityApproved()
 	artifactContentAccepted := a.generatedDocumentArtifactContentQualityAccepted()
 	for _, call := range calls {
+		if artifactApproved || artifactContentAccepted {
+			return true
+		}
 		if generatedDocumentArtifactValidationToolCall(call) {
 			return true
 		}
