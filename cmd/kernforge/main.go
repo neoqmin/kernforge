@@ -239,7 +239,11 @@ func run(args []string) error {
 		}
 	}
 	if permissionFlag != "" {
-		cfg.PermissionMode = permissionFlag
+		mode, ok := ParseModeStrict(permissionFlag)
+		if !ok {
+			return invalidPermissionModeError("permission-mode", permissionFlag)
+		}
+		cfg.PermissionMode = string(mode)
 	}
 	if yesFlag {
 		cfg.PermissionMode = string(ModeBypass)
@@ -6174,7 +6178,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			fmt.Fprintln(rt.writer, rt.ui.infoLine("Permissions: "+string(rt.perms.Mode())))
 			return false, nil
 		}
-		mode := ParseMode(cmd.Args)
+		mode, ok := ParseModeStrict(cmd.Args)
+		if !ok {
+			return false, invalidPermissionModeError("permission mode", cmd.Args)
+		}
 		rt.perms.SetMode(mode)
 		rt.session.PermissionMode = string(mode)
 		rt.cfg.PermissionMode = string(mode)
@@ -9200,7 +9207,11 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	if samePermissionMode(activePermission, rt.cfg.PermissionMode) {
 		activePermission = loaded.PermissionMode
 	}
-	activePermission = string(ParseMode(activePermission))
+	if mode, ok := ParseModeStrict(activePermission); ok {
+		activePermission = string(mode)
+	} else {
+		activePermission = loaded.PermissionMode
+	}
 
 	rt.cfg = loaded
 	rt.session.Provider = activeProvider

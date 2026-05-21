@@ -148,6 +148,33 @@ func TestReloadRuntimeConfigUsesLivePermissionSnapshotOverStaleSession(t *testin
 	}
 }
 
+func TestPermissionsCommandRejectsInvalidModeWithoutChangingState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := t.TempDir()
+	cfg := DefaultConfig(workspace)
+	cfg.PermissionMode = string(ModePlan)
+	cfg.MCPServers = nil
+	session := NewSession(workspace, cfg.Provider, cfg.Model, cfg.BaseURL, string(ModePlan))
+	rt := newReloadPermissionTestRuntime(workspace, cfg, session, ModePlan)
+
+	_, err := rt.handleCommand(Command{Name: "permissions", Args: "full-access"})
+	if err == nil {
+		t.Fatalf("expected invalid permission mode to fail")
+	}
+	if rt.perms.Mode() != ModePlan {
+		t.Fatalf("permission manager changed after invalid mode, got %q", rt.perms.Mode())
+	}
+	if rt.session.PermissionMode != string(ModePlan) {
+		t.Fatalf("session permission changed after invalid mode, got %q", rt.session.PermissionMode)
+	}
+	if rt.cfg.PermissionMode != string(ModePlan) {
+		t.Fatalf("config permission changed after invalid mode, got %q", rt.cfg.PermissionMode)
+	}
+}
+
 func TestReloadRuntimeConfigPreservesLivePermissionOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

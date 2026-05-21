@@ -333,6 +333,49 @@ func TestLoadConfigIgnoresWorkspaceHostLocalOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsInvalidPermissionMode(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	path := userConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"permission_mode":"full-access"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := LoadConfig(workspace)
+	if err == nil {
+		t.Fatalf("expected invalid permission mode to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid permission_mode") || !strings.Contains(err.Error(), "bypassPermissions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSaveUserConfigRejectsInvalidPermissionMode(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.PermissionMode = "full-access"
+	err := SaveUserConfig(cfg)
+	if err == nil {
+		t.Fatalf("expected invalid permission mode to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid permission_mode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(userConfigPath()); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid config should not be written, stat err=%v", statErr)
+	}
+}
+
 func TestLoadConfigIgnoresWorkspaceConfigUntilProjectTrusted(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
