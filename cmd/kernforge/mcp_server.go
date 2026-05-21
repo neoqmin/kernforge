@@ -56,6 +56,7 @@ type kernforgeMCPResourceTemplate struct {
 type mcpServerRunOptions struct {
 	ConfigOverrides     mcpServerConfigOverrides
 	LoadWorkspaceConfig bool
+	StrictConfig        bool
 }
 
 type mcpServerConfigOverrides struct {
@@ -167,7 +168,7 @@ func (r *kernforgeMCPServerRuntime) ensureServer(workspace string, source string
 
 func (r *kernforgeMCPServerRuntime) configForWorkspace(workspace string) Config {
 	if r.options.LoadWorkspaceConfig && !samePath(workspace, r.fallbackCWD) {
-		if cfg, err := LoadConfig(workspace); err == nil {
+		if cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{StrictConfig: r.options.StrictConfig}); err == nil {
 			return cfg
 		}
 	}
