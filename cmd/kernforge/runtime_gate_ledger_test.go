@@ -19,6 +19,10 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 		t.Fatalf("write other.go: %v", err)
 	}
 	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go와 other.go를 수정해",
+	}}
 	session.LastReviewRun = &ReviewRun{
 		ID:                "review-stale",
 		SchemaVersion:     reviewSchemaVersion,
@@ -177,8 +181,13 @@ func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(
 	}
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "README.md를 업데이트해",
+	}}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:        "patch-tx-1",
+		Goal:      "README.md를 업데이트해",
 		Status:    patchTransactionStatusCommitted,
 		StartedAt: now,
 		UpdatedAt: now,
@@ -224,6 +233,136 @@ func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(
 	}
 }
 
+func TestRuntimeGateFinalAnswerIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "README.md를 업데이트해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "README.md 업데이트 완료",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-old",
+		Goal:      "README.md를 업데이트해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now().Add(-time.Hour),
+		UpdatedAt: time.Now().Add(-time.Hour),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-old-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "README.md",
+				Operation: "modify",
+			}},
+		}},
+	}}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if len(ledger.ChangedPaths) != 0 {
+		t.Fatalf("expected final-answer gate to ignore previous-turn archived patch paths, got %#v", ledger.ChangedPaths)
+	}
+	if ledger.PatchTransactionID != "" {
+		t.Fatalf("expected final-answer gate not to attach previous-turn patch transaction, got %#v", ledger)
+	}
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("expected previous-turn patch history not to require review for a read-only final answer, got %#v", ledger)
+	}
+}
+
+func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	now := time.Now()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "README.md를 수정해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "README.md 수정 완료",
+		},
+		{
+			Role: "user",
+			Text: "main.go를 수정해",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:          "patch-tx-old",
+		Goal:        "README.md를 수정해",
+		Status:      patchTransactionStatusCommitted,
+		StartedAt:   now.Add(-time.Minute),
+		UpdatedAt:   now.Add(time.Minute),
+		CompletedAt: now.Add(time.Minute),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-old-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "README.md",
+				Operation: "modify",
+			}},
+		}},
+	}}
+	session.LastVerification = &VerificationReport{
+		GeneratedAt:  now,
+		Trigger:      "manual",
+		Workspace:    root,
+		ChangedPaths: []string{"main.go"},
+		Steps: []VerificationStep{{
+			Label:   "go test",
+			Command: "go test ./cmd/kernforge",
+			Status:  VerificationPassed,
+		}},
+	}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-main",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Branch:            delegationGitBranch(root),
+		ReviewFingerprint: "fp-main",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"main.go"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-main",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.PatchTransactionID != "" {
+		t.Fatalf("expected final-answer git fallback not to attach previous-turn patch transaction, got %#v", ledger)
+	}
+	if !slices.Equal(ledger.ChangedPaths, []string{"main.go"}) {
+		t.Fatalf("expected final-answer git fallback to use current dirty file only, got %#v", ledger.ChangedPaths)
+	}
+	if len(ledger.Warnings) != 0 || !ledger.Ready {
+		t.Fatalf("expected stale archived patch time not to stale the current final-answer ledger, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
@@ -234,8 +373,13 @@ func TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *te
 	}
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "README.md를 수정해",
+	}}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:        "patch-tx-1",
+		Goal:      "README.md를 수정해",
 		Status:    patchTransactionStatusCommitted,
 		StartedAt: now,
 		UpdatedAt: now,
@@ -340,8 +484,13 @@ func TestRuntimeGateLedgerLinksReviewPatchVerificationAndWaiver(t *testing.T) {
 	}
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "README.md를 수정해",
+	}}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:        "patch-tx-1",
+		Goal:      "README.md를 수정해",
 		Status:    patchTransactionStatusCommitted,
 		StartedAt: now,
 		UpdatedAt: now,
@@ -415,8 +564,13 @@ func TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning(t *testi
 	}
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "README.md를 수정해",
+	}}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:            "patch-tx-current",
+		Goal:          "README.md를 수정해",
 		Status:        patchTransactionStatusCommitted,
 		WorkspaceRoot: root,
 		StartedAt:     now.Add(-time.Minute),
@@ -553,6 +707,10 @@ func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
 		t.Fatalf("write main.go: %v", err)
 	}
 	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 수정해",
+	}}
 	var output bytes.Buffer
 	rt := &runtimeState{
 		writer:  &output,

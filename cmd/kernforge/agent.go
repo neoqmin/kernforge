@@ -2294,19 +2294,7 @@ func (a *Agent) shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification bo
 	if attemptedEditTool || successfulEditTool {
 		return true
 	}
-	if a.Session.ActivePatchTransaction != nil {
-		if len(a.Session.ActivePatchTransaction.ChangedPaths()) > 0 {
-			return true
-		}
-	}
-	if a.Session.ActiveEditLoop != nil {
-		if len(a.Session.ActiveEditLoop.ChangedPaths) > 0 ||
-			len(a.Session.ActiveEditLoop.WorkerSummaries) > 0 ||
-			strings.TrimSpace(a.Session.ActiveEditLoop.VerificationSummary) != "" {
-			return true
-		}
-	}
-	return false
+	return sessionHasCurrentTurnFinalGateEvidence(a.Session)
 }
 
 func assistantMessagePhaseForModelResponse(msg Message) string {
@@ -2693,7 +2681,7 @@ func (a *Agent) shouldRouteCommentaryReplyThroughFinalGates(request string, repl
 	if attemptedEditTool || successfulEditTool {
 		return true
 	}
-	return len(sessionPatchTransactionChangedPaths(a.Session)) > 0
+	return sessionHasCurrentTurnFinalGateEvidence(a.Session)
 }
 
 func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, resp ChatResponse) bool {
