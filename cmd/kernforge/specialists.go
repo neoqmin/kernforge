@@ -15,6 +15,11 @@ type SpecialistAssignment struct {
 	Score   int
 }
 
+const (
+	specialistMicroWorkerDescriptionMaxBytes = 320
+	specialistMicroWorkerPromptMaxBytes      = 1200
+)
+
 func defaultSpecialistProfiles() []SpecialistSubagentProfile {
 	return []SpecialistSubagentProfile{
 		{
@@ -754,13 +759,13 @@ func buildSpecialistMicroWorkerSystemPrompt(profile SpecialistSubagentProfile) s
 		"Keep the answer under 4 short bullets.",
 	}
 	if strings.TrimSpace(profile.Name) != "" {
-		lines = append(lines, "Specialist role: "+profile.Name)
+		lines = append(lines, "Specialist role: "+compactPromptSection(profile.Name, 96))
 	}
 	if strings.TrimSpace(profile.Description) != "" {
-		lines = append(lines, profile.Description)
+		lines = append(lines, "Specialist description:\n"+compactPromptSection(profile.Description, specialistMicroWorkerDescriptionMaxBytes))
 	}
 	if strings.TrimSpace(profile.Prompt) != "" {
-		lines = append(lines, profile.Prompt)
+		lines = append(lines, "Specialist guidance:\n"+compactPromptSection(profile.Prompt, specialistMicroWorkerPromptMaxBytes))
 	}
 	return strings.Join(lines, "\n")
 }

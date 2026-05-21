@@ -268,6 +268,39 @@ func TestSpecialistClientDoesNotLeakMainAPIKeyToDifferentProvider(t *testing.T) 
 	}
 }
 
+func TestSpecialistMicroWorkerSystemPromptCompactsProfileText(t *testing.T) {
+	longDescription := "description-head " + strings.Repeat("description-body ", 80) + "description-tail"
+	longPrompt := "prompt-head " + strings.Repeat("prompt-body ", 180) + "prompt-tail"
+
+	systemPrompt := buildSpecialistMicroWorkerSystemPrompt(SpecialistSubagentProfile{
+		Name:        strings.Repeat("role-name-", 30),
+		Description: longDescription,
+		Prompt:      longPrompt,
+	})
+
+	if !strings.Contains(systemPrompt, "Specialist role: role-name-") {
+		t.Fatalf("expected compact role line in system prompt, got:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "Specialist description:\ndescription-head") {
+		t.Fatalf("expected compact description section in system prompt, got:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "Specialist guidance:\nprompt-head") {
+		t.Fatalf("expected compact guidance section in system prompt, got:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "description-tail") {
+		t.Fatalf("expected long description tail to be omitted, got:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "prompt-tail") {
+		t.Fatalf("expected long prompt tail to be omitted, got:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "...") {
+		t.Fatalf("expected compacted prompt to include ellipsis, got:\n%s", systemPrompt)
+	}
+	if len(systemPrompt) > specialistMicroWorkerDescriptionMaxBytes+specialistMicroWorkerPromptMaxBytes+600 {
+		t.Fatalf("expected system prompt to stay bounded, got %d bytes", len(systemPrompt))
+	}
+}
+
 func TestSpecialistBatchRouteLimiterDoesNotForceCloudDuplicateRouteToSerial(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai"
