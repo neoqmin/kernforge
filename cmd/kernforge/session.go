@@ -469,17 +469,53 @@ func (s *SessionStore) Save(sess *Session) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.root, sess.ID+".json"), data, 0o644)
+	path := s.sessionPath(sess.ID)
+	unlock := lockFilePath(path)
+	defer unlock()
+	if existing, err := os.ReadFile(path); err == nil && json.Valid(existing) {
+		_ = atomicWriteFile(sessionBackupPath(path), existing, 0o644)
+	}
+	if err := atomicWriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	_ = atomicWriteFile(sessionBackupPath(path), data, 0o644)
+	return nil
 }
 
 func (s *SessionStore) Load(id string) (*Session, error) {
-	data, err := os.ReadFile(filepath.Join(s.root, id+".json"))
+	path := s.sessionPath(id)
+	unlock := lockFilePath(path)
+	defer unlock()
+	sess, _, err := loadSessionFile(path)
+	if err == nil {
+		return sess, nil
+	}
+	primaryErr := err
+	backupPath := sessionBackupPath(path)
+	backupSess, backupData, backupErr := loadSessionFile(backupPath)
+	if backupErr != nil {
+		return nil, primaryErr
+	}
+	_ = atomicWriteFile(path, backupData, 0o644)
+	return backupSess, nil
+}
+
+func (s *SessionStore) sessionPath(id string) string {
+	return filepath.Join(s.root, id+".json")
+}
+
+func sessionBackupPath(path string) string {
+	return path + ".bak"
+}
+
+func loadSessionFile(path string) (*Session, []byte, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var sess Session
 	if err := json.Unmarshal(data, &sess); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sess.normalizeWorkingDirState()
 	sess.normalizeSelectionState()
@@ -494,7 +530,7 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	sess.normalizeSuggestionMemory()
 	sess.normalizeAutomations()
 	sess.normalizeGoals()
-	return &sess, nil
+	return &sess, data, nil
 }
 
 func (s *SessionStore) List() ([]SessionSummary, error) {
@@ -510,13 +546,13 @@ func (s *SessionStore) List() ([]SessionSummary, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(s.root, entry.Name()))
+		path := filepath.Join(s.root, entry.Name())
+		sess, _, err := loadSessionFile(path)
 		if err != nil {
-			continue
-		}
-		var sess Session
-		if err := json.Unmarshal(data, &sess); err != nil {
-			continue
+			sess, _, err = loadSessionFile(sessionBackupPath(path))
+			if err != nil {
+				continue
+			}
 		}
 		items = append(items, SessionSummary{
 			ID:         sess.ID,
