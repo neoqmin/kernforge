@@ -3567,6 +3567,7 @@ func TestMCPCommandShowsWebResearchMCPKeySources(t *testing.T) {
 	for _, needle := range []string{
 		"== MCP",
 		"web-research tools=2 resources=0 prompts=0",
+		"env=local",
 		"active_key=TAVILY_API_KEY (config)",
 		"tavily=config",
 		"brave=environment",

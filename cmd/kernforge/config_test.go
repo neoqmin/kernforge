@@ -1599,6 +1599,46 @@ func TestNormalizeConfigPathsNormalizesMCPEnvEntries(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPathsNormalizesMCPEnvironmentID(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				Name:          "remote",
+				Command:       "node",
+				EnvironmentID: " remote-dev ",
+			},
+		},
+	}
+
+	normalizeConfigPaths(cfg)
+
+	if got := cfg.MCPServers[0].EnvironmentID; got != "remote-dev" {
+		t.Fatalf("expected trimmed MCP environment id, got %q", got)
+	}
+}
+
+func TestMergeMCPServerConfigPreservesEnvironmentID(t *testing.T) {
+	base := MCPServerConfig{
+		Name:          "docs",
+		Command:       "node",
+		EnvironmentID: "remote-base",
+	}
+	overlay := MCPServerConfig{
+		Name: "docs",
+	}
+
+	merged := mergeMCPServerConfig(base, overlay)
+	if merged.EnvironmentID != "remote-base" {
+		t.Fatalf("expected inherited environment id, got %#v", merged)
+	}
+
+	overlay.EnvironmentID = "remote-overlay"
+	merged = mergeMCPServerConfig(base, overlay)
+	if merged.EnvironmentID != "remote-overlay" {
+		t.Fatalf("expected overlay environment id, got %#v", merged)
+	}
+}
+
 func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 	help := HelpText()
 	for _, needle := range []string{

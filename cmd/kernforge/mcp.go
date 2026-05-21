@@ -19,13 +19,14 @@ import (
 )
 
 type MCPServerConfig struct {
-	Name         string            `json:"name"`
-	Command      string            `json:"command"`
-	Args         []string          `json:"args,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	Cwd          string            `json:"cwd,omitempty"`
-	Capabilities []string          `json:"capabilities,omitempty"`
-	Disabled     bool              `json:"disabled,omitempty"`
+	Name          string            `json:"name"`
+	Command       string            `json:"command"`
+	Args          []string          `json:"args,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Cwd           string            `json:"cwd,omitempty"`
+	EnvironmentID string            `json:"environment_id,omitempty"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
+	Disabled      bool              `json:"disabled,omitempty"`
 }
 
 type MCPToolDescriptor struct {
@@ -68,6 +69,7 @@ type MCPServerStatus struct {
 	Name          string
 	Command       string
 	Cwd           string
+	EnvironmentID string
 	ToolCount     int
 	ResourceCount int
 	PromptCount   int
@@ -116,6 +118,7 @@ type mcpTurnMetadataContextKey struct{}
 const mcpTurnMetadataMetaKey = "x-codex-turn-metadata"
 const mcpTurnMetadataUserInputRequestedKey = "user_input_requested_during_turn"
 const mcpBridgeCallIDMetaKey = "codex_bridge_mcp_call_id"
+const defaultMCPServerEnvironmentID = "local"
 
 func contextWithMCPTurnMetadata(ctx context.Context, metadata map[string]any) context.Context {
 	if ctx == nil {
@@ -202,10 +205,11 @@ func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []str
 		client, clientWarnings, err := startMCPClient(ws, cfg)
 		if err != nil {
 			manager.status = append(manager.status, MCPServerStatus{
-				Name:    cfg.Name,
-				Command: cfg.Command,
-				Cwd:     resolveMCPServerCwd(ws, cfg),
-				Error:   err.Error(),
+				Name:          cfg.Name,
+				Command:       cfg.Command,
+				Cwd:           resolveMCPServerCwd(ws, cfg),
+				EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
+				Error:         err.Error(),
 			})
 			warnings = append(warnings, fmt.Sprintf("mcp server %s: %v", cfg.Name, err))
 			continue
@@ -240,9 +244,37 @@ func resolveMCPServerCwd(ws Workspace, cfg MCPServerConfig) string {
 	return filepath.Clean(filepath.Join(ws.Root, cfg.Cwd))
 }
 
+func effectiveMCPServerEnvironmentID(cfg MCPServerConfig) string {
+	environmentID := strings.TrimSpace(cfg.EnvironmentID)
+	if environmentID == "" {
+		return defaultMCPServerEnvironmentID
+	}
+	return environmentID
+}
+
+func validateMCPServerEnvironment(cfg MCPServerConfig) error {
+	environmentID := effectiveMCPServerEnvironmentID(cfg)
+	if environmentID == defaultMCPServerEnvironmentID {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Command) != "" {
+		cwd := strings.TrimSpace(cfg.Cwd)
+		if cwd == "" {
+			return fmt.Errorf("stdio MCP server %q references environment_id %q but requires an absolute cwd", cfg.Name, environmentID)
+		}
+		if !filepath.IsAbs(cwd) {
+			return fmt.Errorf("stdio MCP server %q references environment_id %q but requires an absolute cwd, got %q", cfg.Name, environmentID, cwd)
+		}
+	}
+	return fmt.Errorf("mcp server %q references unsupported environment_id %q", cfg.Name, environmentID)
+}
+
 func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, error) {
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, nil, fmt.Errorf("missing command")
+	}
+	if err := validateMCPServerEnvironment(cfg); err != nil {
+		return nil, nil, err
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Dir = resolveMCPServerCwd(ws, cfg)
@@ -286,9 +318,10 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		stdin:  stdin,
 		stdout: bufio.NewReader(stdout),
 		status: MCPServerStatus{
-			Name:    cfg.Name,
-			Command: cfg.Command,
-			Cwd:     cmd.Dir,
+			Name:          cfg.Name,
+			Command:       cfg.Command,
+			Cwd:           cmd.Dir,
+			EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
 		},
 	}
 	go client.captureStderr(stderr)
