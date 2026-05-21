@@ -2569,8 +2569,12 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	if inputErr != nil {
 		return ToolExecutionResult{}, inputErr
 	}
+	displayPath, unifiedDiff := writeFileUnifiedDiffPreview(t.ws, args)
 	text, err := t.Execute(ctx, input)
 	path := strings.TrimSpace(stringValue(args, "path"))
+	if displayPath != "" {
+		path = displayPath
+	}
 	meta := map[string]any{
 		"path":                  path,
 		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
@@ -2582,8 +2586,33 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"requires_verification": err == nil,
 		"effect":                "edit",
 	}
+	if err == nil && strings.TrimSpace(unifiedDiff) != "" {
+		meta["unified_diff"] = unifiedDiff
+	}
 	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
+}
+
+func writeFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string, string) {
+	route, err := ws.ResolveEditPathWithOptions(EditRoutingRequest{
+		Path:              stringValue(args, "path"),
+		OwnerNodeID:       stringValue(args, "owner_node_id"),
+		ForLookup:         false,
+		AllowBaseFallback: true,
+	})
+	if err != nil {
+		return "", ""
+	}
+	before := ""
+	if existing, readErr := os.ReadFile(route.AbsolutePath); readErr == nil {
+		before = string(existing)
+	}
+	after := stringValue(args, "content")
+	if boolValue(args, "append", false) {
+		after = before + after
+	}
+	displayPath := route.DisplayPath()
+	return displayPath, buildUnifiedDiff(displayPath, before, after)
 }
 
 func suspiciousRewritePayload(path, before, after string) bool {
@@ -2777,8 +2806,12 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 	if inputErr != nil {
 		return ToolExecutionResult{}, inputErr
 	}
+	displayPath, unifiedDiff, plannedReplacements := replaceInFileUnifiedDiffPreview(t.ws, args)
 	text, err := t.Execute(ctx, input)
 	path := strings.TrimSpace(stringValue(args, "path"))
+	if displayPath != "" {
+		path = displayPath
+	}
 	all := boolValue(args, "all", false)
 	replacements := 0
 	if err == nil {
@@ -2788,6 +2821,9 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 			}
 		} else {
 			replacements = 1
+		}
+		if replacements == 0 && plannedReplacements > 0 {
+			replacements = plannedReplacements
 		}
 	}
 	meta := map[string]any{
@@ -2801,8 +2837,47 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 		"requires_verification": err == nil,
 		"effect":                "edit",
 	}
+	if err == nil && strings.TrimSpace(unifiedDiff) != "" {
+		meta["unified_diff"] = unifiedDiff
+	}
 	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
+}
+
+func replaceInFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string, string, int) {
+	route, err := ws.ResolveEditPathWithOptions(EditRoutingRequest{
+		Path:              stringValue(args, "path"),
+		OwnerNodeID:       stringValue(args, "owner_node_id"),
+		ForLookup:         false,
+		AllowBaseFallback: true,
+	})
+	if err != nil {
+		return "", "", 0
+	}
+	data, err := os.ReadFile(route.AbsolutePath)
+	if err != nil {
+		return route.DisplayPath(), "", 0
+	}
+	before := string(data)
+	search := stringValue(args, "search")
+	count := strings.Count(before, search)
+	if count == 0 {
+		return route.DisplayPath(), "", 0
+	}
+	all := boolValue(args, "all", false)
+	if !all && count > 1 {
+		return route.DisplayPath(), "", 0
+	}
+	replace := stringValue(args, "replace")
+	after := ""
+	if all {
+		after = strings.ReplaceAll(before, search, replace)
+	} else {
+		after = strings.Replace(before, search, replace, 1)
+		count = 1
+	}
+	displayPath := route.DisplayPath()
+	return displayPath, buildUnifiedDiff(displayPath, before, after), count
 }
 
 func parseReplacementCountFromOutput(text string) (int, error) {
