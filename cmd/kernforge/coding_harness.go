@@ -1826,7 +1826,7 @@ func pathTokensFromLine(line string) []string {
 	})
 	out := make([]string, 0, len(fields))
 	for _, field := range fields {
-		token := strings.TrimSpace(strings.Trim(field, ".:"))
+		token := strings.TrimSpace(strings.TrimRight(field, ".:"))
 		token = strings.TrimLeft(token, "@")
 		if token == "" {
 			continue
@@ -1840,7 +1840,7 @@ func pathTokensFromLine(line string) []string {
 }
 
 func pathTokenLooksVerifiable(token string) bool {
-	token = strings.TrimSpace(strings.Trim(token, "."))
+	token = strings.TrimSpace(strings.TrimRight(token, "."))
 	if token == "" || strings.HasPrefix(strings.ToLower(token), "http://") || strings.HasPrefix(strings.ToLower(token), "https://") {
 		return false
 	}
