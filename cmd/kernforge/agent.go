@@ -1303,16 +1303,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if a.shouldFinalizeGeneratedDocumentArtifactReply(latestUser, reply, unresolvedVerification) {
-					a.acceptRecentFinalAnswerCandidate(reply)
-					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
-					a.finalizePatchTransactionOnReturn()
-					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
-					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
-					if err := a.Store.Save(a.Session); err != nil {
-						return "", err
-					}
-					return reply, nil
+				if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactFinalReply(latestUser, reply, attemptedEditTool, unresolvedVerification); finalized || err != nil {
+					return reply, err
 				}
 				if successfulEditTool && !a.shouldSkipPostChangeReviewForKnownFinalBlocker(reply, unresolvedVerification) {
 					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
@@ -1326,6 +1318,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							return "", err
 						}
 						continue
+					}
+					if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactFinalReply(latestUser, reply, attemptedEditTool, unresolvedVerification); finalized || err != nil {
+						return reply, err
 					}
 				}
 				if runtimeGateFinalAnswerRevisions < 2 {
@@ -2535,6 +2530,73 @@ func (a *Agent) generatedDocumentArtifactSeedFinalReply() string {
 		return fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사로 내용을 확인했습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.", target)
 	}
 	return fmt.Sprintf("%s is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact.", target)
+}
+
+func (a *Agent) finalizeAcceptedFinalAnswer(reply string, unresolvedVerification bool) (string, error) {
+	if a == nil || a.Session == nil {
+		return reply, nil
+	}
+	a.acceptRecentFinalAnswerCandidate(reply)
+	a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
+	a.finalizePatchTransactionOnReturn()
+	a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+	a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+	if a.Store != nil {
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+	}
+	return reply, nil
+}
+
+func (a *Agent) maybeFinalizeGeneratedDocumentArtifactFinalReply(request string, reply string, attemptedEditTool bool, unresolvedVerification bool) (string, bool, error) {
+	if a == nil || a.Session == nil {
+		return "", false, nil
+	}
+	if a.changesAreGeneratedDocumentArtifactsForTurn(request) && strings.TrimSpace(reply) != "" {
+		report := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+		a.Session.LastCodingHarnessReport = &report
+		a.Session.LastTestImpactReport = &report.TestImpact
+		a.Session.LastJobSupervisorReport = &report.JobSupervisor
+		if report.Approved {
+			finalReply, err := a.finalizeAcceptedFinalAnswer(reply, unresolvedVerification)
+			return finalReply, true, err
+		}
+		if !a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, unresolvedVerification) {
+			return "", false, nil
+		}
+		a.discardRecentFinalAnswerCandidate(reply)
+		reply = a.synthesizeGeneratedDocumentArtifactFinalReply(&report)
+		report = a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+		a.Session.LastCodingHarnessReport = &report
+		a.Session.LastTestImpactReport = &report.TestImpact
+		a.Session.LastJobSupervisorReport = &report.JobSupervisor
+		if !report.Approved {
+			reply = generatedDocumentArtifactHarnessBlockedReply(&report)
+		}
+		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+		finalReply, err := a.finalizeAcceptedFinalAnswer(reply, unresolvedVerification)
+		return finalReply, true, err
+	}
+	if a.shouldFinalizeGeneratedDocumentArtifactReply(request, reply, unresolvedVerification) {
+		finalReply, err := a.finalizeAcceptedFinalAnswer(reply, unresolvedVerification)
+		return finalReply, true, err
+	}
+	if !a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, a.Session.LastCodingHarnessReport, unresolvedVerification) {
+		return "", false, nil
+	}
+	a.discardRecentFinalAnswerCandidate(reply)
+	reply = a.synthesizeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport)
+	report := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
+	a.Session.LastCodingHarnessReport = &report
+	a.Session.LastTestImpactReport = &report.TestImpact
+	a.Session.LastJobSupervisorReport = &report.JobSupervisor
+	if !report.Approved {
+		reply = generatedDocumentArtifactHarnessBlockedReply(&report)
+	}
+	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	finalReply, err := a.finalizeAcceptedFinalAnswer(reply, unresolvedVerification)
+	return finalReply, true, err
 }
 
 func (a *Agent) finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(calls []ToolCall, attemptedEditTool bool, unresolvedVerification bool, reason string) (string, error) {

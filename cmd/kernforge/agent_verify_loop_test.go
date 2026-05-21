@@ -9409,6 +9409,109 @@ func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure
 	}
 }
 
+func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	reportDir := filepath.Join(root, "Tavern")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	reply := "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: request},
+		{Role: "assistant", Phase: messagePhaseFinalAnswerCandidate, Text: reply},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-doc",
+		Goal:   request,
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	lastFingerprint := ""
+	revisionCount := 0
+	exhaustedNudge := false
+	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(context.Background(), request, &lastFingerprint, &revisionCount, &exhaustedNudge)
+	if err != nil {
+		t.Fatalf("runAutomaticPostChangeReviewGate: %v", err)
+	}
+	if needsModelTurn {
+		t.Fatalf("expected generated document quality skip to avoid a repair turn")
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected post-change quality skip to seed an approved coding harness report, got %#v", session.LastCodingHarnessReport)
+	}
+	finalReply, finalized, err := agent.maybeFinalizeGeneratedDocumentArtifactFinalReply(request, reply, true, false)
+	if err != nil {
+		t.Fatalf("maybeFinalizeGeneratedDocumentArtifactFinalReply: %v", err)
+	}
+	if !finalized || finalReply != reply {
+		t.Fatalf("expected post-change quality skip to converge into final acceptance, finalized=%t reply=%q", finalized, finalReply)
+	}
+	if session.ActivePatchTransaction != nil {
+		t.Fatalf("expected final acceptance to close the active patch transaction, got %#v", session.ActivePatchTransaction)
+	}
+	if len(session.PatchTransactions) == 0 {
+		t.Fatalf("expected final acceptance to archive the document patch transaction")
+	}
+	if got := session.Messages[len(session.Messages)-1].Phase; got != messagePhaseFinalAnswer {
+		t.Fatalf("expected final answer candidate to be accepted, got phase %q", got)
+	}
+	foundSkip := false
+	for _, line := range progress {
+		if strings.Contains(line, "generated document artifacts") || strings.Contains(line, "생성 문서 산출물") {
+			foundSkip = true
+			break
+		}
+	}
+	if !foundSkip {
+		t.Fatalf("expected generated document post-change skip progress, got %#v", progress)
+	}
+}
+
 func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclosureRepair(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
