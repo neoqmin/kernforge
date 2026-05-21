@@ -489,6 +489,22 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 	return out
 }
 
+func (r *ToolRegistry) ToolNames() []string {
+	if r == nil {
+		return nil
+	}
+	out := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out = append(out, name)
+	}
+	slices.Sort(out)
+	return out
+}
+
 func (r *ToolRegistry) DefinitionsExcluding(disabled map[string]bool) []ToolDefinition {
 	if len(disabled) == 0 {
 		return r.Definitions()

@@ -263,6 +263,9 @@ func TestToolRegistrySupportsHiddenDispatchOnlyTools(t *testing.T) {
 	if !toolRegistryHasTool(registry, "hidden") {
 		t.Fatalf("hidden tool should remain dispatchable")
 	}
+	if got := registry.ToolNames(); strings.Join(got, ",") != "hidden,visible" {
+		t.Fatalf("expected all dispatchable tool names, got %#v", got)
+	}
 	result, err := registry.ExecuteDetailed(context.Background(), "hidden", `{}`)
 	if err != nil {
 		t.Fatalf("hidden ExecuteDetailed: %v", err)
