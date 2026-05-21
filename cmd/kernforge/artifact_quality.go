@@ -14,10 +14,11 @@ import (
 const artifactQualityReadLimit = 512 * 1024
 
 type ArtifactQualityReport struct {
-	GeneratedAt time.Time              `json:"generated_at,omitempty"`
-	Artifacts   []ArtifactQualityCheck `json:"artifacts,omitempty"`
-	Notes       []string               `json:"notes,omitempty"`
-	Findings    []CodingHarnessFinding `json:"findings,omitempty"`
+	GeneratedAt    time.Time              `json:"generated_at,omitempty"`
+	Artifacts      []ArtifactQualityCheck `json:"artifacts,omitempty"`
+	SourceEvidence []string               `json:"source_evidence,omitempty"`
+	Notes          []string               `json:"notes,omitempty"`
+	Findings       []CodingHarnessFinding `json:"findings,omitempty"`
 }
 
 type ArtifactQualityCheck struct {
@@ -49,6 +50,16 @@ func (a *Agent) buildArtifactQualityReport(reply string) ArtifactQualityReport {
 			report.Artifacts = append(report.Artifacts, check)
 		}
 		report.Findings = append(report.Findings, findings...)
+	}
+	if artifactQualityPromptRequiresSourceEvidence(prompt) {
+		report.SourceEvidence = artifactQualityRecordedSourceEvidence(a.Session, prompt, targets)
+		if len(report.SourceEvidence) == 0 {
+			report.Findings = append(report.Findings, CodingHarnessFinding{
+				Severity: "warning",
+				Title:    "Source review artifact has no source inspection evidence",
+				Detail:   "The request asks for a source-code review artifact, but this turn has no recorded read_file, grep, list_files, git_status, or git_diff evidence for non-artifact source paths.",
+			})
+		}
 	}
 	report.Normalize()
 	return report
@@ -538,6 +549,92 @@ func artifactQualityLooksPlaceholder(text string) bool {
 	)
 }
 
+func artifactQualityPromptRequiresSourceEvidence(prompt string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(prompt)))
+	if lower == "" {
+		return false
+	}
+	hasSourceSurface := containsAny(lower,
+		"source code", "source files", "codebase", "code base", "source tree",
+		"소스코드", "소스 코드", "소스 파일", "코드베이스", "전체 코드",
+	)
+	hasReviewIntent := containsAny(lower,
+		"review", "inspect", "audit", "analyze", "analysis", "find bug", "find bugs", "bug report", "bugs",
+		"검토", "분석", "감사", "버그", "오류", "문제점",
+	)
+	hasDocumentIntent := looksLikeDocumentAuthoringIntent(lower) || looksLikeReviewArtifactAuthoringRequest(lower)
+	return hasSourceSurface && hasReviewIntent && hasDocumentIntent
+}
+
+func artifactQualityRecordedSourceEvidence(session *Session, prompt string, targets []string) []string {
+	if session == nil {
+		return nil
+	}
+	start := artifactQualitySourceEvidenceStartIndex(session, prompt)
+	targetSet := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetSet[strings.ToLower(normalizeSessionRelativePath(target))] = struct{}{}
+	}
+	var evidence []string
+	for index := start; index < len(session.Messages); index++ {
+		msg := session.Messages[index]
+		if !strings.EqualFold(msg.Role, "tool") || msg.IsError {
+			continue
+		}
+		name := strings.TrimSpace(msg.ToolName)
+		switch name {
+		case "read_file", "grep", "list_files":
+			path := normalizeSessionRelativePath(toolMetaString(msg.ToolMeta, "path"))
+			if !artifactQualityPathCountsAsSourceEvidence(path, targetSet) {
+				continue
+			}
+			evidence = append(evidence, name+":"+path)
+		case "git_status", "git_diff":
+			evidence = append(evidence, name)
+		}
+	}
+	return normalizeTaskStateList(evidence, 16)
+}
+
+func artifactQualitySourceEvidenceStartIndex(session *Session, prompt string) int {
+	if session == nil {
+		return 0
+	}
+	normalizedPrompt := strings.TrimSpace(baseUserQueryText(prompt))
+	for index := len(session.Messages) - 1; index >= 0; index-- {
+		msg := session.Messages[index]
+		if !strings.EqualFold(msg.Role, "user") {
+			continue
+		}
+		text := strings.TrimSpace(baseUserQueryText(msg.Text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			continue
+		}
+		if normalizedPrompt == "" || strings.EqualFold(text, normalizedPrompt) {
+			return index + 1
+		}
+	}
+	return 0
+}
+
+func artifactQualityPathCountsAsSourceEvidence(path string, targetSet map[string]struct{}) bool {
+	normalized := normalizeSessionRelativePath(path)
+	if normalized == "" {
+		return false
+	}
+	if _, ok := targetSet[strings.ToLower(normalized)]; ok {
+		return false
+	}
+	if preWritePathLooksLikeGeneratedDocumentArtifact(normalized) {
+		return false
+	}
+	lower := strings.ToLower(normalized)
+	if containsAny(lower, ".kernforge/reviews", "/review/", "/reviews/", "/report/", "/reports/") {
+		return false
+	}
+	return true
+}
+
 func (r *ArtifactQualityReport) Normalize() {
 	if r == nil {
 		return
@@ -545,6 +642,7 @@ func (r *ArtifactQualityReport) Normalize() {
 	for i := range r.Artifacts {
 		r.Artifacts[i].Normalize()
 	}
+	r.SourceEvidence = normalizeTaskStateList(r.SourceEvidence, 16)
 	r.Notes = normalizeTaskStateList(r.Notes, 8)
 	r.Findings = normalizeCodingHarnessFindings(r.Findings)
 }
@@ -576,6 +674,9 @@ func (r ArtifactQualityReport) RenderPromptSection() string {
 			parts = append(parts, item)
 		}
 		lines = append(lines, "- Artifacts: "+strings.Join(parts, " | "))
+	}
+	if len(r.SourceEvidence) > 0 {
+		lines = append(lines, "- Source evidence: "+strings.Join(limitStrings(r.SourceEvidence, 8), " | "))
 	}
 	for _, finding := range r.Findings {
 		lines = append(lines, fmt.Sprintf("- [%s] %s: %s", finding.Severity, finding.Title, compactPromptSection(finding.Detail, 220)))
