@@ -684,11 +684,23 @@ Relative-path read and search tools look in the current directory first, then fa
 Later sources override earlier ones:
 
 1. Global config
-2. Workspace config, for project-scoped settings only
+2. Workspace config, for trusted projects only
 3. Environment variables
 4. Command-line flags
 
-Workspace config is repository content, so Kernforge does not let it choose where credentials are sent or which host-local executables are run. The following keys are ignored when they appear in `.kernforge/config.json`: `provider`, `base_url`, `api_key`, `provider_keys`, `codex_cli_path`, `codex_cli_args`, `claude_cli_path`, `claude_cli_args`, `permission_mode`, `shell`, `session_dir`, `mcp_servers`, `active_profile_key`, `model_routes`, `hooks_enabled`, `hook_presets`, and `hooks_fail_closed`. Put those in `~/.kernforge/config.json`, environment variables, or an explicit runtime command instead. Workspace config remains suitable for project verification paths, `auto_verify`, skill paths, specialist overlays, worktree isolation, and saved profile lists.
+Workspace config is repository content. Kernforge therefore ignores `.kernforge/config.json` and `.kernforge/hooks.json` until the current project is explicitly trusted from user config. Use `/trust on`, or add a user-level entry like this to `~/.kernforge/config.json`:
+
+```json
+{
+  "projects": {
+    "F:/kernullist/kernforge": {
+      "trust_level": "trusted"
+    }
+  }
+}
+```
+
+Project-local config cannot mark itself trusted. Even after a project is trusted, Kernforge does not let workspace config choose where credentials are sent or which host-local executables are run. The following keys are ignored when they appear in `.kernforge/config.json`: `provider`, `base_url`, `api_key`, `provider_keys`, `codex_cli_path`, `codex_cli_args`, `claude_cli_path`, `claude_cli_args`, `permission_mode`, `shell`, `session_dir`, `mcp_servers`, `active_profile_key`, `model_routes`, `projects`, `hooks_enabled`, `hook_presets`, and `hooks_fail_closed`. Put those in `~/.kernforge/config.json`, environment variables, or an explicit runtime command instead. Trusted workspace config remains suitable for project verification paths, `auto_verify`, skill paths, specialist overlays, worktree isolation, and saved profile lists.
 
 ### Example Config
 
@@ -776,6 +788,7 @@ Workspace config is repository content, so Kernforge does not let it choose wher
 | `enabled_skills` | Skills always injected into prompts |
 | `mcp_servers` | MCP server definitions. Host-local only: ignored from workspace config |
 | `profiles` | Saved recent or pinned provider/model profiles |
+| `projects` | User-level project trust map. Ignored from workspace config |
 | `hooks_enabled` | Enable or disable the hook engine. Host policy only: ignored from workspace config |
 | `hook_presets` | Hook preset names. Host policy only: ignored from workspace config |
 | `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default. Host policy only: ignored from workspace config |
@@ -1072,7 +1085,7 @@ When Kernforge is running as the MCP server and Codex is the MCP client, review 
 
 For MCP clients that reuse one Kernforge server entry across multiple repositories, `-cwd` is only the fallback workspace. Kernforge also honors client workspace hints from `initialize.rootUri`, `initialize.workspaceFolders`, `tools/call.params._meta.cwd`, and the per-tool `workspace` or `cwd` argument. In Codex CLI, if the MCP server reports the wrong workspace in `kernforge_status`, pass the current repo as `workspace` on the Kernforge tool call or configure the MCP entry so its `-cwd` matches that repo.
 
-For live web research, Kernforge deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` through your shell environment or through `mcp_servers[].env` in the user config, then run `/reload` if you changed config or environment after startup. Workspace-local `mcp_servers` are ignored because they can launch host-local commands from repository content. The bundled script lives with the app source under `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`; runtime workspaces normally use the deployed copy under the user config directory. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection.
+For live web research, Kernforge deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` through your shell environment or through `mcp_servers[].env` in the user config, then run `/reload` if you changed config or environment after startup. Project-local config and hooks are ignored until `/trust on`, and workspace-local `mcp_servers` stay ignored because they can launch host-local commands from repository content. The bundled script lives with the app source under `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`; runtime workspaces normally use the deployed copy under the user config directory. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection.
 
 Minimal user config example:
 

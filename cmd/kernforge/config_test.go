@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+func markConfigProjectTrustedForTest(t *testing.T, cfg *Config, workspace string) {
+	t.Helper()
+	keys := projectTrustCandidateKeys(workspace)
+	if len(keys) == 0 {
+		t.Fatalf("expected project trust key for %q", workspace)
+	}
+	if cfg.Projects == nil {
+		cfg.Projects = map[string]ProjectTrustConfig{}
+	}
+	cfg.Projects[keys[0]] = ProjectTrustConfig{TrustLevel: "trusted"}
+}
+
 func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -191,6 +203,7 @@ func TestLoadConfigMergesUserAndWorkspaceProfiles(t *testing.T) {
 		{Name: "user-main-a", Provider: "openai", Model: "gpt-a"},
 		{Name: "user-main-b", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
 	}
+	markConfigProjectTrustedForTest(t, &userCfg, workspace)
 	if err := SaveUserConfig(userCfg); err != nil {
 		t.Fatalf("SaveUserConfig: %v", err)
 	}
@@ -243,6 +256,7 @@ func TestLoadConfigIgnoresWorkspaceHostLocalOverrides(t *testing.T) {
 		Command: "node",
 		Args:    []string{"global.js"},
 	}}
+	markConfigProjectTrustedForTest(t, &userCfg, workspace)
 	if err := SaveUserConfig(userCfg); err != nil {
 		t.Fatalf("SaveUserConfig: %v", err)
 	}
@@ -316,6 +330,113 @@ func TestLoadConfigIgnoresWorkspaceHostLocalOverrides(t *testing.T) {
 	}
 	if !profileListContainsName(loaded.Profiles, "workspace-main") {
 		t.Fatalf("expected workspace profiles to remain mergeable, got %#v", loaded.Profiles)
+	}
+}
+
+func TestLoadConfigIgnoresWorkspaceConfigUntilProjectTrusted(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	userCfg := DefaultConfig(workspace)
+	userCfg.Provider = "openai"
+	userCfg.Model = "gpt-user"
+	if err := SaveUserConfig(userCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(workspace, map[string]any{
+		"model":        "gpt-workspace",
+		"auto_verify":  false,
+		"msbuild_path": `C:\Tools\MSBuild\MSBuild.exe`,
+		"projects": map[string]ProjectTrustConfig{
+			projectTrustCandidateKeys(workspace)[0]: {TrustLevel: "trusted"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig untrusted: %v", err)
+	}
+	if loaded.Model != "gpt-user" {
+		t.Fatalf("expected untrusted workspace config to be ignored, got model %q", loaded.Model)
+	}
+	if loaded.AutoVerify == nil || !*loaded.AutoVerify {
+		t.Fatalf("expected untrusted workspace auto_verify to be ignored")
+	}
+	if loaded.MSBuildPath != "" {
+		t.Fatalf("expected untrusted workspace msbuild_path to be ignored, got %q", loaded.MSBuildPath)
+	}
+	if configProjectTrusted(loaded, workspace) {
+		t.Fatalf("workspace config must not be able to mark itself trusted")
+	}
+
+	trustedCfg := DefaultConfig(workspace)
+	trustedCfg.Provider = "openai"
+	trustedCfg.Model = "gpt-user"
+	markConfigProjectTrustedForTest(t, &trustedCfg, workspace)
+	if err := SaveUserConfig(trustedCfg); err != nil {
+		t.Fatalf("SaveUserConfig trusted: %v", err)
+	}
+	loaded, err = LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig trusted: %v", err)
+	}
+	if loaded.Model != "gpt-workspace" {
+		t.Fatalf("expected trusted workspace model to apply, got %q", loaded.Model)
+	}
+	if loaded.AutoVerify == nil || *loaded.AutoVerify {
+		t.Fatalf("expected trusted workspace auto_verify override")
+	}
+	if loaded.MSBuildPath != `C:\Tools\MSBuild\MSBuild.exe` {
+		t.Fatalf("expected trusted workspace msbuild_path, got %q", loaded.MSBuildPath)
+	}
+}
+
+func TestSaveProjectTrustLevelControlsWorkspaceConfig(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	userCfg := DefaultConfig(workspace)
+	userCfg.Provider = "openai"
+	userCfg.Model = "gpt-user"
+	if err := SaveUserConfig(userCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(workspace, map[string]any{
+		"model": "gpt-workspace",
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	key, err := SaveProjectTrustLevel(workspace, "trusted")
+	if err != nil {
+		t.Fatalf("SaveProjectTrustLevel trusted: %v", err)
+	}
+	if key == "" {
+		t.Fatalf("expected trust key")
+	}
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig trusted: %v", err)
+	}
+	if loaded.Model != "gpt-workspace" {
+		t.Fatalf("expected trusted workspace config, got model %q", loaded.Model)
+	}
+
+	if _, err := SaveProjectTrustLevel(workspace, "untrusted"); err != nil {
+		t.Fatalf("SaveProjectTrustLevel untrusted: %v", err)
+	}
+	loaded, err = LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig untrusted: %v", err)
+	}
+	if loaded.Model != "gpt-user" {
+		t.Fatalf("expected untrusted workspace config to be ignored, got model %q", loaded.Model)
 	}
 }
 
@@ -1398,7 +1519,8 @@ func TestHelpDetailIncludesWebResearchMCPTips(t *testing.T) {
 		`"web_search"`,
 		`"web_fetch"`,
 		`"TAVILY_API_KEY"`,
-		"Workspace-local mcp_servers are ignored",
+		"Project-local config and hooks are ignored until the project is trusted",
+		"workspace-local mcp_servers stay ignored",
 		"auto-adds that MCP to ~/.kernforge/config.json",
 	} {
 		if !strings.Contains(detail, needle) {
@@ -1689,6 +1811,11 @@ func TestMigrateLegacyConfigDefaultsRewritesWorkspaceConfigFile(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	workspace := t.TempDir()
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
 
 	wsPath := filepath.Join(workspace, ".kernforge", "config.json")
 	if err := os.MkdirAll(filepath.Dir(wsPath), 0o755); err != nil {
