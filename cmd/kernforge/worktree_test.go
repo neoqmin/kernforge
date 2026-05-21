@@ -380,13 +380,31 @@ func TestResolveEditTargetRoutesOwnedEditsIntoSpecialistWorktree(t *testing.T) {
 	}
 	rt.syncWorkspaceFromSession()
 
-	route, err := rt.resolveEditTarget(EditRoutingRequest{
+	initialLookup, err := rt.resolveEditTarget(EditRoutingRequest{
 		Path:        "main.go",
 		OwnerNodeID: "plan-01",
 		ForLookup:   true,
 	})
 	if err != nil {
-		t.Fatalf("resolveEditTarget: %v", err)
+		t.Fatalf("initial lookup should stay in the main workspace: %v", err)
+	}
+	if !sameFilePath(initialLookup.AbsolutePath, filepath.Join(repoRoot, "main.go")) {
+		t.Fatalf("expected initial lookup to resolve in the main workspace, got %#v", initialLookup)
+	}
+	if strings.TrimSpace(initialLookup.WorktreeRoot) != "" || strings.TrimSpace(initialLookup.Specialist) != "" {
+		t.Fatalf("read-only lookup must not create specialist routing before a concrete edit lease exists, got %#v", initialLookup)
+	}
+	if len(rt.session.SpecialistWorktrees) != 0 {
+		t.Fatalf("read-only lookup must not create a specialist worktree lease, got %#v", rt.session.SpecialistWorktrees)
+	}
+
+	route, err := rt.resolveEditTarget(EditRoutingRequest{
+		Path:        "main.go",
+		OwnerNodeID: "plan-01",
+		ForLookup:   false,
+	})
+	if err != nil {
+		t.Fatalf("mutation route should create the specialist worktree: %v", err)
 	}
 	if route.Specialist != "implementation-owner" {
 		t.Fatalf("expected implementation-owner route, got %#v", route)
@@ -399,6 +417,17 @@ func TestResolveEditTargetRoutesOwnedEditsIntoSpecialistWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(route.AbsolutePath); err != nil {
 		t.Fatalf("expected routed file to exist inside specialist worktree: %v", err)
+	}
+	lookupAfterEditRoute, err := rt.resolveEditTarget(EditRoutingRequest{
+		Path:        "main.go",
+		OwnerNodeID: "plan-01",
+		ForLookup:   true,
+	})
+	if err != nil {
+		t.Fatalf("lookup after edit lease should route through specialist worktree: %v", err)
+	}
+	if !sameFilePath(lookupAfterEditRoute.AbsolutePath, route.AbsolutePath) {
+		t.Fatalf("expected lookup after edit lease to map to specialist path %q, got %#v", route.AbsolutePath, lookupAfterEditRoute)
 	}
 	absoluteRoute, err := rt.resolveEditTarget(EditRoutingRequest{
 		Path:        filepath.Join(repoRoot, "main.go"),

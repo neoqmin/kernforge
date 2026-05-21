@@ -116,7 +116,17 @@ func (rt *runtimeState) resolveRoutableOwnerNodeID(ownerNodeID string) string {
 
 func (rt *runtimeState) resolveEditRoutingOwnerNodeID(req EditRoutingRequest) string {
 	req = req.normalized()
-	if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) == "" {
+	if req.lookupIntent() {
+		ownerNodeID := strings.TrimSpace(req.OwnerNodeID)
+		if ownerNodeID == "" {
+			return ""
+		}
+		if rt == nil || rt.session == nil {
+			return ownerNodeID
+		}
+		if sessionOwnerNodeHasConcreteEditRouting(rt.session, ownerNodeID) {
+			return ownerNodeID
+		}
 		return ""
 	}
 	return rt.resolveRoutableOwnerNodeID(req.OwnerNodeID)
