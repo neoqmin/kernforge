@@ -84,6 +84,7 @@ const (
 var errVerificationFollowupBlocked = errors.New("verification follow-up blocked after verification was declined or skipped")
 var errVerificationOutOfScopeFollowupBlocked = errors.New("verification follow-up blocked after verification failed outside the current patch scope")
 var errReadOnlyAnalysisToolBlocked = errors.New("read-only analysis blocked a tool that can mutate external state")
+var errTurnDisabledToolBlocked = errors.New("turn tool exposure blocked a disabled tool")
 var errPreWriteReviewReanchorRequired = errors.New("pre-write blocked proposal requires current file reanchor before next edit")
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
@@ -1644,6 +1645,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				result = readOnlyAnalysisToolBlockedResult(a.Config, call)
 				err = fmt.Errorf("%w: %s", errReadOnlyAnalysisToolBlocked, strings.TrimSpace(call.Name))
 				blockedToolResult = true
+			} else if turnDisabledTools[strings.TrimSpace(call.Name)] {
+				result = turnDisabledToolBlockedResult(a.Config, call)
+				err = fmt.Errorf("%w: %s", errTurnDisabledToolBlocked, strings.TrimSpace(call.Name))
+				blockedToolResult = true
 			} else if isolationErr := a.checkUserChangeIsolationBeforeTool(call); isolationErr != nil {
 				err = isolationErr
 				result = userChangeIsolationToolResult(call, isolationErr)
@@ -2856,15 +2861,17 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
 		return true
 	}
+	requestText := strings.TrimSpace(baseUserQueryText(request))
+	requestIsInternalReviewFeedback := looksLikeInternalReviewFeedbackUserMessage(requestText)
+	if generatedDocumentArtifactRequestContextForTurn(a.Session, request) == "" &&
+		!requestIsInternalReviewFeedback {
+		return false
+	}
 	if sessionHasDocumentArtifactContentAcceptedHarness(a.Session) {
 		return true
 	}
 	if sessionHasApprovedDocumentArtifactOnlyHarness(a.Session) {
 		return true
-	}
-	if generatedDocumentArtifactRequestContextForTurn(a.Session, request) == "" &&
-		!looksLikeInternalReviewFeedbackUserMessage(strings.TrimSpace(baseUserQueryText(request))) {
-		return false
 	}
 	root := workspaceSnapshotRoot(a.Workspace)
 	if strings.TrimSpace(root) == "" {
@@ -6684,6 +6691,29 @@ func readOnlyAnalysisToolBlockedResult(cfg Config, call ToolCall) ToolExecutionR
 			"result_class":             "read_only_policy_block",
 			"read_only_analysis":       true,
 			"read_only_allowed":        false,
+			"command_execution_status": "blocked",
+			"changed_workspace":        false,
+			"success":                  false,
+		},
+	}
+}
+
+func turnDisabledToolBlockedResult(cfg Config, call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: localizedText(cfg,
+			fmt.Sprintf("NOT_EXECUTED: tool `%s` is disabled for this turn and was not executed. Use the currently exposed tools or provide the final answer from existing evidence.", name),
+			fmt.Sprintf("NOT_EXECUTED: 이번 턴에서 `%s` 도구는 비활성화되어 실행하지 않았습니다. 현재 노출된 도구를 사용하거나 기존 근거로 최종 답변을 작성하세요.", name),
+		),
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "turn_tool_exposure_block",
+			"turn_tool_disabled":       true,
+			"exposed_to_model":         false,
 			"command_execution_status": "blocked",
 			"changed_workspace":        false,
 			"success":                  false,

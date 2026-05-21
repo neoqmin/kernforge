@@ -4618,6 +4618,77 @@ func TestAgentNudgesAfterMalformedWriteFileArguments(t *testing.T) {
 	}
 }
 
+func TestAgentBlocksDisabledToolEvenIfModelCallsIt(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "write_file",
+						Arguments: `{"path":"main.go","content":"package main`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-2",
+						Name:      "write_file",
+						Arguments: `{"path":"main.go","content":"package main\n"}`,
+					}},
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "done after disabled tool was blocked"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "done after disabled tool was blocked" {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected one retry and one follow-up after blocked disabled tool, got %d", len(provider.requests))
+	}
+	for _, tool := range provider.requests[1].Tools {
+		if tool.Name == "write_file" {
+			t.Fatalf("expected write_file to be hidden from the retry request")
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "main.go")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("disabled write_file should not create main.go, stat error: %v", statErr)
+	}
+	blocked := false
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.ToolCallID != "call-2" {
+			continue
+		}
+		blocked = strings.Contains(msg.Text, "NOT_EXECUTED") &&
+			toolMetaString(msg.ToolMeta, "result_class") == "turn_tool_exposure_block" &&
+			toolMetaBool(msg.ToolMeta, "turn_tool_disabled")
+	}
+	if !blocked {
+		t.Fatalf("expected disabled tool result to be persisted, got %#v", session.Messages)
+	}
+}
+
 func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
 	provider := &timeoutThenSuccessProviderClient{}
 	var progress []string
@@ -11390,6 +11461,9 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 
 	if agent.changesAreGeneratedDocumentArtifactsForTurn("RuntimeManager.cpp 버그를 수정해") {
 		t.Fatalf("stale document artifact history should not classify an unrelated new turn as document-only")
+	}
+	if agent.changesAreGeneratedDocumentArtifactsForTurn("Fix RuntimeManager.cpp and provide the final answer now.") {
+		t.Fatalf("final-answer wording on a new code request should not revive stale document artifact state")
 	}
 	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("RuntimeManager.cpp 버그를 수정해", []ToolCall{{Name: "read_file", Arguments: `{"path":"RuntimeManager.cpp"}`}}) {
 		t.Fatalf("stale document artifact state should not block inspection tools for an unrelated new turn")

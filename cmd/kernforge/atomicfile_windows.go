@@ -4,12 +4,16 @@ package main
 
 import (
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 const (
 	moveFileReplaceExisting = 0x1
 	moveFileWriteThrough    = 0x8
+	replaceFileMaxAttempts  = 8
+	errorSharingViolation   = syscall.Errno(32)
+	errorLockViolation      = syscall.Errno(33)
 )
 
 func replaceFileAtomic(src, dst string) error {
@@ -23,16 +27,39 @@ func replaceFileAtomic(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	r1, _, callErr := moveFileExW.Call(
-		uintptr(unsafe.Pointer(srcPtr)),
-		uintptr(unsafe.Pointer(dstPtr)),
-		uintptr(moveFileReplaceExisting|moveFileWriteThrough),
-	)
-	if r1 == 0 {
-		if callErr != syscall.Errno(0) {
-			return callErr
+	var lastErr error
+	for attempt := 0; attempt < replaceFileMaxAttempts; attempt++ {
+		r1, _, callErr := moveFileExW.Call(
+			uintptr(unsafe.Pointer(srcPtr)),
+			uintptr(unsafe.Pointer(dstPtr)),
+			uintptr(moveFileReplaceExisting|moveFileWriteThrough),
+		)
+		if r1 != 0 {
+			return nil
 		}
-		return syscall.EINVAL
+		lastErr = syscall.EINVAL
+		if callErr != syscall.Errno(0) {
+			lastErr = callErr
+		}
+		if !transientReplaceFileError(lastErr) {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 	}
-	return nil
+	return lastErr
+}
+
+func transientReplaceFileError(err error) bool {
+	errno, ok := err.(syscall.Errno)
+	if !ok {
+		return false
+	}
+	switch errno {
+	case syscall.ERROR_ACCESS_DENIED,
+		errorSharingViolation,
+		errorLockViolation:
+		return true
+	default:
+		return false
+	}
 }
