@@ -72,6 +72,22 @@ func TestBuildVerificationPlanWithTuningCadencesAdaptiveGoFullRegression(t *test
 	}
 }
 
+func TestAdaptiveVerificationSuccessDecisionMatchesExecutedScope(t *testing.T) {
+	targetedOnly := []VerificationStep{
+		{Label: "go test ./cmd/app/...", Command: "go test ./cmd/app/...", Stage: "targeted", Scope: "./cmd/app/..."},
+	}
+	if got := adaptiveVerificationSuccessDecision(targetedOnly); !strings.Contains(got, "scheduled full cadence") {
+		t.Fatalf("expected targeted-only adaptive decision to mention scheduled cadence, got %q", got)
+	}
+	withWorkspace := []VerificationStep{
+		{Label: "go test ./cmd/app/...", Command: "go test ./cmd/app/...", Stage: "targeted", Scope: "./cmd/app/..."},
+		{Label: "go test ./...", Command: "go test ./...", Stage: "workspace", Scope: "workspace"},
+	}
+	if got := adaptiveVerificationSuccessDecision(withWorkspace); !strings.Contains(got, "expanded from targeted") {
+		t.Fatalf("expected workspace adaptive decision to mention expansion, got %q", got)
+	}
+}
+
 func verificationPlanContainsCommand(plan VerificationPlan, command string) bool {
 	for _, step := range plan.Steps {
 		if step.Command == command {

@@ -26,6 +26,77 @@ func writeGoalTestModule(t *testing.T, root string) {
 	}
 }
 
+func TestGoalVerificationCadenceHelpers(t *testing.T) {
+	for _, iteration := range []int{1, 2, 3, 4} {
+		if goalShouldRunFullVerification(iteration) {
+			t.Fatalf("iteration %d should use adaptive verification", iteration)
+		}
+		if got := goalVerificationCommandSummary(iteration); strings.Contains(got, "--full") {
+			t.Fatalf("iteration %d should not advertise full verification, got %q", iteration, got)
+		}
+	}
+	if !goalShouldRunFullVerification(5) {
+		t.Fatalf("iteration 5 should run full verification")
+	}
+	if got := goalVerificationCommandSummary(5); got != "/verify --full" {
+		t.Fatalf("unexpected full verification summary: %q", got)
+	}
+	if got := goalNextFullVerificationIteration(6); got != 10 {
+		t.Fatalf("expected next full verification at iteration 10, got %d", got)
+	}
+}
+
+func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "APPROVED: adaptive verification and audit are satisfied", nil
+			}
+			return "fake goal agent reply", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --run --max-iterations 1 finish sample objective"); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+	if session.LastVerification == nil {
+		t.Fatalf("expected verification report")
+	}
+	if session.LastVerification.Mode != VerificationAdaptive {
+		t.Fatalf("expected adaptive verification before fifth cycle, got %#v", session.LastVerification.Mode)
+	}
+	for _, step := range session.LastVerification.Steps {
+		if verificationStepIsWorkspaceRegression(step) {
+			t.Fatalf("expected workspace regression to be deferred before fifth cycle, got %#v", session.LastVerification.Steps)
+		}
+	}
+	if !strings.Contains(strings.ToLower(session.LastVerification.Decision), "full regression") {
+		t.Fatalf("expected decision to mention full regression cadence, got %q", session.LastVerification.Decision)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if len(goal.CommandHistory) == 0 || goal.CommandHistory[0].Name != "verify" {
+		t.Fatalf("expected verify command evidence, got %#v", goal.CommandHistory)
+	}
+}
+
 func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	root := initTestGitRepo(t)
 	goalPath := filepath.Join(root, "GOAL.md")

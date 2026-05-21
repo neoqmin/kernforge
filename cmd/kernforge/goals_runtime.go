@@ -124,7 +124,7 @@ func goalAcceptanceContract(objective string) *AcceptanceContract {
 	contract.ExpectedBehaviors = append(contract.ExpectedBehaviors,
 		"Run autonomous implementation, review, verification, completion-audit, final semantic review, and recovery loops until ready or blocked.",
 	)
-	contract.VerificationNotes = append(contract.VerificationNotes, "Autonomous goals should run /verify --full before completion audit when verification steps are available.")
+	contract.VerificationNotes = append(contract.VerificationNotes, "Autonomous goals should run adaptive verification before completion audit, with full regression scheduled every fifth cycle.")
 	contract.Normalize()
 	return &contract
 }
@@ -134,7 +134,7 @@ func goalCompletionCriteria(objective string, contract *AcceptanceContract) []st
 		"Objective is explicit and persisted in GoalState.",
 		"Implementation pass has inspected and changed the workspace when needed.",
 		"Independent review pass has run and any concrete revision request has been repaired.",
-		"Latest /verify --full has no failing steps when verification steps are available.",
+		"Latest scheduled verification has no failing steps when verification steps are available, and full regression is current on the five-cycle cadence when due.",
 		"Latest /completion-audit is ready with no blockers or warnings.",
 		"Final semantic goal review has approved the completed state.",
 		"No unrecovered repeated failure or no-progress loop remains.",
@@ -158,10 +158,138 @@ func goalPlanItems() []PlanItem {
 		{Step: "Inspect the objective, repository state, acceptance contract, and task graph.", Status: "pending"},
 		{Step: "Implement or modify code and documentation required by the goal.", Status: "pending"},
 		{Step: "Run an independent review pass and repair concrete findings.", Status: "pending"},
-		{Step: "Run full verification and record the result.", Status: "pending"},
+		{Step: "Run scheduled verification and record the result; full regression runs every fifth cycle.", Status: "pending"},
 		{Step: "Run completion audit and compare it to the goal criteria.", Status: "pending"},
 		{Step: "Recover, replan, or block only with a concrete repeated failure or no-progress reason.", Status: "pending"},
 	}
+}
+
+func goalShouldRunFullVerification(iteration int) bool {
+	if iteration <= 0 {
+		iteration = 1
+	}
+	return iteration%defaultAdaptiveFullRegressionInterval == 0
+}
+
+func goalVerificationCommandSummary(iteration int) string {
+	if goalShouldRunFullVerification(iteration) {
+		return "/verify --full"
+	}
+	return fmt.Sprintf("/verify (adaptive; full regression every %dth cycle)", defaultAdaptiveFullRegressionInterval)
+}
+
+func goalNextFullVerificationIteration(iteration int) int {
+	if iteration <= 0 {
+		iteration = 1
+	}
+	remainder := iteration % defaultAdaptiveFullRegressionInterval
+	if remainder == 0 {
+		return iteration
+	}
+	return iteration + defaultAdaptiveFullRegressionInterval - remainder
+}
+
+func goalAdaptiveVerificationCadenceNote(iteration int, skipped int) string {
+	next := goalNextFullVerificationIteration(iteration)
+	if skipped > 0 {
+		return fmt.Sprintf("Autonomous goal cadence skipped %d workspace regression check(s); full regression is scheduled for iteration %d.", skipped, next)
+	}
+	return fmt.Sprintf("Autonomous goal cadence is running adaptive verification; full regression is scheduled for iteration %d.", next)
+}
+
+func goalVerificationPlanLifecycleSummary(iteration int) string {
+	if goalShouldRunFullVerification(iteration) {
+		return "Full verification command completed on the scheduled cadence."
+	}
+	return "Adaptive verification command completed; full regression remains on the five-cycle cadence."
+}
+
+func (rt *runtimeState) handleGoalVerifyCommandContext(ctx context.Context, iteration int) error {
+	if goalShouldRunFullVerification(iteration) {
+		return rt.handleVerifyCommandContext(ctx, "--full")
+	}
+	return rt.handleGoalAdaptiveVerifyCommandContext(ctx, iteration)
+}
+
+func (rt *runtimeState) handleGoalAdaptiveVerifyCommandContext(ctx context.Context, iteration int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	changed := collectVerificationChangedPaths(rt.workspace.Root, rt.session)
+	tuning := VerificationTuning{}
+	if rt.verifyHistory != nil {
+		if loaded, err := rt.verifyHistory.PlannerTuning(rt.workspace.Root); err == nil {
+			tuning = loaded
+		}
+	}
+	if iteration <= 0 {
+		iteration = 1
+	}
+	tuning.AdaptiveRuns = (iteration - 1) % defaultAdaptiveFullRegressionInterval
+	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, VerificationAdaptive, tuning)
+	if len(plan.Steps) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No recommended verification steps were found for this workspace."))
+		return nil
+	}
+	if verdict, err := rt.workspace.Hook(ctx, HookPreVerification, HookPayload{
+		"trigger":       "manual",
+		"mode":          string(plan.Mode),
+		"changed_files": append([]string(nil), changed...),
+	}); err == nil {
+		if len(verdict.VerificationAdds) > 0 {
+			for _, step := range verdict.VerificationAdds {
+				if !verificationStepExists(plan.Steps, VerificationPolicyStep{
+					Label:   step.Label,
+					Command: step.Command,
+					Stage:   step.Stage,
+				}) {
+					plan.Steps = append(plan.Steps, step)
+				}
+			}
+			plan.PlannerNote = joinSentence(plan.PlannerNote, fmt.Sprintf("Hook engine added %d verification step(s).", len(verdict.VerificationAdds)))
+		}
+		if len(verdict.ContextAdds) > 0 {
+			plan.PlannerNote = joinSentence(plan.PlannerNote, "Hook review context: "+strings.Join(verdict.ContextAdds, " | "))
+		}
+	} else {
+		return err
+	}
+	filtered, skipped := omitWorkspaceRegressionSteps(plan.Steps)
+	if skipped > 0 {
+		plan.Steps = filtered
+		plan.PlannerNote = joinSentence(plan.PlannerNote, goalAdaptiveVerificationCadenceNote(iteration, skipped))
+	}
+	var report VerificationReport
+	if len(plan.Steps) == 0 {
+		report = skippedVerificationReportForPlan(rt.workspace.Root, "manual", plan, goalAdaptiveVerificationCadenceNote(iteration, skipped)+" No targeted checks were available for this cycle.")
+	} else {
+		report = executeVerificationSteps(ctx, rt.workspace, "manual", plan)
+	}
+	rt.session.LastVerification = &report
+	if rt.store != nil {
+		_ = rt.store.Save(rt.session)
+	}
+	if rt.verifyHistory != nil {
+		_ = rt.verifyHistory.Append(rt.session.ID, workspaceSnapshotRoot(rt.workspace), report)
+	}
+	_, _ = rt.workspace.Hook(ctx, HookPostVerification, HookPayload{
+		"trigger":       "manual",
+		"mode":          string(report.Mode),
+		"changed_files": append([]string(nil), changed...),
+		"output":        report.SummaryLine(),
+		"error":         report.FailureSummary(),
+	})
+	fmt.Fprintln(rt.writer, rt.ui.section("Verification"))
+	fmt.Fprintln(rt.writer, report.RenderTerminal(rt.ui))
+	activeFeature, hasActiveFeature := rt.activeFeatureForHandoff()
+	if handoff := verificationHandoff(report, activeFeature, hasActiveFeature); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
 }
 
 func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (GoalState, bool, error) {
@@ -252,8 +380,8 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	}
 	rt.session.SetPlanNodeLifecycle("plan-03", "completed", "Review pass completed and concrete findings were repaired or cleared.")
 
-	verifyCommand := startGoalCommand(iteration.Index, "verify", "/verify --full")
-	verifyErr := rt.handleVerifyCommandContext(ctx, "--full")
+	verifyCommand := startGoalCommand(iteration.Index, "verify", goalVerificationCommandSummary(iteration.Index))
+	verifyErr := rt.handleGoalVerifyCommandContext(ctx, iteration.Index)
 	verifyCommand.finish(statusForErr(verifyErr), verificationSummaryOrError(rt.session, verifyErr))
 	iteration.Commands = append(iteration.Commands, verifyCommand)
 	if isGoalCancellationError(verifyErr) {
@@ -265,7 +393,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		goal.Status = goalStatusBlocked
 		goal.LastError = verifyErr.Error()
 	} else {
-		rt.session.SetPlanNodeLifecycle("plan-04", "completed", "Full verification command completed.")
+		rt.session.SetPlanNodeLifecycle("plan-04", "completed", goalVerificationPlanLifecycleSummary(iteration.Index))
 	}
 	if rt.session.LastVerification != nil {
 		iteration.Verification = rt.session.LastVerification.SummaryLine()
