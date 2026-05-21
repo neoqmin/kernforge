@@ -147,7 +147,10 @@ func (r *kernforgeMCPServerRuntime) ensureServer(workspace string, source string
 	if r.server != nil && r.server.rt != nil {
 		r.server.rt.closeExtensions()
 	}
-	cfg := r.configForWorkspace(resolved)
+	cfg, err := r.configForWorkspace(resolved)
+	if err != nil {
+		return nil, err
+	}
 	if err := r.options.ConfigOverrides.apply(&cfg); err != nil {
 		return nil, err
 	}
@@ -218,13 +221,18 @@ func (rt *runtimeState) noteMCPServerEntrypointTelemetry(entrypoint string, work
 	}
 }
 
-func (r *kernforgeMCPServerRuntime) configForWorkspace(workspace string) Config {
+func (r *kernforgeMCPServerRuntime) configForWorkspace(workspace string) (Config, error) {
 	if r.options.LoadWorkspaceConfig && !samePath(workspace, r.fallbackCWD) {
-		if cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{StrictConfig: r.options.StrictConfig}); err == nil {
-			return cfg
+		cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{
+			StrictConfig: r.options.StrictConfig,
+			Profile:      r.options.ConfigOverrides.Profile,
+		})
+		if err != nil {
+			return Config{}, err
 		}
+		return cfg, nil
 	}
-	return r.fallbackConfig
+	return r.fallbackConfig, nil
 }
 
 func (r *kernforgeMCPServerRuntime) close() {
@@ -240,12 +248,6 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) error {
 	providerOverride := normalizeProviderName(o.Provider)
 	baseURLOverride := strings.TrimSpace(o.BaseURL)
 	currentProvider := normalizeProviderName(cfg.Provider)
-	if strings.TrimSpace(o.Profile) != "" {
-		if err := applyNamedConfigProfile(cfg, o.Profile); err != nil {
-			return err
-		}
-		currentProvider = normalizeProviderName(cfg.Provider)
-	}
 	if strings.TrimSpace(o.Provider) != "" {
 		cfg.Provider = providerOverride
 		if baseURLOverride == "" && currentProvider != providerOverride {

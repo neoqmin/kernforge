@@ -822,98 +822,142 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 	}
 }
 
-func TestApplyNamedConfigProfileActivatesSavedProfile(t *testing.T) {
-	cfg := DefaultConfig(t.TempDir())
-	cfg.Provider = "openai"
-	cfg.Model = "gpt-default"
-	cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "stale-worker", Provider: "openai", Model: "gpt-stale-worker"}
-	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
-		Name:        "planner",
-		Description: "keep planner metadata",
-		Provider:    "openai",
-		Model:       "gpt-stale-specialist",
-	}}
-	selected := Profile{
-		Name:            "work",
-		Provider:        "openrouter",
-		Model:           "deepseek/deepseek-v4-pro",
-		BaseURL:         normalizeOpenRouterBaseURL(""),
-		ReasoningEffort: "high",
-		RoleModels: &ProfileRoleModels{
-			AnalysisWorker: &Profile{Provider: "openrouter", Model: "deepseek/deepseek-r1", ReasoningEffort: "medium"},
-			Specialists: []SpecialistSubagentProfile{{
-				Name:            "planner",
-				Provider:        "openai-codex",
-				Model:           "gpt-5.5",
-				ReasoningEffort: "xhigh",
-			}},
+func TestLoadConfigWithProfileConfigLayer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(userConfigPath(), []byte(`{"provider":"openai","model":"gpt-base","max_tokens":8192}`), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("work"), []byte(`{"provider":"openrouter","model":"deepseek/deepseek-v4-pro","base_url":"https://openrouter.ai/api/v1","reasoning_effort":"high"}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "work"})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" || loaded.BaseURL != normalizeOpenRouterBaseURL("") || loaded.ReasoningEffort != "high" {
+		t.Fatalf("expected profile config layer to override base config, got provider=%q model=%q base=%q effort=%q", loaded.Provider, loaded.Model, loaded.BaseURL, loaded.ReasoningEffort)
+	}
+}
+
+func TestLoadConfigWithProfileDoesNotBootstrapBaseConfigFromProfileLayer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("work"), []byte(`{"provider":"openrouter","model":"deepseek/deepseek-v4-pro","base_url":"https://openrouter.ai/api/v1"}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "work"})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected selected profile layer, got provider=%q model=%q", loaded.Provider, loaded.Model)
+	}
+	baseData, err := os.ReadFile(userConfigPath())
+	if err != nil {
+		t.Fatalf("read bootstrapped base config: %v", err)
+	}
+	if strings.Contains(string(baseData), "deepseek/deepseek-v4-pro") || strings.Contains(string(baseData), "openrouter") {
+		t.Fatalf("base config should not be bootstrapped from profile layer: %s", string(baseData))
+	}
+}
+
+func TestLoadConfigWithProfileRejectsLegacySavedProfileName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	base := `{"provider":"openai","model":"gpt-base","profiles":[{"name":"work","provider":"openai","model":"gpt-work"}]}`
+	if err := os.WriteFile(userConfigPath(), []byte(base), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+
+	_, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "work"})
+	if err == nil {
+		t.Fatalf("expected legacy saved profile conflict")
+	}
+	if !strings.Contains(err.Error(), `-profile "work" cannot be used`) || !strings.Contains(err.Error(), userProfileConfigPath("work")) || !strings.Contains(err.Error(), configProfileDocsURL) {
+		t.Fatalf("unexpected profile conflict error: %v", err)
+	}
+}
+
+func TestLoadConfigWithProfileRejectsNonPlainName(t *testing.T) {
+	_, err := LoadConfigWithOptions(t.TempDir(), ConfigLoadOptions{Profile: "../work"})
+	if err == nil {
+		t.Fatalf("expected invalid profile name error")
+	}
+	if !strings.Contains(err.Error(), "invalid -profile value") {
+		t.Fatalf("unexpected invalid profile error: %v", err)
+	}
+}
+
+func TestRunProfileFlagRejectsNonPlainNameBeforeRuntime(t *testing.T) {
+	workspace := t.TempDir()
+	err := run([]string{"-cwd", workspace, "-p", "../work", "-prompt", "hello"})
+	if err == nil {
+		t.Fatalf("expected invalid profile name error")
+	}
+	if !strings.Contains(err.Error(), "invalid -profile value") {
+		t.Fatalf("unexpected invalid profile error: %v", err)
+	}
+}
+
+func TestMCPServerConfigForWorkspaceAppliesProfileConfigLayer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	fallback := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(userConfigPath(), []byte(`{"provider":"openai","model":"gpt-base"}`), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("mcp-work"), []byte(`{"provider":"openrouter","model":"deepseek/deepseek-v4-pro","base_url":"https://openrouter.ai/api/v1"}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+	runtime := &kernforgeMCPServerRuntime{
+		fallbackCWD:    fallback,
+		fallbackConfig: DefaultConfig(fallback),
+		options: mcpServerRunOptions{
+			LoadWorkspaceConfig: true,
+			ConfigOverrides: mcpServerConfigOverrides{
+				Profile: "mcp-work",
+			},
 		},
 	}
-	cfg.Profiles = []Profile{
-		{Name: "default", Provider: "openai", Model: "gpt-default"},
-		selected,
-	}
 
-	if err := applyNamedConfigProfile(&cfg, "work"); err != nil {
-		t.Fatalf("applyNamedConfigProfile: %v", err)
-	}
-	if cfg.Provider != selected.Provider || cfg.Model != selected.Model || cfg.BaseURL != selected.BaseURL {
-		t.Fatalf("expected selected main profile, got provider=%q model=%q base=%q", cfg.Provider, cfg.Model, cfg.BaseURL)
-	}
-	if cfg.ActiveProfileKey != configProfileKey(selected) {
-		t.Fatalf("expected active profile key %q, got %q", configProfileKey(selected), cfg.ActiveProfileKey)
-	}
-	if cfg.ProjectAnalysis.WorkerProfile == nil || cfg.ProjectAnalysis.WorkerProfile.Model != "deepseek/deepseek-r1" || cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "medium" {
-		t.Fatalf("expected selected analysis worker role, got %#v", cfg.ProjectAnalysis.WorkerProfile)
-	}
-	if len(cfg.Specialists.Profiles) != 1 || cfg.Specialists.Profiles[0].Model != "gpt-5.5" || cfg.Specialists.Profiles[0].Description != "keep planner metadata" {
-		t.Fatalf("expected specialist profile role with preserved metadata, got %#v", cfg.Specialists.Profiles)
-	}
-}
-
-func TestApplyNamedConfigProfileReportsAvailableProfiles(t *testing.T) {
-	cfg := DefaultConfig(t.TempDir())
-	cfg.Profiles = []Profile{
-		{Name: "zeta", Provider: "openai", Model: "gpt-z"},
-		{Name: "alpha", Provider: "openai", Model: "gpt-a"},
-	}
-
-	err := applyNamedConfigProfile(&cfg, "missing")
-	if err == nil {
-		t.Fatalf("expected missing profile error")
-	}
-	if !strings.Contains(err.Error(), `profile "missing" not found`) || !strings.Contains(err.Error(), "alpha, zeta") {
-		t.Fatalf("expected available profile names in error, got %v", err)
-	}
-}
-
-func TestMCPServerConfigOverridesApplyNamedProfile(t *testing.T) {
-	cfg := DefaultConfig(t.TempDir())
-	cfg.Profiles = []Profile{{
-		Name:     "mcp-work",
-		Provider: "openrouter",
-		Model:    "deepseek/deepseek-v4-pro",
-		BaseURL:  normalizeOpenRouterBaseURL(""),
-	}}
-
-	err := (mcpServerConfigOverrides{
-		Profile: "mcp-work",
-		Model:   "runtime-model",
-	}).apply(&cfg)
+	cfg, err := runtime.configForWorkspace(workspace)
 	if err != nil {
-		t.Fatalf("apply overrides: %v", err)
+		t.Fatalf("configForWorkspace: %v", err)
 	}
-	if cfg.Provider != "openrouter" || cfg.Model != "runtime-model" || cfg.BaseURL != normalizeOpenRouterBaseURL("") {
-		t.Fatalf("expected profile provider/base with model override, got provider=%q model=%q base=%q", cfg.Provider, cfg.Model, cfg.BaseURL)
-	}
-	if cfg.ActiveProfileKey == "" {
-		t.Fatalf("expected active profile key to be set")
+	if cfg.Provider != "openrouter" || cfg.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected MCP workspace config to include selected profile layer, got provider=%q model=%q", cfg.Provider, cfg.Model)
 	}
 }
 
 func TestKernforgeCLIHelpConsumesProfileValue(t *testing.T) {
 	if !kernforgeFlagConsumesHelpValue("-profile") {
 		t.Fatalf("expected -profile to consume its value")
+	}
+	if !kernforgeFlagConsumesHelpValue("-p") {
+		t.Fatalf("expected -p to consume its value")
 	}
 }
 

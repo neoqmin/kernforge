@@ -344,8 +344,14 @@ func (d *kernforgeDaemonServer) ensureServer(workspace string, source string) (*
 	if runtime == nil {
 		cfg := d.fallbackConfig
 		if d.options.LoadWorkspaceConfig && !samePath(resolved, d.fallbackCWD) {
-			if workspaceCfg, err := LoadConfigWithOptions(resolved, ConfigLoadOptions{StrictConfig: d.options.StrictConfig}); err == nil {
+			if workspaceCfg, err := LoadConfigWithOptions(resolved, ConfigLoadOptions{
+				StrictConfig: d.options.StrictConfig,
+				Profile:      d.options.ConfigOverrides.Profile,
+			}); err == nil {
 				cfg = workspaceCfg
+			} else {
+				d.mu.Unlock()
+				return nil, err
 			}
 		}
 		runtime = &kernforgeMCPServerRuntime{
