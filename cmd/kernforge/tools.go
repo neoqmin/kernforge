@@ -425,6 +425,9 @@ func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRouti
 	}
 	route, err := w.ResolveEditPathWithOptions(req)
 	if err == nil {
+		if fallback, ok := w.lookupFallbackForMissingOwnedWorktreeRoute(req, route); ok {
+			return fallback, nil
+		}
 		return route, nil
 	}
 	if strings.TrimSpace(ownerNodeID) == "" || !isEditTargetMismatchError(err) {
@@ -432,6 +435,30 @@ func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRouti
 	}
 	req.OwnerNodeID = ""
 	return w.ResolveEditPathWithOptions(req)
+}
+
+func (w Workspace) lookupFallbackForMissingOwnedWorktreeRoute(req EditRoutingRequest, route EditRoutingResult) (EditRoutingResult, bool) {
+	if strings.TrimSpace(req.OwnerNodeID) == "" || strings.TrimSpace(route.WorktreeRoot) == "" {
+		return EditRoutingResult{}, false
+	}
+	if strings.TrimSpace(route.AbsolutePath) == "" {
+		return EditRoutingResult{}, false
+	}
+	if _, err := os.Stat(route.AbsolutePath); err == nil {
+		return EditRoutingResult{}, false
+	} else if !os.IsNotExist(err) {
+		return EditRoutingResult{}, false
+	}
+	fallbackReq := req
+	fallbackReq.OwnerNodeID = ""
+	fallback, err := w.ResolveEditPathWithOptions(fallbackReq)
+	if err != nil {
+		return EditRoutingResult{}, false
+	}
+	if _, err := os.Stat(fallback.AbsolutePath); err != nil {
+		return EditRoutingResult{}, false
+	}
+	return fallback, true
 }
 
 func isEditTargetMismatchError(err error) bool {

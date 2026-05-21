@@ -43,6 +43,79 @@ func TestLookupToolsRecoverFromRawOwnerEditMismatch(t *testing.T) {
 	assertLookupToolsRecoverFromOwnerEditMismatch(t, false)
 }
 
+func TestLookupToolsRecoverWhenOwnedWorktreeRouteIsMissing(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatalf("MkdirAll src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile main.go: %v", err)
+	}
+	worktreeRoot := filepath.Join(t.TempDir(), "specialist")
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll specialist worktree: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			abs, err := ws.resolveAgainstRoot(worktreeRoot, req.Path)
+			if err != nil {
+				return EditRoutingResult{}, err
+			}
+			return EditRoutingResult{
+				AbsolutePath: abs,
+				DisplayRoot:  worktreeRoot,
+				OwnerNodeID:  req.OwnerNodeID,
+				Specialist:   "driver-build-fixer",
+				WorktreeRoot: worktreeRoot,
+			}, nil
+		}
+		return ws.resolveEditFallback(req)
+	}
+
+	readTool := NewReadFileTool(ws)
+	readResult, err := readTool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":          "src/main.go",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("read_file should fall back when owned worktree route is missing: %v", err)
+	}
+	if !strings.Contains(readResult.DisplayText, "package main") {
+		t.Fatalf("expected read_file to return base workspace content, got %q", readResult.DisplayText)
+	}
+
+	listTool := NewListFilesTool(ws)
+	listResult, err := listTool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":          "src",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("list_files should fall back when owned worktree route is missing: %v", err)
+	}
+	if !strings.Contains(listResult.DisplayText, "src/main.go") {
+		t.Fatalf("expected list_files to include base workspace file, got %q", listResult.DisplayText)
+	}
+
+	grepTool := NewGrepTool(ws)
+	grepResult, err := grepTool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":       "package main",
+		"path":          "src",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("grep should fall back when owned worktree route is missing: %v", err)
+	}
+	if !strings.Contains(grepResult.DisplayText, "src/main.go") {
+		t.Fatalf("expected grep to find base workspace content, got %q", grepResult.DisplayText)
+	}
+}
+
 func assertLookupToolsRecoverFromOwnerEditMismatch(t *testing.T, wrapSentinel bool) {
 	t.Helper()
 
