@@ -400,6 +400,29 @@ func TestResolveEditTargetRoutesOwnedEditsIntoSpecialistWorktree(t *testing.T) {
 	if _, err := os.Stat(route.AbsolutePath); err != nil {
 		t.Fatalf("expected routed file to exist inside specialist worktree: %v", err)
 	}
+	absoluteRoute, err := rt.resolveEditTarget(EditRoutingRequest{
+		Path:        filepath.Join(repoRoot, "main.go"),
+		OwnerNodeID: "plan-01",
+		ForLookup:   true,
+	})
+	if err != nil {
+		t.Fatalf("absolute lookup should route through specialist worktree without ownership mismatch: %v", err)
+	}
+	expectedWorktreePath := filepath.Join(route.WorktreeRoot, "main.go")
+	if !sameFilePath(absoluteRoute.AbsolutePath, expectedWorktreePath) {
+		t.Fatalf("expected absolute lookup to map to specialist worktree path %q, got %#v", expectedWorktreePath, absoluteRoute)
+	}
+	absoluteEditRoute, err := rt.resolveEditTarget(EditRoutingRequest{
+		Path:        filepath.Join(repoRoot, "main.go"),
+		OwnerNodeID: "plan-01",
+		ForLookup:   false,
+	})
+	if err != nil {
+		t.Fatalf("absolute edit should route through specialist worktree without ownership mismatch: %v", err)
+	}
+	if !sameFilePath(absoluteEditRoute.AbsolutePath, expectedWorktreePath) {
+		t.Fatalf("expected absolute edit to map to specialist worktree path %q, got %#v", expectedWorktreePath, absoluteEditRoute)
+	}
 	if len(rt.session.SpecialistWorktrees) != 1 {
 		t.Fatalf("expected one specialist worktree lease, got %#v", rt.session.SpecialistWorktrees)
 	}

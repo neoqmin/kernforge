@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -360,7 +361,8 @@ func (rt *runtimeState) resolveEditTarget(req EditRoutingRequest) (EditRoutingRe
 		}
 		return result, nil
 	}
-	absolutePath, err := rt.workspace.resolveAgainstRoot(lease.Root, req.Path)
+	routePath := rt.specialistWorktreeRoutePath(req, result)
+	absolutePath, err := rt.workspace.resolveAgainstRoot(lease.Root, routePath)
 	if err != nil {
 		return EditRoutingResult{}, err
 	}
@@ -376,6 +378,48 @@ func (rt *runtimeState) resolveEditTarget(req EditRoutingRequest) (EditRoutingRe
 		return EditRoutingResult{}, err
 	}
 	return result, nil
+}
+
+func (rt *runtimeState) specialistWorktreeRoutePath(req EditRoutingRequest, fallback EditRoutingResult) string {
+	routePath := strings.TrimSpace(req.Path)
+	if routePath == "" {
+		routePath = "."
+	}
+	for _, root := range []string{
+		fallback.DisplayRoot,
+		rt.workspace.Root,
+		rt.workspace.BaseRoot,
+	} {
+		if rel, ok := relativePathWithinRoot(root, fallback.AbsolutePath); ok {
+			return rel
+		}
+	}
+	return routePath
+}
+
+func relativePathWithinRoot(root string, target string) (string, bool) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(target) == "" {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", false
+	}
+	if !pathWithinRoot(rootAbs, targetAbs) {
+		return "", false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return "", false
+	}
+	if rel == "" {
+		return ".", true
+	}
+	return rel, true
 }
 
 func (rt *runtimeState) resolveShellRoot(ownerNodeID string) (ShellRoutingResult, error) {
