@@ -10537,6 +10537,55 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 	}
 }
 
+func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session: session,
+		Tools: NewToolRegistry(
+			&staticTool{name: "read_file", output: "read"},
+			&staticTool{name: "apply_patch", output: "patch"},
+			&staticTool{name: "mcp__web_research__search_web", output: "web"},
+		),
+	}
+
+	plan := agent.buildTurnToolExposurePlan(nil, "fix code", false, true, false, false, true)
+	if !plan.SuppressInteractiveWorkers {
+		t.Fatalf("final-answer-only correction must suppress interactive workers")
+	}
+	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web"} {
+		if !plan.DisabledTools[name] {
+			t.Fatalf("final-answer-only correction must disable %s, got %#v", name, plan.DisabledTools)
+		}
+	}
+	if plan.GeneratedDocumentFinalOnly {
+		t.Fatalf("ordinary answer-only correction should not be classified as generated-document finalization")
+	}
+
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, false, false, true)
+	if plan.SuppressInteractiveWorkers {
+		t.Fatalf("ordinary local-code web policy should not suppress interactive workers")
+	}
+	if !plan.DisabledTools["mcp__web_research__search_web"] {
+		t.Fatalf("ordinary local-code web policy should hide web research tools, got %#v", plan.DisabledTools)
+	}
+	for _, name := range []string{"read_file", "apply_patch"} {
+		if plan.DisabledTools[name] {
+			t.Fatalf("ordinary local-code web policy should keep local tool %s visible, got %#v", name, plan.DisabledTools)
+		}
+	}
+
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, true, false, false)
+	if !plan.SuppressInteractiveWorkers {
+		t.Fatalf("out-of-scope verification final-only state must suppress interactive workers")
+	}
+	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web"} {
+		if !plan.DisabledTools[name] {
+			t.Fatalf("out-of-scope verification final-only state must disable %s, got %#v", name, plan.DisabledTools)
+		}
+	}
+}
+
 func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarnessApproval(t *testing.T) {
 	root := t.TempDir()
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"

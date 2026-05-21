@@ -721,26 +721,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err
 		}
-		suppressInteractiveWorkers := a.shouldSuppressInteractiveWorkersForTurn(latestUser)
-		if !suppressInteractiveWorkers {
+		toolExposurePlan := a.buildTurnToolExposurePlan(disabledTools, latestUser, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+		if !toolExposurePlan.SuppressInteractiveWorkers {
 			_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
 			_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
 			_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
 		}
-		turnDisabledTools := cloneDisabledTools(disabledTools)
-		if verificationOutOfScopeFinalOnly {
-			disableAllTools(turnDisabledTools, a.Tools)
-		}
-		if finalAnswerOnlyCorrection {
-			disableAllTools(turnDisabledTools, a.Tools)
-		}
-		if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
-			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
-		}
-		generatedDocumentFinalOnly := a.shouldUseGeneratedDocumentArtifactFinalOnlyTools(latestUser, unresolvedVerification)
-		if generatedDocumentFinalOnly {
-			disableAllTools(turnDisabledTools, a.Tools)
-		}
+		turnDisabledTools := toolExposurePlan.DisabledTools
+		generatedDocumentFinalOnly := toolExposurePlan.GeneratedDocumentFinalOnly
 		onTextDelta := a.EmitAssistantDelta
 		if a.shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification, attemptedEditTool, successfulEditTool) {
 			onTextDelta = nil
@@ -2029,7 +2017,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
 					})
 				}
-				if !a.shouldSuppressInteractiveWorkersForTurn(latestUser) {
+				toolExposurePlan := a.buildTurnToolExposurePlan(disabledTools, latestUser, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+				if !toolExposurePlan.SuppressInteractiveWorkers {
 					_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 					_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 					_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
@@ -2786,6 +2775,34 @@ func generatedDocumentArtifactValidationToolGuidance() string {
 
 func generatedDocumentArtifactFinalOnlyPromptGuidance() string {
 	return "Generated document artifact finalization is answer-only now. The artifact content has already passed deterministic content checks or has an approved artifact harness report. Do not request or mention additional tool use, shell validation, review passes, or source inspection. Provide the final answer only, including an explicit statement when build/test verification was not run."
+}
+
+type turnToolExposurePlan struct {
+	DisabledTools              map[string]bool
+	GeneratedDocumentFinalOnly bool
+	SuppressInteractiveWorkers bool
+}
+
+func (a *Agent) buildTurnToolExposurePlan(baseDisabled map[string]bool, request string, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
+	disabled := cloneDisabledTools(baseDisabled)
+	var registry *ToolRegistry
+	if a != nil {
+		registry = a.Tools
+	}
+	generatedDocumentFinalOnly := a.shouldUseGeneratedDocumentArtifactFinalOnlyTools(request, unresolvedVerification)
+	suppressInteractiveWorkers := a.shouldSuppressInteractiveWorkersForTurn(request)
+	if finalAnswerOnlyCorrection || verificationOutOfScopeFinalOnly || generatedDocumentFinalOnly {
+		disableAllTools(disabled, registry)
+		suppressInteractiveWorkers = true
+	}
+	if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
+		disableWebResearchToolsForLocalCodeWork(disabled, registry)
+	}
+	return turnToolExposurePlan{
+		DisabledTools:              disabled,
+		GeneratedDocumentFinalOnly: generatedDocumentFinalOnly,
+		SuppressInteractiveWorkers: suppressInteractiveWorkers,
+	}
 }
 
 func (a *Agent) shouldSuppressInteractiveWorkersForTurn(request string) bool {
