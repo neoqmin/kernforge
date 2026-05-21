@@ -36,6 +36,16 @@ func TestWorkspaceResolveForLookupFallsBackToBaseRoot(t *testing.T) {
 }
 
 func TestLookupToolsRecoverFromOwnerEditMismatch(t *testing.T) {
+	assertLookupToolsRecoverFromOwnerEditMismatch(t, true)
+}
+
+func TestLookupToolsRecoverFromRawOwnerEditMismatch(t *testing.T) {
+	assertLookupToolsRecoverFromOwnerEditMismatch(t, false)
+}
+
+func assertLookupToolsRecoverFromOwnerEditMismatch(t *testing.T, wrapSentinel bool) {
+	t.Helper()
+
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -48,6 +58,9 @@ func TestLookupToolsRecoverFromOwnerEditMismatch(t *testing.T) {
 	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
 		req = req.normalized()
 		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			if !wrapSentinel {
+				return EditRoutingResult{}, fmt.Errorf("edit target mismatch: path %s is outside editable ownership for specialist driver-build-fixer", req.Path)
+			}
 			return EditRoutingResult{}, fmt.Errorf("%w: path %s is outside editable ownership for specialist driver-build-fixer", ErrEditTargetMismatch, req.Path)
 		}
 		return ws.resolveEditFallback(req)

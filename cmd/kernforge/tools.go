@@ -427,11 +427,23 @@ func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRouti
 	if err == nil {
 		return route, nil
 	}
-	if strings.TrimSpace(ownerNodeID) == "" || !errors.Is(err, ErrEditTargetMismatch) {
+	if strings.TrimSpace(ownerNodeID) == "" || !isEditTargetMismatchError(err) {
 		return EditRoutingResult{}, err
 	}
 	req.OwnerNodeID = ""
 	return w.ResolveEditPathWithOptions(req)
+}
+
+func isEditTargetMismatchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrEditTargetMismatch) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "edit target mismatch") ||
+		strings.Contains(text, "outside editable ownership")
 }
 
 func (w Workspace) ResolveEditPathWithOptions(req EditRoutingRequest) (EditRoutingResult, error) {
