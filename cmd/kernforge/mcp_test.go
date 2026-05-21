@@ -806,6 +806,24 @@ func TestAgentMCPTurnMetadataIncludesWorkspaceGitMetadata(t *testing.T) {
 	}
 }
 
+func TestGitRepositoryRootFromFilesystemFindsAncestor(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	nested := filepath.Join(repo, "src", "pkg")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	filePath := filepath.Join(nested, "main.go")
+	if err := os.WriteFile(filePath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	if got := gitRepositoryRootFromFilesystem(filePath); !samePath(got, repo) {
+		t.Fatalf("expected repo root %q, got %q", repo, got)
+	}
+}
+
 func metadataWorkspaceForPath(t *testing.T, turnMeta map[string]any, path string) map[string]any {
 	t.Helper()
 	workspaces, ok := turnMeta["workspaces"].(map[string]any)

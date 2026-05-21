@@ -60,6 +60,7 @@ func TestGitStatusToolDisablesConfiguredHooksPath(t *testing.T) {
 	for _, want := range []string{
 		"-c",
 		"core.hooksPath=" + disabledGitHooksPath(),
+		"core.fsmonitor=false",
 		"status --short --branch",
 	} {
 		if !strings.Contains(argsText, want) {
@@ -100,6 +101,7 @@ func TestRunGitCommandDisablesConfiguredHooksPath(t *testing.T) {
 	for _, want := range []string{
 		"-c",
 		"core.hooksPath=" + disabledGitHooksPath(),
+		"core.fsmonitor=false",
 		"status --short",
 	} {
 		if !strings.Contains(argsText, want) {

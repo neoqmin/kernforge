@@ -15,8 +15,9 @@ func disabledGitHooksPath() string {
 }
 
 func gitHelperArgs(args ...string) []string {
-	out := make([]string, 0, len(args)+2)
+	out := make([]string, 0, len(args)+4)
 	out = append(out, "-c", "core.hooksPath="+disabledGitHooksPath())
+	out = append(out, "-c", "core.fsmonitor=false")
 	out = append(out, args...)
 	return out
 }
