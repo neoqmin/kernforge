@@ -43,8 +43,14 @@ func TestBuildTestImpactReportRecommendsGoVerification(t *testing.T) {
 		t.Fatalf("expected medium/high confidence, got %#v", report)
 	}
 	joined := strings.Join(report.RecommendedCommands, " | ")
-	if !strings.Contains(joined, "go test") || !strings.Contains(joined, "go vet ./...") {
-		t.Fatalf("expected go verification commands, got %#v", report.RecommendedCommands)
+	if !strings.Contains(joined, "go test ./cmd/app/...") {
+		t.Fatalf("expected targeted go verification command, got %#v", report.RecommendedCommands)
+	}
+	if strings.Contains(joined, "go vet ./...") {
+		t.Fatalf("workspace regression should wait for the adaptive full-regression cadence, got %#v", report.RecommendedCommands)
+	}
+	if !strings.Contains(strings.Join(report.Notes, " | "), "Full regression cadence") {
+		t.Fatalf("expected adaptive cadence note, got %#v", report.Notes)
 	}
 	if len(report.Findings) == 0 || !strings.Contains(report.Findings[0].Title, "Recommended verification") {
 		t.Fatalf("expected unrecorded verification warning, got %#v", report.Findings)

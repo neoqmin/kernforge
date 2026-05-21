@@ -38,6 +38,7 @@ const (
 	conversationEventKindGoal             = "goal"
 	conversationEventKindReview           = "review"
 	conversationEventKindExternalLookup   = "external_lookup"
+	conversationEventKindMCPServer        = "mcp_server"
 
 	conversationSeverityInfo  = "info"
 	conversationSeverityWarn  = "warn"

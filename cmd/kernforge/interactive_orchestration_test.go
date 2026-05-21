@@ -48,6 +48,16 @@ func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 	}
 }
 
+func TestShouldPrimeInteractivePlanSkipsPureVerificationCommands(t *testing.T) {
+	state := &TaskState{
+		Goal: "검증 명령을 실행해줘",
+	}
+
+	if shouldPrimeInteractivePlan(state, false, true, false) {
+		t.Fatalf("expected pure verification command to skip interactive preflight planning")
+	}
+}
+
 func TestShouldPrimeInteractivePlanSkipsFocusedBugFixSelection(t *testing.T) {
 	state := &TaskState{
 		Goal: "@SampleApp/SampleWorker/SampleUpdManager.cpp:250-322 버그를 찾아서 수정해",

@@ -75,6 +75,7 @@ func runKernforgeDaemonCommand(cwd string, cfg Config, resumeID string, args []s
 }
 
 func runKernforgeDaemon(cwd string, cfg Config, resumeID string, options mcpServerRunOptions) error {
+	options.Entrypoint = normalizeMCPServerEntrypoint(options.Entrypoint, mcpServerEntrypointDaemonServer)
 	if err := os.MkdirAll(kernforgeDaemonDir(), 0o755); err != nil {
 		return err
 	}

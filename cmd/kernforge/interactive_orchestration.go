@@ -180,13 +180,25 @@ func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, expl
 	if explicitEditRequest && looksLikeBugSearchAndFixIntent(lowerGoal) {
 		return true
 	}
-	if requestLooksLikeLocalVerificationWork(lowerGoal) {
+	if requestLooksLikeLocalVerificationWork(lowerGoal) && !requestLooksLikeImplementationOrSourceEditWork(lowerGoal) {
 		return true
 	}
 	if shouldPrioritizeWebResearchInSystemPrompt(lowerGoal) {
 		return true
 	}
 	return false
+}
+
+func requestLooksLikeImplementationOrSourceEditWork(lowerGoal string) bool {
+	lowerGoal = strings.ToLower(strings.TrimSpace(lowerGoal))
+	if lowerGoal == "" {
+		return false
+	}
+	return containsAny(lowerGoal,
+		"add ", "address ", "change ", "correct ", "edit ", "fix ", "fix the", "implement ", "modify ",
+		"patch ", "refactor ", "remove ", "rename ", "replace ", "update ", "write ",
+		"고쳐", "고치", "구현", "만들", "변경", "반영", "삭제", "생성", "수정", "작성", "추가", "패치", "해결",
+	)
 }
 
 func buildInteractiveExecutionPlanPrompt(state *TaskState, readOnlyAnalysis bool) string {
