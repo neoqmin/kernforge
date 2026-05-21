@@ -9839,8 +9839,8 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 		{Name: "replace_in_file", Arguments: `{"path":"Tavern/BugReport.md","old":"before","new":"after"}`},
 		{Name: "apply_patch", Arguments: `{"patch":"*** Begin Patch\n*** Update File: Tavern/BugReport.md\n@@\n-before\n+after\n*** End Patch\n"}`},
 	} {
-		if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
-			t.Fatalf("document artifact edit tool should not be classified as post-completion inspection churn: %#v", call)
+		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
+			t.Fatalf("approved generated document artifact should block post-completion edit churn: %#v", call)
 		}
 	}
 }
@@ -10200,6 +10200,90 @@ func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
 	}
 }
 
+func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHarnessReport(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	shellTool := &staticTool{name: "run_shell", output: "should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-shell-before-harness",
+						Name:      "run_shell",
+						Arguments: `{"command":"echo Reviewing Tavern/BugReport.md for final validation"}`,
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), shellTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized document-artifact final reply, got %q", reply)
+	}
+	if shellTool.calls != 0 {
+		t.Fatalf("run_shell should be blocked and not executed for generated document validation churn, got %d calls", shellTool.calls)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected runtime to synthesize final answer without another model turn, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected blocked validation tool to trigger an approved artifact harness report, got %#v", session.LastCodingHarnessReport)
+	}
+	if sessionContainsToolResultText(session, "call-shell-before-harness", "should not run") {
+		t.Fatalf("blocked run_shell unexpectedly executed, messages=%#v", session.Messages)
+	}
+}
+
 func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
@@ -10435,17 +10519,17 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 			t.Fatalf("expected approved document artifact harness to block post-completion call %#v", call)
 		}
 	}
-	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
 		Name:      "apply_patch",
 		Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
 	}}) {
-		t.Fatalf("document artifact finalization must not classify edit tools as post-completion inspection churn")
+		t.Fatalf("document artifact finalization should classify post-completion edit tools as churn")
 	}
-	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
 		Name:      "replace_in_file",
 		Arguments: `{"path":"Tavern/BugReport.md","old":"before","new":"after"}`,
 	}}) {
-		t.Fatalf("document artifact finalization must not classify replace_in_file as post-completion inspection churn")
+		t.Fatalf("document artifact finalization should classify post-completion replace_in_file as churn")
 	}
 	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected approved document artifact harness to skip interactive final-answer review")
