@@ -97,6 +97,7 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 		def: ToolDefinition{
 			Name:        "dup",
 			Description: "first",
+			InputSchema: emptyObjectSchema(),
 		},
 		output: "first output",
 	}
@@ -104,8 +105,16 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 		def: ToolDefinition{
 			Name:        "dup",
 			Description: "second",
+			InputSchema: emptyObjectSchema(),
 		},
 		output: "second output",
+	}
+	missingSchema := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "missing_schema",
+			Description: "missing schema",
+		},
+		output: "missing schema output",
 	}
 	blank := &mutableRegistryTool{
 		def: ToolDefinition{
@@ -135,7 +144,7 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 		output: "invalid nested output",
 	}
 
-	registry := NewToolRegistry(nilTool, first, second, blank, invalidSchema, invalidNestedSchema)
+	registry := NewToolRegistry(nilTool, first, second, missingSchema, blank, invalidSchema, invalidNestedSchema)
 	defs := registry.Definitions()
 	if len(defs) != 1 {
 		t.Fatalf("expected only first valid unique tool definition, got %#v", defs)
@@ -157,13 +166,17 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 	if _, err := registry.ExecuteDetailed(context.Background(), "invalid_nested_schema", `{}`); err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Fatalf("invalid nested schema tool should not be registered, got %v", err)
 	}
+	if _, err := registry.ExecuteDetailed(context.Background(), "missing_schema", `{}`); err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("missing schema tool should not be registered, got %v", err)
+	}
 	issues := registry.RegistrationIssues()
-	if len(issues) != 4 {
+	if len(issues) != 5 {
 		t.Fatalf("expected duplicate and invalid definitions to be reported, got %#v", issues)
 	}
 	issueText := strings.Join(formatToolRegistrationIssues(issues), "\n")
 	for _, want := range []string{
 		"dup: duplicate tool name",
+		"missing_schema: missing input schema",
 		"missing tool name",
 		"invalid_schema: invalid input schema",
 		"invalid_nested_schema: invalid input schema",

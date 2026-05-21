@@ -10815,6 +10815,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 				def: ToolDefinition{
 					Name:        "dispatch_only",
 					Description: "hidden dispatch-only tool",
+					InputSchema: emptyObjectSchema(),
 				},
 				output: "hidden",
 				hidden: true,

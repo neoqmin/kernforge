@@ -154,6 +154,9 @@ func validateToolDefinition(def ToolDefinition) error {
 	if strings.TrimSpace(def.Name) == "" {
 		return fmt.Errorf("missing tool name")
 	}
+	if len(def.InputSchema) == 0 {
+		return fmt.Errorf("missing input schema")
+	}
 	if !validToolInputSchema(def.InputSchema) {
 		return fmt.Errorf("invalid input schema")
 	}
@@ -162,7 +165,7 @@ func validateToolDefinition(def ToolDefinition) error {
 
 func validToolInputSchema(schema map[string]any) bool {
 	if len(schema) == 0 {
-		return true
+		return false
 	}
 	if !validToolJSONSchemaMap(schema) {
 		return false
