@@ -1083,6 +1083,11 @@ func TestEnsureOpenAICodexAuthInteractiveImportsCodexCLIAuth(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
 
 	if err := saveCodexOAuthAuthFile(codexCLIOAuthAuthFilePath(), codexOAuthTokens{
 		AccessToken:  testCodexOAuthJWT(time.Now().Add(time.Hour)),
@@ -1767,6 +1772,11 @@ func TestRuntimeStateHandleSetSpecialistModelCommandPersistsWorkspaceOverride(t 
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
 
 	output := &bytes.Buffer{}
 	rt := &runtimeState{
@@ -1825,6 +1835,11 @@ func TestRuntimeStateHandleSetSpecialistModelCommandClearPreservesOtherOverrides
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
 
 	cfg := DefaultConfig(workspace)
 	cfg.Provider = "openai"
@@ -2733,6 +2748,11 @@ func TestRuntimeStatePromptResolveAutoVerifyFailureAlwaysPersistsToWorkspaceConf
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
 
 	output := &bytes.Buffer{}
 	rt := &runtimeState{
@@ -2792,6 +2812,11 @@ func TestRuntimeStatePromptResolveAutoVerifyFailureSavesToolPathAndRequestsRetry
 	workspace := filepath.Join(home, "repo")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
+	}
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
 	}
 	msbuildPath := filepath.Join(home, "MSBuild.exe")
 	if err := os.WriteFile(msbuildPath, []byte("stub"), 0o644); err != nil {
@@ -2943,6 +2968,11 @@ func TestHandleSetVerificationToolPathCommandPersistsWorkspaceOverride(t *testin
 	workspace := filepath.Join(home, "repo")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
+	}
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
 	}
 	ninjaPath := filepath.Join(home, "ninja.exe")
 	if err := os.WriteFile(ninjaPath, []byte("stub"), 0o644); err != nil {
@@ -3310,7 +3340,7 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	}
 
 	text := out.String()
-	if !strings.Contains(text, "Effective settings merged from config files, environment, and session overrides.") {
+	if !strings.Contains(text, "Effective settings merged from user config, trusted project config, environment, and session overrides.") {
 		t.Fatalf("expected config hint, got %q", text)
 	}
 	if !strings.Contains(text, "auto_checkpoint_edits:") {
@@ -3318,6 +3348,9 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	}
 	if !strings.Contains(text, "hooks_enabled:") {
 		t.Fatalf("expected hook settings in config output, got %q", text)
+	}
+	if !strings.Contains(text, "-- Project Trust ") || !strings.Contains(text, "project_config:") {
+		t.Fatalf("expected project trust settings in config output, got %q", text)
 	}
 	if !strings.Contains(text, "-- Model ") || !strings.Contains(text, "-- Tool Paths ") || !strings.Contains(text, "-- Extensions ") {
 		t.Fatalf("expected grouped config output, got %q", text)
@@ -3333,6 +3366,7 @@ func TestSlashCommandTurnElapsedPolicySuppressesLocalMetaCommands(t *testing.T) 
 		"/quit",
 		"/status",
 		"/config",
+		"/trust",
 		"/model gpt-5.5",
 		"/provider openrouter",
 		"/profile",

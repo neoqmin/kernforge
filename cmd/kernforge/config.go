@@ -47,6 +47,7 @@ var workspaceLocalConfigDenylist = []string{
 	"mcp_servers",
 	"active_profile_key",
 	"model_routes",
+	"projects",
 	"hooks_enabled",
 	"hook_presets",
 	"hooks_fail_closed",
@@ -88,54 +89,59 @@ type WorktreeIsolationConfig struct {
 	AutoForTrackedFeatures *bool  `json:"auto_for_tracked_features,omitempty"`
 }
 
+type ProjectTrustConfig struct {
+	TrustLevel string `json:"trust_level,omitempty"`
+}
+
 type Config struct {
-	Provider               string                    `json:"provider"`
-	Model                  string                    `json:"model"`
-	BaseURL                string                    `json:"base_url"`
-	APIKey                 string                    `json:"api_key"`
-	ProviderKeys           map[string]string         `json:"provider_keys,omitempty"`
-	CodexCLIPath           string                    `json:"codex_cli_path,omitempty"`
-	CodexCLIArgs           []string                  `json:"codex_cli_args,omitempty"`
-	ClaudeCLIPath          string                    `json:"claude_cli_path,omitempty"`
-	ClaudeCLIArgs          []string                  `json:"claude_cli_args,omitempty"`
-	Temperature            float64                   `json:"temperature"`
-	ReasoningEffort        string                    `json:"reasoning_effort,omitempty"`
-	MaxTokens              int                       `json:"max_tokens"`
-	MaxToolIterations      int                       `json:"max_tool_iterations"`
-	MaxRequestRetries      int                       `json:"max_request_retries,omitempty"`
-	RequestRetryDelayMs    int                       `json:"request_retry_delay_ms,omitempty"`
-	RequestTimeoutSecs     int                       `json:"request_timeout_seconds,omitempty"`
-	ProgressDisplay        string                    `json:"progress_display,omitempty"`
-	ModelRoutes            ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
-	ShellTimeoutSecs       int                       `json:"shell_timeout_seconds,omitempty"`
-	ReadHintSpans          int                       `json:"read_hint_spans,omitempty"`
-	ReadCacheEntries       int                       `json:"read_cache_entries,omitempty"`
-	MSBuildPath            string                    `json:"msbuild_path,omitempty"`
-	CMakePath              string                    `json:"cmake_path,omitempty"`
-	CTestPath              string                    `json:"ctest_path,omitempty"`
-	NinjaPath              string                    `json:"ninja_path,omitempty"`
-	Command                string                    `json:"command,omitempty"`
-	PermissionMode         string                    `json:"permission_mode"`
-	Shell                  string                    `json:"shell"`
-	SessionDir             string                    `json:"session_dir"`
-	AutoCompactChars       int                       `json:"auto_compact_chars"`
-	AutoCheckpointEdits    *bool                     `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerify             *bool                     `json:"auto_verify,omitempty"`
-	AutoLocale             *bool                     `json:"auto_locale,omitempty"`
-	FuzzFuncOutputLanguage string                    `json:"fuzz_func_output_language,omitempty"`
-	HooksEnabled           *bool                     `json:"hooks_enabled,omitempty"`
-	HookPresets            []string                  `json:"hook_presets,omitempty"`
-	HooksFailClosed        *bool                     `json:"hooks_fail_closed,omitempty"`
-	MemoryFiles            []string                  `json:"memory_files"`
-	SkillPaths             []string                  `json:"skill_paths,omitempty"`
-	EnabledSkills          []string                  `json:"enabled_skills,omitempty"`
-	MCPServers             []MCPServerConfig         `json:"mcp_servers,omitempty"`
-	Profiles               []Profile                 `json:"profiles,omitempty"`
-	ActiveProfileKey       string                    `json:"active_profile_key,omitempty"`
-	ProjectAnalysis        ProjectAnalysisConfig     `json:"project_analysis,omitempty"`
-	Review                 ReviewHarnessConfig       `json:"review,omitempty"`
-	Specialists            SpecialistSubagentsConfig `json:"specialists,omitempty"`
-	WorktreeIsolation      WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
+	Provider               string                        `json:"provider"`
+	Model                  string                        `json:"model"`
+	BaseURL                string                        `json:"base_url"`
+	APIKey                 string                        `json:"api_key"`
+	ProviderKeys           map[string]string             `json:"provider_keys,omitempty"`
+	CodexCLIPath           string                        `json:"codex_cli_path,omitempty"`
+	CodexCLIArgs           []string                      `json:"codex_cli_args,omitempty"`
+	ClaudeCLIPath          string                        `json:"claude_cli_path,omitempty"`
+	ClaudeCLIArgs          []string                      `json:"claude_cli_args,omitempty"`
+	Temperature            float64                       `json:"temperature"`
+	ReasoningEffort        string                        `json:"reasoning_effort,omitempty"`
+	MaxTokens              int                           `json:"max_tokens"`
+	MaxToolIterations      int                           `json:"max_tool_iterations"`
+	MaxRequestRetries      int                           `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs    int                           `json:"request_retry_delay_ms,omitempty"`
+	RequestTimeoutSecs     int                           `json:"request_timeout_seconds,omitempty"`
+	ProgressDisplay        string                        `json:"progress_display,omitempty"`
+	ModelRoutes            ModelRouteSchedulerConfig     `json:"model_routes,omitempty"`
+	ShellTimeoutSecs       int                           `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans          int                           `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries       int                           `json:"read_cache_entries,omitempty"`
+	MSBuildPath            string                        `json:"msbuild_path,omitempty"`
+	CMakePath              string                        `json:"cmake_path,omitempty"`
+	CTestPath              string                        `json:"ctest_path,omitempty"`
+	NinjaPath              string                        `json:"ninja_path,omitempty"`
+	Command                string                        `json:"command,omitempty"`
+	PermissionMode         string                        `json:"permission_mode"`
+	Shell                  string                        `json:"shell"`
+	SessionDir             string                        `json:"session_dir"`
+	AutoCompactChars       int                           `json:"auto_compact_chars"`
+	AutoCheckpointEdits    *bool                         `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify             *bool                         `json:"auto_verify,omitempty"`
+	AutoLocale             *bool                         `json:"auto_locale,omitempty"`
+	FuzzFuncOutputLanguage string                        `json:"fuzz_func_output_language,omitempty"`
+	HooksEnabled           *bool                         `json:"hooks_enabled,omitempty"`
+	HookPresets            []string                      `json:"hook_presets,omitempty"`
+	HooksFailClosed        *bool                         `json:"hooks_fail_closed,omitempty"`
+	MemoryFiles            []string                      `json:"memory_files"`
+	SkillPaths             []string                      `json:"skill_paths,omitempty"`
+	EnabledSkills          []string                      `json:"enabled_skills,omitempty"`
+	MCPServers             []MCPServerConfig             `json:"mcp_servers,omitempty"`
+	Profiles               []Profile                     `json:"profiles,omitempty"`
+	ActiveProfileKey       string                        `json:"active_profile_key,omitempty"`
+	Projects               map[string]ProjectTrustConfig `json:"projects,omitempty"`
+	ProjectAnalysis        ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
+	Review                 ReviewHarnessConfig           `json:"review,omitempty"`
+	Specialists            SpecialistSubagentsConfig     `json:"specialists,omitempty"`
+	WorktreeIsolation      WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
 }
 
 type Profile struct {
@@ -205,6 +211,9 @@ func LoadConfig(cwd string) (Config, error) {
 		source := configSourceUser
 		if index > 0 {
 			source = configSourceWorkspace
+		}
+		if source == configSourceWorkspace && !configProjectTrusted(cfg, cwd) {
+			continue
 		}
 		if err := mergeConfigFileForSource(&cfg, path, source); err != nil {
 			return cfg, err
@@ -374,6 +383,196 @@ func workspaceConfigPath(cwd string) string {
 	return filepath.Join(cwd, userConfigDirName, "config.json")
 }
 
+func configProjectTrusted(cfg Config, cwd string) bool {
+	return strings.EqualFold(projectTrustLevelForPath(cfg, cwd), "trusted")
+}
+
+func projectTrustLevelForPath(cfg Config, cwd string) string {
+	if len(cfg.Projects) == 0 {
+		return ""
+	}
+	keys := projectTrustCandidateKeys(cwd)
+	if len(keys) == 0 {
+		return ""
+	}
+	normalizedProjects := map[string]ProjectTrustConfig{}
+	for rawKey, project := range cfg.Projects {
+		key := normalizeProjectTrustLookupKey(rawKey)
+		if key == "" {
+			continue
+		}
+		normalizedProjects[key] = project
+	}
+	for _, key := range keys {
+		if project, ok := normalizedProjects[key]; ok {
+			return normalizeProjectTrustLevel(project.TrustLevel)
+		}
+	}
+	return ""
+}
+
+func projectTrustCandidateKeys(cwd string) []string {
+	var candidates []string
+	if root := findGitProjectRoot(cwd); root != "" {
+		candidates = append(candidates, root)
+	}
+	if abs, err := filepath.Abs(cwd); err == nil {
+		candidates = append(candidates, abs)
+	} else if strings.TrimSpace(cwd) != "" {
+		candidates = append(candidates, cwd)
+	}
+	seen := map[string]bool{}
+	var keys []string
+	for _, candidate := range candidates {
+		for _, key := range normalizedProjectTrustKeys(candidate) {
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func findGitProjectRoot(cwd string) string {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return ""
+	}
+	info, statErr := os.Stat(abs)
+	if statErr == nil && !info.IsDir() {
+		abs = filepath.Dir(abs)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+			return abs
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			break
+		}
+		abs = parent
+	}
+	return ""
+}
+
+func normalizedProjectTrustKeys(path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	keys := []string{normalizeProjectTrustLookupKey(path)}
+	if abs, err := filepath.Abs(path); err == nil {
+		keys = append(keys, normalizeProjectTrustLookupKey(abs))
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			keys = append(keys, normalizeProjectTrustLookupKey(resolved))
+		}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, key := range keys {
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, key)
+	}
+	return out
+}
+
+func normalizeProjectTrustLookupKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	key = filepath.Clean(expandHome(key))
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	return key
+}
+
+func normalizeProjectTrustLevel(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "trusted":
+		return "trusted"
+	case "untrusted":
+		return "untrusted"
+	default:
+		return ""
+	}
+}
+
+func mergeProjectTrustConfigs(dst, src map[string]ProjectTrustConfig) map[string]ProjectTrustConfig {
+	if len(dst) == 0 && len(src) == 0 {
+		return nil
+	}
+	merged := map[string]ProjectTrustConfig{}
+	for key, project := range dst {
+		level := normalizeProjectTrustLevel(project.TrustLevel)
+		if level == "" {
+			continue
+		}
+		normalizedKey := normalizeProjectTrustLookupKey(key)
+		if normalizedKey == "" {
+			continue
+		}
+		merged[normalizedKey] = ProjectTrustConfig{TrustLevel: level}
+	}
+	for key, project := range src {
+		level := normalizeProjectTrustLevel(project.TrustLevel)
+		if level == "" {
+			continue
+		}
+		normalizedKey := normalizeProjectTrustLookupKey(key)
+		if normalizedKey == "" {
+			continue
+		}
+		merged[normalizedKey] = ProjectTrustConfig{TrustLevel: level}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func loadUserConfigOnly(cwd string) (Config, error) {
+	cfg := DefaultConfig(cwd)
+	if err := mergeConfigFileForSource(&cfg, userConfigPath(), configSourceUser); err != nil {
+		return cfg, err
+	}
+	normalizeConfigPaths(&cfg)
+	applyActiveProfileRoleModels(&cfg)
+	return cfg, nil
+}
+
+func SaveProjectTrustLevel(cwd string, level string) (string, error) {
+	level = normalizeProjectTrustLevel(level)
+	if level == "" {
+		return "", fmt.Errorf("project trust level must be trusted or untrusted")
+	}
+	keys := projectTrustCandidateKeys(cwd)
+	if len(keys) == 0 {
+		return "", fmt.Errorf("could not resolve project trust key for %s", cwd)
+	}
+	cfg, err := loadUserConfigOnly(cwd)
+	if err != nil {
+		return "", err
+	}
+	if cfg.Projects == nil {
+		cfg.Projects = map[string]ProjectTrustConfig{}
+	}
+	for _, key := range keys {
+		delete(cfg.Projects, key)
+	}
+	cfg.Projects[keys[0]] = ProjectTrustConfig{TrustLevel: level}
+	if err := SaveUserConfig(cfg); err != nil {
+		return "", err
+	}
+	return keys[0], nil
+}
+
 func mergeConfigFile(cfg *Config, path string) error {
 	return mergeConfigFileForSource(cfg, path, configSourceUser)
 }
@@ -448,6 +647,7 @@ func sanitizeConfigPatchForSource(patch *Config, source configSourceKind) {
 	patch.MCPServers = nil
 	patch.ActiveProfileKey = ""
 	patch.ModelRoutes = ModelRouteSchedulerConfig{}
+	patch.Projects = nil
 	patch.HooksEnabled = nil
 	patch.HookPresets = nil
 	patch.HooksFailClosed = nil
@@ -723,6 +923,9 @@ func mergeConfig(dst *Config, src Config) {
 	if strings.TrimSpace(src.ActiveProfileKey) != "" {
 		dst.ActiveProfileKey = strings.TrimSpace(src.ActiveProfileKey)
 	}
+	if len(src.Projects) > 0 {
+		dst.Projects = mergeProjectTrustConfigs(dst.Projects, src.Projects)
+	}
 	if src.ProjectAnalysis.Enabled != nil {
 		value := *src.ProjectAnalysis.Enabled
 		dst.ProjectAnalysis.Enabled = &value
@@ -913,6 +1116,7 @@ func normalizeConfigPaths(cfg *Config) {
 	for i, item := range cfg.SkillPaths {
 		cfg.SkillPaths[i] = expandHome(item)
 	}
+	cfg.Projects = mergeProjectTrustConfigs(nil, cfg.Projects)
 	if strings.TrimSpace(cfg.CodexCLIPath) != "" {
 		cfg.CodexCLIPath = expandHome(cfg.CodexCLIPath)
 	}
@@ -1154,6 +1358,7 @@ func preserveExistingUserConfig(cfg *Config, opts saveUserConfigOptions) {
 	if strings.TrimSpace(cfg.ActiveProfileKey) == "" && strings.TrimSpace(existing.ActiveProfileKey) != "" {
 		cfg.ActiveProfileKey = strings.TrimSpace(existing.ActiveProfileKey)
 	}
+	cfg.Projects = mergeProjectTrustConfigs(existing.Projects, cfg.Projects)
 	if opts.PreserveReviewRoleModels {
 		preserveExistingReviewRoleModels(cfg, existing)
 	}
@@ -2263,6 +2468,7 @@ func HelpText() string {
 	return strings.TrimSpace(`
 General:
 /config                Show effective runtime config
+/trust [status|on|off] Show or set project-local config and hook trust
 /context               Show context usage summary
 /exit                  Exit the CLI
 /help                  Show available commands
@@ -2645,12 +2851,16 @@ Examples:
 /find-root-cause 내 게임에서 파티원을 초대하고 추방하다 보면 파티원 제한 숫자를 넘어서서 파티원을 초대할 수 있게 돼
 /find-root-cause 내 Win32 서비스 프로세스가 sc stop으로 종료되지 않아
 `), true
-	case "general", "hooks", "hook-reload", "override", "override-add", "override-clear":
+	case "general", "hooks", "hook-reload", "trust", "override", "override-add", "override-clear":
 		return strings.TrimSpace(`
 General commands cover high-level runtime inspection and app control.
 
 /config
-- Show the effective runtime configuration after global config, workspace config, env vars, and flags are merged.
+- Show the effective runtime configuration after user config, trusted project config, env vars, and flags are merged.
+
+/trust [status|on|off]
+- Show or set whether the current project may load .kernforge/config.json and .kernforge/hooks.json.
+- Trust is stored in user config (~/.kernforge/config.json) under projects; project-local config cannot mark itself trusted.
 
 /context
 - Show approximate context size, message count, summary size, and plan item count.
@@ -3189,6 +3399,7 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 
 /init config
 - Create a starter .kernforge/config.json template.
+- Project-local config is ignored until /trust on stores a user-level trust entry for this project.
 
 /init hooks
 - Create a starter .kernforge/hooks.json template.
@@ -3259,7 +3470,7 @@ MCP and skills commands expose local skills plus external MCP tools, resources, 
 Web research setup:
 - Mark web-capable MCP servers with capabilities like "web_search" and "web_fetch" in ~/.kernforge/config.json.
 - You can also put keys like "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", and "SERPAPI_API_KEY" in user-level mcp_servers[].env.
-- Workspace-local mcp_servers are ignored because project config is repository content and MCP servers launch host-local commands.
+- Project-local config and hooks are ignored until the project is trusted, and workspace-local mcp_servers stay ignored because MCP servers launch host-local commands.
 - On startup, Kernforge deploys the bundled web-research MCP into ~/.kernforge/mcp/web-research-mcp.js and auto-adds that MCP to ~/.kernforge/config.json when no equivalent web-research server is configured yet.
 - Once a web-search/browser MCP is configured, Kernforge can prioritize it for latest/current research requests before local file inspection.
 `), true

@@ -203,7 +203,10 @@ func LoadHookEngine(root string, cfg Config) (*HookEngine, []string) {
 		}
 		engine.Rules = append(engine.Rules, rules...)
 	}
-	for _, path := range hookConfigSearchPaths(root) {
+	if !configProjectTrusted(cfg, root) && workspaceHookConfigExists(root) {
+		warns = append(warns, fmt.Sprintf("project-local hooks ignored until project is trusted: %s", filepath.Join(root, userConfigDirName, "hooks.json")))
+	}
+	for _, path := range hookConfigSearchPaths(root, cfg) {
 		file, err := loadHookFile(path)
 		if err != nil {
 			warns = append(warns, err.Error())
@@ -226,11 +229,22 @@ func LoadHookEngine(root string, cfg Config) (*HookEngine, []string) {
 	return engine, warns
 }
 
-func hookConfigSearchPaths(root string) []string {
-	return []string{
+func hookConfigSearchPaths(root string, cfg Config) []string {
+	paths := []string{
 		filepath.Join(userConfigDir(), "hooks.json"),
-		filepath.Join(root, userConfigDirName, "hooks.json"),
 	}
+	if configProjectTrusted(cfg, root) {
+		paths = append(paths, filepath.Join(root, userConfigDirName, "hooks.json"))
+	}
+	return paths
+}
+
+func workspaceHookConfigExists(root string) bool {
+	info, err := os.Stat(filepath.Join(root, userConfigDirName, "hooks.json"))
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 func loadHookFile(path string) (*HookFile, error) {

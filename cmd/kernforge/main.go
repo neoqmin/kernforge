@@ -817,6 +817,7 @@ func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
 		"help",
 		"status",
 		"config",
+		"trust",
 		"version",
 		"context",
 		"session",
@@ -6770,7 +6771,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Exported to "+cmd.Args))
 	case "config":
 		fmt.Fprintln(rt.writer, rt.ui.section("Config"))
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Effective settings merged from config files, environment, and session overrides."))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Effective settings merged from user config, trusted project config, environment, and session overrides."))
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Model",
 			kv("provider", valueOrUnset(rt.cfg.Provider)),
@@ -6795,6 +6796,20 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("progress_display", configProgressDisplay(rt.cfg)),
 			kv("max_tool_iterations", formatMaxToolIterations(configMaxToolIterations(rt.cfg))),
 			kv("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)),
+		)
+		fmt.Fprintln(rt.writer)
+		projectTrustLevel := normalizeProjectTrustLevel(projectTrustLevelForPath(rt.cfg, rt.workspace.BaseRoot))
+		if projectTrustLevel == "" {
+			projectTrustLevel = "unknown"
+		}
+		projectLocalState := "ignored"
+		if strings.EqualFold(projectTrustLevel, "trusted") {
+			projectLocalState = "eligible"
+		}
+		rt.printKVGroup("Project Trust",
+			kv("trust_level", projectTrustLevel),
+			kv("project_config", projectLocalState),
+			kv("project_hooks", projectLocalState),
 		)
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Automation",
@@ -6843,6 +6858,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 		if rt.checkpoints != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("checkpoint_root", rt.checkpoints.Root))
+		}
+	case "trust":
+		if err := rt.handleTrustCommand(cmd.Args); err != nil {
+			return false, err
 		}
 	case "set-analysis-models":
 		if err := rt.handleSetAnalysisModelsCommand(cmd.Args); err != nil {
@@ -6978,6 +6997,7 @@ func (rt *runtimeState) handleSetVerificationToolPathCommand(toolName, args stri
 	}); err != nil {
 		return err
 	}
+	rt.warnIfProjectLocalConfigIgnored()
 	applyVerificationToolPathToConfig(&rt.cfg, toolName, resolvedPath)
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	if rt.agent != nil {
@@ -6998,6 +7018,7 @@ func (rt *runtimeState) handleClearVerificationToolPathCommand(toolName string) 
 	}); err != nil {
 		return err
 	}
+	rt.warnIfProjectLocalConfigIgnored()
 	applyVerificationToolPathToConfig(&rt.cfg, toolName, "")
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	if rt.agent != nil {
@@ -7368,6 +7389,7 @@ func (rt *runtimeState) tryAutoResolveAutoVerifyFailure(report VerificationRepor
 	if len(applied) == 0 {
 		return AutoVerifyFailureNoAction, false, nil
 	}
+	rt.warnIfProjectLocalConfigIgnored()
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	if rt.agent != nil {
 		rt.agent.Config = rt.cfg
@@ -7443,6 +7465,7 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 			}); err != nil {
 				return AutoVerifyFailureNoAction, err
 			}
+			rt.warnIfProjectLocalConfigIgnored()
 			applyVerificationToolPathToConfig(&rt.cfg, toolName, resolvedPath)
 			rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 			if rt.agent != nil {
@@ -7471,6 +7494,7 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 			}); err != nil {
 				return AutoVerifyFailureNoAction, err
 			}
+			rt.warnIfProjectLocalConfigIgnored()
 			lines := []string{rt.ui.successLine("Automatic verification disabled for this workspace.")}
 			if summary := strings.TrimSpace(report.FailureSummary()); summary != "" {
 				lines = append(lines, rt.ui.warnLine("Latest verification failure:"), rt.ui.dim(summary))
@@ -8157,6 +8181,75 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 	return nil
 }
 
+func (rt *runtimeState) handleTrustCommand(args string) error {
+	action := strings.ToLower(strings.TrimSpace(args))
+	switch action {
+	case "", "status":
+		rt.printProjectTrustStatus()
+		return nil
+	case "on", "trust", "trusted":
+		return rt.setProjectTrustLevel("trusted")
+	case "off", "untrust", "untrusted":
+		return rt.setProjectTrustLevel("untrusted")
+	default:
+		return fmt.Errorf("usage: /trust [status|on|off]")
+	}
+}
+
+func (rt *runtimeState) warnIfProjectLocalConfigIgnored() {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	if strings.TrimSpace(rt.workspace.BaseRoot) == "" || configProjectTrusted(rt.cfg, rt.workspace.BaseRoot) {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.warnLine("Project-local config saved but ignored until /trust on for this project."))
+}
+
+func (rt *runtimeState) setProjectTrustLevel(level string) error {
+	key, err := SaveProjectTrustLevel(rt.workspace.BaseRoot, level)
+	if err != nil {
+		return err
+	}
+	if err := rt.reloadRuntimeConfig(); err != nil {
+		return err
+	}
+	if strings.EqualFold(level, "trusted") {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Project trusted. Project-local config and hooks are now eligible to load."))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Project marked untrusted. Project-local config and hooks will be ignored."))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("trust_key", key))
+	return nil
+}
+
+func (rt *runtimeState) printProjectTrustStatus() {
+	level := normalizeProjectTrustLevel(projectTrustLevelForPath(rt.cfg, rt.workspace.BaseRoot))
+	if level == "" {
+		level = "unknown"
+	}
+	keys := projectTrustCandidateKeys(rt.workspace.BaseRoot)
+	key := ""
+	if len(keys) > 0 {
+		key = keys[0]
+	}
+	localConfig := "ignored"
+	localHooks := "ignored"
+	if strings.EqualFold(level, "trusted") {
+		localConfig = "eligible"
+		localHooks = "eligible"
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Project Trust"))
+	rt.printKVGroup("Status",
+		kv("workspace", valueOrUnset(rt.workspace.BaseRoot)),
+		kv("trust_level", level),
+		kv("trust_key", valueOrUnset(key)),
+		kv("project_config", localConfig),
+		kv("project_hooks", localHooks),
+	)
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /trust on to allow this project to load .kernforge/config.json and .kernforge/hooks.json. Use /trust off to disable them again."))
+}
+
 func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 	target := normalizeSpecialistProfileName(name)
 	if target == "" {
@@ -8227,7 +8320,11 @@ func (rt *runtimeState) persistSpecialistOverrides() error {
 	} else {
 		overrides["specialists"] = nil
 	}
-	return SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, overrides)
+	if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, overrides); err != nil {
+		return err
+	}
+	rt.warnIfProjectLocalConfigIgnored()
+	return nil
 }
 
 func specialistConfigIsEmpty(cfg SpecialistSubagentsConfig) bool {

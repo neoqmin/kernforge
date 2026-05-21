@@ -425,12 +425,34 @@ func TestLoadHookEngineFromWorkspaceFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(InitHooksTemplate()), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	engine, warns := LoadHookEngine(root, DefaultConfig(root))
+	cfg := DefaultConfig(root)
+	markConfigProjectTrustedForTest(t, &cfg, root)
+	engine, warns := LoadHookEngine(root, cfg)
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %#v", warns)
 	}
 	if engine == nil || len(engine.Rules) == 0 {
 		t.Fatalf("expected loaded engine, got %#v", engine)
+	}
+}
+
+func TestLoadHookEngineSkipsWorkspaceFileUntilProjectTrusted(t *testing.T) {
+	root := t.TempDir()
+	hooksDir := filepath.Join(root, userConfigDirName)
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(hooksDir, "hooks.json")
+	if err := os.WriteFile(path, []byte(InitHooksTemplate()), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	engine, warns := LoadHookEngine(root, DefaultConfig(root))
+	if engine != nil {
+		t.Fatalf("expected untrusted workspace hooks to be ignored, got %#v", engine)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "ignored until project is trusted") {
+		t.Fatalf("expected untrusted hooks warning, got %#v", warns)
 	}
 }
 
