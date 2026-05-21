@@ -130,15 +130,178 @@ func validToolInputSchema(schema map[string]any) bool {
 	if len(schema) == 0 {
 		return true
 	}
-	rawType, ok := schema["type"]
+	if !validToolJSONSchemaMap(schema) {
+		return false
+	}
+	_, ok := schema["type"]
 	if !ok {
 		return true
 	}
-	typeName, ok := rawType.(string)
+	return toolSchemaHasType(schema, "object")
+}
+
+func validToolJSONSchemaMap(schema map[string]any) bool {
+	if rawType, ok := schema["type"]; ok && !validToolSchemaType(rawType) {
+		return false
+	}
+	if rawProperties, ok := schema["properties"]; ok && rawProperties != nil {
+		properties, ok := rawProperties.(map[string]any)
+		if !ok {
+			return false
+		}
+		for _, value := range properties {
+			if !validToolJSONSchemaValue(value) {
+				return false
+			}
+		}
+	}
+	if rawItems, ok := schema["items"]; ok && rawItems != nil {
+		if !validToolJSONSchemaValueOrList(rawItems) {
+			return false
+		}
+	}
+	if rawItems, ok := schema["prefixItems"]; ok && rawItems != nil {
+		if !validToolJSONSchemaList(rawItems) {
+			return false
+		}
+	}
+	if rawAdditional, ok := schema["additionalProperties"]; ok && rawAdditional != nil {
+		switch typed := rawAdditional.(type) {
+		case bool:
+		case map[string]any:
+			if !validToolJSONSchemaMap(typed) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	if rawRequired, ok := schema["required"]; ok && rawRequired != nil {
+		if !validToolStringArray(rawRequired) {
+			return false
+		}
+	}
+	if rawEnum, ok := schema["enum"]; ok && rawEnum != nil {
+		if !validToolArray(rawEnum) {
+			return false
+		}
+	}
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		raw, ok := schema[key]
+		if ok && raw != nil && !validToolJSONSchemaList(raw) {
+			return false
+		}
+	}
+	for _, key := range []string{"$defs", "definitions"} {
+		raw, ok := schema[key]
+		if ok && raw != nil {
+			definitions, ok := raw.(map[string]any)
+			if !ok {
+				return false
+			}
+			for _, value := range definitions {
+				if !validToolJSONSchemaValue(value) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func validToolSchemaType(raw any) bool {
+	switch typed := raw.(type) {
+	case string:
+		return validToolPrimitiveType(typed)
+	case []string:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			if !validToolPrimitiveType(item) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		if len(typed) == 0 {
+			return false
+		}
+		for _, item := range typed {
+			value, ok := item.(string)
+			if !ok || !validToolPrimitiveType(value) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func validToolPrimitiveType(name string) bool {
+	switch strings.TrimSpace(strings.ToLower(name)) {
+	case "array", "boolean", "integer", "null", "number", "object", "string":
+		return true
+	default:
+		return false
+	}
+}
+
+func validToolJSONSchemaValue(raw any) bool {
+	switch typed := raw.(type) {
+	case bool:
+		return true
+	case map[string]any:
+		return validToolJSONSchemaMap(typed)
+	default:
+		return false
+	}
+}
+
+func validToolJSONSchemaValueOrList(raw any) bool {
+	if validToolJSONSchemaValue(raw) {
+		return true
+	}
+	return validToolJSONSchemaList(raw)
+}
+
+func validToolJSONSchemaList(raw any) bool {
+	items, ok := raw.([]any)
 	if !ok {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(typeName), "object")
+	for _, item := range items {
+		if !validToolJSONSchemaValue(item) {
+			return false
+		}
+	}
+	return true
+}
+
+func validToolStringArray(raw any) bool {
+	switch typed := raw.(type) {
+	case []string:
+		return true
+	case []any:
+		for _, item := range typed {
+			if _, ok := item.(string); !ok {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func validToolArray(raw any) bool {
+	switch raw.(type) {
+	case []any, []string, []int, []float64, []bool:
+		return true
+	default:
+		return false
+	}
 }
 
 func toolHiddenFromModel(tool Tool) bool {
@@ -148,9 +311,148 @@ func toolHiddenFromModel(tool Tool) bool {
 
 func snapshotToolDefinition(def ToolDefinition) ToolDefinition {
 	def.Name = strings.TrimSpace(def.Name)
-	def.InputSchema = cloneToolDefinitionMap(def.InputSchema)
+	def.InputSchema = normalizeToolInputSchema(cloneToolDefinitionMap(def.InputSchema))
 	def.OutputSchema = cloneToolDefinitionMap(def.OutputSchema)
 	return def
+}
+
+func normalizeToolInputSchema(schema map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	normalizeToolJSONSchemaMap(schema, true)
+	return schema
+}
+
+func normalizeToolJSONSchemaMap(schema map[string]any, root bool) {
+	if rawProperties, ok := schema["properties"]; ok {
+		if properties, ok := rawProperties.(map[string]any); ok {
+			for key, value := range properties {
+				properties[key] = normalizeToolJSONSchemaValue(value)
+			}
+		}
+	}
+	if rawItems, ok := schema["items"]; ok {
+		schema["items"] = normalizeToolJSONSchemaValue(rawItems)
+	}
+	if rawItems, ok := schema["prefixItems"]; ok {
+		schema["prefixItems"] = normalizeToolJSONSchemaValue(rawItems)
+	}
+	if rawAdditional, ok := schema["additionalProperties"]; ok {
+		if nested, ok := rawAdditional.(map[string]any); ok {
+			normalizeToolJSONSchemaMap(nested, false)
+		}
+	}
+	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+		if raw, ok := schema[key]; ok {
+			schema[key] = normalizeToolJSONSchemaValue(raw)
+		}
+	}
+	for _, key := range []string{"$defs", "definitions"} {
+		if raw, ok := schema[key]; ok {
+			if definitions, ok := raw.(map[string]any); ok {
+				for name, value := range definitions {
+					definitions[name] = normalizeToolJSONSchemaValue(value)
+				}
+			}
+		}
+	}
+	if rawConst, ok := schema["const"]; ok {
+		delete(schema, "const")
+		schema["enum"] = []any{rawConst}
+	}
+	if _, ok := schema["type"]; !ok {
+		if inferred, ok := inferToolSchemaType(schema, root); ok {
+			schema["type"] = inferred
+		}
+	}
+	if toolSchemaHasType(schema, "object") || (schema["type"] == nil && toolSchemaInfersObject(schema)) {
+		if raw, ok := schema["properties"]; !ok || raw == nil {
+			schema["properties"] = map[string]any{}
+		}
+	}
+	if toolSchemaHasType(schema, "array") {
+		if raw, ok := schema["items"]; !ok || raw == nil {
+			schema["items"] = map[string]any{"type": "string"}
+		}
+	}
+}
+
+func normalizeToolJSONSchemaValue(raw any) any {
+	switch typed := raw.(type) {
+	case bool:
+		return map[string]any{"type": "string"}
+	case map[string]any:
+		normalizeToolJSONSchemaMap(typed, false)
+		return typed
+	case []any:
+		for i, item := range typed {
+			typed[i] = normalizeToolJSONSchemaValue(item)
+		}
+		return typed
+	default:
+		return raw
+	}
+}
+
+func inferToolSchemaType(schema map[string]any, root bool) (string, bool) {
+	if toolSchemaInfersObject(schema) {
+		return "object", true
+	}
+	for _, key := range []string{"items", "prefixItems"} {
+		if _, ok := schema[key]; ok {
+			return "array", true
+		}
+	}
+	for _, key := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"} {
+		if _, ok := schema[key]; ok {
+			return "number", true
+		}
+	}
+	for _, key := range []string{"enum", "format"} {
+		if _, ok := schema[key]; ok {
+			return "string", true
+		}
+	}
+	if !root {
+		return "string", true
+	}
+	return "", false
+}
+
+func toolSchemaHasType(schema map[string]any, name string) bool {
+	rawType, ok := schema["type"]
+	if !ok {
+		return false
+	}
+	target := strings.TrimSpace(strings.ToLower(name))
+	switch typed := rawType.(type) {
+	case string:
+		return strings.TrimSpace(strings.ToLower(typed)) == target
+	case []string:
+		for _, item := range typed {
+			if strings.TrimSpace(strings.ToLower(item)) == target {
+				return true
+			}
+		}
+	case []any:
+		for _, raw := range typed {
+			item, ok := raw.(string)
+			if ok && strings.TrimSpace(strings.ToLower(item)) == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toolSchemaInfersObject(schema map[string]any) bool {
+	for _, key := range []string{"properties", "required", "additionalProperties"} {
+		if _, ok := schema[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneToolDefinitionMap(src map[string]any) map[string]any {

@@ -122,8 +122,20 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 		},
 		output: "invalid output",
 	}
+	invalidNestedSchema := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "invalid_nested_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": "not a schema object",
+				},
+			},
+		},
+		output: "invalid nested output",
+	}
 
-	registry := NewToolRegistry(nilTool, first, second, blank, invalidSchema)
+	registry := NewToolRegistry(nilTool, first, second, blank, invalidSchema, invalidNestedSchema)
 	defs := registry.Definitions()
 	if len(defs) != 1 {
 		t.Fatalf("expected only first valid unique tool definition, got %#v", defs)
@@ -141,6 +153,86 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 	}
 	if _, err := registry.ExecuteDetailed(context.Background(), "invalid_schema", `{}`); err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Fatalf("invalid schema tool should not be registered, got %v", err)
+	}
+	if _, err := registry.ExecuteDetailed(context.Background(), "invalid_nested_schema", `{}`); err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("invalid nested schema tool should not be registered, got %v", err)
+	}
+}
+
+func TestToolRegistryNormalizesObjectSchemasBeforeExposure(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "missing_properties",
+			InputSchema: map[string]any{
+				"type": "object",
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected normalized schema to remain visible, got %#v", defs)
+	}
+	properties, ok := defs[0].InputSchema["properties"].(map[string]any)
+	if !ok || len(properties) != 0 {
+		t.Fatalf("expected missing object properties to normalize to an empty object, got %#v", defs[0].InputSchema)
+	}
+	result, err := registry.ExecuteDetailed(context.Background(), "missing_properties", `{}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if result.DisplayText != "ok" {
+		t.Fatalf("expected normalized tool to remain dispatchable, got %q", result.DisplayText)
+	}
+}
+
+func TestToolRegistryInfersAndSanitizesNestedSchemasBeforeExposure(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "inferred_object",
+			InputSchema: map[string]any{
+				"properties": map[string]any{
+					"query": map[string]any{
+						"description": "search query",
+					},
+					"tags": map[string]any{
+						"type": "array",
+					},
+					"mode": map[string]any{
+						"const": "fast",
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected inferred schema to remain visible, got %#v", defs)
+	}
+	if defs[0].InputSchema["type"] != "object" {
+		t.Fatalf("expected top-level properties to infer object type, got %#v", defs[0].InputSchema)
+	}
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	query := properties["query"].(map[string]any)
+	if query["type"] != "string" {
+		t.Fatalf("expected property without type to default to string, got %#v", query)
+	}
+	tags := properties["tags"].(map[string]any)
+	if _, ok := tags["items"].(map[string]any); !ok {
+		t.Fatalf("expected array property without items to receive default items, got %#v", tags)
+	}
+	mode := properties["mode"].(map[string]any)
+	enum, ok := mode["enum"].([]any)
+	if !ok || len(enum) != 1 || enum[0] != "fast" {
+		t.Fatalf("expected const to be rewritten as a single-value enum, got %#v", mode)
+	}
+	if _, ok := mode["const"]; ok {
+		t.Fatalf("expected const keyword to be removed after normalization, got %#v", mode)
 	}
 }
 
