@@ -351,18 +351,115 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("post-change review: %v", err)
 	}
-	if reviewed || needsRevision || feedback != "" || fingerprint != "" {
-		t.Fatalf("expected generated document artifact to skip post-change review, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"버그_검토_보고서.md"})
+	if !reviewed || needsRevision || feedback != "" || fingerprint != expectedFingerprint {
+		t.Fatalf("expected generated document artifact to consume deterministic quality gate, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
 	}
 	if len(client.requests) != 0 {
 		t.Fatalf("expected no review model call for generated report artifact, got %d", len(client.requests))
+	}
+	reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[0].Text, fingerprint)
+	if err != nil {
+		t.Fatalf("repeat generated document post-change skip: %v", err)
+	}
+	if reviewedAgain || needsAgain || feedbackAgain != "" || fingerprintAgain != expectedFingerprint {
+		t.Fatalf("expected deterministic generated document gate to stay consumed, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain)
 	}
 	joinedProgress := strings.Join(progress, "\n")
 	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") {
 		t.Fatalf("expected Korean skip progress, got %#v", progress)
 	}
+	if strings.Count(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") != 1 {
+		t.Fatalf("expected generated document skip progress to be emitted once, got %#v", progress)
+	}
 	if strings.Contains(joinedProgress, "Automatic post-change review") {
 		t.Fatalf("expected progress not to leak English post-change review text, got %#v", progress)
+	}
+}
+
+func TestPostChangeReviewGeneratedDocumentArtifactFingerprintTracksContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "BugReport.md")
+	if err := os.WriteFile(path, []byte(strings.Join([]string{
+		"# Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: main.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("write generated report: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   request,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	client := &scriptedProviderClient{}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), request, "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if !reviewed || needsRevision || feedback != "" || fingerprint == "" {
+		t.Fatalf("expected initial generated artifact quality gate, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join([]string{
+		"# Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 2 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: main.cpp",
+		"- Impact: documented issue.",
+		"",
+		"## BUG-002",
+		"- File: worker.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("rewrite generated report: %v", err)
+	}
+
+	reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, err := agent.maybeRunPostChangeReview(context.Background(), request, fingerprint)
+	if err != nil {
+		t.Fatalf("post-change review after artifact content change: %v", err)
+	}
+	if !reviewedAgain || needsAgain || feedbackAgain != "" || fingerprintAgain == "" || fingerprintAgain == fingerprint {
+		t.Fatalf("expected changed artifact content to rerun deterministic quality gate, reviewed=%t needs=%t feedback=%q fingerprint=%q old=%q", reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, fingerprint)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model calls for document artifact quality gate, got %d", len(client.requests))
 	}
 }
 
@@ -442,15 +539,26 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 	if err != nil {
 		t.Fatalf("post-change review: %v", err)
 	}
-	if reviewed || needsRevision || feedback != "" || fingerprint != "" {
-		t.Fatalf("expected generated document artifact to skip post-change review from acceptance contract, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"Tavern/BugReport.md"})
+	if !reviewed || needsRevision || feedback != "" || fingerprint != expectedFingerprint {
+		t.Fatalf("expected generated document artifact to consume deterministic quality gate from acceptance contract, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
 	}
 	if len(client.requests) != 0 {
 		t.Fatalf("expected no review model call for generated report artifact, got %d", len(client.requests))
 	}
+	reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[len(session.Messages)-1].Text, fingerprint)
+	if err != nil {
+		t.Fatalf("repeat generated document post-change skip: %v", err)
+	}
+	if reviewedAgain || needsAgain || feedbackAgain != "" || fingerprintAgain != expectedFingerprint {
+		t.Fatalf("expected deterministic generated document gate from acceptance contract to stay consumed, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain)
+	}
 	joinedProgress := strings.Join(progress, "\n")
 	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") {
 		t.Fatalf("expected Korean skip progress from original request, got %#v", progress)
+	}
+	if strings.Count(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") != 1 {
+		t.Fatalf("expected generated document skip progress to be emitted once, got %#v", progress)
 	}
 	if strings.Contains(joinedProgress, "Automatic post-change review") {
 		t.Fatalf("expected progress not to leak English post-change review text, got %#v", progress)
@@ -509,7 +617,8 @@ func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t
 	if !strings.Contains(feedback, "Required artifact is missing") {
 		t.Fatalf("expected missing artifact blocker, got %q", feedback)
 	}
-	if fingerprint != "generated-document-artifact-quality" {
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"Tavern/BugReport.md"})
+	if fingerprint != expectedFingerprint {
 		t.Fatalf("expected stable deterministic fingerprint, got %q", fingerprint)
 	}
 	if len(client.requests) != 0 {
@@ -646,8 +755,9 @@ func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *
 	if err != nil {
 		t.Fatalf("post-change review: %v", err)
 	}
-	if reviewed || needsRevision || feedback != "" || fingerprint != "" {
-		t.Fatalf("expected active document artifact to skip post-change review, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{".kernforge/reviews/bug-analysis-report.md"})
+	if !reviewed || needsRevision || feedback != "" || fingerprint != expectedFingerprint {
+		t.Fatalf("expected active document artifact to consume deterministic quality gate, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
 	}
 	if len(client.requests) != 0 {
 		t.Fatalf("expected no review model call for active generated report artifact, got %d", len(client.requests))

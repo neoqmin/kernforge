@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
+
+const generatedDocumentArtifactQualityFingerprint = "generated-document-artifact-quality"
 
 func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, lastFingerprint string) (bool, bool, string, string, error) {
 	if a == nil || a.Session == nil {
@@ -29,16 +33,20 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		return false, false, "", "", nil
 	}
 	if skipRequest := postChangeGeneratedDocumentArtifactRequest(a.Session, request, changedPaths); skipRequest != "" {
+		artifactFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, changedPaths)
+		if strings.EqualFold(strings.TrimSpace(lastFingerprint), artifactFingerprint) && sessionHasDocumentArtifactContentAcceptedHarness(a.Session) {
+			return false, false, "", artifactFingerprint, nil
+		}
 		if needsRevision, feedback := a.validateGeneratedDocumentArtifactForPostChangeSkip(skipRequest); needsRevision {
 			if a.EmitProgress != nil {
 				a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Generated document artifact quality checks found blockers. Asking the model to revise the document artifact without starting code review.", "생성 문서 산출물 품질 검사에서 차단 항목을 발견했습니다. 코드 리뷰를 시작하지 않고 문서 산출물 수정을 요청합니다."))
 			}
-			return true, true, feedback, "generated-document-artifact-quality", nil
+			return true, true, feedback, artifactFingerprint, nil
 		}
 		if a.EmitProgress != nil {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Skipping automatic post-change review because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 자동 변경 후 리뷰를 건너뜁니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다."))
 		}
-		return false, false, "", "", nil
+		return true, false, "", artifactFingerprint, nil
 	}
 	if a.Session.LastReviewRun != nil &&
 		a.Session.LastReviewRun.AutoTriggered &&
@@ -94,6 +102,39 @@ func postChangeReviewRunStillMatchesSessionEvidence(run *ReviewRun, session *Ses
 		currentFailed = session.LastVerification.HasFailures()
 	}
 	return strings.EqualFold(runSummary, currentSummary) && runFailed == currentFailed
+}
+
+func generatedDocumentArtifactQualityFingerprintForPaths(root string, changedPaths []string) string {
+	parts := []string{generatedDocumentArtifactQualityFingerprint}
+	for _, path := range normalizeTaskStateList(changedPaths, 64) {
+		normalized := normalizeSessionRelativePath(path)
+		parts = append(parts, "path:"+normalized)
+		abs := path
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, filepath.FromSlash(normalized))
+		}
+		if strings.TrimSpace(root) != "" && !pathWithinRoot(root, abs) {
+			parts = append(parts, "outside-root")
+			continue
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			if os.IsNotExist(err) {
+				parts = append(parts, "missing")
+			} else {
+				parts = append(parts, "read-error")
+			}
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("size:%d", len(data)), string(data))
+	}
+	return generatedDocumentArtifactQualityFingerprint + ":" + computeReviewFingerprint(parts...)
+}
+
+func isGeneratedDocumentArtifactQualityFingerprint(fingerprint string) bool {
+	trimmed := strings.TrimSpace(fingerprint)
+	return strings.EqualFold(trimmed, generatedDocumentArtifactQualityFingerprint) ||
+		strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(generatedDocumentArtifactQualityFingerprint)+":")
 }
 
 func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) error {
@@ -853,6 +894,9 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 		return false, nil
 	}
 	*lastFingerprint = fingerprint
+	if isGeneratedDocumentArtifactQualityFingerprint(fingerprint) && !needsRevision {
+		return false, nil
+	}
 	if a.EmitProgress != nil {
 		if needsRevision {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review found blockers. Asking the model to revise...", "자동 변경 후 리뷰에서 차단 항목을 발견했습니다. 모델에 수정안을 다시 요청합니다..."))
