@@ -72,7 +72,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	}
 	ledger.ChangedPaths = runtimeGateChangedPathsForAction(root, session, action)
 	documentArtifactOnly := runtimeGateDocumentArtifactOnly(session, action, ledger.ChangedPaths)
-	if tx := latestRuntimeGatePatchTransaction(session); tx != nil {
+	if tx := runtimeGatePatchTransactionForAction(session, action); tx != nil {
 		ledger.PatchTransactionID = strings.TrimSpace(tx.ID)
 	}
 	if session != nil && session.LastVerification != nil {
@@ -267,9 +267,12 @@ func runtimeGateChangedPaths(root string, session *Session) []string {
 
 func runtimeGateChangedPathsForAction(root string, session *Session, action string) []string {
 	var paths []string
-	patchPaths := sessionPatchTransactionChangedPaths(session)
-	paths = append(paths, patchPaths...)
 	action = normalizeRuntimeGateAction(action)
+	patchPaths := currentTurnPatchTransactionChangedPaths(session)
+	if len(patchPaths) == 0 && runtimeGateActionMayUseArchivedPatchScope(action) {
+		patchPaths = sessionPatchTransactionChangedPaths(session)
+	}
+	paths = append(paths, patchPaths...)
 	includeGitChanged := true
 	if len(patchPaths) > 0 {
 		switch action {
@@ -278,11 +281,52 @@ func runtimeGateChangedPathsForAction(root string, session *Session, action stri
 		default:
 			includeGitChanged = false
 		}
+	} else if strings.EqualFold(action, runtimeGateActionFinalAnswer) {
+		includeGitChanged = runtimeGateFinalAnswerShouldUseGitChangedFallback(session)
 	}
 	if includeGitChanged && strings.TrimSpace(root) != "" && reviewScopeGitStatusLooksUsable(root) {
 		paths = append(paths, filterReviewablePaths(delegationChangedFiles(root))...)
 	}
 	return normalizeCompletionAuditReviewPaths(paths)
+}
+
+func runtimeGateFinalAnswerShouldUseGitChangedFallback(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
+	if generatedDocumentArtifactRequestContextForTurn(session, latestUser) != "" {
+		return false
+	}
+	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
+		return classifyTurnIntent(latestUser) == TurnIntentEditCode
+	}
+	if session.AcceptanceContract != nil {
+		contract := *session.AcceptanceContract
+		contract.Normalize()
+		if generatedDocumentArtifactRequestContextForTurn(session, contract.SourcePrompt) != "" {
+			return false
+		}
+		if strings.EqualFold(contract.Mode, "inspect_and_fix") {
+			return true
+		}
+		if classifyTurnIntent(contract.SourcePrompt) == TurnIntentEditCode {
+			return true
+		}
+	}
+	if session.TaskState != nil {
+		return classifyTurnIntent(session.TaskState.Goal) == TurnIntentEditCode
+	}
+	return false
+}
+
+func runtimeGateActionMayUseArchivedPatchScope(action string) bool {
+	switch normalizeRuntimeGateAction(action) {
+	case runtimeGateActionGitWrite, runtimeGateActionMCPWrite, runtimeGateActionReview, runtimeGateActionCompletionAudit:
+		return true
+	default:
+		return false
+	}
 }
 
 func runtimeGateReviewRun(root string, session *Session, provided *ReviewRun) (ReviewRun, bool) {
@@ -389,23 +433,24 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 	if changedPathsAreGeneratedDocumentArtifacts(session, "", ledger.ChangedPaths) {
 		return
 	}
+	if len(ledger.ChangedPaths) == 0 {
+		return
+	}
 	if session.LastVerification == nil {
-		if len(ledger.ChangedPaths) > 0 {
-			ledger.Warnings = append(ledger.Warnings, "changed files have no linked verification report")
-			ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
-				ID:             "verify",
-				Command:        "/verify --full",
-				Reason:         "changed files have no latest verification report",
-				Safety:         "safe_local",
-				When:           "before completion or git write",
-				ClientHint:     "Run verification, then repeat /review or /completion-audit.",
-				ExpectedResult: "A current verification report is linked into the runtime gate ledger.",
-			})
-		}
+		ledger.Warnings = append(ledger.Warnings, "changed files have no linked verification report")
+		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+			ID:             "verify",
+			Command:        "/verify --full",
+			Reason:         "changed files have no latest verification report",
+			Safety:         "safe_local",
+			When:           "before completion or git write",
+			ClientHint:     "Run verification, then repeat /review or /completion-audit.",
+			ExpectedResult: "A current verification report is linked into the runtime gate ledger.",
+		})
 		return
 	}
 	report := *session.LastVerification
-	if !verificationReportCoversCurrentPatch(session, report, time.Time{}, ledger.ChangedPaths) {
+	if !verificationReportCoversRuntimeGateScope(session, report, time.Time{}, ledger.ChangedPaths, ledger.PatchTransactionID) {
 		ledger.Warnings = append(ledger.Warnings, "latest verification predates or does not cover the current patch transaction")
 		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
 			ID:             "verify",
@@ -437,11 +482,18 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 }
 
 func verificationReportCoversCurrentPatch(session *Session, report VerificationReport, recordedAt time.Time, changedPaths []string) bool {
+	return verificationReportCoversPatchTime(report, recordedAt, changedPaths, runtimeGateLatestPatchChangeTime(session))
+}
+
+func verificationReportCoversRuntimeGateScope(session *Session, report VerificationReport, recordedAt time.Time, changedPaths []string, patchTransactionID string) bool {
+	return verificationReportCoversPatchTime(report, recordedAt, changedPaths, runtimeGatePatchChangeTimeByID(session, patchTransactionID))
+}
+
+func verificationReportCoversPatchTime(report VerificationReport, recordedAt time.Time, changedPaths []string, patchTime time.Time) bool {
 	changedPaths = normalizeTaskStateList(changedPaths, 64)
 	if len(changedPaths) > 0 && len(report.ChangedPaths) > 0 && !changedPathsCovered(changedPaths, report.ChangedPaths) {
 		return false
 	}
-	patchTime := runtimeGateLatestPatchChangeTime(session)
 	if patchTime.IsZero() {
 		return true
 	}
@@ -464,6 +516,32 @@ func runtimeGateLatestPatchChangeTime(session *Session) time.Time {
 	if tx == nil {
 		return time.Time{}
 	}
+	return runtimeGatePatchTransactionChangeTime(*tx)
+}
+
+func runtimeGatePatchChangeTimeByID(session *Session, id string) time.Time {
+	id = strings.TrimSpace(id)
+	if session == nil || id == "" {
+		return time.Time{}
+	}
+	if session.ActivePatchTransaction != nil {
+		tx := *session.ActivePatchTransaction
+		tx.Normalize()
+		if strings.TrimSpace(tx.ID) == id {
+			return runtimeGatePatchTransactionChangeTime(tx)
+		}
+	}
+	for _, candidate := range session.PatchTransactions {
+		tx := candidate
+		tx.Normalize()
+		if strings.TrimSpace(tx.ID) == id {
+			return runtimeGatePatchTransactionChangeTime(tx)
+		}
+	}
+	return time.Time{}
+}
+
+func runtimeGatePatchTransactionChangeTime(tx PatchTransaction) time.Time {
 	tx.Normalize()
 	for _, candidate := range []time.Time{tx.CompletedAt, tx.UpdatedAt, tx.StartedAt} {
 		if !candidate.IsZero() {
@@ -477,11 +555,21 @@ func runtimeGateVerificationPassed(session *Session) bool {
 	if session == nil || session.LastVerification == nil {
 		return false
 	}
-	if !verificationReportCoversCurrentPatch(session, *session.LastVerification, time.Time{}, sessionPatchTransactionChangedPaths(session)) {
+	if !verificationReportCoversCurrentPatch(session, *session.LastVerification, time.Time{}, currentTurnPatchTransactionChangedPaths(session)) {
 		return false
 	}
 	report := *session.LastVerification
 	return !report.HasFailures() && completionAuditVerificationHasPassedStep(report)
+}
+
+func runtimeGatePatchTransactionForAction(session *Session, action string) *PatchTransaction {
+	if tx := currentTurnPatchTransaction(session); tx != nil {
+		return tx
+	}
+	if runtimeGateActionMayUseArchivedPatchScope(action) {
+		return latestRuntimeGatePatchTransaction(session)
+	}
+	return nil
 }
 
 func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger) {

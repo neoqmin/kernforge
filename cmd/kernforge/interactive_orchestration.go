@@ -705,7 +705,7 @@ func (a *Agent) shouldReviewInteractiveFinalAnswer(reply string, attemptedEditTo
 	if a.Session.LastCodingHarnessReport != nil && !a.Session.LastCodingHarnessReport.Approved {
 		return true
 	}
-	if len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
+	if sessionHasCurrentTurnFinalGateEvidence(a.Session) {
 		return true
 	}
 	return false

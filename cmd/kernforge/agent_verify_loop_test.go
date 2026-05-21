@@ -11678,8 +11678,24 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("RuntimeManager.cpp 버그를 수정해", []ToolCall{{Name: "read_file", Arguments: `{"path":"RuntimeManager.cpp"}`}}) {
 		t.Fatalf("stale document artifact state should not block inspection tools for an unrelated new turn")
 	}
+	if agent.shouldReviewInteractiveFinalAnswer("RuntimeManager.cpp 수정 완료", true, false) {
+		t.Fatalf("stale document patch history should not trigger final-answer review for an unrelated new turn")
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-code",
+		Goal:   "RuntimeManager.cpp 버그를 수정해",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-code-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
 	if !agent.shouldReviewInteractiveFinalAnswer("RuntimeManager.cpp 수정 완료", true, false) {
-		t.Fatalf("unrelated code turn with historical patch evidence should remain eligible for final-answer review")
+		t.Fatalf("current-turn code patch evidence should remain eligible for final-answer review")
 	}
 }
 
@@ -11905,6 +11921,84 @@ func TestAgentRoutesGeneratedDocumentCommentaryReplyThroughArtifactHarness(t *te
 	}
 	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
 		t.Fatalf("expected final commentary document harness report to be approved, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
+func TestAgentDoesNotRouteUnrelatedCommentaryThroughFinalGatesFromStalePatchHistory(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "RuntimeManager.cpp 버그를 수정해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "RuntimeManager.cpp 수정 완료",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-code-old",
+		Goal:   "RuntimeManager.cpp 버그를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-code-old-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if agent.shouldRouteCommentaryReplyThroughFinalGates("현재 상태만 알려줘", "현재 상태를 확인했습니다.", false, false, false) {
+		t.Fatalf("stale archived patch history should not route a read-only commentary reply into final gates")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("현재 상태를 확인했습니다.", false, false) {
+		t.Fatalf("stale archived patch history should not trigger final-answer review for a read-only turn")
+	}
+	report := agent.buildDiffAwareSelfReviewReport("이번 턴에는 파일 변경이 없습니다.", false)
+	if len(report.ChangedPaths) != 0 || len(report.Findings) != 0 {
+		t.Fatalf("stale patch history should not affect current-turn diff review, got %#v", report)
+	}
+}
+
+func TestAgentRoutesCurrentPatchCommentaryThroughFinalGates(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-code",
+		Goal:   "RuntimeManager.cpp 버그를 수정해",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-code-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !agent.shouldRouteCommentaryReplyThroughFinalGates("RuntimeManager.cpp 버그를 수정해", "수정 완료", false, false, false) {
+		t.Fatalf("current-turn patch evidence should route commentary replies through final gates")
+	}
+	report := agent.buildDiffAwareSelfReviewReport("수정 완료", false)
+	if len(report.ChangedPaths) != 1 || report.ChangedPaths[0] != "cmd/kernforge/agent.go" {
+		t.Fatalf("expected current-turn changed path in diff review, got %#v", report.ChangedPaths)
 	}
 }
 

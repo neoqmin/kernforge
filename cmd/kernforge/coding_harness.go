@@ -1102,7 +1102,7 @@ func (a *Agent) buildAcceptanceContractReport(reply string) AcceptanceContractRe
 			})
 		}
 	}
-	if strings.EqualFold(contract.Mode, "analysis_only") && len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
+	if strings.EqualFold(contract.Mode, "analysis_only") && len(currentTurnPatchTransactionChangedPaths(a.Session)) > 0 {
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Analysis-only contract was modified",
@@ -1123,7 +1123,7 @@ func (a *Agent) buildAcceptanceContractReport(reply string) AcceptanceContractRe
 
 func (a *Agent) buildDiffAwareSelfReviewReport(reply string, attemptedEditTool bool) DiffAwareSelfReviewReport {
 	report := DiffAwareSelfReviewReport{}
-	changed := sessionPatchTransactionChangedPaths(a.Session)
+	changed := currentTurnPatchTransactionChangedPaths(a.Session)
 	report.ChangedPaths = changed
 	lowerReply := strings.ToLower(strings.TrimSpace(reply))
 	if len(changed) > 0 && replyClaimsNoFileChanges(lowerReply) {
@@ -1591,6 +1591,83 @@ func sessionPatchTransactionChangedPaths(sess *Session) []string {
 		return normalizeTaskStateList(sess.PatchTransactions[0].ChangedPaths(), 64)
 	}
 	return nil
+}
+
+func currentTurnPatchTransactionChangedPaths(sess *Session) []string {
+	tx := currentTurnPatchTransaction(sess)
+	if tx == nil {
+		return nil
+	}
+	paths := tx.ChangedPaths()
+	if len(paths) == 0 {
+		return nil
+	}
+	return normalizeTaskStateList(paths, 64)
+}
+
+func currentTurnPatchTransaction(sess *Session) *PatchTransaction {
+	if sess == nil {
+		return nil
+	}
+	if sess.ActivePatchTransaction != nil {
+		copyTx := *sess.ActivePatchTransaction
+		copyTx.Normalize()
+		if strings.TrimSpace(copyTx.ID) != "" {
+			return &copyTx
+		}
+	}
+	if len(sess.PatchTransactions) == 0 {
+		return nil
+	}
+	copyTx := sess.PatchTransactions[0]
+	copyTx.Normalize()
+	if strings.TrimSpace(copyTx.ID) == "" {
+		return nil
+	}
+	if !patchTransactionMatchesCurrentTurn(sess, copyTx) {
+		return nil
+	}
+	return &copyTx
+}
+
+func patchTransactionMatchesCurrentTurn(sess *Session, tx PatchTransaction) bool {
+	goal := normalizedPatchTransactionGoal(tx.Goal)
+	if goal == "" {
+		return false
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(sess.Messages)))
+	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
+		return normalizedPatchTransactionGoal(latestUser) == goal
+	}
+	candidates := make([]string, 0, 2)
+	if sess.AcceptanceContract != nil {
+		candidates = append(candidates, sess.AcceptanceContract.SourcePrompt)
+	}
+	if sess.TaskState != nil {
+		candidates = append(candidates, sess.TaskState.Goal)
+	}
+	for _, candidate := range candidates {
+		if normalizedPatchTransactionGoal(candidate) == goal {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedPatchTransactionGoal(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(baseUserQueryText(text))), " "))
+}
+
+func sessionHasCurrentTurnFinalGateEvidence(sess *Session) bool {
+	if len(currentTurnPatchTransactionChangedPaths(sess)) > 0 {
+		return true
+	}
+	if sess == nil || sess.ActiveEditLoop == nil {
+		return false
+	}
+	return len(sess.ActiveEditLoop.ChangedPaths) > 0 ||
+		len(sess.ActiveEditLoop.WorkerSummaries) > 0 ||
+		strings.TrimSpace(sess.ActiveEditLoop.VerificationSummary) != ""
 }
 
 func hasPendingVerificationCheck(sess *Session) bool {
