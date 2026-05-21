@@ -3583,7 +3583,18 @@ func assistantTextLooksLikeCompletionSummary(text string) bool {
 		"successfully generated",
 		"successfully saved",
 		"report has been",
+		"report is saved",
+		"report is complete",
+		"report is ready",
 		"document has been",
+		"document is saved",
+		"document is complete",
+		"document is ready",
+		"has been finalized",
+		"has been fully created",
+		"has been fully generated",
+		"has been fully completed",
+		"is now in final form",
 		"bug report has been",
 		"saved to ",
 		"created at ",
@@ -3609,6 +3620,36 @@ func assistantTextLooksLikeCompletionSummary(text string) bool {
 	} {
 		if strings.Contains(normalized, marker) {
 			return true
+		}
+	}
+	hasArtifactNoun := strings.Contains(normalized, "report") ||
+		strings.Contains(normalized, "document") ||
+		strings.Contains(normalized, "artifact") ||
+		strings.Contains(normalized, "file") ||
+		strings.Contains(normalized, "보고서") ||
+		strings.Contains(normalized, "문서") ||
+		strings.Contains(normalized, "산출물") ||
+		strings.Contains(normalized, "파일")
+	if hasArtifactNoun {
+		for _, marker := range []string{
+			"saved to ",
+			"saved in ",
+			"saved at ",
+			"is saved in ",
+			"is saved at ",
+			"created at ",
+			"created in ",
+			"generated at ",
+			"generated in ",
+			"written to ",
+			"wrote to ",
+			"저장되었습니다",
+			"작성되었습니다",
+			"생성되었습니다",
+		} {
+			if strings.Contains(normalized, marker) {
+				return true
+			}
 		}
 	}
 	return false

@@ -3110,6 +3110,77 @@ func TestAgentFinalizesFinalLookingReplyWhenProviderEndTurnFalse(t *testing.T) {
 	}
 }
 
+func TestAgentFinalizesSavedReportSummaryWhenProviderEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportContent := strings.Join([]string{
+		"# Tavern BugReport Report Status",
+		"",
+		"This Tavern BugReport report status document records the current saved report state.",
+		"It includes detailed bug findings, impact analysis, and suggested fixes for each bug.",
+		"BUG-001 documents a representative correctness issue with impact analysis and a fix recommendation.",
+		"BUG-002 documents a representative stability issue with impact analysis and a fix recommendation.",
+		"BUG-003 documents a representative resource issue with impact analysis and a fix recommendation.",
+		strings.Repeat("The report status remains substantive and ready for final review. ", 20),
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	endTurnFalse := false
+	finalReply := "The full report with detailed descriptions, impact analysis, and suggested fixes for each bug is saved in `Tavern/BugReport.md`."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message:    Message{Role: "assistant", Text: finalReply},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "Tavern/BugReport.md report status")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected saved report summary to become final reply, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected saved report summary with end_turn=false to stop the turn, got %d requests", len(provider.requests))
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected saved report summary to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
+func TestAssistantTextLooksLikeCompletionSummaryForSavedReport(t *testing.T) {
+	text := "The full report with detailed descriptions, impact analysis, and suggested fixes for each bug is saved in `Tavern/BugReport.md`."
+	if !assistantTextLooksLikeCompletionSummary(text) {
+		t.Fatalf("expected saved report wording to be treated as a completion summary")
+	}
+}
+
+func TestAssistantTextLooksLikeCompletionSummaryDoesNotTreatReportMentionAsDone(t *testing.T) {
+	text := "I still need to inspect the full report before I can provide the final result."
+	if assistantTextLooksLikeCompletionSummary(text) {
+		t.Fatalf("expected an in-progress report mention to remain a follow-up response")
+	}
+}
+
 func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	root := t.TempDir()
 	provider := &turnStateObservingProviderClient{
