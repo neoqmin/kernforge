@@ -133,30 +133,37 @@ func buildSelectionContextPrompt(root string, selections []ViewerSelection) stri
 
 func LoadWorkspaceSelections(root string) ([]ViewerSelection, error) {
 	path := filepath.Join(root, ".kernforge", "selections.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
+	unlock := lockFilePath(path)
+	defer unlock()
+	selections, _, err := loadWorkspaceSelectionsFile(path)
+	if err == nil {
+		return absolutizeWorkspaceSelections(root, selections), nil
 	}
-	var selections []ViewerSelection
-	if err := json.Unmarshal(data, &selections); err != nil {
-		return nil, err
+	if os.IsNotExist(err) {
+		return nil, nil
 	}
-	for i, sel := range selections {
-		if !filepath.IsAbs(sel.FilePath) {
-			selections[i].FilePath = filepath.Join(root, sel.FilePath)
-		}
+	primaryErr := err
+	backupPath := workspaceSelectionsBackupPath(path)
+	backupSelections, backupData, backupErr := loadWorkspaceSelectionsFile(backupPath)
+	if backupErr != nil {
+		return nil, primaryErr
 	}
-	return selections, nil
+	_ = atomicWriteFile(path, backupData, 0o644)
+	return absolutizeWorkspaceSelections(root, backupSelections), nil
 }
 
 func SyncWorkspaceSelections(root string, sessionSelections []ViewerSelection) error {
 	path := filepath.Join(root, ".kernforge", "selections.json")
+	unlock := lockFilePath(path)
+	defer unlock()
 	var existing []ViewerSelection
-	if data, err := os.ReadFile(path); err == nil {
-		json.Unmarshal(data, &existing)
+	if loaded, _, err := loadWorkspaceSelectionsFile(path); err == nil {
+		existing = loaded
+	} else if !os.IsNotExist(err) {
+		if loaded, data, backupErr := loadWorkspaceSelectionsFile(workspaceSelectionsBackupPath(path)); backupErr == nil {
+			existing = loaded
+			_ = atomicWriteFile(path, data, 0o644)
+		}
 	}
 
 	merged := make(map[string]ViewerSelection)
@@ -186,7 +193,8 @@ func SyncWorkspaceSelections(root string, sessionSelections []ViewerSelection) e
 	}
 
 	if len(final) == 0 {
-		os.Remove(path)
+		_ = os.Remove(path)
+		_ = os.Remove(workspaceSelectionsBackupPath(path))
 		return nil
 	}
 
@@ -204,5 +212,38 @@ func SyncWorkspaceSelections(root string, sessionSelections []ViewerSelection) e
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0644)
+	if existingData, err := os.ReadFile(path); err == nil && json.Valid(existingData) {
+		_ = atomicWriteFile(workspaceSelectionsBackupPath(path), existingData, 0o644)
+	}
+	if err := atomicWriteFile(path, out, 0o644); err != nil {
+		return err
+	}
+	_ = atomicWriteFile(workspaceSelectionsBackupPath(path), out, 0o644)
+	return nil
+}
+
+func workspaceSelectionsBackupPath(path string) string {
+	return path + ".bak"
+}
+
+func loadWorkspaceSelectionsFile(path string) ([]ViewerSelection, []byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var selections []ViewerSelection
+	if err := json.Unmarshal(data, &selections); err != nil {
+		return nil, nil, err
+	}
+	return selections, data, nil
+}
+
+func absolutizeWorkspaceSelections(root string, selections []ViewerSelection) []ViewerSelection {
+	out := append([]ViewerSelection(nil), selections...)
+	for i, sel := range out {
+		if !filepath.IsAbs(sel.FilePath) {
+			out[i].FilePath = filepath.Join(root, sel.FilePath)
+		}
+	}
+	return out
 }
