@@ -10708,6 +10708,14 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 			&staticTool{name: "read_file", output: "read"},
 			&staticTool{name: "apply_patch", output: "patch"},
 			&staticTool{name: "mcp__web_research__search_web", output: "web"},
+			&mutableRegistryTool{
+				def: ToolDefinition{
+					Name:        "dispatch_only",
+					Description: "hidden dispatch-only tool",
+				},
+				output: "hidden",
+				hidden: true,
+			},
 		),
 	}
 
@@ -10715,7 +10723,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 	if !plan.SuppressInteractiveWorkers {
 		t.Fatalf("final-answer-only correction must suppress interactive workers")
 	}
-	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web"} {
+	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web", "dispatch_only"} {
 		if !plan.DisabledTools[name] {
 			t.Fatalf("final-answer-only correction must disable %s, got %#v", name, plan.DisabledTools)
 		}
@@ -10741,7 +10749,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 	if !plan.SuppressInteractiveWorkers {
 		t.Fatalf("out-of-scope verification final-only state must suppress interactive workers")
 	}
-	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web"} {
+	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web", "dispatch_only"} {
 		if !plan.DisabledTools[name] {
 			t.Fatalf("out-of-scope verification final-only state must disable %s, got %#v", name, plan.DisabledTools)
 		}

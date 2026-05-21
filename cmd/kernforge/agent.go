@@ -3315,11 +3315,7 @@ func disableAllTools(disabled map[string]bool, registry *ToolRegistry) {
 	if disabled == nil || registry == nil {
 		return
 	}
-	for _, def := range registry.Definitions() {
-		name := strings.TrimSpace(def.Name)
-		if name == "" {
-			continue
-		}
+	for _, name := range registry.ToolNames() {
 		disabled[name] = true
 	}
 }
