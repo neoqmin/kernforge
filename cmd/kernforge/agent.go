@@ -2611,6 +2611,9 @@ func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request 
 	}
 	artifactApproved := a.generatedDocumentArtifactQualityApproved()
 	artifactContentAccepted := a.generatedDocumentArtifactContentQualityAccepted()
+	if !artifactApproved && !artifactContentAccepted && a.Session.LastCodingHarnessReport == nil && generatedDocumentArtifactFinalizationOnlyToolCalls(calls) {
+		return true
+	}
 	for _, call := range calls {
 		if artifactApproved || artifactContentAccepted {
 			return true
