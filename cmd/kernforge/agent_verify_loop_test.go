@@ -10174,6 +10174,132 @@ func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 	}
 }
 
+func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "worker_target.txt"), []byte("AntiTamperGuard evidence is present here.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.TaskState = &TaskState{
+		Goal:                  request,
+		ExecutorFocusNode:     "plan-01",
+		ExecutorParallelNodes: []string{"plan-02"},
+	}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{ID: "plan-01", Title: "Finalize generated bug report", Kind: "report", Status: "in_progress", LastUpdated: time.Now()},
+			{ID: "plan-02", Title: "Inspect AntiTamperGuard evidence", Kind: "inspection", Status: "ready", LastUpdated: time.Now()},
+		},
+		LastUpdated: time.Now(),
+	}
+	session.TaskGraph.Normalize()
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   request,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{
+				Role: "assistant",
+				Text: "Tavern/BugReport.md 문서 산출물이 완료되었습니다. 빌드/테스트 검증은 실행하지 않았습니다.",
+			},
+			StopReason: "stop",
+		}},
+	}
+	ws := Workspace{BaseRoot: root, Root: root, Shell: "powershell"}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     buildRegistry(ws, nil),
+		Workspace: ws,
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("expected generated document final reply, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected exactly one model request, got %d", len(provider.requests))
+	}
+	node, ok := session.TaskGraph.Node("plan-02")
+	if !ok {
+		t.Fatalf("expected secondary node to remain in graph")
+	}
+	if node.ReadOnlyWorkerTool != "" || node.ReadOnlyWorkerSummary != "" {
+		t.Fatalf("expected generated-document finalization to suppress read-only worker, got %#v", node)
+	}
+	for _, event := range session.TaskState.Events {
+		if strings.Contains(event.Kind, "parallel_worker") {
+			t.Fatalf("expected no parallel worker events for generated-document finalization, got %#v", session.TaskState.Events)
+		}
+	}
+}
+
+func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarnessApproval(t *testing.T) {
+	root := t.TempDir()
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.TaskState = &TaskState{
+		Goal:                  request,
+		ExecutorParallelNodes: []string{"plan-02"},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   request,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !agent.shouldSuppressInteractiveWorkersForTurn(request) {
+		t.Fatalf("expected generated document write to suppress automatic interactive workers before harness approval")
+	}
+	if agent.shouldSuppressInteractiveWorkersForTurn("Tavern/BugReport.md 검증해") {
+		t.Fatalf("explicit local verification requests should remain allowed to run tools and workers")
+	}
+}
+
 func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
