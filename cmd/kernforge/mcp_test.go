@@ -164,6 +164,106 @@ func TestMCPHelperProcess(t *testing.T) {
 	}
 }
 
+func TestMCPInvalidToolHelperProcess(t *testing.T) {
+	if os.Getenv("KERNFORGE_MCP_INVALID_HELPER") != "1" {
+		return
+	}
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		msg, err := readRPCMessage(reader)
+		if err != nil {
+			os.Exit(0)
+		}
+		method, _ := msg["method"].(string)
+		switch method {
+		case "initialize":
+			_ = writeRPCMessage(os.Stdout, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities": map[string]any{
+						"tools":     map[string]any{},
+						"resources": map[string]any{},
+						"prompts":   map[string]any{},
+					},
+					"serverInfo": map[string]any{
+						"name":    "invalid",
+						"version": "1.0.0",
+					},
+				},
+			})
+		case "notifications/initialized":
+			continue
+		case "tools/list":
+			_ = writeRPCMessage(os.Stdout, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"tools": []map[string]any{
+						{
+							"name":        "search_web",
+							"description": "Search the web with a valid schema",
+							"inputSchema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"query": map[string]any{"type": "string"},
+								},
+							},
+						},
+						{
+							"name":        "bad_search",
+							"description": "Search web with an invalid schema",
+							"inputSchema": map[string]any{
+								"type": "string",
+							},
+						},
+					},
+				},
+			})
+		case "tools/call":
+			params, _ := msg["params"].(map[string]any)
+			name, _ := params["name"].(string)
+			args, _ := params["arguments"].(map[string]any)
+			query, _ := args["query"].(string)
+			_ = writeRPCMessage(os.Stdout, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"content": []map[string]any{{
+						"type": "text",
+						"text": fmt.Sprintf("%s: %s", name, query),
+					}},
+				},
+			})
+		case "resources/list":
+			_ = writeRPCMessage(os.Stdout, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"resources": []map[string]any{},
+				},
+			})
+		case "prompts/list":
+			_ = writeRPCMessage(os.Stdout, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"prompts": []map[string]any{},
+				},
+			})
+		default:
+			_ = writeRPCMessage(os.Stdout, map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"error": map[string]any{
+					"message": "unsupported method",
+				},
+			})
+		}
+	}
+}
+
 func TestMCPWebResearchHelperProcess(t *testing.T) {
 	if os.Getenv("KERNFORGE_MCP_WEB_HELPER") != "1" {
 		return
@@ -452,6 +552,55 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	prompts := manager.Prompts()
 	if len(prompts) != 1 || prompts[0].Prompt.Name != "summarize" {
 		t.Fatalf("unexpected prompts: %#v", prompts)
+	}
+}
+
+func TestLoadMCPManagerSkipsInvalidToolSpecsBeforeRegistration(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:         "invalid",
+		Command:      os.Args[0],
+		Args:         []string{"-test.run=TestMCPInvalidToolHelperProcess"},
+		Capabilities: []string{"web_search"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_INVALID_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 1 {
+		t.Fatalf("expected one invalid tool warning, got %v", warnings)
+	}
+	if !strings.Contains(warnings[0], "skipped tool bad_search") {
+		t.Fatalf("expected invalid tool warning to name bad_search, got %q", warnings[0])
+	}
+
+	statuses := manager.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	if statuses[0].ToolCount != 1 {
+		t.Fatalf("expected only the valid remote tool in status, got %d", statuses[0].ToolCount)
+	}
+
+	tools := manager.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected only the valid MCP tool to be registered, got %d", len(tools))
+	}
+	def := tools[0].Definition()
+	if def.Name != "mcp__invalid__search_web" {
+		t.Fatalf("expected valid tool definition, got %q", def.Name)
+	}
+	if len(NewToolRegistry(tools...).Definitions()) != 1 {
+		t.Fatalf("expected registry to expose exactly one valid MCP definition")
+	}
+
+	catalog := manager.WebResearchCatalogPrompt()
+	if !strings.Contains(catalog, "mcp__invalid__search_web") {
+		t.Fatalf("expected valid web tool in catalog, got %q", catalog)
+	}
+	if strings.Contains(catalog, "bad_search") || strings.Contains(catalog, "mcp__invalid__bad_search") {
+		t.Fatalf("invalid tool leaked into web research catalog: %q", catalog)
 	}
 }
 

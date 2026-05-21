@@ -337,9 +337,11 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		client.Close()
 		return nil, nil, err
 	}
+	warnings := []string{}
+	tools, toolWarnings := filterValidMCPToolDescriptors(cfg.Name, tools)
+	warnings = append(warnings, toolWarnings...)
 	client.tools = tools
 	client.status.ToolCount = len(tools)
-	warnings := []string{}
 	if resources, err := client.listResources(ctx); err == nil {
 		client.resources = resources
 		client.status.ResourceCount = len(resources)
@@ -695,6 +697,53 @@ func serverDeclaresWebResearchCapability(cfg MCPServerConfig) bool {
 
 func namespacedMCPToolName(server, tool string) string {
 	return "mcp__" + sanitizeMCPName(server) + "__" + sanitizeMCPName(tool)
+}
+
+func filterValidMCPToolDescriptors(serverName string, tools []MCPToolDescriptor) ([]MCPToolDescriptor, []string) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	valid := make([]MCPToolDescriptor, 0, len(tools))
+	warnings := []string{}
+	for _, tool := range tools {
+		namespaced := namespacedMCPToolName(serverName, tool.Name)
+		description := mcpToolDescription(serverName, tool)
+		def := snapshotToolDefinition(mcpToolDefinition(namespaced, tool, description))
+		if !validToolDefinition(def) {
+			warnings = append(warnings, fmt.Sprintf(
+				"mcp server %s skipped tool %s: invalid tool definition",
+				strings.TrimSpace(serverName),
+				strings.TrimSpace(tool.Name),
+			))
+			continue
+		}
+		tool.InputSchema = def.InputSchema
+		tool.OutputSchema = def.OutputSchema
+		valid = append(valid, tool)
+	}
+	return valid, warnings
+}
+
+func mcpToolDescription(serverName string, tool MCPToolDescriptor) string {
+	description := fmt.Sprintf("[MCP:%s] %s", serverName, strings.TrimSpace(tool.Description))
+	description = strings.TrimSpace(description)
+	if description == "" || description == fmt.Sprintf("[MCP:%s]", serverName) {
+		description = fmt.Sprintf("[MCP:%s] %s", serverName, strings.TrimSpace(tool.Name))
+	}
+	return description
+}
+
+func mcpToolDefinition(namespaced string, remote MCPToolDescriptor, description string) ToolDefinition {
+	schema := remote.InputSchema
+	if len(schema) == 0 {
+		schema = emptyObjectSchema()
+	}
+	return ToolDefinition{
+		Name:         namespaced,
+		Description:  strings.TrimSpace(description),
+		InputSchema:  schema,
+		OutputSchema: remote.OutputSchema,
+	}
 }
 
 func looksLikeWebResearchMCPText(values ...string) bool {
@@ -1643,20 +1692,11 @@ func (c *MCPClient) Close() error {
 }
 
 func (t MCPTool) Definition() ToolDefinition {
-	schema := t.remote.InputSchema
-	if len(schema) == 0 {
-		schema = emptyObjectSchema()
-	}
 	description := strings.TrimSpace(t.description)
 	if description == "" {
-		description = fmt.Sprintf("[MCP:%s] %s", t.client.config.Name, t.remote.Name)
+		description = mcpToolDescription(t.client.config.Name, t.remote)
 	}
-	return ToolDefinition{
-		Name:         t.namespaced,
-		Description:  description,
-		InputSchema:  schema,
-		OutputSchema: t.remote.OutputSchema,
-	}
+	return mcpToolDefinition(t.namespaced, t.remote, description)
 }
 
 func (t MCPTool) Execute(ctx context.Context, input any) (string, error) {
