@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +101,95 @@ func TestBuildSelectionContextPromptIncludesNotesAndTags(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "@provider.go:10-12") {
 		t.Fatalf("expected second selection reference, got %q", prompt)
+	}
+}
+
+func TestLoadWorkspaceSelectionsRecoversCorruptPrimaryFromBackup(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".kernforge")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(dir, "selections.json")
+	backup := workspaceSelectionsBackupPath(path)
+	backupData := []byte(`[{"file_path":"main.go","start_line":2,"end_line":4,"note":"keep"}]`)
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatalf("write corrupt primary: %v", err)
+	}
+	if err := os.WriteFile(backup, backupData, 0o644); err != nil {
+		t.Fatalf("write backup: %v", err)
+	}
+
+	selections, err := LoadWorkspaceSelections(root)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceSelections: %v", err)
+	}
+	if len(selections) != 1 {
+		t.Fatalf("expected one recovered selection, got %#v", selections)
+	}
+	if selections[0].FilePath != filepath.Join(root, "main.go") {
+		t.Fatalf("expected absolute recovered file path, got %q", selections[0].FilePath)
+	}
+	restored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read restored primary: %v", err)
+	}
+	if !json.Valid(restored) {
+		t.Fatalf("expected restored primary to be valid JSON: %q", restored)
+	}
+}
+
+func TestSyncWorkspaceSelectionsUsesBackupWhenPrimaryIsCorrupt(t *testing.T) {
+	root := t.TempDir()
+	first := ViewerSelection{
+		FilePath:  filepath.Join(root, "first.go"),
+		StartLine: 1,
+		EndLine:   3,
+		Note:      "first",
+	}
+	if err := SyncWorkspaceSelections(root, []ViewerSelection{first}); err != nil {
+		t.Fatalf("initial SyncWorkspaceSelections: %v", err)
+	}
+
+	path := filepath.Join(root, ".kernforge", "selections.json")
+	backup := workspaceSelectionsBackupPath(path)
+	if data, err := os.ReadFile(backup); err != nil {
+		t.Fatalf("expected backup after sync: %v", err)
+	} else if !json.Valid(data) {
+		t.Fatalf("expected valid backup JSON")
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatalf("corrupt primary: %v", err)
+	}
+
+	second := ViewerSelection{
+		FilePath:  filepath.Join(root, "second.go"),
+		StartLine: 4,
+		EndLine:   5,
+		Note:      "second",
+	}
+	if err := SyncWorkspaceSelections(root, []ViewerSelection{second}); err != nil {
+		t.Fatalf("recovering SyncWorkspaceSelections: %v", err)
+	}
+	selections, err := LoadWorkspaceSelections(root)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceSelections: %v", err)
+	}
+	if len(selections) != 2 {
+		t.Fatalf("expected recovered first selection plus new second selection, got %#v", selections)
+	}
+	var foundFirst bool
+	var foundSecond bool
+	for _, selection := range selections {
+		if selection.FilePath == filepath.Join(root, "first.go") && selection.Note == "first" {
+			foundFirst = true
+		}
+		if selection.FilePath == filepath.Join(root, "second.go") && selection.Note == "second" {
+			foundSecond = true
+		}
+	}
+	if !foundFirst || !foundSecond {
+		t.Fatalf("expected both recovered and new selections, got %#v", selections)
 	}
 }
 
