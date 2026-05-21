@@ -551,6 +551,71 @@ func TestAgentAddsAllToolPlaceholdersBeforeNextModelTurn(t *testing.T) {
 	}
 }
 
+func TestAgentInjectsBudgetLimitGoalContextAfterToolAccounting(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{ID: "call-grep", Name: "grep", Arguments: `{"pattern":"needle"}`},
+			),
+			{Message: Message{Role: "assistant", Text: "Budget reached; useful progress is summarized."}},
+		},
+	}
+	session := NewSession(root, "openai-codex", "gpt-5.2", "", "default")
+	goal := GoalState{
+		ID:          "goal-budget-steer",
+		Objective:   "keep improving the benchmark",
+		Status:      goalStatusActive,
+		TokenBudget: 1,
+		CreatedAt:   time.Now().Add(-2 * time.Second),
+		UpdatedAt:   time.Now().Add(-2 * time.Second),
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	grepTool := &staticTool{name: "grep", output: "needle found"}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(grepTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), strings.Repeat("budget ", 64))
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Budget reached") {
+		t.Fatalf("expected final budget summary, got %q", reply)
+	}
+	if grepTool.calls != 1 {
+		t.Fatalf("expected grep to run once, got %d", grepTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected follow-up request after tool accounting, got %d", len(provider.requests))
+	}
+	for _, needle := range []string{
+		"<goal_context>",
+		"budget_limited",
+		"Wrap up this turn soon",
+		"keep improving the benchmark",
+	} {
+		if !scriptedRequestsContainText(provider.requests[1:], needle) {
+			t.Fatalf("follow-up request missing budget steering text %q", needle)
+		}
+	}
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.Status != goalStatusBudgetLimited {
+		t.Fatalf("expected goal to be budget-limited, got %#v", active)
+	}
+}
+
 func TestAgentHidesOriginalViewImageDetailForUnsupportedCodexModel(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
