@@ -1313,7 +1313,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				} else {
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 				}
-				if a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
+				if !a.shouldSkipInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(latestUser, unresolvedVerification) &&
+					a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
 					finalAnswerReviewRevisions < 2 &&
 					!strings.EqualFold(strings.TrimSpace(reply), strings.TrimSpace(lastReviewedFinalAnswer)) {
 					approved, reviewText := a.reviewInteractiveFinalAnswer(ctx, reply, unresolvedVerification)
@@ -2368,6 +2369,40 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	}
 	report := a.Session.LastCodingHarnessReport
 	return report != nil && report.Approved
+}
+
+func (a *Agent) shouldSkipInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(request string, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if requestLooksLikeLocalVerificationWork(strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))) {
+		return false
+	}
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return false
+	}
+	if a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() && !a.Session.LastVerification.WasSkipped() {
+		return false
+	}
+	if unresolvedVerification && (a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped()) {
+		return false
+	}
+	report := a.Session.LastCodingHarnessReport
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) {
+		return false
+	}
+	if copyReport.Approved {
+		return true
+	}
+	return len(copyReport.ArtifactQuality.Artifacts) > 0 &&
+		generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.Acceptance.Findings) &&
+		generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.DiffReview.Findings) &&
+		generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.Outcome.Findings)
 }
 
 func (a *Agent) shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(request string) bool {
@@ -5494,9 +5529,6 @@ func shouldBlockUnconfirmedDocumentReadToolCalls(calls []ToolCall, session *Sess
 		if documentPathConfirmedBySession(session, targetPath) {
 			continue
 		}
-		if sessionHasListFilesConfirmationForParent(session, parentPath) || toolCallsIncludeListFilesConfirmation(calls, parentPath) {
-			continue
-		}
 		return true, targetPath, parentPath
 	}
 	return false, "", ""
@@ -6129,6 +6161,24 @@ func documentPathConfirmedBySession(session *Session, targetPath string) bool {
 					return true
 				}
 			}
+		case "list_files":
+			if listFilesOutputConfirmsPath(msg.Text, normalizedTarget) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func listFilesOutputConfirmsPath(output string, targetPath string) bool {
+	normalizedTarget := strings.TrimSuffix(normalizeSessionRelativePath(targetPath), "/")
+	if normalizedTarget == "" || normalizedTarget == "." {
+		return false
+	}
+	for _, line := range strings.Split(output, "\n") {
+		normalizedLine := strings.TrimSuffix(normalizeSessionRelativePath(line), "/")
+		if strings.EqualFold(normalizedLine, normalizedTarget) {
+			return true
 		}
 	}
 	return false
