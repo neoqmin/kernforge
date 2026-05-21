@@ -501,9 +501,13 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewGitStatusTool(ws),
 		NewGitDiffTool(ws),
 		NewUpdatePlanTool(ws),
-		NewGetGoalTool(ws),
-		NewCreateGoalTool(ws),
-		NewUpdateGoalTool(ws),
+	}
+	if goalToolsAvailable(ws) {
+		items = append(items,
+			NewGetGoalTool(ws),
+			NewCreateGoalTool(ws),
+			NewUpdateGoalTool(ws),
+		)
 	}
 	if mcp != nil {
 		items = append(items, mcp.Tools()...)

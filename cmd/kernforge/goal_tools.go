@@ -19,6 +19,10 @@ func NewGetGoalTool(ws Workspace) GetGoalTool       { return GetGoalTool{ws: ws}
 func NewCreateGoalTool(ws Workspace) CreateGoalTool { return CreateGoalTool{ws: ws} }
 func NewUpdateGoalTool(ws Workspace) UpdateGoalTool { return UpdateGoalTool{ws: ws} }
 
+func goalToolsAvailable(ws Workspace) bool {
+	return ws.GoalSession != nil && ws.GoalStore != nil
+}
+
 type goalToolThreadGoal struct {
 	ThreadID        string `json:"threadId"`
 	Objective       string `json:"objective"`
