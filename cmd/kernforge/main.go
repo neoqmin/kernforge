@@ -69,6 +69,7 @@ type runtimeState struct {
 	goalReply                  func(context.Context, string) (string, error)
 	interactive                bool
 	strictConfig               bool
+	configProfile              string
 	outputMu                   sync.Mutex
 	footerVisible              bool
 	footerLineCount            int
@@ -135,6 +136,7 @@ func run(args []string) error {
 		cwdFlag           string
 		providerFlag      string
 		profileFlag       string
+		profileShortFlag  string
 		modelFlag         string
 		baseURLFlag       string
 		imageFlag         string
@@ -162,7 +164,8 @@ func run(args []string) error {
 
 	fs.StringVar(&cwdFlag, "cwd", "", "working directory")
 	fs.StringVar(&providerFlag, "provider", "", "model provider")
-	fs.StringVar(&profileFlag, "profile", "", "saved provider/model profile name")
+	fs.StringVar(&profileFlag, "profile", "", "named user config profile")
+	fs.StringVar(&profileShortFlag, "p", "", "shorthand for -profile")
 	fs.StringVar(&modelFlag, "model", "", "model name")
 	fs.StringVar(&baseURLFlag, "base-url", "", "provider base URL")
 	fs.StringVar(&imageFlag, "image", "", "comma-separated image paths for -prompt mode")
@@ -213,19 +216,15 @@ func run(args []string) error {
 	}
 
 	strictConfig := strictConfigFlag || strictConfigEnvEnabled()
-	cfg, err := LoadConfigWithOptions(cwd, ConfigLoadOptions{StrictConfig: strictConfig})
+	profileFlag = firstNonBlankString(profileFlag, profileShortFlag)
+	cfg, err := LoadConfigWithOptions(cwd, ConfigLoadOptions{StrictConfig: strictConfig, Profile: profileFlag})
 	if err != nil {
 		return err
 	}
 	// Detect and rewrite values that match the previous KernForge hard-coded
 	// defaults (max_tool_iterations: 16, max_tokens: 4096). The notices are
 	// printed once rt.writer is available below.
-	legacyMigrations := MigrateLegacyConfigDefaults(cwd, &cfg)
-	if strings.TrimSpace(profileFlag) != "" {
-		if err := applyNamedConfigProfile(&cfg, profileFlag); err != nil {
-			return err
-		}
-	}
+	legacyMigrations := MigrateLegacyConfigDefaultsWithProfile(cwd, profileFlag, &cfg)
 	loadedProvider := normalizeProviderName(cfg.Provider)
 	if providerFlag != "" {
 		cfg.Provider = providerFlag
@@ -350,6 +349,7 @@ func run(args []string) error {
 		verifyHistory:  NewVerificationHistoryStore(),
 		modelRoutes:    defaultModelRouteScheduler(),
 		strictConfig:   strictConfig,
+		configProfile:  profileFlag,
 		interactive:    runtimeShouldUseInteractiveLoop(promptFlag, commandFlag, goalFlag, goalFileFlag),
 	}
 	defer rt.closeExtensions()
@@ -9284,6 +9284,7 @@ func (rt *runtimeState) closeExtensions() {
 func (rt *runtimeState) reloadRuntimeConfig() error {
 	loaded, err := LoadConfigWithOptions(rt.workspace.BaseRoot, ConfigLoadOptions{
 		StrictConfig: rt.strictConfig,
+		Profile:      rt.configProfile,
 	})
 	if err != nil {
 		return err
@@ -9291,7 +9292,7 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	// Run the same legacy-defaults migration as startup. /reload after a
 	// fresh KernForge upgrade is one of the few times we get a second chance
 	// to catch lingering legacy values without the user manually editing.
-	if notices := MigrateLegacyConfigDefaults(rt.workspace.BaseRoot, &loaded); len(notices) > 0 {
+	if notices := MigrateLegacyConfigDefaultsWithProfile(rt.workspace.BaseRoot, rt.configProfile, &loaded); len(notices) > 0 {
 		rt.printLegacyConfigMigrationNotices(notices)
 	}
 	loaded.BypassHookTrust = configBypassHookTrust(rt.cfg)

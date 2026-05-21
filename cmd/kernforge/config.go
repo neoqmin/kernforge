@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 )
 
 const userConfigDirName = ".kernforge"
+const configProfileDocsURL = "https://developers.openai.com/codex/config-advanced#profiles"
 
 const (
 	defaultReadHintSpans    = 48
@@ -260,6 +260,7 @@ type Config struct {
 
 type ConfigLoadOptions struct {
 	StrictConfig bool
+	Profile      string
 }
 
 type Profile struct {
@@ -331,15 +332,29 @@ func LoadConfig(cwd string) (Config, error) {
 
 func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error) {
 	cfg := DefaultConfig(cwd)
-	for index, path := range configSearchPaths(cwd) {
-		source := configSourceUser
-		if index > 0 {
-			source = configSourceWorkspace
+	profileName, err := parseConfigLayerProfileName(options.Profile)
+	if err != nil {
+		return cfg, err
+	}
+	if err := mergeConfigFileForSourceWithOptions(&cfg, userConfigPath(), configSourceUser, options); err != nil {
+		return cfg, err
+	}
+	if profileName != "" {
+		if configProfileNameExists(cfg.Profiles, profileName) {
+			return cfg, fmt.Errorf("-profile %q cannot be used while %s contains a saved profile named %q; move those settings into %s or rename/remove the saved profile. See %s for the profile layering contract",
+				profileName,
+				userConfigPath(),
+				profileName,
+				userProfileConfigPath(profileName),
+				configProfileDocsURL,
+			)
 		}
-		if source == configSourceWorkspace && !configProjectTrusted(cfg, cwd) {
-			continue
+		if err := mergeConfigFileForSourceWithOptions(&cfg, userProfileConfigPath(profileName), configSourceUser, options); err != nil {
+			return cfg, err
 		}
-		if err := mergeConfigFileForSourceWithOptions(&cfg, path, source, options); err != nil {
+	}
+	if configProjectTrusted(cfg, cwd) {
+		if err := mergeConfigFileForSourceWithOptions(&cfg, workspaceConfigPath(cwd), configSourceWorkspace, options); err != nil {
 			return cfg, err
 		}
 	}
@@ -350,7 +365,19 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 	if err := normalizeConfigPermissionMode(&cfg); err != nil {
 		return cfg, err
 	}
-	if err := EnsureUserConfig(cfg); err != nil {
+	ensureCfg := cfg
+	if profileName != "" {
+		if _, err := os.Stat(userConfigPath()); os.IsNotExist(err) {
+			ensureCfg = DefaultConfig(cwd)
+			applyEnv(&ensureCfg)
+			normalizeConfigPaths(&ensureCfg)
+			applyReasoningEffortEnvOverride(&ensureCfg)
+			if err := normalizeConfigPermissionMode(&ensureCfg); err != nil {
+				return cfg, err
+			}
+		}
+	}
+	if err := EnsureUserConfig(ensureCfg); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
@@ -398,6 +425,10 @@ type LegacyDefaultMigration struct {
 // happened to pick those numbers intentionally is statistically rare, and
 // even if it happens they will see the INFO message and can re-pin them.
 func MigrateLegacyConfigDefaults(cwd string, cfg *Config) []LegacyDefaultMigration {
+	return MigrateLegacyConfigDefaultsWithProfile(cwd, "", cfg)
+}
+
+func MigrateLegacyConfigDefaultsWithProfile(cwd string, profile string, cfg *Config) []LegacyDefaultMigration {
 	if cfg == nil {
 		return nil
 	}
@@ -437,7 +468,7 @@ func MigrateLegacyConfigDefaults(cwd string, cfg *Config) []LegacyDefaultMigrati
 	// Persist the migration to every config file in the search path that
 	// still carries the legacy literal — otherwise the next merge would
 	// overwrite our in-memory fix and we'd repeat the notice forever.
-	for _, path := range configSearchPaths(cwd) {
+	for _, path := range configSearchPathsWithProfile(cwd, profile) {
 		_ = patchLegacyDefaultsInFile(path)
 	}
 	return notices
@@ -505,10 +536,19 @@ func patchLegacyDefaultsInFile(path string) error {
 }
 
 func configSearchPaths(cwd string) []string {
-	return []string{
+	return configSearchPathsWithProfile(cwd, "")
+}
+
+func configSearchPathsWithProfile(cwd string, profile string) []string {
+	profileName, _ := parseConfigLayerProfileName(profile)
+	paths := []string{
 		userConfigPath(),
-		workspaceConfigPath(cwd),
 	}
+	if profileName != "" {
+		paths = append(paths, userProfileConfigPath(profileName))
+	}
+	paths = append(paths, workspaceConfigPath(cwd))
+	return paths
 }
 
 func userConfigDir() string {
@@ -517,6 +557,38 @@ func userConfigDir() string {
 
 func userConfigPath() string {
 	return filepath.Join(userConfigDir(), "config.json")
+}
+
+func userProfileConfigPath(name string) string {
+	return filepath.Join(userConfigDir(), strings.TrimSpace(name)+".config.json")
+}
+
+func parseConfigLayerProfileName(value string) (string, error) {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		return "", nil
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+			continue
+		}
+		return "", fmt.Errorf("invalid -profile value %q; pass a plain name such as %q", value, "work")
+	}
+	return name, nil
+}
+
+func configProfileNameExists(profiles []Profile, name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, profile := range profiles {
+		if strings.EqualFold(strings.TrimSpace(profile.Name), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func workspaceConfigPath(cwd string) string {
@@ -1893,72 +1965,6 @@ func findActiveConfigProfile(cfg Config) (Profile, bool, bool) {
 		}
 	}
 	return Profile{}, false, false
-}
-
-func applyNamedConfigProfile(cfg *Config, selector string) error {
-	if cfg == nil {
-		return fmt.Errorf("cannot apply profile %q without a config", strings.TrimSpace(selector))
-	}
-	selector = strings.TrimSpace(selector)
-	if selector == "" {
-		return nil
-	}
-	profile, ok := findConfigProfileBySelector(*cfg, selector)
-	if !ok {
-		available := configProfileSelectorList(*cfg)
-		if available == "" {
-			return fmt.Errorf("profile %q not found (no saved profiles)", selector)
-		}
-		return fmt.Errorf("profile %q not found (saved profiles: %s)", selector, available)
-	}
-	profile = normalizeConfigProfile(profile)
-	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
-		return fmt.Errorf("profile %q is missing provider or model", selector)
-	}
-	cfg.Provider = strings.TrimSpace(profile.Provider)
-	cfg.Model = strings.TrimSpace(profile.Model)
-	cfg.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
-	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(profile.Provider, profile.ReasoningEffort)
-	if strings.TrimSpace(profile.APIKey) != "" {
-		cfg.APIKey = strings.TrimSpace(profile.APIKey)
-	}
-	cfg.ActiveProfileKey = configProfileKey(profile)
-	applyConfigProfileRoleModels(cfg, profile)
-	return nil
-}
-
-func findConfigProfileBySelector(cfg Config, selector string) (Profile, bool) {
-	selector = strings.TrimSpace(selector)
-	if selector == "" {
-		return Profile{}, false
-	}
-	for _, profile := range cfg.Profiles {
-		profile = normalizeConfigProfile(profile)
-		if strings.EqualFold(strings.TrimSpace(profile.Name), selector) {
-			return profile, true
-		}
-	}
-	for _, profile := range cfg.Profiles {
-		profile = normalizeConfigProfile(profile)
-		if strings.EqualFold(configProfileKey(profile), selector) {
-			return profile, true
-		}
-	}
-	return Profile{}, false
-}
-
-func configProfileSelectorList(cfg Config) string {
-	names := make([]string, 0, len(cfg.Profiles))
-	for _, profile := range cfg.Profiles {
-		profile = normalizeConfigProfile(profile)
-		name := strings.TrimSpace(profile.Name)
-		if name == "" {
-			continue
-		}
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
 }
 
 func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
