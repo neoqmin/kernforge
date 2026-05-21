@@ -26,6 +26,8 @@ const (
 
 	VerificationAdaptive VerificationMode = "adaptive"
 	VerificationFull     VerificationMode = "full"
+
+	defaultAdaptiveFullRegressionInterval = 5
 )
 
 type VerificationStep struct {
@@ -251,6 +253,8 @@ func buildVerificationPlan(root string, changed []string, mode VerificationMode)
 
 func buildVerificationPlanWithTuning(root string, changed []string, mode VerificationMode, tuning VerificationTuning) VerificationPlan {
 	steps := buildVerificationSteps(root, changed, mode)
+	var cadenceNote string
+	steps, cadenceNote = applyAdaptiveFullRegressionCadence(steps, mode, tuning)
 	securitySteps, securityNote := buildSecurityVerificationSteps(root, changed, mode)
 	if len(securitySteps) > 0 {
 		steps = append(securitySteps, steps...)
@@ -274,6 +278,7 @@ func buildVerificationPlanWithTuning(root string, changed []string, mode Verific
 	note = joinSentence(note, fuzzNote)
 	note = joinSentence(note, adversarialNote)
 	note = joinSentence(note, policyNote)
+	note = joinSentence(note, cadenceNote)
 	note = joinSentence(note, renderSecurityVerificationSummary(changed))
 	note = joinSentence(note, reorderNote)
 	if policyErr != nil {
@@ -284,6 +289,58 @@ func buildVerificationPlanWithTuning(root string, changed []string, mode Verific
 		ChangedPaths: append([]string(nil), changed...),
 		Steps:        steps,
 		PlannerNote:  note,
+	}
+}
+
+func applyAdaptiveFullRegressionCadence(steps []VerificationStep, mode VerificationMode, tuning VerificationTuning) ([]VerificationStep, string) {
+	if mode != VerificationAdaptive || len(steps) == 0 {
+		return steps, ""
+	}
+	if !hasTargetedVerificationStep(steps) {
+		return steps, ""
+	}
+	interval := defaultAdaptiveFullRegressionInterval
+	nextCycle := tuning.AdaptiveRuns + 1
+	if nextCycle <= 0 {
+		nextCycle = 1
+	}
+	if nextCycle%interval == 0 {
+		return steps, fmt.Sprintf("Full regression cadence: running workspace regression checks on adaptive cycle %d/%d.", nextCycle, interval)
+	}
+	filtered := make([]VerificationStep, 0, len(steps))
+	skipped := 0
+	for _, step := range steps {
+		if verificationStepIsWorkspaceRegression(step) {
+			skipped++
+			continue
+		}
+		filtered = append(filtered, step)
+	}
+	if skipped == 0 || len(filtered) == 0 {
+		return steps, ""
+	}
+	return filtered, fmt.Sprintf("Full regression cadence: skipped %d workspace regression check(s) until cycle %d; current adaptive cycle is %d/%d.", skipped, interval, nextCycle%interval, interval)
+}
+
+func verificationStepIsWorkspaceRegression(step VerificationStep) bool {
+	if !strings.EqualFold(strings.TrimSpace(step.Stage), "workspace") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(step.Scope), "workspace") {
+		return false
+	}
+	command := strings.ToLower(strings.TrimSpace(step.Command))
+	label := strings.ToLower(strings.TrimSpace(step.Label))
+	if command == "" {
+		command = label
+	}
+	switch {
+	case command == "go test ./..." || label == "go test ./...":
+		return true
+	case command == "go vet ./..." || label == "go vet ./...":
+		return true
+	default:
+		return false
 	}
 }
 

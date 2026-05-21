@@ -35,6 +35,52 @@ func TestBuildVerificationStepsForGoUsesChangedPackagesThenFullSuite(t *testing.
 	}
 }
 
+func TestBuildVerificationPlanWithTuningCadencesAdaptiveGoFullRegression(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	changed := []string{
+		filepath.Join(root, "cmd", "app", "main.go"),
+		filepath.Join(root, "internal", "auth", "service.go"),
+	}
+
+	plan := buildVerificationPlanWithTuning(root, changed, VerificationAdaptive, VerificationTuning{AdaptiveRuns: 0})
+	for _, step := range plan.Steps {
+		if step.Command == "go test ./..." || step.Command == "go vet ./..." {
+			t.Fatalf("adaptive cycle 1 should skip workspace regression step, got %#v", plan.Steps)
+		}
+	}
+	if len(plan.Steps) != 2 {
+		t.Fatalf("expected only targeted package checks on cycle 1, got %#v", plan.Steps)
+	}
+	if !strings.Contains(plan.PlannerNote, "skipped 2 workspace regression check") {
+		t.Fatalf("expected cadence note, got %q", plan.PlannerNote)
+	}
+
+	plan = buildVerificationPlanWithTuning(root, changed, VerificationAdaptive, VerificationTuning{AdaptiveRuns: 4})
+	if !verificationPlanContainsCommand(plan, "go test ./...") || !verificationPlanContainsCommand(plan, "go vet ./...") {
+		t.Fatalf("adaptive cycle 5 should include workspace regression checks, got %#v", plan.Steps)
+	}
+	if !strings.Contains(plan.PlannerNote, "running workspace regression checks") {
+		t.Fatalf("expected cycle-5 cadence note, got %q", plan.PlannerNote)
+	}
+
+	plan = buildVerificationPlanWithTuning(root, changed, VerificationFull, VerificationTuning{AdaptiveRuns: 0})
+	if !verificationPlanContainsCommand(plan, "go test ./...") || !verificationPlanContainsCommand(plan, "go vet ./...") {
+		t.Fatalf("explicit full verification should include workspace regression checks, got %#v", plan.Steps)
+	}
+}
+
+func verificationPlanContainsCommand(plan VerificationPlan, command string) bool {
+	for _, step := range plan.Steps {
+		if step.Command == command {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildVerificationStepsForNodeIncludesTypecheckLintAndTest(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"typecheck":"tsc -p .","lint":"eslint .","test":"vitest"}}`), 0o644); err != nil {
@@ -793,6 +839,7 @@ func TestBuildVerificationPlanWithTuningPrioritizesHistoricallyFlakyWorkspaceChe
 		t.Fatalf("write go.mod: %v", err)
 	}
 	tuning := VerificationTuning{
+		AdaptiveRuns: 4,
 		RunCounts: map[string]int{
 			"go test workspace": 2,
 			"go vet workspace":  5,
