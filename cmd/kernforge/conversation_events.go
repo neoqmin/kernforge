@@ -348,6 +348,11 @@ func (a *Agent) appendCodexStyleToolLifecycleBegin(call ToolCall) {
 		})
 	case toolCallIsPatchApplyLike(name):
 		entities["auto_approved"] = "true"
+		if strings.TrimSpace(entities["changed_paths"]) == "" {
+			if path := firstNonEmptyRuntimeString(entities["path"], entities["file"]); path != "" {
+				entities["changed_paths"] = path
+			}
+		}
 		a.Session.AppendConversationEvent(ConversationEvent{
 			Kind:          conversationEventKindPatchApplyBegin,
 			Severity:      conversationSeverityInfo,
@@ -468,7 +473,12 @@ func toolCallIsExecCommandLike(name string) bool {
 }
 
 func toolCallIsPatchApplyLike(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "apply_patch")
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "apply_patch", "apply_edit_proposal", "write_file", "replace_in_file":
+		return true
+	default:
+		return false
+	}
 }
 
 func toolCallIsMCPToolLike(name string) bool {
@@ -840,6 +850,7 @@ func toolArgumentEntities(raw string) map[string]string {
 		}
 	}
 	add("path", stringValue(args, "path"))
+	add("file", stringValue(args, "file"))
 	add("command", stringValue(args, "command"))
 	add("workdir", stringValue(args, "workdir"))
 	add("pattern", stringValue(args, "pattern"))

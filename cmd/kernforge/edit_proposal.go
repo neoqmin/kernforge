@@ -637,7 +637,7 @@ func editProposalToolMeta(proposal EditProposal, planned plannedEditProposal, ch
 	if path != "" {
 		paths = []string{path}
 	}
-	return map[string]any{
+	meta := map[string]any{
 		"path":                  path,
 		"changed_paths":         normalizeTaskStateList(paths, 8),
 		"changed_count":         len(paths),
@@ -646,6 +646,12 @@ func editProposalToolMeta(proposal EditProposal, planned plannedEditProposal, ch
 		"requires_verification": changed,
 		"effect":                "edit",
 	}
+	if changed && strings.TrimSpace(planned.DisplayPath) != "" {
+		if unifiedDiff := buildUnifiedDiff(planned.DisplayPath, planned.Before, planned.After); strings.TrimSpace(unifiedDiff) != "" {
+			meta["unified_diff"] = unifiedDiff
+		}
+	}
+	return meta
 }
 
 func editProposalReason(planned plannedEditProposal) string {

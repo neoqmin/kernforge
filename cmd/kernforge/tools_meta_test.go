@@ -801,6 +801,121 @@ func TestApplyPatchExecuteDetailedReturnsChangedPathsMeta(t *testing.T) {
 	}
 }
 
+func TestWriteFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewWriteFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "main.go",
+		"content": "package main\n\nfunc main() {}\n",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "path"); got != "main.go" {
+		t.Fatalf("expected display path metadata, got %#v", result.Meta)
+	}
+	unifiedDiff := toolMetaString(result.Meta, "unified_diff")
+	for _, want := range []string{
+		"diff --git a/main.go b/main.go",
+		"--- a/main.go",
+		"+++ b/main.go",
+		"+func main() {}",
+	} {
+		if !strings.Contains(unifiedDiff, want) {
+			t.Fatalf("expected unified diff to contain %q, got %q", want, unifiedDiff)
+		}
+	}
+}
+
+func TestReplaceInFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc oldName() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewReplaceInFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "main.go",
+		"search":  "oldName",
+		"replace": "newName",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "path"); got != "main.go" {
+		t.Fatalf("expected display path metadata, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "applied_replacements") != 1 {
+		t.Fatalf("expected replacement count metadata, got %#v", result.Meta)
+	}
+	unifiedDiff := toolMetaString(result.Meta, "unified_diff")
+	for _, want := range []string{
+		"diff --git a/main.go b/main.go",
+		"-func oldName() {}",
+		"+func newName() {}",
+	} {
+		if !strings.Contains(unifiedDiff, want) {
+			t.Fatalf("expected unified diff to contain %q, got %q", want, unifiedDiff)
+		}
+	}
+}
+
+func TestApplyEditProposalExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc oldName() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyEditProposalTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"file":         "main.go",
+		"operation":    "replace_in_file",
+		"exact_search": "oldName",
+		"replacement":  "newName",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "path"); got != "main.go" {
+		t.Fatalf("expected display path metadata, got %#v", result.Meta)
+	}
+	unifiedDiff := toolMetaString(result.Meta, "unified_diff")
+	for _, want := range []string{
+		"diff --git a/main.go b/main.go",
+		"-func oldName() {}",
+		"+func newName() {}",
+	} {
+		if !strings.Contains(unifiedDiff, want) {
+			t.Fatalf("expected unified diff to contain %q, got %q", want, unifiedDiff)
+		}
+	}
+}
+
 func TestApplyPatchExecuteDetailedIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	baseRoot := t.TempDir()
 	activeRoot := filepath.Join(baseRoot, "worktree")

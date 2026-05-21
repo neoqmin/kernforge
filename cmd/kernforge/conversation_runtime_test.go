@@ -487,6 +487,59 @@ func TestApplyPatchRecordsCodexStyleLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestWriteFileRecordsCodexStyleLifecycleEvents(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	call := ToolCall{
+		ID:        "call-write",
+		Name:      "write_file",
+		Arguments: mustJSON(map[string]any{"path": "main.go", "content": "package main\n"}),
+	}
+	agent.noteToolConversationStart(call)
+	agent.noteToolConversationResult(call, ToolExecutionResult{
+		DisplayText: "wrote 13 bytes to main.go",
+		Meta: map[string]any{
+			"path":          "main.go",
+			"changed_paths": []string{"main.go"},
+			"changed_count": 1,
+			"unified_diff": strings.Join([]string{
+				"diff --git a/main.go b/main.go",
+				"new file mode 100644",
+				"--- /dev/null",
+				"+++ b/main.go",
+				"@@ -0,0 +1,1 @@",
+				"+package main",
+			}, "\n"),
+			"success": true,
+		},
+	})
+
+	begins := latestEventsByKind(session.ConversationEvents, conversationEventKindPatchApplyBegin)
+	ends := latestEventsByKind(session.ConversationEvents, conversationEventKindPatchApplyEnd)
+	turnDiffs := latestEventsByKind(session.ConversationEvents, conversationEventKindTurnDiff)
+	if len(begins) != 1 || begins[0].CorrelationID != "call-write" {
+		t.Fatalf("expected one write_file patch begin event paired to call id, got %#v", begins)
+	}
+	if begins[0].Entities["changed_paths"] != "main.go" {
+		t.Fatalf("expected write_file begin changed path entity, got %#v", begins[0].Entities)
+	}
+	if len(ends) != 1 || ends[0].Entities["status"] != "completed" {
+		t.Fatalf("expected one completed write_file patch end event, got %#v", ends)
+	}
+	if ends[0].Entities["changed_paths"] != "main.go" || ends[0].Entities["changed_count"] != "1" {
+		t.Fatalf("expected write_file end changed path/count entities, got %#v", ends[0].Entities)
+	}
+	if len(turnDiffs) != 1 || !strings.Contains(turnDiffs[0].Raw, "diff --git a/main.go b/main.go") {
+		t.Fatalf("expected write_file turn diff event with unified diff, got %#v", turnDiffs)
+	}
+}
+
 func TestToolFailureRecordsCodexStyleEndEvent(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
