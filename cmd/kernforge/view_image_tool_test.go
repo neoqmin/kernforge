@@ -102,6 +102,58 @@ func TestViewImageToolRejectsSymlinkOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestViewImageToolUsesActiveWorkspaceRootWithoutBaseFallback(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeTestImage(t, baseRoot, "shot.png")
+	tool := NewViewImageTool(Workspace{BaseRoot: baseRoot, Root: activeRoot})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path": "shot.png",
+	})
+	if err == nil {
+		t.Fatal("expected active-root lookup miss")
+	}
+	wantPath := filepath.Join(activeRoot, "shot.png")
+	if !strings.Contains(err.Error(), wantPath) {
+		t.Fatalf("expected error to reference active root path %q, got %v", wantPath, err)
+	}
+	basePath := filepath.Join(baseRoot, "shot.png")
+	if strings.Contains(err.Error(), basePath) {
+		t.Fatalf("view_image must not fall back to base root path %q, got %v", basePath, err)
+	}
+}
+
+func TestViewImageToolIncludesEffectiveWorkspaceRootsMeta(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeTestImage(t, activeRoot, "shot.png")
+	tool := NewViewImageTool(Workspace{BaseRoot: baseRoot, Root: activeRoot})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path": "shot.png",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "workspace_root"); !sameFilePath(got, baseRoot) {
+		t.Fatalf("expected base workspace_root %q, got %#v", baseRoot, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected active workspace root %q, got %#v", activeRoot, result.Meta)
+	}
+	roots := toolMetaStringSlice(result.Meta, "workspace_roots")
+	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
+		t.Fatalf("expected effective workspace_roots [%q %q], got %#v", baseRoot, activeRoot, result.Meta)
+	}
+}
+
 func TestViewImageToolDowngradesOriginalWhenContextDisallows(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")
