@@ -160,6 +160,67 @@ func TestMCPRuntimeUsesConfiguredPermissionMode(t *testing.T) {
 	}
 }
 
+func TestKernforgeMCPServerRecordsEntrypointTelemetry(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = ""
+	cfg.Model = ""
+	cfg.BaseURL = ""
+	cfg.PermissionMode = string(ModeBypass)
+	cfg.SessionDir = filepath.Join(root, ".kernforge", "sessions")
+	cfg.HooksEnabled = boolPtr(false)
+
+	runtime := &kernforgeMCPServerRuntime{
+		fallbackCWD:    root,
+		fallbackConfig: cfg,
+		options: mcpServerRunOptions{
+			Entrypoint: mcpServerEntrypointDaemonServer,
+		},
+	}
+	defer runtime.close()
+
+	server, err := runtime.ensureServer("", "")
+	if err != nil {
+		t.Fatalf("ensureServer: %v", err)
+	}
+
+	event, ok := latestConversationEventByKind(server.rt.session, conversationEventKindMCPServer)
+	if !ok {
+		t.Fatalf("expected MCP server entrypoint event, got %#v", server.rt.session.ConversationEvents)
+	}
+	if event.Entities["entrypoint"] != mcpServerEntrypointDaemonServer {
+		t.Fatalf("expected daemon entrypoint metadata, got %#v", event.Entities)
+	}
+	if event.Entities["workspace_source"] != "fallback" {
+		t.Fatalf("expected fallback workspace source, got %#v", event.Entities)
+	}
+
+	loaded, err := server.rt.store.Load(server.rt.session.ID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	persisted, ok := latestConversationEventByKind(loaded, conversationEventKindMCPServer)
+	if !ok {
+		t.Fatalf("expected persisted MCP server event, got %#v", loaded.ConversationEvents)
+	}
+	if persisted.Entities["entrypoint"] != mcpServerEntrypointDaemonServer {
+		t.Fatalf("expected persisted daemon entrypoint, got %#v", persisted.Entities)
+	}
+}
+
+func latestConversationEventByKind(sess *Session, kind string) (ConversationEvent, bool) {
+	if sess == nil {
+		return ConversationEvent{}, false
+	}
+	for index := len(sess.ConversationEvents) - 1; index >= 0; index-- {
+		event := sess.ConversationEvents[index]
+		if event.Kind == kind {
+			return event, true
+		}
+	}
+	return ConversationEvent{}, false
+}
+
 func TestMCPVerifyExecuteRespectsConfiguredPermissionMode(t *testing.T) {
 	server, cleanup := newTestKernforgeMCPServer(t)
 	defer cleanup()

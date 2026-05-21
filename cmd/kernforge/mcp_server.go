@@ -18,6 +18,11 @@ import (
 
 const kernforgeMCPProtocolVersion = "2024-11-05"
 
+const (
+	mcpServerEntrypointCLIFlag      = "cli_flag"
+	mcpServerEntrypointDaemonServer = "daemon_server"
+)
+
 type kernforgeMCPServer struct {
 	rt              *runtimeState
 	tools           map[string]kernforgeMCPTool
@@ -57,6 +62,7 @@ type mcpServerRunOptions struct {
 	ConfigOverrides     mcpServerConfigOverrides
 	LoadWorkspaceConfig bool
 	StrictConfig        bool
+	Entrypoint          string
 }
 
 type mcpServerConfigOverrides struct {
@@ -73,6 +79,7 @@ func runKernforgeMCPServer(cwd string, cfg Config, resumeID string, in io.Reader
 	if len(options) > 0 {
 		runOptions = options[0]
 	}
+	runOptions.Entrypoint = normalizeMCPServerEntrypoint(runOptions.Entrypoint, mcpServerEntrypointCLIFlag)
 	runtime := &kernforgeMCPServerRuntime{
 		fallbackCWD:     cwd,
 		fallbackConfig:  cfg,
@@ -161,10 +168,51 @@ func (r *kernforgeMCPServerRuntime) ensureServer(workspace string, source string
 	}
 	server := newKernforgeMCPServer(rt)
 	server.workspaceSource = firstNonBlankString(source, "fallback")
+	rt.noteMCPServerEntrypointTelemetry(r.options.Entrypoint, server.workspaceSource)
 	r.server = server
 	r.activeWorkspace = resolved
 	r.workspaceSource = server.workspaceSource
 	return server, nil
+}
+
+func normalizeMCPServerEntrypoint(value string, fallback string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	trimmed = strings.ReplaceAll(trimmed, "-", "_")
+	trimmed = strings.ReplaceAll(trimmed, " ", "_")
+	switch trimmed {
+	case mcpServerEntrypointCLIFlag, mcpServerEntrypointDaemonServer:
+		return trimmed
+	}
+	return fallback
+}
+
+func (rt *runtimeState) noteMCPServerEntrypointTelemetry(entrypoint string, workspaceSource string) {
+	if rt == nil || rt.session == nil {
+		return
+	}
+	normalizedEntrypoint := normalizeMCPServerEntrypoint(entrypoint, mcpServerEntrypointCLIFlag)
+	normalizedWorkspaceSource := strings.TrimSpace(workspaceSource)
+	if normalizedWorkspaceSource == "" {
+		normalizedWorkspaceSource = "fallback"
+	}
+	entities := map[string]string{
+		"entrypoint":       normalizedEntrypoint,
+		"workspace_source": normalizedWorkspaceSource,
+		"workspace":        filepath.Clean(rt.session.WorkingDir),
+	}
+	rt.session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindMCPServer,
+		Severity: conversationSeverityInfo,
+		Summary:  fmt.Sprintf("MCP server runtime created via %s", normalizedEntrypoint),
+		Entities: entities,
+		Metadata: map[string]any{
+			"entrypoint":       normalizedEntrypoint,
+			"workspace_source": normalizedWorkspaceSource,
+		},
+	})
+	if rt.store != nil {
+		_ = rt.store.Save(rt.session)
+	}
 }
 
 func (r *kernforgeMCPServerRuntime) configForWorkspace(workspace string) Config {
