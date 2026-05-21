@@ -449,7 +449,8 @@ func generatedDocumentArtifactRequestContextForTurn(session *Session, request st
 		return contextRequest
 	}
 	requestText := strings.TrimSpace(baseUserQueryText(request))
-	if looksLikeInternalReviewFeedbackUserMessage(requestText) {
+	if looksLikeInternalReviewFeedbackUserMessage(requestText) ||
+		looksLikeFinalAnswerFollowupPrompt(requestText) {
 		return generatedDocumentArtifactRequestContext(session, request)
 	}
 	if classifyTurnIntent(requestText) == TurnIntentContinueLastTask &&
@@ -459,6 +460,35 @@ func generatedDocumentArtifactRequestContextForTurn(session *Session, request st
 		return generatedDocumentArtifactRequestContext(session, request)
 	}
 	return ""
+}
+
+func looksLikeFinalAnswerFollowupPrompt(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(text))
+	}
+	if lower == "" {
+		return false
+	}
+	if looksLikeExplicitEditIntent(lower) ||
+		requestLooksLikeLocalVerificationWork(lower) ||
+		looksLikeExecutionFlowQuestion(lower) {
+		return false
+	}
+	return containsAny(lower,
+		"final answer",
+		"final summary",
+		"provide the final",
+		"give the final",
+		"answer now",
+		"conclude",
+		"wrap up",
+		"최종 답변",
+		"최종답변",
+		"최종 요약",
+		"마무리",
+		"결론",
+	)
 }
 
 func generatedDocumentArtifactCurrentRequestContext(session *Session, request string) string {
