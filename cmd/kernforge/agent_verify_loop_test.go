@@ -3986,6 +3986,90 @@ func TestCompactCutIndexPreservesPinnedVerificationMessages(t *testing.T) {
 	}
 }
 
+func TestCompactRetainedMessagesWithinBudgetKeepsNewestAndTruncatesBoundary(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "old context that should move into summary"},
+		{Role: "user", Text: strings.Repeat("middle-", 20)},
+		{Role: "user", Text: "new"},
+	}
+
+	retained, summarizePrefix := compactRetainedMessagesWithinBudget(messages, 24)
+	if summarizePrefix != 2 {
+		t.Fatalf("expected dropped and truncated boundary messages to be summarized, got prefix %d", summarizePrefix)
+	}
+	if len(retained) != 2 {
+		t.Fatalf("expected truncated boundary plus newest message, got %#v", retained)
+	}
+	if retained[1].Text != "new" {
+		t.Fatalf("expected newest message to survive intact, got %#v", retained)
+	}
+	if !strings.HasSuffix(retained[0].Text, "...") || strings.Contains(retained[0].Text, "middle-middle-middle-middle") {
+		t.Fatalf("expected boundary message to be truncated, got %q", retained[0].Text)
+	}
+}
+
+func TestCompactRetainedMessagesWithinBudgetPreservesImagesOnBoundary(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "old"},
+		{
+			Role: "user",
+			Text: strings.Repeat("image-context-", 10),
+			Images: []MessageImage{{
+				Path:      "shot.png",
+				MediaType: "image/png",
+			}},
+		},
+		{Role: "user", Text: "new"},
+	}
+
+	retained, summarizePrefix := compactRetainedMessagesWithinBudget(messages, 20)
+	if summarizePrefix != 2 {
+		t.Fatalf("expected boundary image message to be summarized after truncation, got prefix %d", summarizePrefix)
+	}
+	if len(retained) != 2 || len(retained[0].Images) != 1 {
+		t.Fatalf("expected truncated boundary to retain image payload, got %#v", retained)
+	}
+	if retained[1].Text != "new" {
+		t.Fatalf("expected newest message to survive, got %#v", retained)
+	}
+}
+
+func TestCompactWithTriggerSummarizesRetainedMessagesDroppedByBudget(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	for i := 0; i < 18; i++ {
+		session.AddMessage(Message{Role: "user", Text: fmt.Sprintf("old message %02d", i)})
+	}
+	session.AddMessage(Message{Role: "user", Text: "recent before huge"})
+	session.AddMessage(Message{Role: "user", Text: strings.Repeat("huge-boundary-", 50)})
+	session.AddMessage(Message{Role: "user", Text: "latest"})
+	agent := &Agent{
+		Config: Config{
+			AutoCompactChars: 40,
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	summary, err := agent.CompactWithTrigger(context.Background(), "test compact", "auto", "test")
+	if err != nil {
+		t.Fatalf("CompactWithTrigger: %v", err)
+	}
+	if !strings.Contains(summary, "huge-boundary") {
+		t.Fatalf("expected truncated boundary to be summarized before dropping detail, got %q", summary)
+	}
+	if len(agent.Session.Messages) != 2 {
+		t.Fatalf("expected retained messages to be budget-bound to boundary plus latest, got %#v", agent.Session.Messages)
+	}
+	if agent.Session.Messages[1].Text != "latest" {
+		t.Fatalf("expected latest message to survive intact, got %#v", agent.Session.Messages)
+	}
+	if len(agent.Session.Messages[0].Text) > 40 {
+		t.Fatalf("expected retained boundary to be truncated, got %q", agent.Session.Messages[0].Text)
+	}
+}
+
 func TestSummarizeMessagesIncludesCompactToolErrorDetails(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Text: "inspect the failure"},

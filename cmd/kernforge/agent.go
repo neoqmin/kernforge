@@ -76,6 +76,9 @@ const (
 	maxEditTargetMismatchReanchorBlocks   = 1
 	maxToolBudgetExtensions               = 2
 	compactPinnedMessagesToKeep           = 6
+	compactRetainedMessageTokenBudget     = 64_000
+	compactApproxCharsPerToken            = 4
+	compactMinRetainedMessageCharBudget   = 8_000
 )
 
 var errVerificationFollowupBlocked = errors.New("verification follow-up blocked after verification was declined or skipped")
@@ -475,8 +478,14 @@ func (a *Agent) CompactWithTrigger(ctx context.Context, instructions string, tri
 	if _, err := a.Workspace.Hook(ctx, HookPreCompact, compactHookPayload(a, HookPreCompact, instructions, trigger, reason, "", beforeMessages, beforeChars, beforeSummaryChars, 0, 0, 0)); err != nil {
 		return "", err
 	}
-	older := a.Session.Messages[:cut]
-	a.Session.Messages = append([]Message(nil), a.Session.Messages[cut:]...)
+	candidates := append([]Message(nil), a.Session.Messages[cut:]...)
+	retained, summarizeCandidatePrefix := compactRetainedMessagesWithinBudget(candidates, compactRetainedMessageCharBudget(a.Config.AutoCompactChars))
+	olderEnd := cut + summarizeCandidatePrefix
+	if olderEnd > len(a.Session.Messages) {
+		olderEnd = len(a.Session.Messages)
+	}
+	older := a.Session.Messages[:olderEnd]
+	a.Session.Messages = retained
 	summary := summarizeMessages(older, instructions)
 	if workingMemory := strings.TrimSpace(renderCompactionWorkingMemory(a.Session)); workingMemory != "" {
 		summary = strings.TrimSpace(summary) + "\n\n" + workingMemory
@@ -7755,6 +7764,154 @@ func compactCutIndex(messages []Message, keepRecentMessages int, keepRecentToolT
 		return 0
 	}
 	return cut
+}
+
+func compactRetainedMessageCharBudget(autoCompactChars int) int {
+	budget := compactRetainedMessageTokenBudget * compactApproxCharsPerToken
+	if autoCompactChars <= 0 || autoCompactChars >= budget {
+		return budget
+	}
+	derived := autoCompactChars / 2
+	if derived <= 0 {
+		return autoCompactChars
+	}
+	if derived < compactMinRetainedMessageCharBudget {
+		if autoCompactChars < compactMinRetainedMessageCharBudget {
+			return autoCompactChars
+		}
+		return compactMinRetainedMessageCharBudget
+	}
+	return derived
+}
+
+func compactRetainedMessagesWithinBudget(messages []Message, maxChars int) ([]Message, int) {
+	if len(messages) == 0 {
+		return nil, 0
+	}
+	if maxChars <= 0 {
+		return append([]Message(nil), messages...), 0
+	}
+	remaining := maxChars
+	retainedReversed := make([]Message, 0, len(messages))
+	firstRetained := len(messages)
+	firstRetainedTruncated := false
+	for i := len(messages) - 1; i >= 0; i-- {
+		if remaining <= 0 {
+			break
+		}
+		msg := messages[i]
+		cost := compactMessageRetainedCharCost(msg)
+		if cost <= 0 {
+			cost = 1
+		}
+		if cost <= remaining {
+			retainedReversed = append(retainedReversed, msg)
+			firstRetained = i
+			remaining -= cost
+			continue
+		}
+		truncated, ok := compactTruncateMessageToCharBudget(msg, remaining)
+		if ok {
+			retainedReversed = append(retainedReversed, truncated)
+			firstRetained = i
+			firstRetainedTruncated = true
+		}
+		remaining = 0
+		break
+	}
+	if len(retainedReversed) == 0 {
+		latest := messages[len(messages)-1]
+		if truncated, ok := compactTruncateMessageToCharBudget(latest, maxChars); ok {
+			retainedReversed = append(retainedReversed, truncated)
+			firstRetained = len(messages) - 1
+			firstRetainedTruncated = true
+		}
+	}
+	retained := make([]Message, len(retainedReversed))
+	for i := range retainedReversed {
+		retained[len(retainedReversed)-1-i] = retainedReversed[i]
+	}
+	summarizePrefix := firstRetained
+	if firstRetainedTruncated && summarizePrefix < len(messages) {
+		summarizePrefix++
+	}
+	if summarizePrefix < 0 {
+		summarizePrefix = 0
+	}
+	if summarizePrefix > len(messages) {
+		summarizePrefix = len(messages)
+	}
+	return retained, summarizePrefix
+}
+
+func compactMessageRetainedCharCost(msg Message) int {
+	total := len(msg.Text) + len(msg.ReasoningContent)
+	total += len(msg.ToolCallID) + len(msg.ToolName)
+	for _, call := range msg.ToolCalls {
+		total += len(call.ID) + len(call.Name) + len(call.Arguments)
+	}
+	for _, item := range msg.ToolContentItems {
+		total += len(item.Text)
+		if item.Type == "input_image" {
+			total++
+		}
+	}
+	if len(msg.Images) > 0 {
+		total += len(msg.Images)
+	}
+	if total == 0 && (len(msg.ToolCalls) > 0 || len(msg.ToolContentItems) > 0) {
+		return 1
+	}
+	return total
+}
+
+func compactTruncateMessageToCharBudget(msg Message, maxChars int) (Message, bool) {
+	if maxChars <= 0 {
+		return Message{}, false
+	}
+	if len(msg.ToolCalls) > 0 {
+		return Message{}, false
+	}
+	remaining := maxChars
+	truncated := msg
+	if compactConsumeTextBudget(&truncated.Text, &remaining) {
+		return truncated, true
+	}
+	if compactConsumeTextBudget(&truncated.ReasoningContent, &remaining) {
+		return truncated, true
+	}
+	for i := range truncated.ToolContentItems {
+		if compactConsumeTextBudget(&truncated.ToolContentItems[i].Text, &remaining) {
+			return truncated, true
+		}
+	}
+	if len(truncated.Images) > 0 || len(truncated.ToolCalls) > 0 || len(truncated.ToolContentItems) > 0 {
+		return truncated, true
+	}
+	return Message{}, false
+}
+
+func compactConsumeTextBudget(text *string, remaining *int) bool {
+	if text == nil || remaining == nil {
+		return false
+	}
+	value := strings.TrimSpace(*text)
+	if value == "" {
+		*text = ""
+		return false
+	}
+	if *remaining <= 0 {
+		*text = ""
+		return false
+	}
+	if len(value) <= *remaining {
+		*text = value
+		*remaining -= len(value)
+		return false
+	}
+	*text = compactPromptSection(value, *remaining)
+	*remaining = 0
+	return true
 }
 
 func countFollowingToolMessages(messages []Message, assistantIndex int) int {
