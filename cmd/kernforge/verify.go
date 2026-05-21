@@ -307,6 +307,14 @@ func applyAdaptiveFullRegressionCadence(steps []VerificationStep, mode Verificat
 	if nextCycle%interval == 0 {
 		return steps, fmt.Sprintf("Full regression cadence: running workspace regression checks on adaptive cycle %d/%d.", nextCycle, interval)
 	}
+	filtered, skipped := omitWorkspaceRegressionSteps(steps)
+	if skipped == 0 || len(filtered) == 0 {
+		return steps, ""
+	}
+	return filtered, fmt.Sprintf("Full regression cadence: skipped %d workspace regression check(s) until cycle %d; current adaptive cycle is %d/%d.", skipped, interval, nextCycle%interval, interval)
+}
+
+func omitWorkspaceRegressionSteps(steps []VerificationStep) ([]VerificationStep, int) {
 	filtered := make([]VerificationStep, 0, len(steps))
 	skipped := 0
 	for _, step := range steps {
@@ -316,10 +324,7 @@ func applyAdaptiveFullRegressionCadence(steps []VerificationStep, mode Verificat
 		}
 		filtered = append(filtered, step)
 	}
-	if skipped == 0 || len(filtered) == 0 {
-		return steps, ""
-	}
-	return filtered, fmt.Sprintf("Full regression cadence: skipped %d workspace regression check(s) until cycle %d; current adaptive cycle is %d/%d.", skipped, interval, nextCycle%interval, interval)
+	return filtered, skipped
 }
 
 func verificationStepIsWorkspaceRegression(step VerificationStep) bool {
@@ -1489,13 +1494,13 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 	}
 	if strings.TrimSpace(report.Decision) == "" {
 		if report.Mode == VerificationAdaptive && hasTargetedVerificationStep(report.Steps) {
-			report.Decision = "Adaptive verification expanded from targeted checks to workspace-level checks after targeted checks passed."
+			report.Decision = adaptiveVerificationSuccessDecision(report.Steps)
 		} else {
 			report.Decision = "Verification completed all planned steps."
 		}
 	} else if !report.HasFailures() && report.HasPassedStep() {
 		if report.Mode == VerificationAdaptive && hasTargetedVerificationStep(report.Steps) {
-			report.Decision = joinSentence(report.Decision, "Adaptive verification expanded from targeted checks to workspace-level checks after targeted checks passed.")
+			report.Decision = joinSentence(report.Decision, adaptiveVerificationSuccessDecision(report.Steps))
 		} else {
 			report.Decision = joinSentence(report.Decision, "Verification completed all planned steps.")
 		}
@@ -1503,9 +1508,25 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 	return report
 }
 
+func adaptiveVerificationSuccessDecision(steps []VerificationStep) string {
+	if hasWorkspaceVerificationStep(steps) {
+		return "Adaptive verification expanded from targeted checks to workspace-level checks after targeted checks passed."
+	}
+	return "Adaptive verification completed targeted checks; workspace regression remains on the scheduled full cadence."
+}
+
 func hasTargetedVerificationStep(steps []VerificationStep) bool {
 	for _, step := range steps {
 		if step.Stage == "targeted" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWorkspaceVerificationStep(steps []VerificationStep) bool {
+	for _, step := range steps {
+		if step.Stage == "workspace" {
 			return true
 		}
 	}
