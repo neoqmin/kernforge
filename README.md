@@ -684,9 +684,11 @@ Relative-path read and search tools look in the current directory first, then fa
 Later sources override earlier ones:
 
 1. Global config
-2. Workspace config
+2. Workspace config, for project-scoped settings only
 3. Environment variables
 4. Command-line flags
+
+Workspace config is repository content, so Kernforge does not let it choose where credentials are sent or which host-local executables are run. The following keys are ignored when they appear in `.kernforge/config.json`: `provider`, `base_url`, `api_key`, `provider_keys`, `codex_cli_path`, `codex_cli_args`, `claude_cli_path`, `claude_cli_args`, `permission_mode`, `shell`, `session_dir`, `mcp_servers`, `active_profile_key`, `model_routes`, `hooks_enabled`, `hook_presets`, and `hooks_fail_closed`. Put those in `~/.kernforge/config.json`, environment variables, or an explicit runtime command instead. Workspace config remains suitable for project verification paths, `auto_verify`, skill paths, specialist overlays, worktree isolation, and saved profile lists.
 
 ### Example Config
 
@@ -772,11 +774,11 @@ Later sources override earlier ones:
 | `memory_files` | Extra memory file paths |
 | `skill_paths` | Extra skill search paths |
 | `enabled_skills` | Skills always injected into prompts |
-| `mcp_servers` | MCP server definitions |
+| `mcp_servers` | MCP server definitions. Host-local only: ignored from workspace config |
 | `profiles` | Saved recent or pinned provider/model profiles |
-| `hooks_enabled` | Enable or disable the hook engine |
-| `hook_presets` | Hook preset names loaded for the workspace |
-| `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default |
+| `hooks_enabled` | Enable or disable the hook engine. Host policy only: ignored from workspace config |
+| `hook_presets` | Hook preset names. Host policy only: ignored from workspace config |
+| `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default. Host policy only: ignored from workspace config |
 | `project_analysis` | Multi-agent project analysis configuration, output path, and worker/reviewer profiles |
 | `review` | Common review harness automation settings and role-specific reviewer models |
 | `specialists` | Enable specialist subagents and overlay built-in specialist profiles |
@@ -1070,9 +1072,9 @@ When Kernforge is running as the MCP server and Codex is the MCP client, review 
 
 For MCP clients that reuse one Kernforge server entry across multiple repositories, `-cwd` is only the fallback workspace. Kernforge also honors client workspace hints from `initialize.rootUri`, `initialize.workspaceFolders`, `tools/call.params._meta.cwd`, and the per-tool `workspace` or `cwd` argument. In Codex CLI, if the MCP server reports the wrong workspace in `kernforge_status`, pass the current repo as `workspace` on the Kernforge tool call or configure the MCP entry so its `-cwd` matches that repo.
 
-For live web research, Kernforge deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` either through your shell environment or through `mcp_servers[].env` in config, then run `/reload` if you changed config or environment after startup. The bundled script lives with the app source under `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`; runtime workspaces normally use the deployed copy under the user config directory. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection. `/init config` also enables the bundled web-research MCP by default when the script is available.
+For live web research, Kernforge deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` through your shell environment or through `mcp_servers[].env` in the user config, then run `/reload` if you changed config or environment after startup. Workspace-local `mcp_servers` are ignored because they can launch host-local commands from repository content. The bundled script lives with the app source under `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`; runtime workspaces normally use the deployed copy under the user config directory. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection.
 
-Minimal workspace config example:
+Minimal user config example:
 
 ```json
 {
@@ -1080,7 +1082,7 @@ Minimal workspace config example:
     {
       "name": "web-research",
       "command": "node",
-      "args": [".kernforge/mcp/web-research-mcp.js"],
+      "args": ["C:/Users/you/.kernforge/mcp/web-research-mcp.js"],
       "env": {
         "TAVILY_API_KEY": "",
         "BRAVE_SEARCH_API_KEY": "",
