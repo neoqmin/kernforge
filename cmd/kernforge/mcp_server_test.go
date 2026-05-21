@@ -125,6 +125,59 @@ func TestMCPConfigOverrideDefaultsUndefinedReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestMCPRuntimeUsesConfiguredPermissionMode(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = ""
+	cfg.Model = ""
+	cfg.BaseURL = ""
+	cfg.PermissionMode = string(ModePlan)
+	cfg.SessionDir = filepath.Join(root, ".kernforge", "sessions")
+	cfg.HooksEnabled = boolPtr(false)
+
+	rt, err := newRuntimeStateForMCPServer(root, cfg, "", io.Discard)
+	if err != nil {
+		t.Fatalf("newRuntimeStateForMCPServer: %v", err)
+	}
+	defer rt.closeExtensions()
+
+	if rt.perms == nil || rt.perms.Mode() != ModePlan {
+		t.Fatalf("expected MCP runtime permission mode %q, got %#v", ModePlan, rt.perms)
+	}
+	if rt.workspace.Perms == nil || rt.workspace.Perms.Mode() != ModePlan {
+		t.Fatalf("expected MCP workspace permission mode %q, got %#v", ModePlan, rt.workspace.Perms)
+	}
+}
+
+func TestMCPVerifyExecuteRespectsConfiguredPermissionMode(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	server.rt.perms.SetMode(ModePlan)
+	if err := os.WriteFile(filepath.Join(server.rt.workspace.Root, "go.mod"), []byte("module example.com/mcpverify\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_verify",
+			"arguments": map[string]any{
+				"execute": true,
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("verify tool produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	if !strings.Contains(text, "Permission denied") || !strings.Contains(text, "plan mode") {
+		t.Fatalf("expected plan-mode permission denial, got: %s", text)
+	}
+}
+
 func TestKernforgeMCPServerUsesInitializeRootURI(t *testing.T) {
 	fallbackRoot := t.TempDir()
 	clientRoot := t.TempDir()

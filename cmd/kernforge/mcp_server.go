@@ -139,6 +139,9 @@ func (r *kernforgeMCPServerRuntime) ensureServer(workspace string, source string
 	}
 	cfg := r.configForWorkspace(resolved)
 	r.options.ConfigOverrides.apply(&cfg)
+	if err := normalizeConfigPermissionMode(&cfg); err != nil {
+		return nil, err
+	}
 	if r.options.LoadWorkspaceConfig {
 		if _, err := autoPopulateVerificationToolPaths(resolved, &cfg, detectWindowsVerificationToolPath); err != nil {
 			return nil, err
@@ -388,6 +391,9 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 	if writer == nil {
 		writer = io.Discard
 	}
+	if err := normalizeConfigPermissionMode(&cfg); err != nil {
+		return nil, err
+	}
 	store := NewSessionStore(cfg.SessionDir)
 	sess, err := loadOrCreateSession(store, resumeID, cwd, cfg)
 	if err != nil {
@@ -419,7 +425,7 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		modelRoutes:    defaultModelRouteScheduler(),
 		interactive:    false,
 	}
-	rt.perms = NewPermissionManager(ModeBypass, nil)
+	rt.perms = NewPermissionManager(ParseMode(cfg.PermissionMode), nil)
 	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(sessionBaseWorkingDir(sess), userConfigDirName, "jobs"), sess, store)
 	rt.workspace = Workspace{
 		BaseRoot:              sessionBaseWorkingDir(sess),
@@ -4339,7 +4345,7 @@ func (s *kernforgeMCPServer) toolVerify(ctx context.Context, args map[string]any
 		return "KernForge verification plan\n\n```json\n" + string(data) + "\n```", nil
 	}
 	ws := s.rt.workspace
-	ws.Perms = NewPermissionManager(ModeBypass, nil)
+	ws.Perms = s.rt.perms
 	report := executeVerificationSteps(ctx, ws, "mcp", plan)
 	s.rt.session.LastVerification = &report
 	_ = s.rt.store.Save(s.rt.session)

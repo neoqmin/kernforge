@@ -223,6 +223,9 @@ func LoadConfig(cwd string) (Config, error) {
 	normalizeConfigPaths(&cfg)
 	applyActiveProfileRoleModels(&cfg)
 	applyReasoningEffortEnvOverride(&cfg)
+	if err := normalizeConfigPermissionMode(&cfg); err != nil {
+		return cfg, err
+	}
 	if err := EnsureUserConfig(cfg); err != nil {
 		return cfg, err
 	}
@@ -544,6 +547,9 @@ func loadUserConfigOnly(cwd string) (Config, error) {
 	}
 	normalizeConfigPaths(&cfg)
 	applyActiveProfileRoleModels(&cfg)
+	if err := normalizeConfigPermissionMode(&cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 
@@ -1287,6 +1293,9 @@ func SaveUserConfigReplacingReviewRoleModels(cfg Config) error {
 
 func saveUserConfigWithOptions(cfg Config, opts saveUserConfigOptions) error {
 	normalizeConfigPaths(&cfg)
+	if err := normalizeConfigPermissionMode(&cfg); err != nil {
+		return err
+	}
 	preserveExistingUserConfig(&cfg, opts)
 	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
 		return err
@@ -3567,18 +3576,51 @@ type PermissionManager struct {
 }
 
 func ParseMode(value string) Mode {
-	switch strings.TrimSpace(value) {
-	case "", string(ModeDefault):
-		return ModeDefault
-	case string(ModeAcceptEdits):
-		return ModeAcceptEdits
-	case string(ModePlan):
-		return ModePlan
-	case string(ModeBypass):
-		return ModeBypass
-	default:
+	mode, ok := ParseModeStrict(value)
+	if !ok {
 		return ModeDefault
 	}
+	return mode
+}
+
+func ParseModeStrict(value string) (Mode, bool) {
+	switch strings.TrimSpace(value) {
+	case "", string(ModeDefault):
+		return ModeDefault, true
+	case string(ModeAcceptEdits):
+		return ModeAcceptEdits, true
+	case string(ModePlan):
+		return ModePlan, true
+	case string(ModeBypass):
+		return ModeBypass, true
+	default:
+		return ModeDefault, false
+	}
+}
+
+func normalizeConfigPermissionMode(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	mode, ok := ParseModeStrict(cfg.PermissionMode)
+	if !ok {
+		return invalidPermissionModeError("permission_mode", cfg.PermissionMode)
+	}
+	cfg.PermissionMode = string(mode)
+	return nil
+}
+
+func invalidPermissionModeError(field string, value string) error {
+	return fmt.Errorf("invalid %s %q (valid: %s)", field, strings.TrimSpace(value), validPermissionModes())
+}
+
+func validPermissionModes() string {
+	return strings.Join([]string{
+		string(ModeDefault),
+		string(ModeAcceptEdits),
+		string(ModePlan),
+		string(ModeBypass),
+	}, ", ")
 }
 
 func NewPermissionManager(mode Mode, prompt PromptFunc) *PermissionManager {
