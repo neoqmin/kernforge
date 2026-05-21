@@ -2472,6 +2472,9 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(request s
 	if a == nil || a.Session == nil || len(calls) == 0 {
 		return "", false, nil
 	}
+	if !generatedDocumentArtifactFinalizationOnlyToolCalls(calls) {
+		return "", false, nil
+	}
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
 		return "", false, nil
@@ -2609,7 +2612,57 @@ func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
 }
 
 func generatedDocumentArtifactPostCompletionToolCall(call ToolCall) bool {
-	return strings.TrimSpace(call.Name) != ""
+	name := strings.TrimSpace(call.Name)
+	return name != "" && !isEditTool(name)
+}
+
+func generatedDocumentArtifactFinalizationOnlyToolCalls(calls []ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			return false
+		}
+		if isEditTool(name) || toolCallMutatesGitState(call) {
+			return false
+		}
+		if shellToolCallMayWriteWorkspace(call) {
+			return false
+		}
+		if !generatedDocumentArtifactPostCompletionToolCall(call) {
+			return false
+		}
+	}
+	return true
+}
+
+func shellToolCallMayWriteWorkspace(call ToolCall) bool {
+	switch strings.TrimSpace(call.Name) {
+	case "run_shell", "run_shell_background":
+		return shellMutationClassMayWriteWorkspace(assessShellCommandMutation(toolCallCommandArgument(call)).Class)
+	case "run_shell_bundle_background":
+		for _, command := range toolCallCommandsArgument(call) {
+			if shellMutationClassMayWriteWorkspace(assessShellCommandMutation(command).Class) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shellMutationClassMayWriteWorkspace(class shellMutationClass) bool {
+	switch class {
+	case shellMutationWorkspaceWrite,
+		shellMutationGitMutation,
+		shellMutationExternalInstall,
+		shellMutationUnsafe,
+		shellMutationUnsupported:
+		return true
+	default:
+		return false
+	}
 }
 
 func generatedDocumentArtifactValidationToolGuidance() string {

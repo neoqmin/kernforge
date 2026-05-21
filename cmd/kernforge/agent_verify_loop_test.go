@@ -10192,6 +10192,106 @@ func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
 	}
 }
 
+func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: Tavern/BugReport.md",
+		"@@",
+		"-소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"+소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"@@",
+		"-| Total | 1 |",
+		"+| High | 1 |",
+		"+| Total | 2 |",
+		"@@",
+		"-- Impact: crash risk.",
+		"+- Impact: crash risk.",
+		"+",
+		"+## BUG-002",
+		"+- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"+- Impact: resource lifetime bug.",
+		"*** End Patch",
+	}, "\n")
+	patchArgs, _ := json.Marshal(map[string]any{"patch": patch})
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-patch-after-final-looking-preamble",
+						Name:      "apply_patch",
+						Arguments: string(patchArgs),
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "총 2개 버그") {
+		t.Fatalf("expected final answer after the corrective edit, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected apply_patch preamble to execute before final answer, got %d requests", len(provider.requests))
+	}
+	content, err := os.ReadFile(filepath.Join(root, "Tavern", "BugReport.md"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(content), "## BUG-002") || !strings.Contains(string(content), "| High | 1 |") {
+		t.Fatalf("expected corrective apply_patch to update the report, got:\n%s", string(content))
+	}
+	if sessionContainsToolResultText(session, "call-patch-after-final-looking-preamble", "generated document artifact turns do not run") {
+		t.Fatalf("apply_patch was incorrectly treated as post-final tool churn, messages=%#v", session.Messages)
+	}
+}
+
 func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -10236,6 +10336,12 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
 			t.Fatalf("expected approved document artifact harness to block post-completion call %#v", call)
 		}
+	}
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
+		Name:      "apply_patch",
+		Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+	}}) {
+		t.Fatalf("document artifact finalization must not classify edit tools as post-completion inspection churn")
 	}
 	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected approved document artifact harness to skip interactive final-answer review")
