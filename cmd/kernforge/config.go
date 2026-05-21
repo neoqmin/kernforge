@@ -259,8 +259,9 @@ type Config struct {
 }
 
 type ConfigLoadOptions struct {
-	StrictConfig bool
-	Profile      string
+	StrictConfig         bool
+	Profile              string
+	SkipEnsureUserConfig bool
 }
 
 type Profile struct {
@@ -377,8 +378,10 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 			}
 		}
 	}
-	if err := EnsureUserConfig(ensureCfg); err != nil {
-		return cfg, err
+	if !options.SkipEnsureUserConfig {
+		if err := EnsureUserConfig(ensureCfg); err != nil {
+			return cfg, err
+		}
 	}
 	return cfg, nil
 }
