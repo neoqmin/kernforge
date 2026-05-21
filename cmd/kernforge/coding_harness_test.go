@@ -522,3 +522,10 @@ func TestClaimedArtifactExtractionIgnoresNonClaimLines(t *testing.T) {
 		t.Fatalf("expected only claimed artifact path, got %#v", paths)
 	}
 }
+
+func TestClaimedArtifactExtractionPreservesDotDirectory(t *testing.T) {
+	paths := extractClaimedArtifactPaths("Saved `.kernforge/reviews/bug-analysis-report.md`.")
+	if len(paths) != 1 || paths[0] != ".kernforge/reviews/bug-analysis-report.md" {
+		t.Fatalf("expected dot-prefixed artifact path to be preserved, got %#v", paths)
+	}
+}

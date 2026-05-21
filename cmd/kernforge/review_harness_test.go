@@ -287,6 +287,22 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifact(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
 		t.Fatalf("modify unrelated dirty source: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "버그_검토_보고서.md"), []byte(strings.Join([]string{
+		"# Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: main.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("write generated report: %v", err)
+	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -352,6 +368,25 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifact(t *testing.T) {
 
 func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t *testing.T) {
 	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir Tavern: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("write generated report: %v", err)
+	}
 	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{
@@ -422,6 +457,73 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 	}
 }
 
+func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t *testing.T) {
+	root := t.TempDir()
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc-report",
+		SourcePrompt: request,
+		RequiredArtifacts: []string{
+			"Tavern/BugReport.md",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   request,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "REVIEW_RESULT\nverdict: approved\nsummary: reviewer must not run"},
+	}}}
+	var progress []string
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), request, "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if !reviewed || !needsRevision {
+		t.Fatalf("expected deterministic artifact quality gate to request revision, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	}
+	if !strings.Contains(feedback, "Required artifact is missing") {
+		t.Fatalf("expected missing artifact blocker, got %q", feedback)
+	}
+	if fingerprint != "generated-document-artifact-quality" {
+		t.Fatalf("expected stable deterministic fingerprint, got %q", fingerprint)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model call for deterministic artifact quality gate, got %d", len(client.requests))
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "문서 산출물 품질 검사") {
+		t.Fatalf("expected artifact quality progress, got %#v", progress)
+	}
+	if agent.Session.LastCodingHarnessReport == nil || agent.Session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected stored blocking artifact harness report, got %#v", agent.Session.LastCodingHarnessReport)
+	}
+}
+
 func TestAutoReviewChangedPathsPrefersPatchTransactionScope(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")
@@ -463,6 +565,25 @@ func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *
 	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
 		t.Fatalf("modify unrelated dirty source: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".kernforge", "reviews"), 0o755); err != nil {
+		t.Fatalf("mkdir generated report dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".kernforge", "reviews", "bug-analysis-report.md"), []byte(strings.Join([]string{
+		"# Bug Analysis Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/TavernWorker/EngineBase.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("write active generated report: %v", err)
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{

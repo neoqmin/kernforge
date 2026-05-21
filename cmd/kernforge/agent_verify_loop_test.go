@@ -9388,6 +9388,144 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 	}
 }
 
+func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *testing.T) {
+	root := t.TempDir()
+	reportLines := []string{
+		"# Tavern Client Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 총 26개 버그를 문서화했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 4 |",
+		"| High | 7 |",
+		"| Medium | 9 |",
+		"| Low | 6 |",
+		"| Total | 26 |",
+		"",
+	}
+	for i := 1; i <= 26; i++ {
+		reportLines = append(reportLines,
+			fmt.Sprintf("## BUG-%03d", i),
+			"- File: Tavern/Tavern/RuntimeManager.cpp",
+			"- Impact: documented issue.",
+			"",
+		)
+	}
+	provider := &streamingScriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": strings.Join(reportLines, "\n"),
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: strings.Join([]string{
+						"The bug report document has been reviewed and is now in final form.",
+						"",
+						"27 documented bugs were found.",
+						"",
+						"| Severity | Count |",
+						"|----------|-------|",
+						"| Critical | 4 |",
+						"| High | 7 |",
+						"| Medium | 9 |",
+						"| Low | 6 |",
+						"| **Total** | **26** |",
+						"",
+						"Build/test verification was not run because this is a documentation-only artifact.",
+					}, "\n"),
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing Tavern/BugReport.md for final validation"}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This fallback final answer should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{
+				Role: "assistant",
+				Text: "NEEDS_REVISION\nThis reviewer should not run after document content is accepted.",
+			},
+			StopReason: "stop",
+		}},
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
+	session.AcceptanceContract = &contract
+	session.Messages = []Message{{
+		Role: "user",
+		Text: request,
+	}}
+	session.TaskState = &TaskState{
+		Goal:        request,
+		Phase:       "execution",
+		PlanSummary: "1. Write the generated document artifact\n2. Summarize without extra validation",
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emittedDelta strings.Builder
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:             provider,
+		ReviewerClient:     reviewer,
+		ReviewerModel:      "reviewer-model",
+		Tools:              NewToolRegistry(NewWriteFileTool(ws), NewRunShellTool(ws), &staticTool{name: "read_file", output: "read should not run"}),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(text string) { emittedDelta.WriteString(text) },
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized generated document final answer, got %q with %d provider requests and messages %#v", reply, len(provider.requests), session.Messages)
+	}
+	if strings.Contains(reply, "27") {
+		t.Fatalf("expected synthesized final answer to omit inconsistent bug counts, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected post-final shell/read responses to remain unrequested, got %d request(s)", len(provider.requests))
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("expected generated document answer-only repair to skip final reviewer, got %d reviewer request(s)", len(reviewer.requests))
+	}
+	if emittedDelta.String() != "" {
+		t.Fatalf("expected inconsistent final candidate to stay hidden until accepted, got %q", emittedDelta.String())
+	}
+	for _, line := range progress {
+		if strings.Contains(line, "automatic post-change review") || strings.Contains(line, "자동 변경 후 리뷰") {
+			t.Fatalf("generated document count repair should not enter post-change review path, progress=%q", line)
+		}
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected synthesized reply to refresh an approved harness report, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
 func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
