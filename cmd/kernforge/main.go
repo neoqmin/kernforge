@@ -6610,8 +6610,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 		fmt.Fprintln(rt.writer, rt.ui.section("MCP"))
 		for _, status := range statuses {
+			environmentID := mcpStatusEnvironmentID(status)
 			if strings.TrimSpace(status.Error) != "" {
-				fmt.Fprintf(rt.writer, "%s  error=%s\n", status.Name, status.Error)
+				fmt.Fprintf(rt.writer, "%s  env=%s  error=%s\n", status.Name, environmentID, status.Error)
 				continue
 			}
 			extra := ""
@@ -6620,7 +6621,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 					extra = webResearchMCPStatusSummary(server, os.Getenv)
 				}
 			}
-			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  cwd=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, status.Cwd, extra)
+			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  env=%s  cwd=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, environmentID, status.Cwd, extra)
 		}
 	case "resources":
 		items := rt.mcpResources()
@@ -9396,6 +9397,14 @@ func joinHookEvents(events []HookEvent) string {
 		parts = append(parts, string(event))
 	}
 	return strings.Join(parts, ",")
+}
+
+func mcpStatusEnvironmentID(status MCPServerStatus) string {
+	environmentID := strings.TrimSpace(status.EnvironmentID)
+	if environmentID == "" {
+		return defaultMCPServerEnvironmentID
+	}
+	return environmentID
 }
 
 func (rt *runtimeState) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {

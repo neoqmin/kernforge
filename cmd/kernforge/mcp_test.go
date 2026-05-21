@@ -384,6 +384,9 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	if statuses[0].ToolCount != 1 {
 		t.Fatalf("expected 1 remote tool, got %d", statuses[0].ToolCount)
 	}
+	if statuses[0].EnvironmentID != defaultMCPServerEnvironmentID {
+		t.Fatalf("expected default MCP environment %q, got %q", defaultMCPServerEnvironmentID, statuses[0].EnvironmentID)
+	}
 	if statuses[0].ResourceCount != 1 {
 		t.Fatalf("expected 1 remote resource, got %d", statuses[0].ResourceCount)
 	}
@@ -449,6 +452,86 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	prompts := manager.Prompts()
 	if len(prompts) != 1 || prompts[0].Prompt.Name != "summarize" {
 		t.Fatalf("unexpected prompts: %#v", prompts)
+	}
+}
+
+func TestLoadMCPManagerAcceptsExplicitLocalEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:          "fake",
+		Command:       os.Args[0],
+		Args:          []string{"-test.run=TestMCPHelperProcess"},
+		EnvironmentID: " local ",
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	statuses := manager.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	if statuses[0].EnvironmentID != defaultMCPServerEnvironmentID {
+		t.Fatalf("expected explicit local MCP environment, got %#v", statuses[0])
+	}
+	if statuses[0].ToolCount != 1 {
+		t.Fatalf("expected local MCP server to start, got %#v", statuses[0])
+	}
+}
+
+func TestLoadMCPManagerRejectsUnsupportedExplicitEnvironmentWithoutStartingServer(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:          "remote",
+		Command:       os.Args[0],
+		Args:          []string{"-test.run=TestMCPHelperProcess"},
+		Cwd:           dir,
+		EnvironmentID: "remote",
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `unsupported environment_id "remote"`) {
+		t.Fatalf("expected unsupported environment warning, got %#v", warnings)
+	}
+	statuses := manager.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 failed status, got %d", len(statuses))
+	}
+	if statuses[0].ToolCount != 0 || statuses[0].EnvironmentID != "remote" {
+		t.Fatalf("expected failed remote status without tools, got %#v", statuses[0])
+	}
+	if !strings.Contains(statuses[0].Error, `unsupported environment_id "remote"`) {
+		t.Fatalf("expected unsupported environment status error, got %#v", statuses[0])
+	}
+}
+
+func TestLoadMCPManagerRejectsExplicitEnvironmentRelativeCwd(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:          "remote",
+		Command:       os.Args[0],
+		Args:          []string{"-test.run=TestMCPHelperProcess"},
+		Cwd:           "relative",
+		EnvironmentID: "remote",
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "requires an absolute cwd") {
+		t.Fatalf("expected absolute cwd warning, got %#v", warnings)
+	}
+	statuses := manager.Status()
+	if len(statuses) != 1 || !strings.Contains(statuses[0].Error, "requires an absolute cwd") {
+		t.Fatalf("expected failed absolute cwd status, got %#v", statuses)
 	}
 }
 
