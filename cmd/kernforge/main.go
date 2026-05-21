@@ -134,6 +134,7 @@ func run(args []string) error {
 	var (
 		cwdFlag           string
 		providerFlag      string
+		profileFlag       string
 		modelFlag         string
 		baseURLFlag       string
 		imageFlag         string
@@ -161,6 +162,7 @@ func run(args []string) error {
 
 	fs.StringVar(&cwdFlag, "cwd", "", "working directory")
 	fs.StringVar(&providerFlag, "provider", "", "model provider")
+	fs.StringVar(&profileFlag, "profile", "", "saved provider/model profile name")
 	fs.StringVar(&modelFlag, "model", "", "model name")
 	fs.StringVar(&baseURLFlag, "base-url", "", "provider base URL")
 	fs.StringVar(&imageFlag, "image", "", "comma-separated image paths for -prompt mode")
@@ -219,6 +221,11 @@ func run(args []string) error {
 	// defaults (max_tool_iterations: 16, max_tokens: 4096). The notices are
 	// printed once rt.writer is available below.
 	legacyMigrations := MigrateLegacyConfigDefaults(cwd, &cfg)
+	if strings.TrimSpace(profileFlag) != "" {
+		if err := applyNamedConfigProfile(&cfg, profileFlag); err != nil {
+			return err
+		}
+	}
 	loadedProvider := normalizeProviderName(cfg.Provider)
 	if providerFlag != "" {
 		cfg.Provider = providerFlag
@@ -267,6 +274,7 @@ func run(args []string) error {
 		return runKernforgeDaemonCommand(cwd, cfg, resumeFlag, fs.Args()[1:], mcpServerRunOptions{
 			ConfigOverrides: mcpServerConfigOverrides{
 				Provider:        providerFlag,
+				Profile:         profileFlag,
 				Model:           modelFlag,
 				BaseURL:         baseURLFlag,
 				PermissionMode:  permissionFlag,
@@ -284,6 +292,7 @@ func run(args []string) error {
 		return runKernforgeMCPServer(cwd, cfg, resumeFlag, os.Stdin, os.Stdout, mcpServerRunOptions{
 			ConfigOverrides: mcpServerConfigOverrides{
 				Provider:        providerFlag,
+				Profile:         profileFlag,
 				Model:           modelFlag,
 				BaseURL:         baseURLFlag,
 				PermissionMode:  permissionFlag,

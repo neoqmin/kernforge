@@ -67,6 +67,7 @@ type mcpServerRunOptions struct {
 
 type mcpServerConfigOverrides struct {
 	Provider        string
+	Profile         string
 	Model           string
 	BaseURL         string
 	PermissionMode  string
@@ -147,7 +148,9 @@ func (r *kernforgeMCPServerRuntime) ensureServer(workspace string, source string
 		r.server.rt.closeExtensions()
 	}
 	cfg := r.configForWorkspace(resolved)
-	r.options.ConfigOverrides.apply(&cfg)
+	if err := r.options.ConfigOverrides.apply(&cfg); err != nil {
+		return nil, err
+	}
 	if err := normalizeConfigPermissionMode(&cfg); err != nil {
 		return nil, err
 	}
@@ -230,13 +233,19 @@ func (r *kernforgeMCPServerRuntime) close() {
 	}
 }
 
-func (o mcpServerConfigOverrides) apply(cfg *Config) {
+func (o mcpServerConfigOverrides) apply(cfg *Config) error {
 	if cfg == nil {
-		return
+		return nil
 	}
 	providerOverride := normalizeProviderName(o.Provider)
 	baseURLOverride := strings.TrimSpace(o.BaseURL)
 	currentProvider := normalizeProviderName(cfg.Provider)
+	if strings.TrimSpace(o.Profile) != "" {
+		if err := applyNamedConfigProfile(cfg, o.Profile); err != nil {
+			return err
+		}
+		currentProvider = normalizeProviderName(cfg.Provider)
+	}
 	if strings.TrimSpace(o.Provider) != "" {
 		cfg.Provider = providerOverride
 		if baseURLOverride == "" && currentProvider != providerOverride {
@@ -270,6 +279,7 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) {
 	if o.BypassHookTrust {
 		cfg.BypassHookTrust = true
 	}
+	return nil
 }
 
 func mcpWorkspaceHintFromMessage(msg map[string]any) (string, string) {

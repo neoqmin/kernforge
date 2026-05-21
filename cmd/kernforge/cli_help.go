@@ -133,6 +133,7 @@ func kernforgeFlagConsumesHelpValue(arg string) bool {
 	switch trimmed {
 	case "cwd",
 		"provider",
+		"profile",
 		"model",
 		"base-url",
 		"image",
@@ -197,6 +198,7 @@ Usage:
 Common options:
   -cwd <dir>                  Workspace root. Default: current directory.
   -provider <name>            Provider override for this process.
+  -profile <name>             Activate a saved provider/model profile for this process.
   -model <name>               Model override for this process.
   -base-url <url>             Provider endpoint override.
   -permission-mode <mode>     default | acceptEdits | plan | bypassPermissions.
@@ -268,6 +270,7 @@ Autonomous goal:
 Useful options:
   -cwd <dir>
   -provider <name>
+  -profile <saved-profile-name>
   -model <name>
   -base-url <url>
   -permission-mode <default|acceptEdits|plan|bypassPermissions|:workspace|:read-only|:danger-full-access>

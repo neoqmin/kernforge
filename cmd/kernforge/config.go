@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1892,6 +1893,72 @@ func findActiveConfigProfile(cfg Config) (Profile, bool, bool) {
 		}
 	}
 	return Profile{}, false, false
+}
+
+func applyNamedConfigProfile(cfg *Config, selector string) error {
+	if cfg == nil {
+		return fmt.Errorf("cannot apply profile %q without a config", strings.TrimSpace(selector))
+	}
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil
+	}
+	profile, ok := findConfigProfileBySelector(*cfg, selector)
+	if !ok {
+		available := configProfileSelectorList(*cfg)
+		if available == "" {
+			return fmt.Errorf("profile %q not found (no saved profiles)", selector)
+		}
+		return fmt.Errorf("profile %q not found (saved profiles: %s)", selector, available)
+	}
+	profile = normalizeConfigProfile(profile)
+	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		return fmt.Errorf("profile %q is missing provider or model", selector)
+	}
+	cfg.Provider = strings.TrimSpace(profile.Provider)
+	cfg.Model = strings.TrimSpace(profile.Model)
+	cfg.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(profile.Provider, profile.ReasoningEffort)
+	if strings.TrimSpace(profile.APIKey) != "" {
+		cfg.APIKey = strings.TrimSpace(profile.APIKey)
+	}
+	cfg.ActiveProfileKey = configProfileKey(profile)
+	applyConfigProfileRoleModels(cfg, profile)
+	return nil
+}
+
+func findConfigProfileBySelector(cfg Config, selector string) (Profile, bool) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return Profile{}, false
+	}
+	for _, profile := range cfg.Profiles {
+		profile = normalizeConfigProfile(profile)
+		if strings.EqualFold(strings.TrimSpace(profile.Name), selector) {
+			return profile, true
+		}
+	}
+	for _, profile := range cfg.Profiles {
+		profile = normalizeConfigProfile(profile)
+		if strings.EqualFold(configProfileKey(profile), selector) {
+			return profile, true
+		}
+	}
+	return Profile{}, false
+}
+
+func configProfileSelectorList(cfg Config) string {
+	names := make([]string, 0, len(cfg.Profiles))
+	for _, profile := range cfg.Profiles {
+		profile = normalizeConfigProfile(profile)
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
