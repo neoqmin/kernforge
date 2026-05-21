@@ -2883,7 +2883,11 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if strings.TrimSpace(root) == "" {
 		return false
 	}
-	return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, autoReviewChangedPaths(a.Session, root))
+	changedPaths := autoReviewChangedPaths(a.Session, root)
+	if len(changedPaths) > 0 {
+		return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, changedPaths)
+	}
+	return sessionHasDocumentArtifactQualityAcceptedHarness(a.Session)
 }
 
 func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {
@@ -2916,6 +2920,45 @@ func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {
 			return false
 		}
 		if len(artifactPaths) > 0 && !artifactPaths[strings.ToLower(normalized)] {
+			return false
+		}
+	}
+	return true
+}
+
+func sessionHasDocumentArtifactQualityAcceptedHarness(session *Session) bool {
+	if session == nil || session.LastCodingHarnessReport == nil {
+		return false
+	}
+	report := *session.LastCodingHarnessReport
+	report.Normalize()
+	if len(report.ArtifactQuality.Artifacts) == 0 {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
+		return false
+	}
+	for _, artifact := range report.ArtifactQuality.Artifacts {
+		if !artifactQualityDocumentArtifactLooksAccepted(artifact) {
+			return false
+		}
+	}
+	return true
+}
+
+func artifactQualityDocumentArtifactLooksAccepted(artifact ArtifactQualityCheck) bool {
+	path := normalizeSessionRelativePath(artifact.Path)
+	if !preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+		return false
+	}
+	if artifact.Size <= 0 && artifact.ContentChars <= 0 {
+		return false
+	}
+	for _, check := range artifact.Checks {
+		lower := strings.ToLower(strings.TrimSpace(check))
+		if strings.Contains(lower, "does not exist") ||
+			strings.Contains(lower, "read failed") ||
+			strings.Contains(lower, "path could not be resolved") {
 			return false
 		}
 	}

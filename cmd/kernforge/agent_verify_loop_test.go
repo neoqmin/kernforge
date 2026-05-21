@@ -11438,6 +11438,71 @@ func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *test
 	}
 }
 
+func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPaths(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}
+	session.TaskState = &TaskState{
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "Please provide the final answer now.",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+		Acceptance: AcceptanceContractReport{
+			Findings: []CodingHarnessFinding{{
+				Severity: "blocker",
+				Title:    "Final answer has inconsistent bug counts",
+				Detail:   "The answer says 27 bugs but its severity rows add up to 26.",
+			}},
+		},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Tools: NewToolRegistry(
+			&staticTool{name: "read_file", output: "read"},
+			&staticTool{name: "run_shell", output: "shell"},
+		),
+	}
+
+	if !agent.changesAreGeneratedDocumentArtifactsForTurn("") {
+		t.Fatalf("expected accepted artifact-quality report to preserve document-artifact state without patch paths")
+	}
+	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply("", session.LastCodingHarnessReport, false) {
+		t.Fatalf("expected answer-only final blocker to synthesize a safe document-artifact final reply without patch paths")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("The answer says 27 bugs but the report is complete.", true, false) {
+		t.Fatalf("expected accepted document artifact quality to skip interactive final-answer review without patch paths")
+	}
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("", []ToolCall{{
+		Name:      "run_shell",
+		Arguments: `{"command":"echo Reviewing Tavern/BugReport.md for final validation"}`,
+	}}) {
+		t.Fatalf("expected accepted document artifact quality to block post-completion validation without patch paths")
+	}
+	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false)
+	if !plan.GeneratedDocumentFinalOnly {
+		t.Fatalf("expected accepted document artifact quality to force final-only tools without patch paths")
+	}
+	for _, name := range []string{"read_file", "run_shell"} {
+		if !plan.DisabledTools[name] {
+			t.Fatalf("expected final-only document artifact turn to disable %s, got %#v", name, plan.DisabledTools)
+		}
+	}
+}
+
 func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
