@@ -44,6 +44,7 @@ type NamedCount struct {
 type VerificationTuning struct {
 	FailureCounts map[string]int
 	RunCounts     map[string]int
+	AdaptiveRuns  int
 }
 
 func NewVerificationHistoryStore() *VerificationHistoryStore {
@@ -622,6 +623,9 @@ func (s *VerificationHistoryStore) PlannerTuning(workspace string) (Verification
 	for _, entry := range items {
 		if workspaceAffinityScore(workspace, entry.Workspace) == 0 {
 			continue
+		}
+		if entry.Report.Mode == VerificationAdaptive {
+			tuning.AdaptiveRuns++
 		}
 		for _, step := range entry.Report.Steps {
 			key := verificationHistoryKey(step)

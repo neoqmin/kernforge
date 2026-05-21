@@ -95,6 +95,48 @@ func TestVerificationDashboardCanFilterByTag(t *testing.T) {
 	}
 }
 
+func TestVerificationHistoryPlannerTuningCountsAdaptiveRuns(t *testing.T) {
+	store := &VerificationHistoryStore{
+		Path: filepath.Join(t.TempDir(), "verification-history.json"),
+	}
+	root := filepath.Join("F:", "repo-a")
+	if err := store.Append("s1", root, VerificationReport{
+		Mode: VerificationAdaptive,
+		Steps: []VerificationStep{{
+			Label:   "go test ./cmd/app/...",
+			Command: "go test ./cmd/app/...",
+			Scope:   "./cmd/app/...",
+			Stage:   "targeted",
+			Status:  VerificationPassed,
+		}},
+	}); err != nil {
+		t.Fatalf("Append adaptive report: %v", err)
+	}
+	if err := store.Append("s2", root, VerificationReport{
+		Mode: VerificationFull,
+		Steps: []VerificationStep{{
+			Label:   "go test ./...",
+			Command: "go test ./...",
+			Scope:   "workspace",
+			Stage:   "workspace",
+			Status:  VerificationPassed,
+		}},
+	}); err != nil {
+		t.Fatalf("Append full report: %v", err)
+	}
+
+	tuning, err := store.PlannerTuning(root)
+	if err != nil {
+		t.Fatalf("PlannerTuning: %v", err)
+	}
+	if tuning.AdaptiveRuns != 1 {
+		t.Fatalf("expected one adaptive run, got %#v", tuning)
+	}
+	if tuning.RunCounts["go test targeted"] != 1 || tuning.RunCounts["go test workspace"] != 1 {
+		t.Fatalf("expected step run counts to remain populated, got %#v", tuning.RunCounts)
+	}
+}
+
 func TestRenderVerificationDashboardHTMLContainsKeySections(t *testing.T) {
 	summary := VerificationDashboardSummary{
 		Scope:         "current workspace",
