@@ -1681,7 +1681,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			a.setToolExecutionResult(toolMsgIndex, toolMsg)
 			a.noteToolExecutionResultDetailed(call, result, err)
-			a.accountGoalProgressAfterTool(call)
+			accounting := a.accountGoalProgressAfterTool(call)
+			if accounting.StatusChanged && accounting.Goal.Status == goalStatusBudgetLimited {
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: goalBudgetLimitContextMessage(accounting.Goal),
+				})
+			}
 			if err == nil && preWriteReviewRequiresReanchor && preWriteReviewReanchorTool(call) {
 				preWriteReviewRequiresReanchor = false
 				preWriteReviewReanchorBlocks = 0
