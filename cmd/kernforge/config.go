@@ -22,6 +22,36 @@ const (
 	maxProviderRetryDelay   = 30 * time.Second
 )
 
+type configSourceKind int
+
+const (
+	configSourceUser configSourceKind = iota
+	configSourceWorkspace
+)
+
+// Workspace-local config is repository content. Keep project workflow settings
+// there, but do not let it choose credential destinations or host-local
+// executables. User config and environment variables still own those fields.
+var workspaceLocalConfigDenylist = []string{
+	"provider",
+	"base_url",
+	"api_key",
+	"provider_keys",
+	"codex_cli_path",
+	"codex_cli_args",
+	"claude_cli_path",
+	"claude_cli_args",
+	"permission_mode",
+	"shell",
+	"session_dir",
+	"mcp_servers",
+	"active_profile_key",
+	"model_routes",
+	"hooks_enabled",
+	"hook_presets",
+	"hooks_fail_closed",
+}
+
 type ReviewModelConfig struct {
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
@@ -171,8 +201,12 @@ func DefaultConfig(cwd string) Config {
 
 func LoadConfig(cwd string) (Config, error) {
 	cfg := DefaultConfig(cwd)
-	for _, path := range configSearchPaths(cwd) {
-		if err := mergeConfigFile(&cfg, path); err != nil {
+	for index, path := range configSearchPaths(cwd) {
+		source := configSourceUser
+		if index > 0 {
+			source = configSourceWorkspace
+		}
+		if err := mergeConfigFileForSource(&cfg, path, source); err != nil {
 			return cfg, err
 		}
 	}
@@ -341,6 +375,10 @@ func workspaceConfigPath(cwd string) string {
 }
 
 func mergeConfigFile(cfg *Config, path string) error {
+	return mergeConfigFileForSource(cfg, path, configSourceUser)
+}
+
+func mergeConfigFileForSource(cfg *Config, path string, source configSourceKind) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -348,19 +386,71 @@ func mergeConfigFile(cfg *Config, path string) error {
 		}
 		return err
 	}
+	dataForDecode := sanitizeConfigDataForSource(data, source)
 	var patch Config
-	if err := json.Unmarshal(data, &patch); err != nil {
+	if err := json.Unmarshal(dataForDecode, &patch); err != nil {
 		if repaired, ok := repairAppendedMCPSnippetConfigJSON(data); ok {
-			if repairErr := json.Unmarshal(repaired, &patch); repairErr == nil {
+			repairedForDecode := sanitizeConfigDataForSource(repaired, source)
+			if repairErr := json.Unmarshal(repairedForDecode, &patch); repairErr == nil {
 				_ = os.WriteFile(path, repaired, 0o644)
+				sanitizeConfigPatchForSource(&patch, source)
 				mergeConfig(cfg, patch)
 				return nil
 			}
 		}
 		return fmt.Errorf("parse %s: %w%s", path, err, configParseRepairHint(data))
 	}
+	sanitizeConfigPatchForSource(&patch, source)
 	mergeConfig(cfg, patch)
 	return nil
+}
+
+func sanitizeConfigDataForSource(data []byte, source configSourceKind) []byte {
+	if source != configSourceWorkspace {
+		return data
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return data
+	}
+	changed := false
+	for _, key := range workspaceLocalConfigDenylist {
+		if _, ok := raw[key]; ok {
+			delete(raw, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return data
+	}
+	sanitized, err := json.Marshal(raw)
+	if err != nil {
+		return data
+	}
+	return sanitized
+}
+
+func sanitizeConfigPatchForSource(patch *Config, source configSourceKind) {
+	if patch == nil || source != configSourceWorkspace {
+		return
+	}
+	patch.Provider = ""
+	patch.BaseURL = ""
+	patch.APIKey = ""
+	patch.ProviderKeys = nil
+	patch.CodexCLIPath = ""
+	patch.CodexCLIArgs = nil
+	patch.ClaudeCLIPath = ""
+	patch.ClaudeCLIArgs = nil
+	patch.PermissionMode = ""
+	patch.Shell = ""
+	patch.SessionDir = ""
+	patch.MCPServers = nil
+	patch.ActiveProfileKey = ""
+	patch.ModelRoutes = ModelRouteSchedulerConfig{}
+	patch.HooksEnabled = nil
+	patch.HookPresets = nil
+	patch.HooksFailClosed = nil
 }
 
 func repairAppendedMCPSnippetConfigJSON(data []byte) ([]byte, bool) {
@@ -1804,7 +1894,6 @@ func InitMemoryTemplate(projectName string) string {
 }
 
 func InitWorkspaceConfigTemplate(workspaceRoot string) string {
-	webResearchServer := defaultWebResearchMCPServer(workspaceRoot)
 	sample := struct {
 		AutoCheckpointEdits *bool                     `json:"auto_checkpoint_edits,omitempty"`
 		AutoVerify          *bool                     `json:"auto_verify,omitempty"`
@@ -1812,7 +1901,6 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
 		RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
 		ProgressDisplay     string                    `json:"progress_display,omitempty"`
-		ModelRoutes         ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
 		ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
 		ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
 		ReadCacheEntries    int                       `json:"read_cache_entries,omitempty"`
@@ -1820,11 +1908,8 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		CMakePath           string                    `json:"cmake_path,omitempty"`
 		CTestPath           string                    `json:"ctest_path,omitempty"`
 		NinjaPath           string                    `json:"ninja_path,omitempty"`
-		HooksEnabled        *bool                     `json:"hooks_enabled,omitempty"`
-		HookPresets         []string                  `json:"hook_presets,omitempty"`
 		SkillPaths          []string                  `json:"skill_paths,omitempty"`
 		EnabledSkills       []string                  `json:"enabled_skills,omitempty"`
-		MCPServers          []MCPServerConfig         `json:"mcp_servers,omitempty"`
 		Specialists         SpecialistSubagentsConfig `json:"specialists,omitempty"`
 		WorktreeIsolation   WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
 	}{
@@ -1834,33 +1919,15 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
 		ProgressDisplay:     "stream",
-		ModelRoutes: ModelRouteSchedulerConfig{
-			Enabled:              boolPtr(true),
-			DefaultMaxConcurrent: 4,
-			ProviderLimits: map[string]int{
-				"codex-cli":    1,
-				"deepseek":     2,
-				"lmstudio":     1,
-				"ollama":       1,
-				"opencode":     1,
-				"opencode-go":  1,
-				"openrouter":   2,
-				"openai-codex": 2,
-				"llama.cpp":    1,
-				"vllm":         1,
-			},
-		},
-		ShellTimeoutSecs: currentDefaultShellTimeoutSecs,
-		ReadHintSpans:    defaultReadHintSpans,
-		ReadCacheEntries: defaultReadCacheEntries,
-		MSBuildPath:      "",
-		CMakePath:        "",
-		CTestPath:        "",
-		NinjaPath:        "",
-		HooksEnabled:     boolPtr(true),
-		HookPresets:      []string{},
-		SkillPaths:       []string{"./.kernforge/skills"},
-		EnabledSkills:    []string{},
+		ShellTimeoutSecs:    currentDefaultShellTimeoutSecs,
+		ReadHintSpans:       defaultReadHintSpans,
+		ReadCacheEntries:    defaultReadCacheEntries,
+		MSBuildPath:         "",
+		CMakePath:           "",
+		CTestPath:           "",
+		NinjaPath:           "",
+		SkillPaths:          []string{"./.kernforge/skills"},
+		EnabledSkills:       []string{},
 		Specialists: SpecialistSubagentsConfig{
 			Enabled:  boolPtr(true),
 			Profiles: []SpecialistSubagentProfile{},
@@ -1870,16 +1937,6 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 			RootDir:                filepath.Join("~", userConfigDirName, "worktrees"),
 			BranchPrefix:           "kernforge/",
 			AutoForTrackedFeatures: boolPtr(true),
-		},
-		MCPServers: []MCPServerConfig{
-			{
-				Name:     "example",
-				Command:  "node",
-				Args:     []string{"path/to/server.js"},
-				Cwd:      ".",
-				Disabled: true,
-			},
-			webResearchServer,
 		},
 	}
 	data, err := json.MarshalIndent(sample, "", "  ")
@@ -3200,9 +3257,9 @@ MCP and skills commands expose local skills plus external MCP tools, resources, 
 - Resolve an MCP prompt by server:name, with optional JSON arguments.
 
 Web research setup:
-- Mark web-capable MCP servers with capabilities like "web_search" and "web_fetch" in .kernforge/config.json.
-- You can also put keys like "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", and "SERPAPI_API_KEY" in mcp_servers[].env.
-- /init config enables the bundled web-research MCP by default when the script is available in the workspace or user config directory.
+- Mark web-capable MCP servers with capabilities like "web_search" and "web_fetch" in ~/.kernforge/config.json.
+- You can also put keys like "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", and "SERPAPI_API_KEY" in user-level mcp_servers[].env.
+- Workspace-local mcp_servers are ignored because project config is repository content and MCP servers launch host-local commands.
 - On startup, Kernforge deploys the bundled web-research MCP into ~/.kernforge/mcp/web-research-mcp.js and auto-adds that MCP to ~/.kernforge/config.json when no equivalent web-research server is configured yet.
 - Once a web-search/browser MCP is configured, Kernforge can prioritize it for latest/current research requests before local file inspection.
 `), true
