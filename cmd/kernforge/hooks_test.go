@@ -559,6 +559,81 @@ func TestLoadHookEngineBypassHookTrustLoadsWorkspaceFileForThisInvocation(t *tes
 	}
 }
 
+func TestLoadHookEngineUsesRootCheckoutHooksForLinkedWorktree(t *testing.T) {
+	ctx := context.Background()
+	repoRoot := t.TempDir()
+	if _, err := runGitCommand(ctx, repoRoot, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "config", "user.email", "test@example.invalid"); err != nil {
+		t.Fatalf("git config email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "config", "user.name", "Test User"); err != nil {
+		t.Fatalf("git config name: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("root\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile README: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "add", "README.md"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "commit", "-m", "initial"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	writeHookTestFile := func(root string, id string) {
+		t.Helper()
+		hooksDir := filepath.Join(root, userConfigDirName)
+		if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", hooksDir, err)
+		}
+		body := fmt.Sprintf(`{
+  "rules": [
+    {
+      "id": %q,
+      "enabled": true,
+      "events": ["PreToolUse"],
+      "match": {
+        "tool_names": ["run_shell"]
+      },
+      "action": {
+        "type": "warn",
+        "message": %q
+      }
+    }
+  ]
+}
+`, id, id)
+		if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(body), 0o644); err != nil {
+			t.Fatalf("WriteFile hook %s: %v", id, err)
+		}
+	}
+
+	writeHookTestFile(repoRoot, "root-hook")
+	linkedRoot := filepath.Join(t.TempDir(), "linked")
+	if _, err := runGitCommand(ctx, repoRoot, "worktree", "add", "-b", "linked-hooks", linkedRoot); err != nil {
+		t.Fatalf("git worktree add: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = runGitCommand(ctx, repoRoot, "worktree", "remove", "--force", linkedRoot)
+	})
+	writeHookTestFile(linkedRoot, "linked-hook")
+
+	cfg := DefaultConfig(linkedRoot)
+	hookRoot := projectHookRoot(linkedRoot)
+	markConfigProjectTrustedForTest(t, &cfg, hookRoot)
+	engine, warns := LoadHookEngine(linkedRoot, cfg)
+	if engine == nil || len(engine.Rules) != 1 {
+		t.Fatalf("expected exactly root hook rule, engine=%#v warns=%#v", engine, warns)
+	}
+	if engine.Rules[0].ID != "root-hook" {
+		t.Fatalf("expected root checkout hook, got %#v", engine.Rules)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "workspace hooks ignored") {
+		t.Fatalf("expected linked worktree hook warning, got %#v", warns)
+	}
+}
+
 func TestHookRuntimeInjectsRecentFailedEvidence(t *testing.T) {
 	root := t.TempDir()
 	evidence := &EvidenceStore{

@@ -195,7 +195,8 @@ func LoadHookEngine(root string, cfg Config) (*HookEngine, []string) {
 	}
 	engine := &HookEngine{Enabled: true}
 	var warns []string
-	projectTrusted := configProjectTrusted(cfg, root)
+	hookRoot := projectHookRoot(root)
+	projectTrusted := configProjectTrusted(cfg, hookRoot)
 	bypassHookTrust := configBypassHookTrust(cfg)
 	for _, preset := range cfg.HookPresets {
 		rules, err := builtinHookPresetRules(preset)
@@ -205,8 +206,11 @@ func LoadHookEngine(root string, cfg Config) (*HookEngine, []string) {
 		}
 		engine.Rules = append(engine.Rules, rules...)
 	}
-	if !projectTrusted && workspaceHookConfigExists(root) {
-		path := filepath.Join(root, userConfigDirName, "hooks.json")
+	if !sameFilePath(root, hookRoot) && workspaceHookConfigExists(root) {
+		warns = append(warns, fmt.Sprintf("workspace hooks ignored; using repository root checkout hooks from: %s", filepath.Join(hookRoot, userConfigDirName, "hooks.json")))
+	}
+	if !projectTrusted && workspaceHookConfigExists(hookRoot) {
+		path := filepath.Join(hookRoot, userConfigDirName, "hooks.json")
 		if bypassHookTrust {
 			warns = append(warns, fmt.Sprintf("dangerously-bypass-hook-trust is enabled; project-local hooks are eligible without saved trust for this invocation: %s", path))
 		} else {
@@ -240,10 +244,29 @@ func hookConfigSearchPaths(root string, cfg Config) []string {
 	paths := []string{
 		filepath.Join(userConfigDir(), "hooks.json"),
 	}
-	if configProjectTrusted(cfg, root) || configBypassHookTrust(cfg) {
-		paths = append(paths, filepath.Join(root, userConfigDirName, "hooks.json"))
+	hookRoot := projectHookRoot(root)
+	if configProjectTrusted(cfg, hookRoot) || configBypassHookTrust(cfg) {
+		paths = append(paths, filepath.Join(hookRoot, userConfigDirName, "hooks.json"))
 	}
 	return paths
+}
+
+func projectHookRoot(root string) string {
+	trimmed := strings.TrimSpace(root)
+	if trimmed == "" {
+		return root
+	}
+	entries, err := gitWorktreeList(trimmed)
+	if err != nil || len(entries) == 0 {
+		return trimmed
+	}
+	for _, entry := range entries {
+		if entry.Bare || strings.TrimSpace(entry.Root) == "" {
+			continue
+		}
+		return filepath.Clean(entry.Root)
+	}
+	return trimmed
 }
 
 func workspaceHookConfigExists(root string) bool {
