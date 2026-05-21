@@ -711,9 +711,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err
 		}
-		_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
-		_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
-		_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
+		suppressInteractiveWorkers := a.shouldSuppressInteractiveWorkersForTurn(latestUser)
+		if !suppressInteractiveWorkers {
+			_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
+			_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
+			_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
+		}
 		turnDisabledTools := cloneDisabledTools(disabledTools)
 		if verificationOutOfScopeFinalOnly {
 			disableAllTools(turnDisabledTools, a.Tools)
@@ -2009,9 +2012,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
 					})
 				}
-				_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
-				_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
-				_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
+				if !a.shouldSuppressInteractiveWorkersForTurn(latestUser) {
+					_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
+					_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
+					_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
+				}
 			}
 		}
 		if deferredMixedTools {
@@ -2754,6 +2759,16 @@ func generatedDocumentArtifactValidationToolGuidance() string {
 
 func generatedDocumentArtifactFinalOnlyPromptGuidance() string {
 	return "Generated document artifact finalization is answer-only now. The artifact content has already passed deterministic content checks or has an approved artifact harness report. Do not request or mention additional tool use, shell validation, review passes, or source inspection. Provide the final answer only, including an explicit statement when build/test verification was not run."
+}
+
+func (a *Agent) shouldSuppressInteractiveWorkersForTurn(request string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if requestLooksLikeLocalVerificationWork(strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))) {
+		return false
+	}
+	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
 func (a *Agent) shouldUseGeneratedDocumentArtifactFinalOnlyTools(request string, unresolvedVerification bool) bool {
@@ -7488,7 +7503,8 @@ func requestLooksLikeLocalVerificationWork(lowerLatestUser string) bool {
 	}
 	return containsAny(lowerLatestUser,
 		"verification command", "verify command", "run verification", "run tests", "run test", "run build", "build command", "test command",
-		"검증 명령", "검증 실행", "빌드 명령", "빌드 실행", "테스트 명령", "테스트 실행",
+		"verify", "validation", "validate", "smoke test", "test it", "build it",
+		"검증 명령", "검증 실행", "검증해", "검증하", "빌드 명령", "빌드 실행", "빌드해", "빌드하", "테스트 명령", "테스트 실행", "테스트해", "테스트하",
 	)
 }
 
