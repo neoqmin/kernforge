@@ -10284,6 +10284,99 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHa
 	}
 }
 
+func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHarnessReport(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	listTool := &staticTool{name: "list_files", output: "list should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{
+						{
+							ID:        "call-read-before-harness",
+							Name:      "read_file",
+							Arguments: `{"path":"Tavern/BugReport.md"}`,
+						},
+						{
+							ID:        "call-list-before-harness",
+							Name:      "list_files",
+							Arguments: `{"path":"Tavern"}`,
+						},
+					},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), readTool, listTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized document-artifact final reply, got %q", reply)
+	}
+	if readTool.calls != 0 || listTool.calls != 0 {
+		t.Fatalf("inspection tools should be blocked for generated document post-completion churn, read=%d list=%d", readTool.calls, listTool.calls)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected runtime to synthesize final answer without another model turn, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected blocked inspection tools to trigger an approved artifact harness report, got %#v", session.LastCodingHarnessReport)
+	}
+	if sessionContainsToolResultText(session, "call-read-before-harness", "read should not run") ||
+		sessionContainsToolResultText(session, "call-list-before-harness", "list should not run") {
+		t.Fatalf("blocked inspection tool unexpectedly executed, messages=%#v", session.Messages)
+	}
+}
+
 func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
