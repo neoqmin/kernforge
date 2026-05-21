@@ -1308,11 +1308,116 @@ func TestGetGoalToolReturnsNullResponseWhenNoGoalExists(t *testing.T) {
 	}
 }
 
+func TestAgentAccountsActiveGoalProgressAfterToolCompletion(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{
+		ID:          "goal-progress",
+		Objective:   "finish accounting",
+		Status:      goalStatusActive,
+		TokenBudget: 1000000,
+		CreatedAt:   time.Now().Add(-2 * time.Second),
+		UpdatedAt:   time.Now().Add(-2 * time.Second),
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	session.AddMessage(Message{Role: "user", Text: strings.Repeat("progress ", 64)})
+	agent := &Agent{Session: session}
+
+	agent.accountGoalProgressAfterTool(ToolCall{Name: "read_file"})
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.TokenUsedEstimate <= 0 {
+		t.Fatalf("expected tool completion to refresh token usage, got %#v", active)
+	}
+	if active.TimeUsedSeconds <= 0 {
+		t.Fatalf("expected tool completion to refresh elapsed time, got %#v", active)
+	}
+	if active.Status != goalStatusActive {
+		t.Fatalf("expected goal to remain active, got %#v", active)
+	}
+}
+
+func TestAgentMarksGoalBudgetLimitedAfterToolAccounting(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{
+		ID:          "goal-budget",
+		Objective:   "finish accounting",
+		Status:      goalStatusActive,
+		TokenBudget: 1,
+		CreatedAt:   time.Now().Add(-2 * time.Second),
+		UpdatedAt:   time.Now().Add(-2 * time.Second),
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	session.AddMessage(Message{Role: "user", Text: strings.Repeat("budget ", 64)})
+	agent := &Agent{Session: session}
+
+	agent.accountGoalProgressAfterTool(ToolCall{Name: "grep"})
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.Status != goalStatusBudgetLimited || !strings.Contains(active.LastError, "goal exceeded token budget estimate") {
+		t.Fatalf("expected budget-limited goal, got %#v", active)
+	}
+	if len(session.ConversationEvents) == 0 {
+		t.Fatalf("expected budget transition event")
+	}
+}
+
+func TestAgentDoesNotDoubleAccountUpdateGoalToolCompletion(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{
+		ID:          "goal-update-tool",
+		Objective:   "finish accounting",
+		Status:      goalStatusActive,
+		TokenBudget: 1,
+		CreatedAt:   time.Now().Add(-2 * time.Second),
+		UpdatedAt:   time.Now().Add(-2 * time.Second),
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	session.AddMessage(Message{Role: "user", Text: strings.Repeat("update ", 64)})
+	agent := &Agent{Session: session}
+
+	agent.accountGoalProgressAfterTool(ToolCall{Name: "update_goal"})
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.Status != goalStatusActive || active.LastError != "" || active.TokenUsedEstimate != goal.TokenUsedEstimate {
+		t.Fatalf("update_goal accounting should be handled by the tool itself, got %#v", active)
+	}
+}
+
 func TestBuildRegistryIncludesCodexGoalTools(t *testing.T) {
-	registry := buildRegistry(Workspace{}, nil)
+	root := t.TempDir()
+	registry := buildRegistry(Workspace{
+		BaseRoot:    root,
+		Root:        root,
+		GoalSession: NewSession(root, "provider", "model", "", "default"),
+		GoalStore:   NewSessionStore(filepath.Join(root, "sessions")),
+	}, nil)
 	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
 		if _, ok := registry.tools[name]; !ok {
 			t.Fatalf("registry missing %s", name)
+		}
+	}
+}
+
+func TestBuildRegistryOmitsGoalToolsWithoutPersistentGoalState(t *testing.T) {
+	registry := buildRegistry(Workspace{}, nil)
+	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
+		if _, ok := registry.tools[name]; ok {
+			t.Fatalf("registry should omit %s without session/store-backed goal state", name)
 		}
 	}
 }

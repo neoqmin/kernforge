@@ -1645,6 +1645,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			a.setToolExecutionResult(toolMsgIndex, toolMsg)
 			a.noteToolExecutionResultDetailed(call, result, err)
+			a.accountGoalProgressAfterTool(call)
 			if err == nil && preWriteReviewRequiresReanchor && preWriteReviewReanchorTool(call) {
 				preWriteReviewRequiresReanchor = false
 				preWriteReviewReanchorBlocks = 0

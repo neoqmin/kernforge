@@ -68,6 +68,44 @@ func primeGoalSessionState(session *Session, goal *GoalState, reason string, rev
 	session.ensureSharedPlanInProgress()
 }
 
+func (a *Agent) accountGoalProgressAfterTool(call ToolCall) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(call.Name), "update_goal") {
+		return
+	}
+	index, ok := a.Session.GoalIndex("active")
+	if !ok {
+		return
+	}
+	goal := a.Session.Goals[index]
+	goal.Normalize()
+	if goal.Status != goalStatusActive {
+		return
+	}
+	previousStatus := goal.Status
+	goal.updateUsageTelemetry(a.Session)
+	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
+		goal.Status = goalStatusBudgetLimited
+		goal.LastError = fmt.Sprintf("goal exceeded token budget estimate (%d > %d)", goal.TokenUsedEstimate, goal.TokenBudget)
+	}
+	goal.Touch()
+	a.Session.UpsertGoal(goal)
+	if previousStatus != goal.Status {
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:     conversationEventKindGoal,
+			Severity: goalEventSeverity(goal),
+			Summary:  fmt.Sprintf("goal status changed: %s", goal.Status),
+			Entities: map[string]string{
+				"goal":   goal.ID,
+				"status": goal.Status,
+				"tool":   strings.TrimSpace(call.Name),
+			},
+		})
+	}
+}
+
 func (rt *runtimeState) goalReviewerProfileLabel() string {
 	if rt == nil || rt.agent == nil {
 		return ""
