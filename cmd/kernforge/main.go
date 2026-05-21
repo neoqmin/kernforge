@@ -222,6 +222,18 @@ func run(args []string) error {
 		return fmt.Errorf("-profile and -p specify different config profiles (%q and %q)", profileFlag, profileShortFlag)
 	}
 	profileFlag = firstNonBlankString(profileFlag, profileShortFlag)
+	if fs.NArg() > 0 && strings.EqualFold(strings.TrimSpace(fs.Arg(0)), "doctor") {
+		return runKernforgeDoctorCommand(cwd, fs.Args()[1:], kernforgeDoctorOptions{
+			StrictConfig:       strictConfig,
+			Profile:            profileFlag,
+			ProviderOverride:   providerFlag,
+			ModelOverride:      modelFlag,
+			BaseURLOverride:    baseURLFlag,
+			PermissionOverride: permissionFlag,
+			ForceBypass:        yesFlag,
+			BypassHookTrust:    bypassHookTrust,
+		})
+	}
 	cfg, err := LoadConfigWithOptions(cwd, ConfigLoadOptions{StrictConfig: strictConfig, Profile: profileFlag})
 	if err != nil {
 		return err

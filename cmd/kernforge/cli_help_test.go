@@ -14,8 +14,10 @@ func TestKernforgeCLIHelpRequestRecognizesCommonForms(t *testing.T) {
 		{args: []string{"--help"}, wantOK: true, wantTopic: ""},
 		{args: []string{"/help"}, wantOK: true, wantTopic: ""},
 		{args: []string{"help", "mcp"}, wantOK: true, wantTopic: "mcp"},
+		{args: []string{"help", "doctor"}, wantOK: true, wantTopic: "doctor"},
 		{args: []string{"-cwd", `C:\repo\driver`, "help", "mcp"}, wantOK: true, wantTopic: "mcp"},
 		{args: []string{"daemon", "help"}, wantOK: true, wantTopic: "daemon"},
+		{args: []string{"doctor", "help"}, wantOK: true, wantTopic: "doctor"},
 		{args: []string{"-cwd", `C:\repo\driver`, "daemon", "--help"}, wantOK: true, wantTopic: "daemon"},
 		{args: []string{"-mcp-server", "--help"}, wantOK: true, wantTopic: "mcp"},
 		{args: []string{"-prompt", "--help"}, wantOK: true, wantTopic: "standalone"},
@@ -63,7 +65,9 @@ func TestKernforgeGeneralHelpIncludesStandaloneAndMCPUsage(t *testing.T) {
 		"-dangerously-bypass-hook-trust",
 		"--version",
 		"You usually do not need daemon mode",
+		"kernforge doctor [--summary|--json]",
 		`"args": ["-mcp-server", "-cwd", "C:\\repo\\driver"]`,
+		"kernforge help doctor",
 		"kernforge help mcp",
 	} {
 		if !strings.Contains(text, needle) {
@@ -90,5 +94,9 @@ func TestKernforgeTopicHelp(t *testing.T) {
 	standalone := renderKernforgeCLIHelp("standalone")
 	if !strings.Contains(standalone, "Interactive REPL") || !strings.Contains(standalone, "One-shot prompt") {
 		t.Fatalf("expected standalone topic help, got:\n%s", standalone)
+	}
+	doctor := renderKernforgeCLIHelp("doctor")
+	if !strings.Contains(doctor, "kernforge doctor --json") || !strings.Contains(doctor, "Reported areas") {
+		t.Fatalf("expected doctor topic help, got:\n%s", doctor)
 	}
 }

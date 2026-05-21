@@ -23,6 +23,11 @@ func kernforgeCLIHelpRequest(args []string) (bool, string) {
 			return true, "daemon"
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(positionals[0]), "doctor") {
+		if len(positionals) > 1 && isKernforgeHelpToken(positionals[1]) {
+			return true, "doctor"
+		}
+	}
 	return false, ""
 }
 
@@ -91,6 +96,8 @@ func inferKernforgeHelpTopic(args []string) string {
 		switch trimmed {
 		case "daemon":
 			return "daemon"
+		case "doctor":
+			return "doctor"
 		case "-mcp-server", "--mcp-server", "-mcp-daemon-proxy", "--mcp-daemon-proxy":
 			return "mcp"
 		case "-prompt", "--prompt", "-command", "--command", "-goal", "--goal", "-goal-file", "--goal-file":
@@ -160,6 +167,8 @@ func kernforgeFlagConsumesHelpValue(arg string) bool {
 
 func renderKernforgeCLIHelp(topic string) string {
 	switch strings.ToLower(strings.TrimSpace(topic)) {
+	case "doctor", "diagnostics":
+		return kernforgeDoctorHelpText()
 	case "mcp", "mcp-server", "server":
 		return kernforgeMCPHelpText()
 	case "daemon", "proxy":
@@ -196,6 +205,9 @@ Usage:
   kernforge daemon <start|run|status|stop> [options]
       Advanced: manage the local daemon used by optional shared MCP proxy mode.
 
+  kernforge doctor [--summary|--json] [options]
+      Print local runtime, config, MCP, auth, state, and daemon diagnostics.
+
 Common options:
   -cwd <dir>                  Workspace root. Default: current directory.
   -provider <name>            Provider override for this process.
@@ -219,6 +231,8 @@ Standalone examples:
   kernforge -prompt "Review the IOCTL path and suggest tests"
   kernforge -command "/analyze-project --mode security"
   kernforge -goal-file .kernforge\goals\stabilize.md
+  kernforge doctor
+  kernforge doctor --json
 
 MCP client setup, recommended:
   kernforge -mcp-server -cwd C:\repo\driver
@@ -240,9 +254,41 @@ Meaning:
 
 More help:
   kernforge help standalone
+  kernforge help doctor
   kernforge help mcp
   kernforge help daemon
   Inside the REPL: /help, /help mcp, /help analyze-project
+`) + "\n"
+}
+
+func kernforgeDoctorHelpText() string {
+	return strings.TrimSpace(`
+Kernforge doctor usage
+
+Commands:
+  kernforge doctor
+      Print a detailed local diagnostic report.
+
+  kernforge doctor --summary
+      Print compact diagnostics with the same grouped checks.
+
+  kernforge doctor --json
+      Print a redacted JSON diagnostic report for support and issue reports.
+
+Useful options:
+  -cwd <dir>
+  -profile, -p <name>
+  -provider <name>
+  -model <name>
+  -base-url <url>
+  -permission-mode <mode>
+  -strict-config
+
+Reported areas:
+  - Environment: runtime, helper commands, workspace, session state.
+  - Configuration: config load status, auth, MCP, permissions.
+  - Connectivity: local network/proxy environment.
+  - Background Server: daemon state and health.
 `) + "\n"
 }
 
