@@ -68,6 +68,7 @@ type runtimeState struct {
 	detectVerificationToolPath func(string) string
 	goalReply                  func(context.Context, string) (string, error)
 	interactive                bool
+	strictConfig               bool
 	outputMu                   sync.Mutex
 	footerVisible              bool
 	footerLineCount            int
@@ -152,6 +153,7 @@ func run(args []string) error {
 		resumeFlag        string
 		permissionFlag    string
 		yesFlag           bool
+		strictConfigFlag  bool
 		mcpServerFlag     bool
 		mcpDaemonProxy    bool
 	)
@@ -178,6 +180,7 @@ func run(args []string) error {
 	fs.StringVar(&resumeFlag, "resume", "", "resume session by id")
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
+	fs.BoolVar(&strictConfigFlag, "strict-config", false, "fail on unknown configuration fields")
 	fs.BoolVar(&mcpServerFlag, "mcp-server", false, "run KernForge as a stdio MCP server")
 	fs.BoolVar(&mcpDaemonProxy, "mcp-daemon-proxy", false, "proxy stdio MCP requests through the local KernForge daemon")
 
@@ -205,7 +208,8 @@ func run(args []string) error {
 		return RunTextViewerWindow(strings.TrimSpace(viewerFileFlag), strings.TrimSpace(viewerResultFlag))
 	}
 
-	cfg, err := LoadConfig(cwd)
+	strictConfig := strictConfigFlag || strictConfigEnvEnabled()
+	cfg, err := LoadConfigWithOptions(cwd, ConfigLoadOptions{StrictConfig: strictConfig})
 	if err != nil {
 		return err
 	}
@@ -264,6 +268,7 @@ func run(args []string) error {
 				ForceBypass:    yesFlag,
 			},
 			LoadWorkspaceConfig: true,
+			StrictConfig:        strictConfig,
 		})
 	}
 	if mcpServerFlag {
@@ -279,6 +284,7 @@ func run(args []string) error {
 				ForceBypass:    yesFlag,
 			},
 			LoadWorkspaceConfig: true,
+			StrictConfig:        strictConfig,
 		})
 	}
 
@@ -327,6 +333,7 @@ func run(args []string) error {
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
 		modelRoutes:    defaultModelRouteScheduler(),
+		strictConfig:   strictConfig,
 		interactive:    runtimeShouldUseInteractiveLoop(promptFlag, commandFlag, goalFlag, goalFileFlag),
 	}
 	defer rt.closeExtensions()
@@ -9216,7 +9223,9 @@ func (rt *runtimeState) closeExtensions() {
 }
 
 func (rt *runtimeState) reloadRuntimeConfig() error {
-	loaded, err := LoadConfig(rt.workspace.BaseRoot)
+	loaded, err := LoadConfigWithOptions(rt.workspace.BaseRoot, ConfigLoadOptions{
+		StrictConfig: rt.strictConfig,
+	})
 	if err != nil {
 		return err
 	}

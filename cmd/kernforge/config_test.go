@@ -128,6 +128,168 @@ func TestConfigParsesOpaqueDesktopNamespace(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWithStrictConfigRejectsUnknownRootField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"model":"gpt-5","modle":"typo"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{StrictConfig: true})
+	if err == nil {
+		t.Fatalf("expected strict config to reject unknown root field")
+	}
+	if !strings.Contains(err.Error(), "unknown configuration field `modle`") {
+		t.Fatalf("expected unknown field error, got %v", err)
+	}
+}
+
+func TestLoadConfigWithStrictConfigRejectsUnknownNestedField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	input := `{
+		"profiles": [
+			{
+				"name": "work",
+				"role_models": {
+					"analysis_worker": {
+						"name": "worker",
+						"provider": "openai",
+						"model": "gpt-5",
+						"unexpected": true
+					}
+				}
+			}
+		]
+	}`
+	if err := os.WriteFile(configPath, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{StrictConfig: true})
+	if err == nil {
+		t.Fatalf("expected strict config to reject unknown nested field")
+	}
+	if !strings.Contains(err.Error(), "unknown configuration field `profiles.0.role_models.analysis_worker.unexpected`") {
+		t.Fatalf("expected nested unknown field error, got %v", err)
+	}
+}
+
+func TestLoadConfigWithStrictConfigAllowsOpaqueDesktopNamespace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	input := `{
+		"desktop": {
+			"theme": "dark",
+			"unknownNested": {
+				"stillAllowed": true
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{StrictConfig: true})
+	if err != nil {
+		t.Fatalf("strict config should allow opaque desktop namespace: %v", err)
+	}
+	nested, ok := cfg.Desktop["unknownNested"].(map[string]any)
+	if !ok || nested["stillAllowed"] != true {
+		t.Fatalf("expected opaque desktop namespace to load, got %#v", cfg.Desktop)
+	}
+}
+
+func TestLoadConfigUsesStrictConfigEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KERNFORGE_STRICT_CONFIG", "1")
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"unknown_from_env":true}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := LoadConfig(workspace)
+	if err == nil {
+		t.Fatalf("expected KERNFORGE_STRICT_CONFIG to enable strict config parsing")
+	}
+	if !strings.Contains(err.Error(), "unknown configuration field `unknown_from_env`") {
+		t.Fatalf("expected unknown env field error, got %v", err)
+	}
+}
+
+func TestRunStrictConfigFlagRejectsUnknownConfigField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"unknown_from_flag":true}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := run([]string{"-cwd", workspace, "-strict-config", "-prompt", "hello"})
+	if err == nil {
+		t.Fatalf("expected -strict-config to reject unknown config field")
+	}
+	if !strings.Contains(err.Error(), "unknown configuration field `unknown_from_flag`") {
+		t.Fatalf("expected unknown flag field error, got %v", err)
+	}
+}
+
+func TestLoadConfigWithStrictConfigRejectsUnknownWorkspaceField(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	cfg := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfg, workspace)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	workspaceConfigPath := filepath.Join(workspace, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(workspaceConfigPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(workspaceConfigPath, []byte(`{"project_analysis":{"unexpected":true}}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{StrictConfig: true})
+	if err == nil {
+		t.Fatalf("expected strict config to reject unknown workspace field")
+	}
+	if !strings.Contains(err.Error(), "unknown configuration field `project_analysis.unexpected`") {
+		t.Fatalf("expected workspace unknown field error, got %v", err)
+	}
+}
+
 func TestInitWorkspaceConfigTemplateOmitsMCPServersEvenWhenDeployedWebResearchExists(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

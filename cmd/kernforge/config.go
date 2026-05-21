@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -255,6 +256,10 @@ type Config struct {
 	Desktop                  map[string]any                `json:"desktop,omitempty"`
 }
 
+type ConfigLoadOptions struct {
+	StrictConfig bool
+}
+
 type Profile struct {
 	Name            string             `json:"name"`
 	Provider        string             `json:"provider"`
@@ -317,6 +322,12 @@ func DefaultConfig(cwd string) Config {
 }
 
 func LoadConfig(cwd string) (Config, error) {
+	return LoadConfigWithOptions(cwd, ConfigLoadOptions{
+		StrictConfig: strictConfigEnvEnabled(),
+	})
+}
+
+func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error) {
 	cfg := DefaultConfig(cwd)
 	for index, path := range configSearchPaths(cwd) {
 		source := configSourceUser
@@ -326,7 +337,7 @@ func LoadConfig(cwd string) (Config, error) {
 		if source == configSourceWorkspace && !configProjectTrusted(cfg, cwd) {
 			continue
 		}
-		if err := mergeConfigFileForSource(&cfg, path, source); err != nil {
+		if err := mergeConfigFileForSourceWithOptions(&cfg, path, source, options); err != nil {
 			return cfg, err
 		}
 	}
@@ -341,6 +352,19 @@ func LoadConfig(cwd string) (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+func strictConfigEnvEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("KERNFORGE_STRICT_CONFIG"))
+	if raw == "" {
+		return false
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyReasoningEffortEnvOverride(cfg *Config) {
@@ -695,6 +719,10 @@ func mergeConfigFile(cfg *Config, path string) error {
 }
 
 func mergeConfigFileForSource(cfg *Config, path string, source configSourceKind) error {
+	return mergeConfigFileForSourceWithOptions(cfg, path, source, ConfigLoadOptions{})
+}
+
+func mergeConfigFileForSourceWithOptions(cfg *Config, path string, source configSourceKind, options ConfigLoadOptions) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -704,10 +732,10 @@ func mergeConfigFileForSource(cfg *Config, path string, source configSourceKind)
 	}
 	dataForDecode := sanitizeConfigDataForSource(data, source)
 	var patch Config
-	if err := json.Unmarshal(dataForDecode, &patch); err != nil {
+	if err := decodeConfigPatchJSON(dataForDecode, &patch, options.StrictConfig); err != nil {
 		if repaired, ok := repairAppendedMCPSnippetConfigJSON(data); ok {
 			repairedForDecode := sanitizeConfigDataForSource(repaired, source)
-			if repairErr := json.Unmarshal(repairedForDecode, &patch); repairErr == nil {
+			if repairErr := decodeConfigPatchJSON(repairedForDecode, &patch, options.StrictConfig); repairErr == nil {
 				_ = os.WriteFile(path, repaired, 0o644)
 				sanitizeConfigPatchForSource(&patch, source)
 				mergeConfig(cfg, patch)
@@ -719,6 +747,98 @@ func mergeConfigFileForSource(cfg *Config, path string, source configSourceKind)
 	sanitizeConfigPatchForSource(&patch, source)
 	mergeConfig(cfg, patch)
 	return nil
+}
+
+func decodeConfigPatchJSON(data []byte, patch *Config, strict bool) error {
+	if err := json.Unmarshal(data, patch); err != nil {
+		return err
+	}
+	if !strict {
+		return nil
+	}
+	return validateStrictConfigJSON(data, reflect.TypeOf(Config{}))
+}
+
+func validateStrictConfigJSON(data []byte, target reflect.Type) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if path, ok := firstUnknownJSONConfigPath(raw, target, nil); ok {
+		return fmt.Errorf("unknown configuration field `%s`", strings.Join(path, "."))
+	}
+	return nil
+}
+
+func firstUnknownJSONConfigPath(value any, target reflect.Type, path []string) ([]string, bool) {
+	target = unwrapStrictConfigType(target)
+	switch target.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		fields := strictConfigJSONFields(target)
+		for key, child := range object {
+			field, ok := fields[key]
+			if !ok {
+				return append(append([]string(nil), path...), key), true
+			}
+			if childPath, ok := firstUnknownJSONConfigPath(child, field.Type, append(path, key)); ok {
+				return childPath, true
+			}
+		}
+	case reflect.Map:
+		if target.Elem().Kind() == reflect.Interface {
+			return nil, false
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		for key, child := range object {
+			if childPath, ok := firstUnknownJSONConfigPath(child, target.Elem(), append(path, key)); ok {
+				return childPath, true
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		items, ok := value.([]any)
+		if !ok {
+			return nil, false
+		}
+		for index, child := range items {
+			if childPath, ok := firstUnknownJSONConfigPath(child, target.Elem(), append(path, strconv.Itoa(index))); ok {
+				return childPath, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func unwrapStrictConfigType(target reflect.Type) reflect.Type {
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	return target
+}
+
+func strictConfigJSONFields(target reflect.Type) map[string]reflect.StructField {
+	fields := map[string]reflect.StructField{}
+	for i := 0; i < target.NumField(); i++ {
+		field := target.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := field.Name
+		if tag := field.Tag.Get("json"); tag != "" {
+			name = strings.Split(tag, ",")[0]
+		}
+		if name == "-" || name == "" {
+			continue
+		}
+		fields[name] = field
+	}
+	return fields
 }
 
 func sanitizeConfigDataForSource(data []byte, source configSourceKind) []byte {

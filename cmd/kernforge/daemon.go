@@ -62,7 +62,7 @@ func runKernforgeDaemonCommand(cwd string, cfg Config, resumeID string, args []s
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
 	case "start":
-		return startKernforgeDaemon(cwd, args[1:])
+		return startKernforgeDaemon(cwd, options.StrictConfig, args[1:])
 	case "run":
 		return runKernforgeDaemon(cwd, cfg, resumeID, options)
 	case "status":
@@ -125,7 +125,7 @@ func runKernforgeDaemon(cwd string, cfg Config, resumeID string, options mcpServ
 	return nil
 }
 
-func startKernforgeDaemon(cwd string, args []string) error {
+func startKernforgeDaemon(cwd string, strictConfig bool, args []string) error {
 	if state, ok := readKernforgeDaemonState(); ok {
 		if _, err := kernforgeDaemonHealth(state, 2*time.Second); err == nil {
 			fmt.Fprintf(os.Stdout, "KernForge daemon already running at %s pid=%d\n", state.Addr, state.PID)
@@ -142,6 +142,9 @@ func startKernforgeDaemon(cwd string, args []string) error {
 	childArgs := []string{}
 	if strings.TrimSpace(cwd) != "" {
 		childArgs = append(childArgs, "-cwd", cwd)
+	}
+	if strictConfig {
+		childArgs = append(childArgs, "-strict-config")
 	}
 	childArgs = append(childArgs, "daemon", "run")
 	cmd := exec.Command(exe, childArgs...)
@@ -337,7 +340,7 @@ func (d *kernforgeDaemonServer) ensureServer(workspace string, source string) (*
 	if runtime == nil {
 		cfg := d.fallbackConfig
 		if d.options.LoadWorkspaceConfig && !samePath(resolved, d.fallbackCWD) {
-			if workspaceCfg, err := LoadConfig(resolved); err == nil {
+			if workspaceCfg, err := LoadConfigWithOptions(resolved, ConfigLoadOptions{StrictConfig: d.options.StrictConfig}); err == nil {
 				cfg = workspaceCfg
 			}
 		}

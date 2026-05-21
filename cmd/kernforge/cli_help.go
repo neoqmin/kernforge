@@ -202,6 +202,7 @@ Common options:
   -permission-mode <mode>     default | acceptEdits | plan | bypassPermissions.
   -resume <session-id>        Resume an existing session.
   -y                          Use bypass permission mode.
+  -strict-config              Fail fast on unknown config.json fields.
   --version                   Show the Kernforge PE file version and exit.
   -h, --help, help            Show this help.
 
