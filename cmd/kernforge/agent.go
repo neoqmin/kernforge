@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -6901,31 +6902,86 @@ func mcpTurnMetadataSandboxTag(permissionMode string) string {
 	}
 }
 
+const mcpTurnMetadataGitCommandTimeout = 5 * time.Second
+
 func mcpTurnMetadataWorkspaces(cwd string) map[string]any {
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-	defer cancel()
-	repoRoot, err := gitRepositoryRoot(ctx, cwd)
-	if err != nil {
+	repoRoot := gitRepositoryRootFromFilesystem(cwd)
+	if repoRoot == "" {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), mcpTurnMetadataGitCommandTimeout)
+	defer cancel()
+
 	workspace := map[string]any{}
-	if head, ok := mcpTurnMetadataGitText(ctx, repoRoot, "rev-parse", "HEAD"); ok && head != "" {
-		workspace["latest_git_commit_hash"] = head
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	setWorkspaceValue := func(key string, value any) {
+		mu.Lock()
+		workspace[key] = value
+		mu.Unlock()
 	}
-	if status, ok := mcpTurnMetadataGitText(ctx, repoRoot, "status", "--porcelain"); ok {
-		workspace["has_changes"] = strings.TrimSpace(status) != ""
-	}
-	if remotes := mcpTurnMetadataRemoteURLs(ctx, repoRoot); len(remotes) > 0 {
-		workspace["associated_remote_urls"] = remotes
-	}
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		if head, ok := mcpTurnMetadataGitText(ctx, repoRoot, "rev-parse", "HEAD"); ok && head != "" {
+			setWorkspaceValue("latest_git_commit_hash", head)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if status, ok := mcpTurnMetadataGitText(ctx, repoRoot, "status", "--porcelain"); ok {
+			setWorkspaceValue("has_changes", strings.TrimSpace(status) != "")
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if remotes := mcpTurnMetadataRemoteURLs(ctx, repoRoot); len(remotes) > 0 {
+			setWorkspaceValue("associated_remote_urls", remotes)
+		}
+	}()
+	wg.Wait()
 	if len(workspace) == 0 {
 		return nil
 	}
 	return map[string]any{repoRoot: workspace}
+}
+
+func gitRepositoryRootFromFilesystem(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	candidate := filepath.Clean(path)
+	if !filepath.IsAbs(candidate) {
+		abs, err := filepath.Abs(candidate)
+		if err != nil {
+			return ""
+		}
+		candidate = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+		candidate = resolved
+	}
+	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+		candidate = filepath.Dir(candidate)
+	}
+	for {
+		if candidate == "" {
+			return ""
+		}
+		if _, err := os.Stat(filepath.Join(candidate, ".git")); err == nil {
+			return filepath.Clean(candidate)
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return ""
+		}
+		candidate = parent
+	}
 }
 
 func mcpTurnMetadataGitText(ctx context.Context, dir string, args ...string) (string, bool) {

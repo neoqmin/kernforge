@@ -367,6 +367,12 @@ func samePath(left string, right string) bool {
 	if left == "" || right == "" {
 		return left == right
 	}
+	if resolved, err := filepath.EvalSymlinks(left); err == nil {
+		left = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(right); err == nil {
+		right = resolved
+	}
 	leftAbs, leftErr := filepath.Abs(left)
 	rightAbs, rightErr := filepath.Abs(right)
 	if leftErr == nil {
