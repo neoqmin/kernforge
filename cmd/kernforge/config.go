@@ -156,6 +156,52 @@ func forcedChatGPTWorkspaceIDsDisplay(ids []string) string {
 	return strings.Join(normalized, ", ")
 }
 
+func mergeOpaqueConfigMaps(base map[string]any, overlay map[string]any) map[string]any {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	merged := map[string]any{}
+	for key, value := range base {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		merged[key] = cloneOpaqueConfigValue(value)
+	}
+	for key, value := range overlay {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if existing, ok := merged[key].(map[string]any); ok {
+			if next, ok := value.(map[string]any); ok {
+				merged[key] = mergeOpaqueConfigMaps(existing, next)
+				continue
+			}
+		}
+		merged[key] = cloneOpaqueConfigValue(value)
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func cloneOpaqueConfigValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return mergeOpaqueConfigMaps(nil, typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, cloneOpaqueConfigValue(item))
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
 type Config struct {
 	Provider                 string                        `json:"provider"`
 	Model                    string                        `json:"model"`
@@ -206,6 +252,7 @@ type Config struct {
 	Review                   ReviewHarnessConfig           `json:"review,omitempty"`
 	Specialists              SpecialistSubagentsConfig     `json:"specialists,omitempty"`
 	WorktreeIsolation        WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
+	Desktop                  map[string]any                `json:"desktop,omitempty"`
 }
 
 type Profile struct {
@@ -1073,6 +1120,9 @@ func mergeConfig(dst *Config, src Config) {
 		value := *src.WorktreeIsolation.AutoForTrackedFeatures
 		dst.WorktreeIsolation.AutoForTrackedFeatures = &value
 	}
+	if len(src.Desktop) > 0 {
+		dst.Desktop = mergeOpaqueConfigMaps(dst.Desktop, src.Desktop)
+	}
 }
 
 func applyEnv(cfg *Config) {
@@ -1181,6 +1231,7 @@ func normalizeConfigPaths(cfg *Config) {
 	cfg.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
 	cfg.ProgressDisplay = normalizeProgressDisplay(cfg.ProgressDisplay)
 	cfg.ForcedChatGPTWorkspaceID = normalizeForcedChatGPTWorkspaceIDs(cfg.ForcedChatGPTWorkspaceID)
+	cfg.Desktop = mergeOpaqueConfigMaps(nil, cfg.Desktop)
 	if cfg.SessionDir != "" {
 		cfg.SessionDir = expandHome(cfg.SessionDir)
 	}
@@ -1442,6 +1493,7 @@ func preserveExistingUserConfig(cfg *Config, opts saveUserConfigOptions) {
 	if opts.PreserveReviewRoleModels {
 		preserveExistingReviewRoleModels(cfg, existing)
 	}
+	cfg.Desktop = mergeOpaqueConfigMaps(existing.Desktop, cfg.Desktop)
 }
 
 func preserveExistingReviewRoleModels(cfg *Config, existing Config) {

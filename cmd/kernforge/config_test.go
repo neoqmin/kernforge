@@ -85,6 +85,49 @@ func TestConfigParsesForcedChatGPTWorkspaceIDs(t *testing.T) {
 	}
 }
 
+func TestConfigParsesOpaqueDesktopNamespace(t *testing.T) {
+	var cfg Config
+	input := []byte(`{
+		"desktop": {
+			"appearanceTheme": "dark",
+			"selected-avatar-id": "codex",
+			"recentViews": ["threads", "settings"],
+			"workspace": {
+				"collapsed": true,
+				"width": 320,
+				"pane": {
+					"selected": "console",
+					"expanded": false
+				}
+			}
+		}
+	}`)
+	if err := json.Unmarshal(input, &cfg); err != nil {
+		t.Fatalf("parse desktop namespace: %v", err)
+	}
+	if cfg.Desktop["appearanceTheme"] != "dark" {
+		t.Fatalf("expected desktop appearanceTheme to round-trip, got %#v", cfg.Desktop["appearanceTheme"])
+	}
+	if cfg.Desktop["selected-avatar-id"] != "codex" {
+		t.Fatalf("expected desktop selected-avatar-id to round-trip, got %#v", cfg.Desktop["selected-avatar-id"])
+	}
+	recentViews, ok := cfg.Desktop["recentViews"].([]any)
+	if !ok || len(recentViews) != 2 || recentViews[0] != "threads" || recentViews[1] != "settings" {
+		t.Fatalf("expected desktop recentViews to round-trip, got %#v", cfg.Desktop["recentViews"])
+	}
+	workspace, ok := cfg.Desktop["workspace"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected desktop workspace map, got %#v", cfg.Desktop["workspace"])
+	}
+	if workspace["collapsed"] != true || workspace["width"] != float64(320) {
+		t.Fatalf("expected desktop workspace values, got %#v", workspace)
+	}
+	pane, ok := workspace["pane"].(map[string]any)
+	if !ok || pane["selected"] != "console" || pane["expanded"] != false {
+		t.Fatalf("expected desktop workspace pane values, got %#v", workspace["pane"])
+	}
+}
+
 func TestInitWorkspaceConfigTemplateOmitsMCPServersEvenWhenDeployedWebResearchExists(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -902,6 +945,70 @@ func TestSaveUserConfigMergesNewProfilesWithExistingProfiles(t *testing.T) {
 		if !profileListContainsName(loaded.Profiles, want) {
 			t.Fatalf("expected main profiles to contain %q, got %#v", want, loaded.Profiles)
 		}
+	}
+}
+
+func TestSaveUserConfigPreservesOpaqueDesktopNamespace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+
+	existing := DefaultConfig(workspace)
+	existing.Desktop = map[string]any{
+		"appearanceTheme": "dark",
+		"recentViews": []any{
+			"threads",
+			"settings",
+		},
+		"workspace": map[string]any{
+			"collapsed": true,
+			"width":     float64(320),
+			"pane": map[string]any{
+				"selected": "console",
+				"expanded": false,
+			},
+		},
+	}
+	if err := SaveUserConfig(existing); err != nil {
+		t.Fatalf("SaveUserConfig existing: %v", err)
+	}
+
+	next := DefaultConfig(workspace)
+	next.Desktop = map[string]any{
+		"lastView": "reviews",
+		"workspace": map[string]any{
+			"width": float64(400),
+			"pane": map[string]any{
+				"selected": "diff",
+			},
+		},
+	}
+	if err := SaveUserConfig(next); err != nil {
+		t.Fatalf("SaveUserConfig next: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Desktop["appearanceTheme"] != "dark" || loaded.Desktop["lastView"] != "reviews" {
+		t.Fatalf("expected desktop root values to merge, got %#v", loaded.Desktop)
+	}
+	recentViews, ok := loaded.Desktop["recentViews"].([]any)
+	if !ok || len(recentViews) != 2 || recentViews[0] != "threads" || recentViews[1] != "settings" {
+		t.Fatalf("expected existing desktop recentViews to remain, got %#v", loaded.Desktop["recentViews"])
+	}
+	workspaceSettings, ok := loaded.Desktop["workspace"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected desktop workspace map, got %#v", loaded.Desktop["workspace"])
+	}
+	if workspaceSettings["collapsed"] != true || workspaceSettings["width"] != float64(400) {
+		t.Fatalf("expected merged desktop workspace values, got %#v", workspaceSettings)
+	}
+	pane, ok := workspaceSettings["pane"].(map[string]any)
+	if !ok || pane["selected"] != "diff" || pane["expanded"] != false {
+		t.Fatalf("expected merged desktop pane values, got %#v", workspaceSettings["pane"])
 	}
 }
 
