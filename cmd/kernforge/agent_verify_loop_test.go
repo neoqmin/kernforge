@@ -9829,10 +9829,18 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 		{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
 		{Name: "list_files", Arguments: `{"path":"Tavern"}`},
 		{Name: "grep", Arguments: `{"path":"Tavern/BugReport.md","pattern":"BUG-"}`},
-		{Name: "write_file", Arguments: `{"path":"Tavern/BugReport.md","content":"# report"}`},
 	} {
 		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
 			t.Fatalf("expected approved generated document artifact to block post-completion tool call %#v", call)
+		}
+	}
+	for _, call := range []ToolCall{
+		{Name: "write_file", Arguments: `{"path":"Tavern/BugReport.md","content":"# report"}`},
+		{Name: "replace_in_file", Arguments: `{"path":"Tavern/BugReport.md","old":"before","new":"after"}`},
+		{Name: "apply_patch", Arguments: `{"patch":"*** Begin Patch\n*** Update File: Tavern/BugReport.md\n@@\n-before\n+after\n*** End Patch\n"}`},
+	} {
+		if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
+			t.Fatalf("document artifact edit tool should not be classified as post-completion inspection churn: %#v", call)
 		}
 	}
 }
@@ -10342,6 +10350,12 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 		Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
 	}}) {
 		t.Fatalf("document artifact finalization must not classify edit tools as post-completion inspection churn")
+	}
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
+		Name:      "replace_in_file",
+		Arguments: `{"path":"Tavern/BugReport.md","old":"before","new":"after"}`,
+	}}) {
+		t.Fatalf("document artifact finalization must not classify replace_in_file as post-completion inspection churn")
 	}
 	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected approved document artifact harness to skip interactive final-answer review")

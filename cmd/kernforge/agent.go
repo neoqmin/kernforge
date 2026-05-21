@@ -2614,10 +2614,6 @@ func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
 
 func generatedDocumentArtifactPostCompletionToolCall(call ToolCall) bool {
 	name := strings.ToLower(strings.TrimSpace(call.Name))
-	switch name {
-	case "write_file", "replace_in_file":
-		return true
-	}
 	return name != "" && !isEditTool(name)
 }
 
