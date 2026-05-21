@@ -3,12 +3,129 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+type mutableRegistryTool struct {
+	def    ToolDefinition
+	output string
+}
+
+func (t *mutableRegistryTool) Definition() ToolDefinition {
+	if t == nil {
+		return ToolDefinition{}
+	}
+	return t.def
+}
+
+func (t *mutableRegistryTool) Execute(ctx context.Context, input any) (string, error) {
+	if t == nil {
+		return "", fmt.Errorf("nil mutable registry tool")
+	}
+	return t.output, nil
+}
+
+func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type": "string",
+			},
+		},
+	}
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        " mutable ",
+			Description: "registered description",
+			InputSchema: schema,
+		},
+		output: "ok",
+	}
+	registry := NewToolRegistry(tool)
+
+	tool.def.Description = "mutated description"
+	schema["type"] = "array"
+	schema["properties"].(map[string]any)["path"].(map[string]any)["type"] = "number"
+
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected one definition, got %d", len(defs))
+	}
+	if defs[0].Name != "mutable" {
+		t.Fatalf("expected trimmed registered name, got %q", defs[0].Name)
+	}
+	if defs[0].Description != "registered description" {
+		t.Fatalf("definition changed after registration: %q", defs[0].Description)
+	}
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	pathSchema := properties["path"].(map[string]any)
+	if defs[0].InputSchema["type"] != "object" || pathSchema["type"] != "string" {
+		t.Fatalf("schema was not snapshotted: %#v", defs[0].InputSchema)
+	}
+
+	defs[0].Description = "caller mutation"
+	defs[0].InputSchema["type"] = "caller mutation"
+
+	defs = registry.Definitions()
+	if defs[0].Description != "registered description" || defs[0].InputSchema["type"] != "object" {
+		t.Fatalf("returned definitions must not mutate registry snapshot: %#v", defs[0])
+	}
+
+	result, err := registry.ExecuteDetailed(context.Background(), "mutable", `{}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if result.DisplayText != "ok" {
+		t.Fatalf("expected registered tool to execute, got %q", result.DisplayText)
+	}
+}
+
+func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
+	var nilTool *mutableRegistryTool
+	first := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "dup",
+			Description: "first",
+		},
+		output: "first output",
+	}
+	second := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "dup",
+			Description: "second",
+		},
+		output: "second output",
+	}
+	blank := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "   ",
+		},
+		output: "blank output",
+	}
+
+	registry := NewToolRegistry(nilTool, first, second, blank)
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected only first valid unique tool definition, got %#v", defs)
+	}
+	if defs[0].Name != "dup" || defs[0].Description != "first" {
+		t.Fatalf("duplicate handling should keep the first registered spec, got %#v", defs[0])
+	}
+
+	result, err := registry.ExecuteDetailed(context.Background(), "dup", `{}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if result.DisplayText != "first output" {
+		t.Fatalf("duplicate handling should keep first executor, got %q", result.DisplayText)
+	}
+}
 
 func TestReadFileExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	root := t.TempDir()

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
@@ -55,23 +56,39 @@ type sharedToolHintsCapacityAware interface {
 }
 
 type ToolRegistry struct {
-	tools map[string]Tool
+	tools       map[string]Tool
+	definitions map[string]ToolDefinition
 }
 
 func NewToolRegistry(items ...Tool) *ToolRegistry {
 	sharedHints := &ToolHints{maxReadSpans: sharedToolHintsLimit(items)}
 	byName := make(map[string]Tool, len(items))
+	definitions := make(map[string]ToolDefinition, len(items))
 	for _, item := range items {
+		if isNilTool(item) {
+			continue
+		}
+		def := snapshotToolDefinition(item.Definition())
+		if def.Name == "" {
+			continue
+		}
+		if _, exists := byName[def.Name]; exists {
+			continue
+		}
 		if aware, ok := item.(sharedToolHintsAware); ok {
 			aware.setSharedToolHints(sharedHints)
 		}
-		byName[item.Definition().Name] = item
+		byName[def.Name] = item
+		definitions[def.Name] = def
 	}
-	return &ToolRegistry{tools: byName}
+	return &ToolRegistry{tools: byName, definitions: definitions}
 }
 
 func sharedToolHintsLimit(items []Tool) int {
 	for _, item := range items {
+		if isNilTool(item) {
+			continue
+		}
 		aware, ok := item.(sharedToolHintsCapacityAware)
 		if !ok {
 			continue
@@ -83,10 +100,56 @@ func sharedToolHintsLimit(items []Tool) int {
 	return defaultReadHintSpans
 }
 
+func isNilTool(tool Tool) bool {
+	if tool == nil {
+		return true
+	}
+	value := reflect.ValueOf(tool)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func snapshotToolDefinition(def ToolDefinition) ToolDefinition {
+	def.Name = strings.TrimSpace(def.Name)
+	def.InputSchema = cloneToolDefinitionMap(def.InputSchema)
+	def.OutputSchema = cloneToolDefinitionMap(def.OutputSchema)
+	return def
+}
+
+func cloneToolDefinitionMap(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for key, value := range src {
+		dst[key] = cloneToolDefinitionValue(value)
+	}
+	return dst
+}
+
+func cloneToolDefinitionValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneToolDefinitionMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneToolDefinitionValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
+}
+
 func (r *ToolRegistry) Definitions() []ToolDefinition {
-	out := make([]ToolDefinition, 0, len(r.tools))
-	for _, tool := range r.tools {
-		out = append(out, tool.Definition())
+	out := make([]ToolDefinition, 0, len(r.definitions))
+	for _, def := range r.definitions {
+		out = append(out, snapshotToolDefinition(def))
 	}
 	return out
 }
@@ -95,13 +158,12 @@ func (r *ToolRegistry) DefinitionsExcluding(disabled map[string]bool) []ToolDefi
 	if len(disabled) == 0 {
 		return r.Definitions()
 	}
-	out := make([]ToolDefinition, 0, len(r.tools))
-	for _, tool := range r.tools {
-		def := tool.Definition()
+	out := make([]ToolDefinition, 0, len(r.definitions))
+	for _, def := range r.definitions {
 		if disabled[strings.TrimSpace(def.Name)] {
 			continue
 		}
-		out = append(out, def)
+		out = append(out, snapshotToolDefinition(def))
 	}
 	return out
 }
