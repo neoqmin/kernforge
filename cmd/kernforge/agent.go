@@ -1356,6 +1356,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		for callIndex, call := range resp.Message.ToolCalls {
 			if err := ctx.Err(); err != nil {
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex, "NOT_EXECUTED: context canceled before this tool could run.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
 				return "", err
 			}
 			toolMsgIndex := -1
@@ -1623,6 +1627,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
 				return "", saveErr
+			}
+			if err := ctx.Err(); err != nil {
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: context canceled before this tool could run.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				return "", err
 			}
 			if err != nil && errors.Is(err, ErrEditCanceled) {
 				toolMsg.Text = "CANCELED: user canceled the edit preview. No files were changed."
