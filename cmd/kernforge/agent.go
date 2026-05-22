@@ -1439,6 +1439,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					IsError:    true,
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, nil)
 				sawToolResultThisTurn = true
 				deferredMixedTools = true
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -1457,6 +1458,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					IsError:    true,
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, errVerificationOutOfScopeFollowupBlocked)
 				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
 				if a.EmitProgress != nil {
 					a.EmitProgress(localizedText(a.Config, "Tool call blocked: verification already failed outside the current patch scope; final answer only.", "도구 호출을 차단했습니다: 검증이 현재 patch scope 밖에서 실패했으므로 최종 답변만 허용합니다."))
@@ -1485,6 +1487,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					IsError:    false,
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, nil)
 				a.noteToolExecutionResultDetailed(call, result, nil)
 				sawToolResultThisTurn = true
 				a.Session.AddMessage(Message{
@@ -1510,6 +1513,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					IsError:    true,
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, errVerificationOutOfScopeFollowupBlocked)
 				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
 				sawToolResultThisTurn = true
 				a.Session.AddMessage(Message{
@@ -1536,6 +1540,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					IsError:    true,
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, errPreWriteReviewReanchorRequired)
 				a.noteToolExecutionResultDetailed(call, result, errPreWriteReviewReanchorRequired)
 				sawToolResultThisTurn = true
 				a.Session.AddMessage(Message{
@@ -1563,6 +1568,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					IsError:    true,
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, ErrEditTargetMismatch)
 				a.noteToolExecutionResultDetailed(call, result, ErrEditTargetMismatch)
 				sawToolResultThisTurn = true
 				if editTargetMismatchReanchorBlocks > maxEditTargetMismatchReanchorBlocks {

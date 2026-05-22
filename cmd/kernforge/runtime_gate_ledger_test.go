@@ -171,6 +171,103 @@ func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutReques
 	}
 }
 
+func TestRuntimeGateBlocksUnknownPatchScopeForFinalAnswer(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 수정해",
+	}}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-unknown",
+		Goal:   "main.go를 수정해",
+		Status: patchTransactionStatusActive,
+		Warnings: []string{
+			"external_edit reported a workspace mutation without changed_paths metadata, so the changed file scope is unknown.",
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusBlocked || ledger.Ready {
+		t.Fatalf("expected unknown patch scope to block final answer, got %#v", ledger)
+	}
+	blockers := strings.Join(ledger.Blockers, " ")
+	if !strings.Contains(blockers, "unknown changed-file scope") ||
+		!strings.Contains(blockers, "without changed_paths") {
+		t.Fatalf("expected unknown scope blocker, got %#v", ledger.Blockers)
+	}
+	if len(ledger.NextCommands) == 0 || ledger.NextCommands[0].Command != "/review" {
+		t.Fatalf("expected /review recovery command, got %#v", ledger.NextCommands)
+	}
+	if !runtimeGateBlocksFinalAnswer(ledger, "작업 완료") {
+		t.Fatalf("expected undisclosed unknown scope blocker to block final answer")
+	}
+}
+
+func TestRuntimeGateUnknownPatchScopeOverridesDocumentArtifactBypass(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-doc-unknown",
+		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Status: patchTransactionStatusActive,
+		Warnings: []string{
+			"write_file reported a workspace mutation without changed_paths metadata, so the changed file scope is unknown.",
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusBlocked || ledger.Ready {
+		t.Fatalf("expected unknown patch scope to override document artifact bypass, got %#v", ledger)
+	}
+	if !strings.Contains(strings.Join(ledger.Blockers, " "), "unknown changed-file scope") {
+		t.Fatalf("expected unknown scope blocker, got %#v", ledger.Blockers)
+	}
+}
+
+func TestRuntimeGateReviewBlocksArchivedUnknownPatchScope(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-archived-unknown",
+		Goal:   "main.go를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Warnings: []string{
+			"apply_patch reported a workspace mutation without changed_paths metadata, so the changed file scope is unknown.",
+		},
+	}}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionReview)
+
+	if ledger.Status != runtimeGateStatusBlocked || ledger.Ready {
+		t.Fatalf("expected review gate to block archived unknown patch scope, got %#v", ledger)
+	}
+	if ledger.PatchTransactionID != "patch-archived-unknown" {
+		t.Fatalf("expected archived patch transaction to be linked, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {

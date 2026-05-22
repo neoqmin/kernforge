@@ -75,6 +75,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	if tx := runtimeGatePatchTransactionForAction(session, action); tx != nil {
 		ledger.PatchTransactionID = strings.TrimSpace(tx.ID)
 	}
+	runtimeGateAttachPatchTransactionScope(session, action, &ledger)
 	if session != nil && session.LastVerification != nil {
 		ledger.VerificationReportID = runtimeGateVerificationReportID(*session.LastVerification)
 	}
@@ -570,6 +571,34 @@ func runtimeGatePatchTransactionForAction(session *Session, action string) *Patc
 		return latestRuntimeGatePatchTransaction(session)
 	}
 	return nil
+}
+
+func runtimeGateAttachPatchTransactionScope(session *Session, action string, ledger *RuntimeGateLedger) {
+	if ledger == nil {
+		return
+	}
+	warnings := runtimeGatePatchTransactionScopeWarningsForAction(session, action)
+	if len(warnings) == 0 {
+		return
+	}
+	ledger.Blockers = append(ledger.Blockers, "patch transaction has unknown changed-file scope: "+strings.Join(limitStrings(warnings, 4), " | "))
+	ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+		ID:             "review",
+		Command:        "/review",
+		Reason:         "workspace mutation was recorded without changed_paths metadata",
+		Safety:         "read_only",
+		When:           "before final answer or git write",
+		ClientHint:     "Inspect the real workspace diff and rerun review with a known changed-file scope.",
+		ExpectedResult: "A fresh review transaction covers the actual changed files.",
+	})
+}
+
+func runtimeGatePatchTransactionScopeWarningsForAction(session *Session, action string) []string {
+	tx := runtimeGatePatchTransactionForAction(session, action)
+	if tx == nil {
+		return nil
+	}
+	return patchTransactionScopeWarnings(*tx)
 }
 
 func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger) {

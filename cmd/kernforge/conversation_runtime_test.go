@@ -613,6 +613,22 @@ func TestToolFailureRecordsCodexStyleEndEvent(t *testing.T) {
 	}
 }
 
+func TestBlockedToolLifecycleStatusesNormalizeToDeclined(t *testing.T) {
+	cases := []map[string]any{
+		{"command_execution_status": "blocked"},
+		{"command_execution_status": "blocked_out_of_scope"},
+		{"command_execution_status": "blocked_final_answer_only"},
+		{"patch_apply_status": "blocked"},
+		{"deferred": true},
+		{"requires_reissue": true},
+	}
+	for _, meta := range cases {
+		if got := toolLifecycleStatus(meta, nil, true); got != "declined" {
+			t.Fatalf("expected blocked/deferred status to normalize to declined, got %q for %#v", got, meta)
+		}
+	}
+}
+
 func TestCompactPreservesConversationWorkingMemoryForResume(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))

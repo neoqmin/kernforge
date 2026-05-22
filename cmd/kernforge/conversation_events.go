@@ -330,6 +330,11 @@ func (a *Agent) noteToolConversationFailureResult(call ToolCall, result ToolExec
 	a.appendCodexStyleToolLifecycleEnd(call, result, err, blocked)
 }
 
+func (a *Agent) noteToolConversationBlockedResult(call ToolCall, result ToolExecutionResult, err error) {
+	a.noteToolConversationStart(call)
+	a.noteToolConversationFailureResult(call, result, err, true)
+}
+
 func (a *Agent) appendCodexStyleToolLifecycleBegin(call ToolCall) {
 	if a == nil || a.Session == nil {
 		return
@@ -549,13 +554,24 @@ func toolLifecycleStatus(meta map[string]any, err error, blocked bool) string {
 		switch status {
 		case "completed", "failed", "declined":
 			return status
+		default:
+			if strings.HasPrefix(status, "blocked") {
+				return "declined"
+			}
 		}
 	}
 	if status := strings.ToLower(strings.TrimSpace(toolMetaString(meta, "patch_apply_status"))); status != "" {
 		switch status {
 		case "completed", "failed", "declined":
 			return status
+		default:
+			if strings.HasPrefix(status, "blocked") {
+				return "declined"
+			}
 		}
+	}
+	if boolValue(meta, "deferred", false) || boolValue(meta, "requires_reissue", false) {
+		return "declined"
 	}
 	if boolValue(meta, "verification_declined", false) || boolValue(meta, "verification_skipped", false) {
 		return "declined"
