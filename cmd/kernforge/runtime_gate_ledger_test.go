@@ -233,6 +233,57 @@ func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(
 	}
 }
 
+func TestRuntimeGateCompletionAuditSkipsStaleActivePatchTransaction(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "README.md를 업데이트해",
+	}}
+	now := time.Now()
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:        "patch-old-active",
+		Goal:      "RuntimeManager.cpp 버그를 수정해",
+		Status:    patchTransactionStatusActive,
+		StartedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-old-active-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "modify",
+			}},
+		}},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-readme",
+		Goal:      "README.md를 업데이트해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: now,
+		UpdatedAt: now,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-readme-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "README.md",
+				Operation: "modify",
+			}},
+		}},
+	}}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionCompletionAudit)
+	if ledger.PatchTransactionID != "patch-readme" {
+		t.Fatalf("expected runtime gate to attach archived current-goal patch, got %#v", ledger)
+	}
+	if strings.Contains(strings.Join(ledger.ChangedPaths, ","), "cmd/kernforge/agent.go") {
+		t.Fatalf("expected stale active patch path to be ignored, got %#v", ledger.ChangedPaths)
+	}
+	if !containsString(ledger.ChangedPaths, "README.md") {
+		t.Fatalf("expected archived current-goal patch path, got %#v", ledger.ChangedPaths)
+	}
+}
+
 func TestRuntimeGateFinalAnswerIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {

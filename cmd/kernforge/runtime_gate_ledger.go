@@ -597,12 +597,8 @@ func latestRuntimeGatePatchTransaction(session *Session) *PatchTransaction {
 	if session == nil {
 		return nil
 	}
-	if session.ActivePatchTransaction != nil {
-		copyTx := *session.ActivePatchTransaction
-		copyTx.Normalize()
-		if strings.TrimSpace(copyTx.ID) != "" {
-			return &copyTx
-		}
+	if tx := currentTurnPatchTransaction(session); tx != nil {
+		return tx
 	}
 	if len(session.PatchTransactions) == 0 {
 		return nil

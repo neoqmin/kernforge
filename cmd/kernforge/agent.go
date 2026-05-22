@@ -2915,6 +2915,15 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	requestText := strings.TrimSpace(baseUserQueryText(request))
 	requestIsInternalReviewFeedback := looksLikeInternalReviewFeedbackUserMessage(requestText)
 	documentRequestContext := generatedDocumentArtifactRequestContextForTurn(a.Session, request)
+	rawActiveChangedPaths := rawActivePatchTransactionChangedPaths(a.Session)
+	if len(rawActiveChangedPaths) > 0 {
+		if documentRequestContext != "" && changedPathsAreGeneratedDocumentArtifacts(a.Session, request, rawActiveChangedPaths) {
+			return true
+		}
+		if requestIsInternalReviewFeedback && sessionHasDocumentArtifactQualityAcceptedHarness(a.Session) && changedPathsMatchDocumentArtifactQuality(a.Session, rawActiveChangedPaths) {
+			return true
+		}
+	}
 	if documentRequestContext == "" &&
 		!requestIsInternalReviewFeedback {
 		return false
@@ -3066,9 +3075,21 @@ func sessionHasApprovedDocumentArtifactOnlyHarness(session *Session) bool {
 func documentArtifactHarnessChangedPaths(session *Session) []string {
 	changedPaths := currentTurnPatchTransactionChangedPaths(session)
 	if len(changedPaths) == 0 {
+		rawActiveChangedPaths := rawActivePatchTransactionChangedPaths(session)
+		if changedPathsLookLikeGeneratedReportArtifacts(rawActiveChangedPaths) ||
+			changedPathsMatchDocumentArtifactQuality(session, rawActiveChangedPaths) {
+			return normalizeTaskStateList(rawActiveChangedPaths, 64)
+		}
 		changedPaths = sessionPatchTransactionChangedPaths(session)
 	}
 	return normalizeTaskStateList(changedPaths, 64)
+}
+
+func rawActivePatchTransactionChangedPaths(session *Session) []string {
+	if session == nil || session.ActivePatchTransaction == nil {
+		return nil
+	}
+	return normalizeTaskStateList(session.ActivePatchTransaction.ChangedPaths(), 64)
 }
 
 func changedPathsMatchDocumentArtifactQuality(session *Session, changedPaths []string) bool {

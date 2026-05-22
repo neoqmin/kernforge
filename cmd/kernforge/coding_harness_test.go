@@ -763,6 +763,48 @@ func TestEnsurePatchTransactionStartsFreshWhenGoalChanges(t *testing.T) {
 	}
 }
 
+func TestSessionPatchTransactionChangedPathsSkipsStaleActivePatch(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "README.md를 업데이트해",
+	}}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-old-active",
+		Goal:   "RuntimeManager.cpp 버그를 수정해",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-old-active-001",
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "modify",
+			}},
+		}},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-readme",
+		Goal:   "README.md를 업데이트해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-readme-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "README.md",
+				Operation: "modify",
+			}},
+		}},
+	}}
+
+	paths := sessionPatchTransactionChangedPaths(session)
+	if len(paths) != 1 || paths[0] != "README.md" {
+		t.Fatalf("expected stale active patch to be skipped in session patch scope, got %#v", paths)
+	}
+}
+
 func TestClaimedArtifactExtractionIgnoresNonClaimLines(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# ok\n"), 0o644); err != nil {
