@@ -2625,7 +2625,7 @@ func (a *Agent) shouldPromoteFinalLookingToolPreambleToFinalCandidate(request st
 	if !assistantTextLooksLikeCompletionSummary(reply) {
 		return false
 	}
-	if !a.shouldRouteCommentaryReplyThroughFinalGates(request, reply, attemptedEditTool, successfulEditTool, unresolvedVerification) {
+	if !attemptedEditTool && !successfulEditTool && assistantTextClaimsWorkspaceMutationCompletion(reply) {
 		return false
 	}
 	if !finalLookingPostCompletionOnlyToolCalls(calls) {
@@ -2657,6 +2657,38 @@ func finalLookingPostCompletionOnlyToolCalls(calls []ToolCall) bool {
 		}
 	}
 	return true
+}
+
+func assistantTextClaimsWorkspaceMutationCompletion(text string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"what i changed",
+		"i changed",
+		"changed ",
+		"modified ",
+		"fixed ",
+		"patched ",
+		"implemented ",
+		"code changes",
+		"no further changes",
+		"no further edits",
+		"수정이 완료",
+		"수정 완료",
+		"수정했습니다",
+		"변경했습니다",
+		"변경은 필요",
+		"더 이상 변경",
+		"더 이상 수정",
+		"패치",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalLookingPostCompletionToolName(name string) bool {
