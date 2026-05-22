@@ -4778,6 +4778,70 @@ func TestAgentStopsBeforeNextModelTurnWhenContextCanceledDuringTool(t *testing.T
 	if len(provider.requests) != 1 {
 		t.Fatalf("expected no follow-up model turn after cancellation, got %d requests", len(provider.requests))
 	}
+	if sessionContainsInProgressToolResult(session) {
+		t.Fatalf("tool placeholders must not remain IN_PROGRESS, messages=%#v", session.Messages)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "tool finished after cancel") {
+		t.Fatalf("expected completed tool result to be saved before cancellation")
+	}
+}
+
+func TestAgentClosesRemainingToolPlaceholdersWhenContextCanceledDuringBatch(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{ID: "call-1", Name: "cancel_during_tool", Arguments: `{}`},
+				ToolCall{ID: "call-2", Name: "second_tool", Arguments: `{}`},
+			),
+			{Message: Message{Role: "assistant", Text: "this should never be requested"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelTool := &cancelDuringToolTool{
+		cancel: cancel,
+	}
+	secondTool := &sequenceTool{
+		name:    "second_tool",
+		outputs: []string{"second should not run"},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(cancelTool, secondTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(ctx, "cancel during a multi-tool batch")
+	if err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if cancelTool.calls != 1 {
+		t.Fatalf("expected first tool to run once, got %d calls", cancelTool.calls)
+	}
+	if secondTool.calls != 0 {
+		t.Fatalf("expected second tool not to run after cancellation, got %d calls", secondTool.calls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected no follow-up model turn after cancellation, got %d requests", len(provider.requests))
+	}
+	if sessionContainsInProgressToolResult(session) {
+		t.Fatalf("tool placeholders must not remain IN_PROGRESS, messages=%#v", session.Messages)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "tool finished after cancel") {
+		t.Fatalf("expected completed first tool result to be saved before cancellation")
+	}
+	if !sessionContainsToolResultText(session, "call-2", "NOT_EXECUTED: context canceled before this tool could run") {
+		t.Fatalf("expected remaining tool to be closed as NOT_EXECUTED, messages=%#v", session.Messages)
+	}
 }
 
 func TestAgentReturnsPromptlyWhenContextCanceledDuringModelTurn(t *testing.T) {
