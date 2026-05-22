@@ -1595,12 +1595,11 @@ func sessionPatchTransactionChangedPaths(sess *Session) []string {
 	if sess == nil {
 		return nil
 	}
-	if sess.ActivePatchTransaction != nil {
-		paths := sess.ActivePatchTransaction.ChangedPaths()
+	if tx := currentTurnPatchTransaction(sess); tx != nil {
+		paths := tx.ChangedPaths()
 		if len(paths) > 0 {
 			return normalizeTaskStateList(paths, 64)
 		}
-		return nil
 	}
 	if len(sess.PatchTransactions) > 0 {
 		return normalizeTaskStateList(sess.PatchTransactions[0].ChangedPaths(), 64)
