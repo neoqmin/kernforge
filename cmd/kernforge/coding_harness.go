@@ -1664,6 +1664,11 @@ func currentTurnPatchTransactionScopeWarnings(sess *Session) []string {
 	if tx == nil {
 		return nil
 	}
+	return patchTransactionScopeWarnings(*tx)
+}
+
+func patchTransactionScopeWarnings(tx PatchTransaction) []string {
+	tx.Normalize()
 	warnings := make([]string, 0, len(tx.Warnings))
 	for _, warning := range tx.Warnings {
 		trimmed := strings.TrimSpace(warning)

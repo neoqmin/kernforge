@@ -5051,6 +5051,26 @@ func TestAgentBlocksDisabledToolEvenIfModelCallsIt(t *testing.T) {
 	if !blocked {
 		t.Fatalf("expected disabled tool result to be persisted, got %#v", session.Messages)
 	}
+	var blockedBegin *ConversationEvent
+	var blockedEnd *ConversationEvent
+	for i := range session.ConversationEvents {
+		event := &session.ConversationEvents[i]
+		if event.CorrelationID != "call-2" {
+			continue
+		}
+		switch event.Kind {
+		case conversationEventKindPatchApplyBegin:
+			blockedBegin = event
+		case conversationEventKindPatchApplyEnd:
+			blockedEnd = event
+		}
+	}
+	if blockedBegin == nil || blockedEnd == nil {
+		t.Fatalf("expected blocked disabled tool to have Codex-style begin/end events, got %#v", session.ConversationEvents)
+	}
+	if blockedEnd.Entities["status"] != "declined" || blockedEnd.Severity != conversationSeverityWarn {
+		t.Fatalf("expected blocked disabled tool to end as declined, got %#v", blockedEnd)
+	}
 }
 
 func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
