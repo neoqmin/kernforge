@@ -2925,6 +2925,64 @@ func TestAgentPromotesFinalLookingToolPreambleAfterCodeEdit(t *testing.T) {
 	}
 }
 
+func TestAgentPromotesFinalLookingToolPreambleForReadOnlyAnalysis(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	readArgs, _ := json.Marshal(map[string]any{"path": "main.go"})
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Final Answer\n\nThe analysis is complete and ready for review.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-read-after-final-looking-analysis",
+						Name:      "read_file",
+						Arguments: string(readArgs),
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "현재 코드 구조를 분석해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Final Answer\n\nThe analysis is complete and ready for review." {
+		t.Fatalf("expected final-looking analysis preamble to become final answer, got %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("read_file should not execute after a final-looking analysis summary, got %d calls", readTool.calls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected final-looking analysis preamble to stop the turn, got %d requests", len(provider.requests))
+	}
+	last := session.Messages[len(session.Messages)-1]
+	if last.Role != "assistant" || last.Phase != messagePhaseFinalAnswer || last.Text != reply || len(last.ToolCalls) != 0 {
+		t.Fatalf("expected final-looking analysis preamble to be stored as final answer without tool calls, got %#v", last)
+	}
+}
+
 func TestAgentDoesNotPromoteFinalLookingVerificationToolBeforeVerification(t *testing.T) {
 	root := t.TempDir()
 	shellTool := &staticTool{name: "run_shell", output: "tests passed"}
