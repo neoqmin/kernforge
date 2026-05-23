@@ -1502,6 +1502,7 @@ func (rt *runtimeState) clearFooterLineLocked() {
 	if !rt.footerVisible {
 		return
 	}
+	ensureVirtualTerminalProcessing()
 	if rt.footerLineCount == 1 {
 		width := visibleLen(rt.footerText)
 		if width > 0 {

@@ -125,6 +125,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 	}
 	redraw := func() {
 		termW := terminalWidth()
+		ensureVirtualTerminalProcessing()
 		// Move cursor up to the first line if previous content wrapped
 		if prevLines > 0 {
 			fmt.Fprintf(rt.writer, "\x1b[%dA", prevLines)
@@ -150,11 +151,13 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 	}
 	moveCursorLeft := func(count int) {
 		if count > 0 {
+			ensureVirtualTerminalProcessing()
 			fmt.Fprintf(rt.writer, "\x1b[%dD", count)
 		}
 	}
 	moveCursorRight := func(count int) {
 		if count > 0 {
+			ensureVirtualTerminalProcessing()
 			fmt.Fprintf(rt.writer, "\x1b[%dC", count)
 		}
 	}
