@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,6 +36,8 @@ type CheckpointDiffEntry struct {
 }
 
 var checkpointTimeNow = time.Now
+
+const checkpointSnapshotMaxExtractedBytes int64 = 2 * 1024 * 1024 * 1024
 
 func NewCheckpointManager() *CheckpointManager {
 	return &CheckpointManager{
@@ -332,12 +335,19 @@ func restoreWorkspaceSnapshot(root, zipPath string) error {
 	defer reader.Close()
 
 	expected := map[string]*zip.File{}
+	var totalBytes int64
 	for _, file := range reader.File {
-		cleanName := filepath.Clean(filepath.FromSlash(file.Name))
-		if cleanName == "." || strings.HasPrefix(cleanName, "..") {
-			return fmt.Errorf("invalid snapshot entry: %s", file.Name)
+		rel, isDir, err := validateCheckpointSnapshotFile(file, &totalBytes)
+		if err != nil {
+			return err
 		}
-		expected[filepath.ToSlash(cleanName)] = file
+		if isDir {
+			continue
+		}
+		if _, exists := expected[rel]; exists {
+			return fmt.Errorf("duplicate snapshot entry: %s", rel)
+		}
+		expected[rel] = file
 	}
 
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
@@ -370,7 +380,10 @@ func restoreWorkspaceSnapshot(root, zipPath string) error {
 	}
 
 	for rel, file := range expected {
-		target := filepath.Join(root, filepath.FromSlash(rel))
+		target, err := checkpointSnapshotOutputPath(root, rel)
+		if err != nil {
+			return err
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
@@ -383,17 +396,18 @@ func restoreWorkspaceSnapshot(root, zipPath string) error {
 			src.Close()
 			return err
 		}
-		_, copyErr := io.Copy(dst, src)
+		copyErr := copyCheckpointSnapshotFile(dst, src, file)
 		closeDstErr := dst.Close()
-		closeSrcErr := src.Close()
 		if copyErr != nil {
+			_ = src.Close()
 			return copyErr
 		}
 		if closeDstErr != nil {
+			_ = src.Close()
 			return closeDstErr
 		}
-		if closeSrcErr != nil {
-			return closeSrcErr
+		if err := src.Close(); err != nil {
+			return err
 		}
 	}
 
@@ -496,16 +510,23 @@ func readSnapshotEntries(zipPath string) (map[string][]byte, error) {
 	}
 	defer reader.Close()
 	out := map[string][]byte{}
+	var totalBytes int64
 	for _, file := range reader.File {
-		cleanName := filepath.Clean(filepath.FromSlash(file.Name))
-		if cleanName == "." || strings.HasPrefix(cleanName, "..") {
-			return nil, fmt.Errorf("invalid snapshot entry: %s", file.Name)
+		rel, isDir, err := validateCheckpointSnapshotFile(file, &totalBytes)
+		if err != nil {
+			return nil, err
+		}
+		if isDir {
+			continue
+		}
+		if _, exists := out[rel]; exists {
+			return nil, fmt.Errorf("duplicate snapshot entry: %s", rel)
 		}
 		src, err := file.Open()
 		if err != nil {
 			return nil, err
 		}
-		data, readErr := io.ReadAll(src)
+		data, readErr := readCheckpointSnapshotFile(src, file)
 		closeErr := src.Close()
 		if readErr != nil {
 			return nil, readErr
@@ -513,9 +534,104 @@ func readSnapshotEntries(zipPath string) (map[string][]byte, error) {
 		if closeErr != nil {
 			return nil, closeErr
 		}
-		out[filepath.ToSlash(cleanName)] = data
+		out[rel] = data
 	}
 	return out, nil
+}
+
+func copyCheckpointSnapshotFile(dst io.Writer, src io.Reader, file *zip.File) error {
+	limit := int64(file.UncompressedSize64)
+	n, err := io.Copy(dst, io.LimitReader(src, limit+1))
+	if err != nil {
+		return err
+	}
+	if n > limit {
+		return fmt.Errorf("snapshot entry exceeded declared size: %s", file.Name)
+	}
+	return nil
+}
+
+func readCheckpointSnapshotFile(src io.Reader, file *zip.File) ([]byte, error) {
+	limit := int64(file.UncompressedSize64)
+	data, err := io.ReadAll(io.LimitReader(src, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("snapshot entry exceeded declared size: %s", file.Name)
+	}
+	return data, nil
+}
+
+func validateCheckpointSnapshotFile(file *zip.File, totalBytes *int64) (string, bool, error) {
+	if file == nil {
+		return "", false, fmt.Errorf("invalid snapshot entry: <nil>")
+	}
+	rel, err := cleanCheckpointSnapshotEntryName(file.Name)
+	if err != nil {
+		return "", false, err
+	}
+	mode := file.FileInfo().Mode()
+	if mode.IsDir() {
+		return rel, true, nil
+	}
+	if !mode.IsRegular() {
+		return "", false, fmt.Errorf("invalid snapshot entry type for %s", file.Name)
+	}
+	if file.UncompressedSize64 > uint64(checkpointSnapshotMaxExtractedBytes) {
+		return "", false, fmt.Errorf("snapshot entry is too large: %s", file.Name)
+	}
+	if totalBytes != nil {
+		if file.UncompressedSize64 > uint64(^uint64(0)>>1) {
+			return "", false, fmt.Errorf("snapshot entry is too large: %s", file.Name)
+		}
+		next := *totalBytes + int64(file.UncompressedSize64)
+		if next < *totalBytes || next > checkpointSnapshotMaxExtractedBytes {
+			return "", false, fmt.Errorf("snapshot extracted size exceeds limit")
+		}
+		*totalBytes = next
+	}
+	return rel, false, nil
+}
+
+func cleanCheckpointSnapshotEntryName(name string) (string, error) {
+	raw := strings.TrimSpace(name)
+	if raw == "" {
+		return "", fmt.Errorf("invalid snapshot entry: empty path")
+	}
+	normalized := strings.ReplaceAll(raw, "\\", "/")
+	slashClean := pathpkg.Clean(normalized)
+	if slashClean == "." ||
+		slashClean == ".." ||
+		strings.HasPrefix(slashClean, "../") ||
+		strings.HasPrefix(slashClean, "/") {
+		return "", fmt.Errorf("invalid snapshot entry: %s", name)
+	}
+	cleanName := filepath.Clean(filepath.FromSlash(normalized))
+	if cleanName == "." ||
+		cleanName == ".." ||
+		strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) ||
+		filepath.IsAbs(cleanName) ||
+		filepath.VolumeName(cleanName) != "" {
+		return "", fmt.Errorf("invalid snapshot entry: %s", name)
+	}
+	return filepath.ToSlash(cleanName), nil
+}
+
+func checkpointSnapshotOutputPath(root string, rel string) (string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(rootAbs, filepath.FromSlash(rel))
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	if !pathIsWithinRoot(rootAbs, targetAbs) {
+		return "", fmt.Errorf("snapshot entry escapes workspace root: %s", rel)
+	}
+	return targetAbs, nil
 }
 
 func readWorkspaceEntries(root string) (map[string][]byte, error) {
