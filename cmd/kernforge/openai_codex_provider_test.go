@@ -696,6 +696,208 @@ func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexClientGenerateImagePostsTypedRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Method; got != http.MethodPost {
+			t.Fatalf("unexpected method: %s", got)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if got := r.Header.Get("x-extra"); got != "present" {
+			t.Fatalf("missing extra header, got %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode body: %v", err)
+		}
+		want := map[string]any{
+			"prompt":     "a red fox in a field",
+			"background": "opaque",
+			"model":      "gpt-image-1.5",
+			"quality":    "medium",
+			"size":       "1024x1536",
+		}
+		if !mapsEqualForTest(body, want) {
+			t.Fatalf("unexpected request body: %#v", body)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write(openAICodexImageResponseFixture())
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	headers := http.Header{"x-extra": []string{"present"}}
+	resp, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
+		Prompt:     "a red fox in a field",
+		Background: OpenAICodexImageBackgroundOpaque,
+		Model:      "gpt-image-1.5",
+		Quality:    OpenAICodexImageQualityMedium,
+		Size:       "1024x1536",
+	}, headers)
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	assertOpenAICodexImageResponseFixture(t, resp)
+}
+
+func TestOpenAICodexClientEditImagePostsTypedRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/edits" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode body: %v", err)
+		}
+		images, ok := body["images"].([]any)
+		if !ok || len(images) != 1 {
+			t.Fatalf("expected one image URL, got %#v", body["images"])
+		}
+		image, ok := images[0].(map[string]any)
+		if !ok || image["image_url"] != "data:image/png;base64,Zm9v" {
+			t.Fatalf("unexpected image URL payload: %#v", images[0])
+		}
+		if body["prompt"] != "add a red hat" || body["model"] != "gpt-image-1.5" {
+			t.Fatalf("unexpected edit request body: %#v", body)
+		}
+		if _, ok := body["quality"]; ok {
+			t.Fatalf("quality should be omitted when unset: %#v", body)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write(openAICodexImageResponseFixture())
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	resp, err := client.EditImage(context.Background(), OpenAICodexImageEditRequest{
+		Images: []OpenAICodexImageURL{{
+			ImageURL: "data:image/png;base64,Zm9v",
+		}},
+		Prompt: "add a red hat",
+		Model:  "gpt-image-1.5",
+	}, nil)
+	if err != nil {
+		t.Fatalf("EditImage: %v", err)
+	}
+	assertOpenAICodexImageResponseFixture(t, resp)
+}
+
+func TestOpenAICodexClientGenerateImageRequiresDataField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"created":1778832973}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	_, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
+		Prompt: "a red fox in a field",
+		Model:  "gpt-image-1.5",
+	}, nil)
+	if err == nil {
+		t.Fatalf("expected missing data error")
+	}
+	if !strings.Contains(err.Error(), "failed to decode image generation response: missing field `data`") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenAICodexClientGenerateImageRejectsInvalidTypedEnum(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("request should not be sent for invalid typed enum")
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	_, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
+		Prompt:  "a red fox in a field",
+		Model:   "gpt-image-1.5",
+		Quality: OpenAICodexImageQuality("ultra"),
+	}, nil)
+	if err == nil {
+		t.Fatalf("expected invalid quality error")
+	}
+	if !strings.Contains(err.Error(), `failed to encode image generation request: invalid quality "ultra"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenAICodexClientGenerateImagePreservesRateLimitReachedType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set(providerRateLimitReachedTypeHeader, "workspace_owner_credits_depleted")
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota","type":"usage_limit_exceeded","code":"usage_limit_reached"}}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	_, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
+		Prompt: "a red fox in a field",
+		Model:  "gpt-image-1.5",
+	}, nil)
+	if err == nil {
+		t.Fatalf("expected rate-limit error")
+	}
+	var providerErr *ProviderAPIError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected ProviderAPIError, got %T", err)
+	}
+	if providerErr.RateLimitReachedType != "workspace_owner_credits_depleted" {
+		t.Fatalf("expected rate limit reached type, got %q", providerErr.RateLimitReachedType)
+	}
+	if !strings.Contains(err.Error(), "Your workspace is out of credits. Add credits to continue.") {
+		t.Fatalf("expected workspace credit copy, got %q", err.Error())
+	}
+}
+
+func openAICodexImageResponseFixture() []byte {
+	return []byte(`{"created":1778832973,"background":"opaque","data":[{"b64_json":"REDACT"}],"output_format":"png","quality":"medium","size":"1024x1536","usage":{"input_tokens":1}}`)
+}
+
+func assertOpenAICodexImageResponseFixture(t *testing.T, resp OpenAICodexImageResponse) {
+	t.Helper()
+	if resp.Created != 1778832973 {
+		t.Fatalf("unexpected created value: %d", resp.Created)
+	}
+	if resp.Background != OpenAICodexImageBackgroundOpaque {
+		t.Fatalf("unexpected background: %q", resp.Background)
+	}
+	if resp.Quality != OpenAICodexImageQualityMedium {
+		t.Fatalf("unexpected quality: %q", resp.Quality)
+	}
+	if resp.Size != "1024x1536" {
+		t.Fatalf("unexpected size: %q", resp.Size)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].B64JSON != "REDACT" {
+		t.Fatalf("unexpected image data: %#v", resp.Data)
+	}
+}
+
+func mapsEqualForTest(got map[string]any, want map[string]any) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, wantValue := range want {
+		if got[key] != wantValue {
+			return false
+		}
+	}
+	return true
+}
+
 func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
