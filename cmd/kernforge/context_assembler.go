@@ -36,7 +36,7 @@ func recentNonUserConversationEvents(sess *Session, limit int) []ConversationEve
 	out := []ConversationEvent{}
 	for i := len(sess.ConversationEvents) - 1; i >= 0; i-- {
 		event := sess.ConversationEvents[i]
-		if event.Kind == conversationEventKindUserMessage || event.Kind == conversationEventKindAssistantReply {
+		if event.Kind == conversationEventKindUserMessage || event.Kind == conversationEventKindAssistantReply || event.Kind == conversationEventKindTurnStarted {
 			continue
 		}
 		out = append(out, event)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -633,6 +635,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	turnStartedAt := time.Now()
 	mcpTurnMetadata := a.mcpTurnMetadataForToolCall(turnStartedAt)
 	providerTurnMetadata := providerTurnMetadataFromMCP(mcpTurnMetadata)
+	a.noteTurnStartedConversationEvent(turnStartedAt, mcpTurnMetadata)
 	markUserInputRequestedDuringTurn := func() {
 		if mcpTurnMetadata != nil {
 			mcpTurnMetadata[mcpTurnMetadataUserInputRequestedKey] = true
@@ -7279,6 +7282,9 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 		if turnID := mcpTurnMetadataTurnID(sessionID, turnStartedAt); turnID != "" {
 			metadata["turn_id"] = turnID
 		}
+		if traceID := mcpTurnMetadataTraceID(sessionID, turnStartedAt); traceID != "" {
+			metadata["trace_id"] = traceID
+		}
 		metadata["thread_source"] = "user"
 	}
 	if provider := strings.TrimSpace(a.Session.Provider); provider != "" {
@@ -7366,6 +7372,15 @@ func mcpTurnMetadataTurnID(sessionID string, turnStartedAt time.Time) string {
 		return ""
 	}
 	return fmt.Sprintf("%s:%d", sessionID, turnStartedAt.UnixNano())
+}
+
+func mcpTurnMetadataTraceID(sessionID string, turnStartedAt time.Time) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || turnStartedAt.IsZero() {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", sessionID, turnStartedAt.UnixNano())))
+	return hex.EncodeToString(sum[:16])
 }
 
 func mcpTurnMetadataSandboxTag(permissionMode string) string {

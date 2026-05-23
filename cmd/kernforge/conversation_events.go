@@ -20,6 +20,7 @@ const (
 	conversationEventKindToolError        = "tool_error"
 	conversationEventKindProviderError    = "provider_error"
 	conversationEventKindCommandError     = "command_error"
+	conversationEventKindTurnStarted      = "turn_started"
 	conversationEventKindExecCommandBegin = "exec_command_begin"
 	conversationEventKindExecCommandEnd   = "exec_command_end"
 	conversationEventKindPatchApplyBegin  = "patch_apply_begin"
@@ -50,6 +51,7 @@ const (
 type ConversationEvent struct {
 	ID            string            `json:"id"`
 	TurnID        string            `json:"turn_id,omitempty"`
+	TraceID       string            `json:"trace_id,omitempty"`
 	Kind          string            `json:"kind"`
 	Severity      string            `json:"severity,omitempty"`
 	Summary       string            `json:"summary"`
@@ -90,6 +92,8 @@ func (s *Session) AppendConversationEvent(event ConversationEvent) {
 	event.Severity = normalizeConversationSeverity(event.Severity)
 	event.Summary = strings.TrimSpace(event.Summary)
 	event.Raw = strings.TrimSpace(event.Raw)
+	event.TurnID = strings.TrimSpace(event.TurnID)
+	event.TraceID = strings.TrimSpace(event.TraceID)
 	event.CorrelationID = strings.TrimSpace(event.CorrelationID)
 	event.ArtifactRefs = uniqueStrings(event.ArtifactRefs)
 	if event.Time.IsZero() {
@@ -134,6 +138,8 @@ func (s *Session) normalizeConversationRuntime() {
 		event.Severity = normalizeConversationSeverity(event.Severity)
 		event.Summary = strings.TrimSpace(event.Summary)
 		event.Raw = strings.TrimSpace(event.Raw)
+		event.TurnID = strings.TrimSpace(event.TurnID)
+		event.TraceID = strings.TrimSpace(event.TraceID)
 		event.CorrelationID = strings.TrimSpace(event.CorrelationID)
 		event.ArtifactRefs = uniqueStrings(event.ArtifactRefs)
 		if event.Time.IsZero() {
@@ -239,6 +245,47 @@ func (a *Agent) noteAssistantConversationEvent(text string) {
 			Raw:      compactPromptSection(trimmed, 1200),
 		})
 	}
+}
+
+func (a *Agent) noteTurnStartedConversationEvent(turnStartedAt time.Time, metadata map[string]any) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	turnID := strings.TrimSpace(stringValue(metadata, "turn_id"))
+	traceID := strings.TrimSpace(stringValue(metadata, "trace_id"))
+	if turnID == "" && traceID == "" {
+		return
+	}
+	entities := map[string]string{}
+	addEntity := func(key string, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			entities[key] = value
+		}
+	}
+	addEntity("provider", a.Session.Provider)
+	addEntity("model", a.Session.Model)
+	addEntity("permission_mode", stringValue(metadata, "permission_mode"))
+	addEntity("sandbox", stringValue(metadata, "sandbox"))
+	addEntity("cwd", stringValue(metadata, "cwd"))
+	addEntity("workspace_root", stringValue(metadata, "workspace_root"))
+	if len(entities) == 0 {
+		entities = nil
+	}
+	eventTime := turnStartedAt
+	if eventTime.IsZero() {
+		eventTime = time.Now()
+	}
+	a.Session.AppendConversationEvent(ConversationEvent{
+		TurnID:   turnID,
+		TraceID:  traceID,
+		Kind:     conversationEventKindTurnStarted,
+		Severity: conversationSeverityInfo,
+		Summary:  "turn started",
+		Time:     eventTime,
+		Entities: entities,
+		Metadata: cloneStringAnyMap(metadata),
+	})
 }
 
 func (a *Agent) noteToolConversationError(call ToolCall, err error, displayText string) {

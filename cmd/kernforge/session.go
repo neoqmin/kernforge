@@ -199,7 +199,7 @@ func (s *Session) ApproxChars() int {
 		}
 	}
 	for _, event := range s.ConversationEvents {
-		total += len(event.Kind) + len(event.Severity) + len(event.Summary) + len(event.Raw) + len(event.CorrelationID)
+		total += len(event.Kind) + len(event.Severity) + len(event.Summary) + len(event.Raw) + len(event.TurnID) + len(event.TraceID) + len(event.CorrelationID)
 		for key, value := range event.Entities {
 			total += len(key) + len(value)
 		}

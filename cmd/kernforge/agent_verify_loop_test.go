@@ -3559,11 +3559,18 @@ func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	if !ok || strings.TrimSpace(firstTurnID) == "" {
 		t.Fatalf("expected first request to carry turn_id, got %#v", provider.requests[0].TurnMetadata)
 	}
+	firstTraceID, ok := provider.requests[0].TurnMetadata["trace_id"].(string)
+	if !ok || strings.TrimSpace(firstTraceID) == "" {
+		t.Fatalf("expected first request to carry trace_id, got %#v", provider.requests[0].TurnMetadata)
+	}
 	if provider.states[0] == nil || provider.states[1] == nil || provider.states[0] != provider.states[1] {
 		t.Fatalf("expected first turn requests to share provider turn state, got %#v", provider.states[:2])
 	}
 	if secondTurnID, _ := provider.requests[1].TurnMetadata["turn_id"].(string); secondTurnID != firstTurnID {
 		t.Fatalf("expected same external turn to reuse turn metadata, got %q then %q", firstTurnID, secondTurnID)
+	}
+	if secondTraceID, _ := provider.requests[1].TurnMetadata["trace_id"].(string); secondTraceID != firstTraceID {
+		t.Fatalf("expected same external turn to reuse trace metadata, got %q then %q", firstTraceID, secondTraceID)
 	}
 	if provider.values[0] != "" || provider.values[1] != "sticky-turn" {
 		t.Fatalf("expected sticky state to be replayed within turn, got %#v", provider.values[:2])
@@ -3583,6 +3590,9 @@ func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	}
 	if thirdTurnID, _ := provider.requests[2].TurnMetadata["turn_id"].(string); thirdTurnID == "" || thirdTurnID == firstTurnID {
 		t.Fatalf("expected second external turn to get fresh turn metadata, first=%q second=%q", firstTurnID, thirdTurnID)
+	}
+	if thirdTraceID, _ := provider.requests[2].TurnMetadata["trace_id"].(string); thirdTraceID == "" || thirdTraceID == firstTraceID {
+		t.Fatalf("expected second external turn to get fresh trace metadata, first=%q second=%q", firstTraceID, thirdTraceID)
 	}
 }
 

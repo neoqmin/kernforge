@@ -71,7 +71,8 @@ func TestReplyWithNilLongMemDoesNotPanic(t *testing.T) {
 	session := NewSession(root, "scripted", "model", "", "default")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{{
-			Message: Message{Role: "assistant", Text: "ok"},
+			Message:    Message{Role: "assistant", Text: "ok"},
+			StopReason: "stop",
 		}},
 	}
 	agent := &Agent{
@@ -89,6 +90,57 @@ func TestReplyWithNilLongMemDoesNotPanic(t *testing.T) {
 	}
 	if !strings.Contains(reply, "ok") {
 		t.Fatalf("expected scripted reply, got %q", reply)
+	}
+}
+
+func TestReplyRecordsTurnStartedTraceID(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message:    Message{Role: "assistant", Text: "ok"},
+			StopReason: "stop",
+		}},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	if _, err := agent.Reply(context.Background(), "start a traced turn"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	events := latestEventsByKind(session.ConversationEvents, conversationEventKindTurnStarted)
+	if len(events) != 1 {
+		t.Fatalf("expected one turn_started event, got %#v", events)
+	}
+	event := events[0]
+	if strings.TrimSpace(event.TurnID) == "" {
+		t.Fatalf("expected turn_started event to include turn_id, got %#v", event)
+	}
+	if strings.TrimSpace(event.TraceID) == "" {
+		t.Fatalf("expected turn_started event to include trace_id, got %#v", event)
+	}
+	if !isLowerHex32(event.TraceID) {
+		t.Fatalf("expected Codex-style 32 hex trace_id, got %q", event.TraceID)
+	}
+	if got := event.Metadata["trace_id"]; got != event.TraceID {
+		t.Fatalf("expected event metadata trace_id %q, got %#v in %#v", event.TraceID, got, event.Metadata)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected at least one provider request")
+	}
+	for index, req := range provider.requests {
+		if got := req.TurnMetadata["turn_id"]; got != event.TurnID {
+			t.Fatalf("expected provider request %d turn_id to match event, got %#v want %q", index, got, event.TurnID)
+		}
+		if got := req.TurnMetadata["trace_id"]; got != event.TraceID {
+			t.Fatalf("expected provider request %d trace_id to match event, got %#v want %q", index, got, event.TraceID)
+		}
 	}
 }
 

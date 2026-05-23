@@ -985,6 +985,9 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	if got, ok := turnMeta["turn_id"].(string); !ok || !strings.HasPrefix(got, session.ID+":") {
 		t.Fatalf("expected turn id to be scoped to session %q, got %#v in %#v", session.ID, turnMeta["turn_id"], turnMeta)
 	}
+	if got, ok := turnMeta["trace_id"].(string); !ok || !isLowerHex32(got) {
+		t.Fatalf("expected trace id to be scoped to session %q, got %#v in %#v", session.ID, turnMeta["trace_id"], turnMeta)
+	}
 	if got, ok := turnMeta["turn_started_at_unix_ms"].(float64); !ok || got <= 0 {
 		t.Fatalf("expected positive turn start metadata, got %#v in %#v", turnMeta["turn_started_at_unix_ms"], turnMeta)
 	}
@@ -1035,6 +1038,9 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 	if got := turnMeta["turn_id"]; got != agent.Session.ID+":1700000000123000000" {
 		t.Fatalf("expected deterministic turn id metadata, got %#v in %#v", got, turnMeta)
 	}
+	if got := turnMeta["trace_id"]; got != mcpTurnMetadataTraceID(agent.Session.ID, startedAt) {
+		t.Fatalf("expected deterministic trace id metadata, got %#v in %#v", got, turnMeta)
+	}
 	if got := turnMeta["cwd"]; got != activeRoot {
 		t.Fatalf("expected cwd to use active workspace root %q, got %#v in %#v", activeRoot, got, turnMeta)
 	}
@@ -1048,6 +1054,22 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 	if !ok || len(roots) != 2 || roots[0] != baseRoot || roots[1] != activeRoot {
 		t.Fatalf("expected workspace_roots to preserve base and active roots, got %#v in %#v", turnMeta["workspace_roots"], turnMeta)
 	}
+}
+
+func isLowerHex32(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	for _, ch := range value {
+		if ch >= '0' && ch <= '9' {
+			continue
+		}
+		if ch >= 'a' && ch <= 'f' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func TestWorkspaceEffectiveRootsCanonicalizesAndDeduplicates(t *testing.T) {
