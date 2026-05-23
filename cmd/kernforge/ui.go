@@ -16,7 +16,11 @@ type UI struct {
 }
 
 func NewUI() UI {
-	return UI{color: colorsEnabled()}
+	color := colorsEnabled()
+	if color {
+		ensureVirtualTerminalProcessing()
+	}
+	return UI{color: color}
 }
 
 func colorsEnabled() bool {
@@ -34,6 +38,7 @@ func (ui UI) paint(code, text string) string {
 	if !ui.color || text == "" {
 		return text
 	}
+	ensureVirtualTerminalProcessing()
 	return "\x1b[" + code + "m" + text + "\x1b[0m"
 }
 
@@ -51,6 +56,7 @@ func (ui UI) mint(text string) string          { return ui.paint("38;5;121", tex
 func (ui UI) assistantCode(text string) string { return ui.paint("38;5;153", text) }
 
 func (ui UI) clearScreen() string {
+	ensureVirtualTerminalProcessing()
 	return "\x1b[2J\x1b[H"
 }
 
