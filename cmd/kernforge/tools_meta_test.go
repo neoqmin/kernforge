@@ -524,6 +524,145 @@ func TestToolRegistryDecodesEscapedDefinitionReferences(t *testing.T) {
 	}
 }
 
+func TestToolRegistryCompactsLargeSchemaByStrippingDescriptions(t *testing.T) {
+	properties := map[string]any{}
+	for i := 0; i < 40; i++ {
+		properties[fmt.Sprintf("field_%03d", i)] = map[string]any{
+			"type":        "string",
+			"description": strings.Repeat("description text ", 20),
+		}
+	}
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "large_described_schema",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": properties,
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("large described schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	encoded, err := json.Marshal(defs[0].InputSchema)
+	if err != nil {
+		t.Fatalf("marshal compacted schema: %v", err)
+	}
+	if len(encoded) > maxCompactToolSchemaBytes {
+		t.Fatalf("expected compacted schema to fit byte budget, got %d", len(encoded))
+	}
+	if strings.Contains(string(encoded), "description") {
+		t.Fatalf("expected descriptions to be stripped from compacted schema, got %s", string(encoded))
+	}
+	compactedProperties := defs[0].InputSchema["properties"].(map[string]any)
+	if _, ok := compactedProperties["field_000"]; !ok {
+		t.Fatalf("description stripping should preserve top-level properties, got %#v", compactedProperties)
+	}
+}
+
+func TestToolRegistryCompactsLargeSchemaByDroppingDefinitions(t *testing.T) {
+	defProperties := map[string]any{}
+	for i := 0; i < 260; i++ {
+		defProperties[fmt.Sprintf("field_%03d", i)] = map[string]any{
+			"type": "string",
+		}
+	}
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "large_definition_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"user": map[string]any{
+						"$ref": "#/$defs/User",
+					},
+				},
+				"$defs": map[string]any{
+					"User": map[string]any{
+						"type":       "object",
+						"properties": defProperties,
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("large definition schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if _, ok := defs[0].InputSchema["$defs"]; ok {
+		t.Fatalf("expected oversized definition table to be dropped, got %#v", defs[0].InputSchema)
+	}
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	user := properties["user"].(map[string]any)
+	if len(user) != 0 {
+		t.Fatalf("expected local definition reference to become an empty schema after definition drop, got %#v", user)
+	}
+	encoded, err := json.Marshal(defs[0].InputSchema)
+	if err != nil {
+		t.Fatalf("marshal compacted schema: %v", err)
+	}
+	if len(encoded) > maxCompactToolSchemaBytes {
+		t.Fatalf("expected definition-dropped schema to fit byte budget, got %d", len(encoded))
+	}
+}
+
+func TestToolRegistryCompactsLargeSchemaByCollapsingDeepObjects(t *testing.T) {
+	deepProperties := map[string]any{}
+	for i := 0; i < 260; i++ {
+		deepProperties[fmt.Sprintf("field_%03d", i)] = map[string]any{
+			"type": "string",
+		}
+	}
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "large_deep_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"level1": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"level2": map[string]any{
+								"type":       "object",
+								"properties": deepProperties,
+							},
+						},
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("large deep schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	level1 := properties["level1"].(map[string]any)
+	level1Properties := level1["properties"].(map[string]any)
+	level2 := level1Properties["level2"].(map[string]any)
+	if len(level2) != 0 {
+		t.Fatalf("expected deep object schema to collapse to empty schema, got %#v", level2)
+	}
+	encoded, err := json.Marshal(defs[0].InputSchema)
+	if err != nil {
+		t.Fatalf("marshal compacted schema: %v", err)
+	}
+	if len(encoded) > maxCompactToolSchemaBytes {
+		t.Fatalf("expected deep-collapsed schema to fit byte budget, got %d", len(encoded))
+	}
+}
+
 func TestToolRegistrySupportsHiddenDispatchOnlyTools(t *testing.T) {
 	visible := &mutableRegistryTool{
 		def: ToolDefinition{
