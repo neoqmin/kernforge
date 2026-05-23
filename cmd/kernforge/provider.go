@@ -210,15 +210,16 @@ type providerErrorBody struct {
 }
 
 type ProviderAPIError struct {
-	Provider       string
-	StatusCode     int
-	Status         string
-	Message        string
-	ErrorType      string
-	Param          string
-	Code           string
-	RequestSummary string
-	RawBody        string
+	Provider             string
+	StatusCode           int
+	Status               string
+	Message              string
+	ErrorType            string
+	Param                string
+	Code                 string
+	RateLimitReachedType string
+	RequestSummary       string
+	RawBody              string
 }
 
 func (e *ProviderAPIError) Error() string {
@@ -242,7 +243,9 @@ func (e *ProviderAPIError) Error() string {
 
 func (e *ProviderAPIError) Details() string {
 	parts := []string{}
-	if strings.TrimSpace(e.Message) != "" {
+	if message := providerRateLimitReachedTypeMessage(e.RateLimitReachedType); message != "" {
+		parts = append(parts, message)
+	} else if strings.TrimSpace(e.Message) != "" {
 		parts = append(parts, strings.TrimSpace(e.Message))
 	} else {
 		parts = append(parts, "provider returned error")
@@ -269,17 +272,22 @@ func (e *ProviderAPIError) Retryable() bool {
 }
 
 func newProviderHTTPError(provider string, statusCode int, status string, data []byte, requestSummary string) error {
+	return newProviderHTTPErrorWithHeaders(provider, statusCode, status, data, requestSummary, nil)
+}
+
+func newProviderHTTPErrorWithHeaders(provider string, statusCode int, status string, data []byte, requestSummary string, headers http.Header) error {
 	message, errorType, param, code, rawBody := decodeProviderErrorPayload(data)
 	return &ProviderAPIError{
-		Provider:       provider,
-		StatusCode:     statusCode,
-		Status:         status,
-		Message:        message,
-		ErrorType:      errorType,
-		Param:          param,
-		Code:           code,
-		RequestSummary: requestSummary,
-		RawBody:        rawBody,
+		Provider:             provider,
+		StatusCode:           statusCode,
+		Status:               status,
+		Message:              message,
+		ErrorType:            errorType,
+		Param:                param,
+		Code:                 code,
+		RateLimitReachedType: providerRateLimitReachedTypeFromHeaders(headers),
+		RequestSummary:       requestSummary,
+		RawBody:              rawBody,
 	}
 }
 
@@ -304,6 +312,47 @@ func decodeProviderErrorPayload(data []byte) (string, string, string, string, st
 		return "empty error response body", "", "", "", rawText
 	}
 	return rawText, "", "", "", rawText
+}
+
+const providerRateLimitReachedTypeHeader = "X-Codex-Rate-Limit-Reached-Type"
+
+func providerRateLimitReachedTypeFromHeaders(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	value := strings.TrimSpace(headers.Get(providerRateLimitReachedTypeHeader))
+	if !providerRateLimitReachedTypeKnown(value) {
+		return ""
+	}
+	return value
+}
+
+func providerRateLimitReachedTypeKnown(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "rate_limit_reached",
+		"workspace_owner_credits_depleted",
+		"workspace_member_credits_depleted",
+		"workspace_owner_usage_limit_reached",
+		"workspace_member_usage_limit_reached":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerRateLimitReachedTypeMessage(value string) string {
+	switch strings.TrimSpace(value) {
+	case "workspace_owner_credits_depleted":
+		return "Your workspace is out of credits. Add credits to continue."
+	case "workspace_member_credits_depleted":
+		return "Your workspace is out of credits. Ask your workspace owner to refill in order to continue."
+	case "workspace_owner_usage_limit_reached":
+		return "You hit your spend cap set in your workspace. Increase your spend cap to continue."
+	case "workspace_member_usage_limit_reached":
+		return "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue."
+	default:
+		return ""
+	}
 }
 
 func normalizeProviderErrorCode(code any) string {
@@ -967,7 +1016,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		if err != nil {
 			return ChatResponse{}, err
 		}
-		apiErr := newProviderHTTPError(providerName, resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
+		apiErr := newProviderHTTPErrorWithHeaders(providerName, resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
 		if req.JSONMode && providerErrorSuggestsJSONModeUnsupported(apiErr) {
 			fallbackReq := req
 			fallbackReq.JSONMode = false

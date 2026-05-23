@@ -371,6 +371,94 @@ func TestProviderErrorSuggestsJSONModeUnsupportedFromStructuredParam(t *testing.
 	}
 }
 
+func TestProviderHTTPErrorFormatsCodexRateLimitReachedTypes(t *testing.T) {
+	tests := []struct {
+		name       string
+		header     string
+		wantDetail string
+	}{
+		{
+			name:       "owner credits",
+			header:     "workspace_owner_credits_depleted",
+			wantDetail: "Your workspace is out of credits. Add credits to continue.",
+		},
+		{
+			name:       "member credits",
+			header:     "workspace_member_credits_depleted",
+			wantDetail: "Your workspace is out of credits. Ask your workspace owner to refill in order to continue.",
+		},
+		{
+			name:       "owner usage limit",
+			header:     "workspace_owner_usage_limit_reached",
+			wantDetail: "You hit your spend cap set in your workspace. Increase your spend cap to continue.",
+		},
+		{
+			name:       "member usage limit",
+			header:     "workspace_member_usage_limit_reached",
+			wantDetail: "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set(providerRateLimitReachedTypeHeader, tt.header)
+			err := newProviderHTTPErrorWithHeaders(
+				"openai-codex",
+				http.StatusTooManyRequests,
+				"429 Too Many Requests",
+				[]byte(`{"error":{"message":"usage_limit_reached","type":"usage_limit_exceeded","code":"usage_limit_reached"}}`),
+				"",
+				headers,
+			)
+			var providerErr *ProviderAPIError
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("expected ProviderAPIError, got %T", err)
+			}
+			if providerErr.RateLimitReachedType != tt.header {
+				t.Fatalf("expected header %q, got %q", tt.header, providerErr.RateLimitReachedType)
+			}
+			text := err.Error()
+			for _, part := range []string{tt.wantDetail, "type=usage_limit_exceeded", "code=usage_limit_reached"} {
+				if !strings.Contains(text, part) {
+					t.Fatalf("expected %q in error, got %q", part, text)
+				}
+			}
+			if !providerErr.Retryable() {
+				t.Fatalf("expected 429 provider error to remain retryable")
+			}
+		})
+	}
+}
+
+func TestProviderHTTPErrorFallsBackForGenericCodexRateLimitReachedType(t *testing.T) {
+	for _, header := range []string{"rate_limit_reached", "future_rate_limit_reached_type"} {
+		headers := http.Header{}
+		headers.Set(providerRateLimitReachedTypeHeader, header)
+		err := newProviderHTTPErrorWithHeaders(
+			"openai-codex",
+			http.StatusTooManyRequests,
+			"429 Too Many Requests",
+			[]byte(`{"error":{"message":"usage_limit_reached","type":"usage_limit_exceeded","code":"usage_limit_reached"}}`),
+			"",
+			headers,
+		)
+		text := err.Error()
+		if !strings.Contains(text, "usage_limit_reached") {
+			t.Fatalf("expected body message fallback for %q, got %q", header, text)
+		}
+		if strings.Contains(text, "workspace") {
+			t.Fatalf("expected %q not to use workspace-specific copy, got %q", header, text)
+		}
+		var providerErr *ProviderAPIError
+		if !errors.As(err, &providerErr) {
+			t.Fatalf("expected ProviderAPIError, got %T", err)
+		}
+		if header == "future_rate_limit_reached_type" && providerErr.RateLimitReachedType != "" {
+			t.Fatalf("expected unknown header to be ignored, got %q", providerErr.RateLimitReachedType)
+		}
+	}
+}
+
 func TestDeepSeekClientUsesRootChatCompletionsEndpoint(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

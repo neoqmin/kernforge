@@ -143,7 +143,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		if err != nil {
 			return ChatResponse{}, err
 		}
-		return ChatResponse{}, newProviderHTTPError("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
+		return ChatResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
 	}
 	out, err := readOpenAICodexStream(ctx, resp.Body, req.OnProgressEvent)
 	if err != nil {
@@ -190,7 +190,7 @@ func FetchOpenAICodexModels(ctx context.Context, baseURL string, tokenSource cod
 		return nil, err
 	}
 	if resp.StatusCode >= 300 {
-		return nil, newProviderHTTPError("openai-codex", resp.StatusCode, resp.Status, data, "")
+		return nil, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, "", resp.Header)
 	}
 	return parseCodexCLIModelsJSON(data)
 }
@@ -935,7 +935,7 @@ func (s *CodexOAuthTokenSource) refresh(ctx context.Context, refreshToken string
 		return codexOAuthTokens{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return codexOAuthTokens{}, newProviderHTTPError("openai-codex", resp.StatusCode, resp.Status, data, "")
+		return codexOAuthTokens{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, "", resp.Header)
 	}
 	var decoded struct {
 		AccessToken      string `json:"access_token"`
@@ -1284,7 +1284,7 @@ func exchangeCodexOAuthAuthorizationCode(ctx context.Context, httpClient *http.C
 			_ = json.Unmarshal(data, &raw)
 		}
 		if resp.StatusCode >= 300 {
-			err = newProviderHTTPError("openai-codex", resp.StatusCode, resp.Status, data, "")
+			err = newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, "", resp.Header)
 			lastErr = err
 			if codexOAuthShouldRetryTransient(resp.StatusCode, raw, data) && attempt < 2 {
 				if sleepErr := sleepCodexOAuthPoll(ctx, time.Duration(attempt+1)*time.Second); sleepErr != nil {
