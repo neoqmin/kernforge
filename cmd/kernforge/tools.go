@@ -371,7 +371,31 @@ func normalizeToolInputSchema(schema map[string]any) map[string]any {
 	}
 	normalizeToolJSONSchemaMap(schema)
 	pruneUnreachableToolDefinitions(schema)
+	compactLargeToolSchema(schema)
 	return schema
+}
+
+const maxCompactToolSchemaBytes = 4000
+const maxCompactToolSchemaDepth = 2
+
+func compactLargeToolSchema(schema map[string]any) {
+	if toolSchemaFitsCompactBudget(schema) {
+		return
+	}
+	stripToolSchemaDescriptions(schema)
+	if toolSchemaFitsCompactBudget(schema) {
+		return
+	}
+	dropToolSchemaDefinitions(schema)
+	if toolSchemaFitsCompactBudget(schema) {
+		return
+	}
+	collapseDeepToolSchemaObjects(schema, 0)
+}
+
+func toolSchemaFitsCompactBudget(schema map[string]any) bool {
+	data, err := json.Marshal(schema)
+	return err == nil && len(data) <= maxCompactToolSchemaBytes
 }
 
 func normalizeToolJSONSchemaMap(schema map[string]any) {
@@ -636,6 +660,103 @@ func decodeJSONPointerToken(token string) string {
 	token = strings.ReplaceAll(token, "~1", "/")
 	token = strings.ReplaceAll(token, "~0", "~")
 	return token
+}
+
+func stripToolSchemaDescriptions(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		delete(typed, "description")
+		for _, child := range typed {
+			stripToolSchemaDescriptions(child)
+		}
+	case []any:
+		for _, child := range typed {
+			stripToolSchemaDescriptions(child)
+		}
+	}
+}
+
+func dropToolSchemaDefinitions(schema map[string]any) {
+	rewriteToolDefinitionRefsToEmptySchemas(schema)
+	delete(schema, "$defs")
+	delete(schema, "definitions")
+}
+
+func rewriteToolDefinitionRefsToEmptySchemas(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if rawRef, ok := typed["$ref"].(string); ok {
+			if _, ok := parseLocalToolDefinitionRef(rawRef); ok {
+				for key := range typed {
+					delete(typed, key)
+				}
+				return
+			}
+		}
+		for key, child := range typed {
+			if key == "$defs" || key == "definitions" {
+				continue
+			}
+			rewriteToolDefinitionRefsToEmptySchemas(child)
+		}
+	case []any:
+		for _, child := range typed {
+			rewriteToolDefinitionRefsToEmptySchemas(child)
+		}
+	}
+}
+
+func collapseDeepToolSchemaObjects(value any, depth int) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if depth >= maxCompactToolSchemaDepth && isComplexToolSchemaObject(typed) {
+			for key := range typed {
+				delete(typed, key)
+			}
+			return
+		}
+
+		if rawProperties, ok := typed["properties"].(map[string]any); ok {
+			for _, child := range rawProperties {
+				collapseDeepToolSchemaObjects(child, depth+1)
+			}
+		}
+		for _, key := range []string{"items", "prefixItems"} {
+			child, ok := typed[key]
+			if !ok {
+				continue
+			}
+			collapseDeepToolSchemaObjects(child, depth+1)
+		}
+		if child, ok := typed["additionalProperties"]; ok && !isBoolValue(child) {
+			collapseDeepToolSchemaObjects(child, depth+1)
+		}
+		for _, key := range []string{"anyOf", "oneOf", "allOf"} {
+			child, ok := typed[key]
+			if !ok {
+				continue
+			}
+			collapseDeepToolSchemaObjects(child, depth+1)
+		}
+	case []any:
+		for _, child := range typed {
+			collapseDeepToolSchemaObjects(child, depth)
+		}
+	}
+}
+
+func isBoolValue(value any) bool {
+	_, ok := value.(bool)
+	return ok
+}
+
+func isComplexToolSchemaObject(schema map[string]any) bool {
+	for _, key := range []string{"properties", "items", "prefixItems", "additionalProperties", "$ref", "anyOf", "oneOf", "allOf"} {
+		if _, ok := schema[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneToolDefinitionMap(src map[string]any) map[string]any {
