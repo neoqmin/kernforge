@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,6 +214,127 @@ func TestCheckpointDiffAndPartialRollback(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspace, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("expected new.txt to be removed by partial rollback, err=%v", err)
 	}
+}
+
+func TestCheckpointRejectsSnapshotEntryTraversal(t *testing.T) {
+	workspace := t.TempDir()
+	zipPath := filepath.Join(t.TempDir(), "snapshot.zip")
+	if err := writeTestSnapshotZip(zipPath, []testSnapshotZipEntry{
+		{Name: "../escape.txt", Body: "escape"},
+	}); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	if err := restoreWorkspaceSnapshot(workspace, zipPath); err == nil || !strings.Contains(err.Error(), "invalid snapshot entry") {
+		t.Fatalf("expected traversal snapshot entry to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(workspace), "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("snapshot traversal wrote outside workspace, err=%v", err)
+	}
+}
+
+func TestCheckpointRejectsSnapshotAbsoluteEntry(t *testing.T) {
+	for _, name := range []string{"/abs.txt", `C:\abs.txt`} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := cleanCheckpointSnapshotEntryName(name); err == nil {
+				t.Fatalf("expected absolute snapshot entry %q to be rejected", name)
+			}
+		})
+	}
+}
+
+func TestCheckpointRejectsSnapshotSymlinkEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "snapshot.zip")
+	if err := writeTestSnapshotZip(zipPath, []testSnapshotZipEntry{
+		{Name: "link.txt", Body: "target.txt", Mode: os.ModeSymlink | 0o777},
+	}); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	if _, err := readSnapshotEntries(zipPath); err == nil || !strings.Contains(err.Error(), "invalid snapshot entry type") {
+		t.Fatalf("expected symlink snapshot entry to be rejected, got %v", err)
+	}
+}
+
+func TestCheckpointRejectsDuplicateSnapshotEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "snapshot.zip")
+	if err := writeTestSnapshotZip(zipPath, []testSnapshotZipEntry{
+		{Name: "dup.txt", Body: "one"},
+		{Name: "dup.txt", Body: "two"},
+	}); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	if _, err := readSnapshotEntries(zipPath); err == nil || !strings.Contains(err.Error(), "duplicate snapshot entry") {
+		t.Fatalf("expected duplicate snapshot entry to be rejected, got %v", err)
+	}
+}
+
+func TestCheckpointRejectsOversizedSnapshotEntry(t *testing.T) {
+	header := zip.FileHeader{
+		Name:               "huge.bin",
+		UncompressedSize64: uint64(checkpointSnapshotMaxExtractedBytes) + 1,
+	}
+	header.SetMode(0o644)
+	file := &zip.File{FileHeader: header}
+	totalBytes := int64(0)
+	if _, _, err := validateCheckpointSnapshotFile(file, &totalBytes); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected oversized snapshot entry to be rejected, got %v", err)
+	}
+}
+
+func TestCheckpointRejectsEntryThatExceedsDeclaredSize(t *testing.T) {
+	header := zip.FileHeader{
+		Name:               "short.bin",
+		UncompressedSize64: 1,
+	}
+	header.SetMode(0o644)
+	file := &zip.File{FileHeader: header}
+	if _, err := readCheckpointSnapshotFile(strings.NewReader("toolong"), file); err == nil || !strings.Contains(err.Error(), "exceeded declared size") {
+		t.Fatalf("expected declared-size overflow to be rejected, got %v", err)
+	}
+}
+
+type testSnapshotZipEntry struct {
+	Name string
+	Body string
+	Mode os.FileMode
+}
+
+func writeTestSnapshotZip(path string, entries []testSnapshotZipEntry) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	writer := zip.NewWriter(file)
+	for _, entry := range entries {
+		header := &zip.FileHeader{
+			Name:   entry.Name,
+			Method: zip.Deflate,
+		}
+		mode := entry.Mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		header.SetMode(mode)
+		w, err := writer.CreateHeader(header)
+		if err != nil {
+			_ = writer.Close()
+			_ = file.Close()
+			return err
+		}
+		if _, err := w.Write([]byte(entry.Body)); err != nil {
+			_ = writer.Close()
+			_ = file.Close()
+			return err
+		}
+	}
+	closeWriterErr := writer.Close()
+	closeFileErr := file.Close()
+	if closeWriterErr != nil {
+		return closeWriterErr
+	}
+	return closeFileErr
 }
 
 func TestHelpTextIncludesCheckpointCommands(t *testing.T) {
