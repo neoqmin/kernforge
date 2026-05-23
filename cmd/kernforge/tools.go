@@ -930,12 +930,64 @@ func runDefaultPostToolUseHook(ctx context.Context, tool Tool, name string, payl
 		result.Meta = map[string]any{}
 	}
 	if err != nil {
+		if feedback, ok := postToolUseHookFeedbackFromError(err); ok {
+			return applyPostToolUseHookFeedback(result, feedback)
+		}
 		result.Meta["post_tool_use_hook_error"] = err.Error()
 		return result
 	}
 	if len(verdict.ContextAdds) > 0 {
 		result.Meta["post_tool_use_context_adds"] = append([]string(nil), verdict.ContextAdds...)
 	}
+	if feedback, ok := postToolUseHookFeedbackFromVerdict(verdict); ok {
+		return applyPostToolUseHookFeedback(result, feedback)
+	}
+	return result
+}
+
+func postToolUseHookFeedbackFromError(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	text := strings.TrimSpace(err.Error())
+	switch {
+	case text == "hook denied":
+		return "PostToolUse hook stopped execution", true
+	case strings.HasPrefix(text, "hook denied:"):
+		feedback := strings.TrimSpace(strings.TrimPrefix(text, "hook denied:"))
+		if feedback == "" {
+			feedback = "PostToolUse hook stopped execution"
+		}
+		return feedback, true
+	default:
+		return "", false
+	}
+}
+
+func postToolUseHookFeedbackFromVerdict(verdict HookVerdict) (string, bool) {
+	if feedback := strings.TrimSpace(verdict.DenyReason); feedback != "" {
+		return feedback, true
+	}
+	if !verdict.Allow {
+		return "PostToolUse hook stopped execution", true
+	}
+	return "", false
+}
+
+func applyPostToolUseHookFeedback(result ToolExecutionResult, feedback string) ToolExecutionResult {
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" {
+		feedback = "PostToolUse hook stopped execution"
+	}
+	if result.Meta == nil {
+		result.Meta = map[string]any{}
+	}
+	result.Meta["post_tool_use_hook_feedback"] = feedback
+	result.Meta["post_tool_use_hook_stopped"] = true
+	result.DisplayText = feedback
+	result.ModelText = feedback
+	result.ContentItems = nil
+	result.ModelContentItems = nil
 	return result
 }
 

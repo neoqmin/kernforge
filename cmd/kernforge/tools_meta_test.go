@@ -803,6 +803,87 @@ func TestToolRegistryDefaultFunctionHookDenialBlocksBeforeExecution(t *testing.T
 	}
 }
 
+func TestToolRegistryPostFunctionHookFeedbackReplacesModelVisibleOutput(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	feedback := "redacted by post hook"
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	hooks := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{{
+				ID:     "post-redact",
+				Events: []HookEvent{HookPostToolUse},
+				Match:  HookMatch{ToolNames: []string{"list_files"}},
+				Action: HookAction{Type: "deny", Message: feedback},
+			}},
+		},
+		Workspace: ws,
+	}
+	ws.RunHook = hooks.Run
+	registry := NewToolRegistry(NewListFilesTool(ws))
+
+	result, err := registry.ExecuteDetailed(context.Background(), "list_files", `{"path":"."}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolExecutionModelText(result); got != feedback {
+		t.Fatalf("expected hook feedback as model text, got %q", got)
+	}
+	if strings.Contains(result.DisplayText, "secret.txt") {
+		t.Fatalf("post hook feedback must replace display text, got %q", result.DisplayText)
+	}
+	if items := toolExecutionModelContentItems(result); len(items) != 0 {
+		t.Fatalf("post hook feedback must clear model content items, got %#v", items)
+	}
+	if got := stringsValueFromAny(result.Meta["post_tool_use_hook_feedback"]); got != feedback {
+		t.Fatalf("expected post hook feedback metadata, got %#v", result.Meta)
+	}
+	if stopped, _ := result.Meta["post_tool_use_hook_stopped"].(bool); !stopped {
+		t.Fatalf("expected post hook stopped metadata, got %#v", result.Meta)
+	}
+	if success, _ := result.Meta["success"].(bool); !success {
+		t.Fatalf("post hook feedback should preserve tool success metadata, got %#v", result.Meta)
+	}
+}
+
+func TestToolRegistryPostFunctionHookAllowFalseUsesFallbackFeedback(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("visible\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile visible: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			_ = payload
+			if event == HookPostToolUse {
+				return HookVerdict{Allow: false}, nil
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	}
+	registry := NewToolRegistry(NewListFilesTool(ws))
+
+	result, err := registry.ExecuteDetailed(context.Background(), "list_files", `{"path":"."}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	const fallback = "PostToolUse hook stopped execution"
+	if got := toolExecutionModelText(result); got != fallback {
+		t.Fatalf("expected fallback hook feedback, got %q", got)
+	}
+	if strings.Contains(result.DisplayText, "visible.txt") {
+		t.Fatalf("post hook fallback must replace display text, got %q", result.DisplayText)
+	}
+}
+
 func TestReadFileExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "sample.txt")
