@@ -27,6 +27,7 @@ type RuntimeErrorLogEntry struct {
 	WorkspaceRoot string            `json:"workspace_root,omitempty"`
 	SessionID     string            `json:"session_id,omitempty"`
 	TurnID        string            `json:"turn_id,omitempty"`
+	TraceID       string            `json:"trace_id,omitempty"`
 	CorrelationID string            `json:"correlation_id,omitempty"`
 	Entities      map[string]string `json:"entities,omitempty"`
 }
@@ -96,6 +97,7 @@ func appendRuntimeErrorConversationEvent(workspaceRoot string, sess *Session, ev
 		Raw:           compactPromptSection(event.Raw, 8192),
 		WorkspaceRoot: root,
 		TurnID:        strings.TrimSpace(event.TurnID),
+		TraceID:       strings.TrimSpace(event.TraceID),
 		CorrelationID: strings.TrimSpace(event.CorrelationID),
 		Entities:      cloneStringMap(event.Entities),
 	}
