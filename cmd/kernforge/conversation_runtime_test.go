@@ -282,6 +282,25 @@ func TestProviderErrorIsRecordedInConversationEvents(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuntimeErrorUsesCodexRateLimitReachedTypeMessage(t *testing.T) {
+	normalized := normalizeRuntimeError(&ProviderAPIError{
+		Provider:             "openai-codex",
+		StatusCode:           429,
+		Status:               "429 Too Many Requests",
+		Message:              "usage_limit_reached",
+		ErrorType:            "usage_limit_exceeded",
+		Code:                 "usage_limit_reached",
+		RateLimitReachedType: "workspace_owner_credits_depleted",
+		RawBody:              `{"error":{"message":"usage_limit_reached","type":"usage_limit_exceeded"}}`,
+	})
+	if normalized.Message != "Your workspace is out of credits. Add credits to continue." {
+		t.Fatalf("unexpected normalized message: %q", normalized.Message)
+	}
+	if normalized.Category != "rate_limit" || !normalized.Retryable {
+		t.Fatalf("expected retryable rate-limit event, got %#v", normalized)
+	}
+}
+
 func TestToolSuccessIsRecordedInConversationEvents(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {

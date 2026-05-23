@@ -758,6 +758,9 @@ func normalizeRuntimeError(err error) NormalizedRuntimeError {
 		out.StatusCode = providerErr.StatusCode
 		out.Code = strings.TrimSpace(providerErr.Code)
 		out.Message = strings.TrimSpace(providerErr.Message)
+		if message := providerRateLimitReachedTypeMessage(providerErr.RateLimitReachedType); message != "" {
+			out.Message = message
+		}
 		out.Request = strings.TrimSpace(providerErr.RequestSummary)
 		out.Raw = strings.TrimSpace(providerErr.RawBody)
 		if out.Raw == "" {

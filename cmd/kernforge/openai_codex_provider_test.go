@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -656,6 +657,42 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	}
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_2" || resp.Message.ToolCalls[0].Name != "grep" {
 		t.Fatalf("unexpected tool calls: %#v", resp.Message.ToolCalls)
+	}
+}
+
+func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set(providerRateLimitReachedTypeHeader, "workspace_member_usage_limit_reached")
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"usage_limit_reached","type":"usage_limit_exceeded","code":"usage_limit_reached"}}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var providerErr *ProviderAPIError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected ProviderAPIError, got %T", err)
+	}
+	if providerErr.RateLimitReachedType != "workspace_member_usage_limit_reached" {
+		t.Fatalf("expected rate limit reached type, got %q", providerErr.RateLimitReachedType)
+	}
+	if !strings.Contains(err.Error(), "Ask an owner to increase your spend cap to continue.") {
+		t.Fatalf("expected workspace usage-limit copy, got %q", err.Error())
 	}
 }
 
