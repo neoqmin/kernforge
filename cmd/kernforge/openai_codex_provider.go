@@ -32,6 +32,7 @@ const (
 	openAICodexAuthFileEnv      = "KERNFORGE_CODEX_AUTH_FILE"
 	openAICodexDefaultAuthFile  = "codex_auth.json"
 	openAICodexTokenRefreshSkew = 2 * time.Minute
+	openAICodexInstallationFile = "installation_id"
 )
 
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -128,7 +129,17 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		return ChatResponse{}, err
 	}
 
-	body, err := buildOpenAICodexRequestBody(req)
+	requestID := newOpenAICodexRequestID()
+	sessionID := firstNonBlankString(req.SessionID, requestID)
+	threadID := firstNonBlankString(req.ThreadID, sessionID)
+	req.SessionID = sessionID
+	req.ThreadID = threadID
+	clientMetadata := map[string]string{}
+	if installationID := resolveOpenAICodexInstallationID(); installationID != "" {
+		clientMetadata["x-codex-installation-id"] = installationID
+	}
+
+	body, err := buildOpenAICodexRequestBodyWithClientMetadata(req, clientMetadata)
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -141,9 +152,6 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	httpReq.Header.Set("authorization", "Bearer "+accessToken)
 	httpReq.Header.Set("originator", "codex_cli_rs")
 	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
-	requestID := newOpenAICodexRequestID()
-	sessionID := firstNonBlankString(req.SessionID, requestID)
-	threadID := firstNonBlankString(req.ThreadID, sessionID)
 	httpReq.Header.Set("session-id", sessionID)
 	httpReq.Header.Set("thread-id", threadID)
 	httpReq.Header.Set("x-client-request-id", threadID)
@@ -219,6 +227,10 @@ func FetchOpenAICodexModels(ctx context.Context, baseURL string, tokenSource cod
 }
 
 func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
+	return buildOpenAICodexRequestBodyWithClientMetadata(req, nil)
+}
+
+func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetadata map[string]string) ([]byte, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" || strings.EqualFold(model, codexCLIDefaultModel) {
 		model = openAICodexDefaultModel
@@ -234,6 +246,22 @@ func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
 		"stream":              true,
 		"include":             []string{"reasoning.encrypted_content"},
 		"parallel_tool_calls": true,
+	}
+	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
+		payload["prompt_cache_key"] = threadID
+	}
+	if len(clientMetadata) > 0 {
+		metadata := map[string]string{}
+		for key, value := range clientMetadata {
+			key = strings.TrimSpace(key)
+			value = strings.TrimSpace(value)
+			if key != "" && value != "" {
+				metadata[key] = value
+			}
+		}
+		if len(metadata) > 0 {
+			payload["client_metadata"] = metadata
+		}
 	}
 	if strings.TrimSpace(req.System) != "" {
 		payload["instructions"] = req.System
@@ -1932,4 +1960,42 @@ func newOpenAICodexRequestID() string {
 		return hex.EncodeToString(raw[:])
 	}
 	return fmt.Sprintf("%x", time.Now().UnixNano())
+}
+
+func resolveOpenAICodexInstallationID() string {
+	id, _ := resolveOpenAICodexInstallationIDAtPath(filepath.Join(userConfigDir(), openAICodexInstallationFile))
+	return id
+}
+
+func resolveOpenAICodexInstallationIDAtPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("installation id path is empty")
+	}
+	if data, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	id := newOpenAICodexInstallationID()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(id), 0o600); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func newOpenAICodexInstallationID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		raw[6] = (raw[6] & 0x0f) | 0x40
+		raw[8] = (raw[8] & 0x3f) | 0x80
+		hexed := hex.EncodeToString(raw[:])
+		return hexed[0:8] + "-" + hexed[8:12] + "-" + hexed[12:16] + "-" + hexed[16:20] + "-" + hexed[20:32]
+	}
+	return newOpenAICodexRequestID()
 }
