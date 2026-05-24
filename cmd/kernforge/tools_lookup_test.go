@@ -1028,6 +1028,84 @@ func TestListFilesToolReportsTruncationAndClampsInvalidMaxEntries(t *testing.T) 
 	}
 }
 
+func TestGrepToolMissingPathReportsCandidates(t *testing.T) {
+	root := t.TempDir()
+	reportDir := filepath.Join(root, "Tavern")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(reportDir, "BugReport.md"), []byte("BUG-001\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "BugReport.md",
+		"pattern": "BUG-",
+	})
+	if err == nil {
+		t.Fatalf("expected missing path error")
+	}
+	if !strings.Contains(result.DisplayText, "grep target does not exist: BugReport.md") {
+		t.Fatalf("expected missing path diagnostic, got %q", result.DisplayText)
+	}
+	if !strings.Contains(result.DisplayText, "Tavern/BugReport.md") {
+		t.Fatalf("expected same-basename candidate, got %q", result.DisplayText)
+	}
+	candidates := toolMetaStringSlice(result.Meta, "candidate_paths")
+	if len(candidates) != 1 || candidates[0] != "Tavern/BugReport.md" {
+		t.Fatalf("expected candidate_paths metadata, got %#v", result.Meta)
+	}
+	if toolMetaString(result.Meta, "error_kind") != "missing_path" {
+		t.Fatalf("expected missing_path error_kind, got %#v", result.Meta)
+	}
+}
+
+func TestGrepToolReportsInvalidPatternAndClampsMaxResults(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("needle\nneedle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":     "[",
+		"max_results": 0,
+	})
+	if err == nil {
+		t.Fatalf("expected invalid pattern error")
+	}
+	if !strings.Contains(result.DisplayText, "grep received an invalid regular expression") {
+		t.Fatalf("expected invalid pattern diagnostic, got %q", result.DisplayText)
+	}
+	if toolMetaString(result.Meta, "error_kind") != "invalid_pattern" {
+		t.Fatalf("expected invalid_pattern error_kind, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "max_results") != 100 {
+		t.Fatalf("expected max_results to be clamped to default, got %#v", result.Meta)
+	}
+
+	result, err = tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":     "needle",
+		"max_results": 0,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed clamped grep: %v", err)
+	}
+	if toolMetaInt(result.Meta, "max_results") != 100 {
+		t.Fatalf("expected max_results to remain clamped to default, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "match_count") != 2 {
+		t.Fatalf("expected both matches after clamp, got %#v", result.Meta)
+	}
+}
+
 func TestWriteFileToolUpdatesFallbackTargetInsteadOfCreatingSiblingFile(t *testing.T) {
 	base := t.TempDir()
 	current := filepath.Join(base, "nested")
