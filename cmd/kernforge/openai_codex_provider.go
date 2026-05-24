@@ -1076,17 +1076,23 @@ func openAICodexAssistantToolOutputInputItems(outputs []MessageCodexToolOutputIt
 	for _, output := range outputs {
 		itemType := strings.TrimSpace(output.Type)
 		callID := strings.TrimSpace(output.CallID)
-		if itemType == "" || callID == "" {
+		if itemType == "" {
 			continue
 		}
 		switch itemType {
 		case "function_call_output":
+			if callID == "" {
+				continue
+			}
 			items = append(items, map[string]any{
 				"type":    itemType,
 				"call_id": callID,
 				"output":  openAICodexCodexToolOutputPayload(output, supportsImages),
 			})
 		case "custom_tool_call_output":
+			if callID == "" {
+				continue
+			}
 			item := map[string]any{
 				"type":    itemType,
 				"call_id": callID,
@@ -1101,7 +1107,7 @@ func openAICodexAssistantToolOutputInputItems(outputs []MessageCodexToolOutputIt
 			status := firstNonEmptyTrimmed(output.Status, "completed")
 			items = append(items, map[string]any{
 				"type":      itemType,
-				"call_id":   callID,
+				"call_id":   openAICodexNullableCallID(callID),
 				"status":    status,
 				"execution": execution,
 				"tools":     cloneOpenAICodexToolMaps(output.Tools),
@@ -1109,6 +1115,14 @@ func openAICodexAssistantToolOutputInputItems(outputs []MessageCodexToolOutputIt
 		}
 	}
 	return items
+}
+
+func openAICodexNullableCallID(callID string) any {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return nil
+	}
+	return callID
 }
 
 func openAICodexCodexToolOutputPayload(output MessageCodexToolOutputItem, supportsImages bool) any {
@@ -1179,6 +1193,9 @@ func (sets openAICodexExpectedOutputSets) matchesOutput(output MessageCodexToolO
 		return callID != "" && sets.custom[callID]
 	case "tool_search_output":
 		if strings.TrimSpace(output.Execution) == "server" {
+			return true
+		}
+		if callID == "" {
 			return true
 		}
 		return callID != "" && sets.toolSearch[callID]
@@ -2758,7 +2775,7 @@ func openAICodexToolOutputFromOutputItem(item openAICodexOutputItem) (MessageCod
 		return MessageCodexToolOutputItem{}, false
 	}
 	callID := strings.TrimSpace(item.CallID)
-	if callID == "" {
+	if callID == "" && itemType != "tool_search_output" {
 		return MessageCodexToolOutputItem{}, false
 	}
 	output := MessageCodexToolOutputItem{
