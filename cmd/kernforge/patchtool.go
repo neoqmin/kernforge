@@ -398,7 +398,7 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 	if err := ws.ConfirmEdit(preview); err != nil {
 		return "", false, nil, "", err
 	}
-	if err := ensurePlannedPatchWrites(ws, planned); err != nil {
+	if err := ensurePlannedPatchWrites(ctx, ws, planned); err != nil {
 		return "", false, nil, "", err
 	}
 	editRoot := ws.Root
@@ -480,23 +480,23 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), nil
 }
 
-func ensurePlannedPatchWrites(ws Workspace, planned []plannedPatchChange) error {
+func ensurePlannedPatchWrites(ctx context.Context, ws Workspace, planned []plannedPatchChange) error {
 	for _, change := range planned {
 		switch change.kind {
 		case "add":
-			if err := ws.EnsureWrite(change.destPath); err != nil {
+			if err := ws.EnsureWriteWithContext(ctx, change.destPath); err != nil {
 				return err
 			}
 		case "delete":
-			if err := ws.EnsureWrite(change.srcPath); err != nil {
+			if err := ws.EnsureWriteWithContext(ctx, change.srcPath); err != nil {
 				return err
 			}
 		case "update":
-			if err := ws.EnsureWrite(change.srcPath); err != nil {
+			if err := ws.EnsureWriteWithContext(ctx, change.srcPath); err != nil {
 				return err
 			}
 			if change.destPath != change.srcPath {
-				if err := ws.EnsureWrite(change.destPath); err != nil {
+				if err := ws.EnsureWriteWithContext(ctx, change.destPath); err != nil {
 					return err
 				}
 			}

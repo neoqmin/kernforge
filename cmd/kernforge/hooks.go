@@ -19,20 +19,21 @@ const (
 )
 
 const (
-	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
-	HookSessionStart     HookEvent = "SessionStart"
-	HookPreToolUse       HookEvent = "PreToolUse"
-	HookPostToolUse      HookEvent = "PostToolUse"
-	HookSubagentStart    HookEvent = "SubagentStart"
-	HookSubagentStop     HookEvent = "SubagentStop"
-	HookPreCompact       HookEvent = "PreCompact"
-	HookPostCompact      HookEvent = "PostCompact"
-	HookPreEdit          HookEvent = "PreEdit"
-	HookPostEdit         HookEvent = "PostEdit"
-	HookPreVerification  HookEvent = "PreVerification"
-	HookPostVerification HookEvent = "PostVerification"
-	HookPreGitPush       HookEvent = "PreGitPush"
-	HookPreCreatePR      HookEvent = "PreCreatePR"
+	HookUserPromptSubmit  HookEvent = "UserPromptSubmit"
+	HookSessionStart      HookEvent = "SessionStart"
+	HookPermissionRequest HookEvent = "PermissionRequest"
+	HookPreToolUse        HookEvent = "PreToolUse"
+	HookPostToolUse       HookEvent = "PostToolUse"
+	HookSubagentStart     HookEvent = "SubagentStart"
+	HookSubagentStop      HookEvent = "SubagentStop"
+	HookPreCompact        HookEvent = "PreCompact"
+	HookPostCompact       HookEvent = "PostCompact"
+	HookPreEdit           HookEvent = "PreEdit"
+	HookPostEdit          HookEvent = "PostEdit"
+	HookPreVerification   HookEvent = "PreVerification"
+	HookPostVerification  HookEvent = "PostVerification"
+	HookPreGitPush        HookEvent = "PreGitPush"
+	HookPreCreatePR       HookEvent = "PreCreatePR"
 )
 
 type HookPayload map[string]any
@@ -98,15 +99,17 @@ type HookNotice struct {
 }
 
 type HookVerdict struct {
-	Allow            bool
-	Warns            []HookNotice
-	DenyReason       string
-	AskMessage       string
-	ContextAdds      []string
-	CheckpointNotes  []string
-	VerificationAdds []VerificationStep
-	MatchedRuleIDs   []string
-	UpdatedInput     HookPayload
+	Allow              bool
+	Warns              []HookNotice
+	DenyReason         string
+	AskMessage         string
+	ContextAdds        []string
+	CheckpointNotes    []string
+	VerificationAdds   []VerificationStep
+	MatchedRuleIDs     []string
+	UpdatedInput       HookPayload
+	PermissionDecision string
+	PermissionMessage  string
 }
 
 type HookEngine struct {
@@ -174,6 +177,10 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 		if !ok {
 			return HookVerdict{}, fmt.Errorf("hook denied: %s", verdict.AskMessage)
 		}
+	}
+	if event == HookPermissionRequest && strings.TrimSpace(verdict.PermissionDecision) != "" {
+		verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
+		return verdict, nil
 	}
 	if verdict.DenyReason != "" {
 		return HookVerdict{}, fmt.Errorf("hook denied: %s", verdict.DenyReason)
@@ -416,6 +423,9 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 		verdict.MatchedRuleIDs = append(verdict.MatchedRuleIDs, rule.ID)
 		switch strings.ToLower(strings.TrimSpace(rule.Action.Type)) {
 		case "", "allow":
+			if event == HookPermissionRequest {
+				verdict.PermissionDecision = "allow"
+			}
 			if err := applyHookActionUpdatedInput(event, rule, &verdict, false); err != nil {
 				return HookVerdict{}, err
 			}
@@ -428,6 +438,10 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 		case "deny":
 			verdict.Allow = false
 			verdict.DenyReason = hookActionMessage(rule, "Blocked by hook policy.")
+			if event == HookPermissionRequest {
+				verdict.PermissionDecision = "deny"
+				verdict.PermissionMessage = verdict.DenyReason
+			}
 		case "append_context", "append_review_context":
 			message := strings.TrimSpace(rule.Action.Message)
 			if message != "" {

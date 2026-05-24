@@ -1416,7 +1416,7 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 		if strings.TrimSpace(resolvedCommand) != "" && strings.TrimSpace(resolvedCommand) != strings.TrimSpace(step.Command) {
 			step.ResolvedCommand = resolvedCommand
 		}
-		if err := ws.EnsureShell(resolvedCommand); err != nil {
+		if err := ws.EnsureShellWithContext(ctx, resolvedCommand); err != nil {
 			step.Status = VerificationSkipped
 			step.Output = "Permission denied: " + err.Error()
 			continue
