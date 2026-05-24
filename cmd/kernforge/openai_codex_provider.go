@@ -1553,7 +1553,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
 		stopReason = strings.TrimSpace(decoded.IncompleteDetails.Reason)
 	}
-	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 && len(out.CodexCompactionItems) == 0 {
+	if !openAICodexMessageHasOutput(out) {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses output", "", "", nil, data)
 	}
 	return ChatResponse{
@@ -2027,7 +2027,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				resp.Message.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(hostedItemTexts), "\n"))
 			}
 			completedParsed = &resp
-			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, localShellCalls, compactionItems, reasoning.String(), toolCalls, toolOrder) {
+			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, hostedWebSearchCalls, localShellCalls, compactionItems, reasoning.String(), reasoningEncryptedContent, toolCalls, toolOrder) {
 				return resp, nil
 			}
 		}
@@ -2091,7 +2091,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			out.CodexCompactionItems = append(out.CodexCompactionItems, completedParsed.Message.CodexCompactionItems...)
 		}
 	}
-	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 && len(out.CodexCompactionItems) == 0 {
+	if !openAICodexMessageHasOutput(out) {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
 	return ChatResponse{
@@ -2105,11 +2105,25 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	}, nil
 }
 
-func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, localShellCalls []MessageLocalShellCall, compactionItems []MessageCodexCompactionItem, reasoningText string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
-	if strings.TrimSpace(streamText) != "" || strings.TrimSpace(reasoningText) != "" {
+func openAICodexMessageHasOutput(msg Message) bool {
+	return strings.TrimSpace(msg.Text) != "" ||
+		strings.TrimSpace(msg.ReasoningContent) != "" ||
+		strings.TrimSpace(msg.ReasoningEncryptedContent) != "" ||
+		len(msg.Images) > 0 ||
+		len(msg.WebSearchCalls) > 0 ||
+		len(msg.LocalShellCalls) > 0 ||
+		len(msg.CodexCompactionItems) > 0 ||
+		len(msg.ToolCalls) > 0
+}
+
+func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, hostedWebSearchCalls []MessageWebSearchCall, localShellCalls []MessageLocalShellCall, compactionItems []MessageCodexCompactionItem, reasoningText string, reasoningEncryptedContent string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
+	if strings.TrimSpace(streamText) != "" || strings.TrimSpace(reasoningText) != "" || strings.TrimSpace(reasoningEncryptedContent) != "" {
 		return true
 	}
 	if len(itemTexts) > 0 || len(finalItemTexts) > 0 || len(hostedItemTexts) > 0 || len(hostedImages) > 0 {
+		return true
+	}
+	if len(hostedWebSearchCalls) > 0 {
 		return true
 	}
 	if len(localShellCalls) > 0 {

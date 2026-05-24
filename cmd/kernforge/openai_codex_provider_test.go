@@ -3049,6 +3049,26 @@ func TestParseOpenAICodexResponsePreservesReasoningEncryptedContent(t *testing.T
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesReasoningEncryptedOnly(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"reasoning",
+			"id":"reasoning-1",
+			"encrypted_content":"sealed-reasoning"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.Message.Text != "" {
+		t.Fatalf("expected no visible text, got %q", resp.Message.Text)
+	}
+	if resp.Message.ReasoningEncryptedContent != "sealed-reasoning" {
+		t.Fatalf("expected encrypted reasoning to be preserved, got %q", resp.Message.ReasoningEncryptedContent)
+	}
+}
+
 func TestParseOpenAICodexResponseCapturesServerModel(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -3620,6 +3640,24 @@ func TestReadOpenAICodexStreamPreservesReasoningEncryptedContent(t *testing.T) {
 	}
 	if resp.Message.Text != "done" {
 		t.Fatalf("expected visible message text, got %q", resp.Message.Text)
+	}
+	if resp.Message.ReasoningEncryptedContent != "sealed-reasoning" {
+		t.Fatalf("expected encrypted reasoning to be preserved, got %q", resp.Message.ReasoningEncryptedContent)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesReasoningEncryptedOnly(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","encrypted_content":"sealed-reasoning"}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "" {
+		t.Fatalf("expected no visible text, got %q", resp.Message.Text)
 	}
 	if resp.Message.ReasoningEncryptedContent != "sealed-reasoning" {
 		t.Fatalf("expected encrypted reasoning to be preserved, got %q", resp.Message.ReasoningEncryptedContent)
