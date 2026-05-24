@@ -501,6 +501,46 @@ func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodySynthesizesMissingApplyPatchOutputAsCustom(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "edit"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_patch",
+				Name:      "apply_patch",
+				Arguments: mustJSON(map[string]any{"patch": patch}),
+			}}},
+			{Role: "user", Text: "Continue after the interrupted edit."},
+		},
+		Tools: []ToolDefinition{NewApplyPatchTool(Workspace{}).Definition()},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 4 {
+		t.Fatalf("expected four input items, got %#v in %s", payload["input"], body)
+	}
+	call := input[1].(map[string]any)
+	if call["type"] != "custom_tool_call" || call["call_id"] != "call_patch" || call["name"] != "apply_patch" {
+		t.Fatalf("expected apply_patch custom tool call, got %#v", call)
+	}
+	output := input[2].(map[string]any)
+	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_patch" || output["name"] != "apply_patch" {
+		t.Fatalf("expected synthesized apply_patch custom output, got %#v", output)
+	}
+	if encoded := string(body); strings.Contains(encoded, `"type":"function_call_output"`) {
+		t.Fatalf("apply_patch missing result must not be synthesized as function_call_output: %s", encoded)
+	}
+}
+
 func TestOpenAICodexClientAppliesConfiguredReasoningEffort(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
