@@ -892,6 +892,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				}
 				items = append(items, openAICodexToolCallInputItem(callID, tc))
 			}
+			items = append(items, openAICodexAssistantLocalShellInputItems(msg.LocalShellCalls)...)
 			items = append(items, openAICodexAssistantImageGenerationInputItems(req.WorkingDir, msg.Images, supportsImages)...)
 			items = append(items, openAICodexAssistantWebSearchInputItems(msg.WebSearchCalls)...)
 		case "tool":
@@ -979,6 +980,27 @@ func openAICodexAssistantWebSearchInputItems(calls []MessageWebSearchCall) []any
 	return items
 }
 
+func openAICodexAssistantLocalShellInputItems(calls []MessageLocalShellCall) []any {
+	if len(calls) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(calls))
+	for _, call := range calls {
+		callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+		if callID == "" || len(call.Action) == 0 {
+			continue
+		}
+		status := firstNonEmptyTrimmed(call.Status, "completed")
+		items = append(items, map[string]any{
+			"type":    "local_shell_call",
+			"call_id": callID,
+			"status":  status,
+			"action":  cloneToolDefinitionMap(call.Action),
+		})
+	}
+	return items
+}
+
 func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 	if len(messages) == 0 {
 		return messages
@@ -992,6 +1014,12 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 				callID := firstNonEmptyTrimmed(call.ID, call.Name)
 				if callID != "" {
 					expected[callID] = call
+				}
+			}
+			for _, call := range msg.LocalShellCalls {
+				callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+				if callID != "" {
+					expected[callID] = ToolCall{ID: callID}
 				}
 			}
 		case "tool":
@@ -1041,6 +1069,20 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 				Role:       "tool",
 				ToolCallID: callID,
 				ToolName:   call.Name,
+				Text:       text,
+				IsError:    isError,
+			})
+		}
+		for _, call := range msg.LocalShellCalls {
+			callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+			if callID == "" || outputs[callID] {
+				continue
+			}
+			text := missingOpenAIToolResultText(messages, index+1)
+			isError := strings.HasPrefix(text, "ERROR:")
+			out = append(out, Message{
+				Role:       "tool",
+				ToolCallID: callID,
 				Text:       text,
 				IsError:    isError,
 			})
@@ -1400,6 +1442,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	reasoningTexts := []string{}
 	reasoningEncryptedContents := []string{}
 	webSearchCalls := []MessageWebSearchCall{}
+	localShellCalls := []MessageLocalShellCall{}
 	textMessageCount := 0
 	commentaryTextMessageCount := 0
 	messagePhase := ""
@@ -1431,6 +1474,10 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			if call, ok := openAICodexToolCallFromOutputItem(item); ok {
 				out.ToolCalls = append(out.ToolCalls, call)
 			}
+		case "local_shell_call":
+			if call, ok := openAICodexLocalShellCallFromOutputItem(item); ok {
+				localShellCalls = append(localShellCalls, call)
+			}
 		case "reasoning":
 			if reasoningText := openAICodexReasoningItemText(item); strings.TrimSpace(reasoningText) != "" {
 				reasoningTexts = append(reasoningTexts, reasoningText)
@@ -1459,12 +1506,13 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	out.ReasoningContent = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(reasoningTexts), "\n"))
 	out.ReasoningEncryptedContent = firstNonEmptyTrimmed(reasoningEncryptedContents...)
 	out.WebSearchCalls = append(out.WebSearchCalls, webSearchCalls...)
+	out.LocalShellCalls = append(out.LocalShellCalls, localShellCalls...)
 	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
 		stopReason = strings.TrimSpace(decoded.IncompleteDetails.Reason)
 	}
-	if out.Text == "" && len(out.ToolCalls) == 0 {
+	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses output", "", "", nil, data)
 	}
 	return ChatResponse{
@@ -1523,6 +1571,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	hostedItemTexts := []string{}
 	hostedImages := []MessageImage{}
 	hostedWebSearchCalls := []MessageWebSearchCall{}
+	localShellCalls := []MessageLocalShellCall{}
 	var completedResponse json.RawMessage
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
@@ -1638,6 +1687,13 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		if call, ok := openAICodexWebSearchCallFromOutputItem(item); ok {
 			hostedWebSearchCalls = append(hostedWebSearchCalls, call)
 		}
+	}
+	collectLocalShellCall := func(item openAICodexOutputItem) {
+		call, ok := openAICodexLocalShellCallFromOutputItem(item)
+		if !ok {
+			return
+		}
+		localShellCalls = append(localShellCalls, call)
 	}
 
 	processPayload := func(payload string) (ChatResponse, bool, error) {
@@ -1782,6 +1838,8 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				}
 			} else if event.Item.Type == "image_generation_call" || event.Item.Type == "web_search_call" {
 				collectHostedOutputItem(event.Item)
+			} else if event.Item.Type == "local_shell_call" {
+				collectLocalShellCall(event.Item)
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
 				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
@@ -1918,7 +1976,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				resp.Message.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(hostedItemTexts), "\n"))
 			}
 			completedParsed = &resp
-			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, reasoning.String(), toolCalls, toolOrder) {
+			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, localShellCalls, reasoning.String(), toolCalls, toolOrder) {
 				return resp, nil
 			}
 		}
@@ -1939,7 +1997,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
 	}
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...)}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...), LocalShellCalls: append([]MessageLocalShellCall(nil), localShellCalls...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -1975,8 +2033,11 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		if len(out.WebSearchCalls) == 0 && len(completedParsed.Message.WebSearchCalls) > 0 {
 			out.WebSearchCalls = append(out.WebSearchCalls, completedParsed.Message.WebSearchCalls...)
 		}
+		if len(out.LocalShellCalls) == 0 && len(completedParsed.Message.LocalShellCalls) > 0 {
+			out.LocalShellCalls = append(out.LocalShellCalls, completedParsed.Message.LocalShellCalls...)
+		}
 	}
-	if out.Text == "" && len(out.ToolCalls) == 0 {
+	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
 	return ChatResponse{
@@ -1990,11 +2051,14 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	}, nil
 }
 
-func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, reasoningText string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
+func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, localShellCalls []MessageLocalShellCall, reasoningText string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
 	if strings.TrimSpace(streamText) != "" || strings.TrimSpace(reasoningText) != "" {
 		return true
 	}
 	if len(itemTexts) > 0 || len(finalItemTexts) > 0 || len(hostedItemTexts) > 0 || len(hostedImages) > 0 {
+		return true
+	}
+	if len(localShellCalls) > 0 {
 		return true
 	}
 	for _, index := range toolOrder {
@@ -2353,6 +2417,31 @@ func openAICodexWebSearchCallFromOutputItem(item openAICodexOutputItem) (Message
 		}
 	}
 	return call, true
+}
+
+func openAICodexLocalShellCallFromOutputItem(item openAICodexOutputItem) (MessageLocalShellCall, bool) {
+	if strings.TrimSpace(item.Type) != "local_shell_call" {
+		return MessageLocalShellCall{}, false
+	}
+	var action map[string]any
+	if len(item.Action) > 0 {
+		if err := json.Unmarshal(item.Action, &action); err != nil {
+			return MessageLocalShellCall{}, false
+		}
+	}
+	if len(action) == 0 {
+		return MessageLocalShellCall{}, false
+	}
+	callID := firstNonEmptyTrimmed(item.CallID, item.ID)
+	if callID == "" {
+		return MessageLocalShellCall{}, false
+	}
+	return MessageLocalShellCall{
+		ID:     strings.TrimSpace(item.ID),
+		CallID: callID,
+		Status: strings.TrimSpace(item.Status),
+		Action: cloneToolDefinitionMap(action),
+	}, true
 }
 
 func openAICodexWebSearchOutputItemQuery(item openAICodexOutputItem) string {

@@ -795,6 +795,50 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesLocalShellCallOutput(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "run a local command"},
+			{Role: "assistant", LocalShellCalls: []MessageLocalShellCall{{
+				CallID: "call_shell",
+				Status: "completed",
+				Action: map[string]any{
+					"type":              "exec",
+					"command":           []any{"echo", "hi"},
+					"working_directory": ".",
+				},
+			}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_shell",
+				Text:       "ok",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	call := input[1].(map[string]any)
+	if call["type"] != "local_shell_call" || call["call_id"] != "call_shell" || call["status"] != "completed" {
+		t.Fatalf("expected Codex local_shell_call item, got %#v", call)
+	}
+	action, ok := call["action"].(map[string]any)
+	if !ok || action["type"] != "exec" {
+		t.Fatalf("expected exec action, got %#v", call["action"])
+	}
+	output := input[2].(map[string]any)
+	if output["type"] != "function_call_output" || output["call_id"] != "call_shell" || output["output"] != "ok" {
+		t.Fatalf("expected local shell function_call_output item, got %#v in %s", output, body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyMarksToolSearchNamespaceOutputDeferred(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -2838,6 +2882,28 @@ func TestParseOpenAICodexResponsePreservesEndTurn(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesLocalShellCall(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"local_shell_call",
+			"call_id":"call_shell",
+			"status":"completed",
+			"action":{"type":"exec","command":["echo","hi"],"working_directory":"."}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.Message.LocalShellCalls) != 1 {
+		t.Fatalf("expected one local shell call, got %#v", resp.Message.LocalShellCalls)
+	}
+	call := resp.Message.LocalShellCalls[0]
+	if call.CallID != "call_shell" || call.Status != "completed" || call.Action["type"] != "exec" {
+		t.Fatalf("unexpected local shell call: %#v", call)
+	}
+}
+
 func TestParseOpenAICodexResponsePreservesReasoningContent(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -3177,6 +3243,25 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	}
 	if resp.Message.Text != "done text" {
 		t.Fatalf("expected done message text, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesLocalShellCall(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"local_shell_call","call_id":"call_shell","status":"completed","action":{"type":"exec","command":["echo","hi"],"working_directory":"."}}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.LocalShellCalls) != 1 {
+		t.Fatalf("expected one local shell call, got %#v", resp.Message.LocalShellCalls)
+	}
+	call := resp.Message.LocalShellCalls[0]
+	if call.CallID != "call_shell" || call.Status != "completed" || call.Action["type"] != "exec" {
+		t.Fatalf("unexpected local shell call: %#v", call)
 	}
 }
 
