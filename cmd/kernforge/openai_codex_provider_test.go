@@ -89,6 +89,13 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
 		t.Fatalf("expected reasoning encrypted content include, got %#v", payload["include"])
 	}
+	textControls, ok := payload["text"].(map[string]any)
+	if !ok || textControls["verbosity"] != "low" {
+		t.Fatalf("expected default verbosity low, got %#v", payload["text"])
+	}
+	if _, ok := textControls["format"].(map[string]any); !ok {
+		t.Fatalf("expected JSON mode format to be preserved, got %#v", payload["text"])
+	}
 	if _, ok := payload["tools"].([]any); !ok {
 		t.Fatalf("expected responses tools array, got %#v", payload["tools"])
 	}
@@ -143,6 +150,30 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	include, ok := payload["include"].([]any)
 	if !ok || len(include) != 0 {
 		t.Fatalf("expected empty include without reasoning, got %#v", payload["include"])
+	}
+	textControls, ok := payload["text"].(map[string]any)
+	if !ok || textControls["verbosity"] != "low" {
+		t.Fatalf("expected default verbosity low, got %#v", payload["text"])
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "test-no-verbosity",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := payload["text"]; ok {
+		t.Fatalf("expected text controls to be omitted for unknown model, got %#v", payload["text"])
 	}
 }
 
