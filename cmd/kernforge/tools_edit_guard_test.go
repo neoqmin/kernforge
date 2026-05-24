@@ -1004,6 +1004,44 @@ func TestApplyPatchUpdateAppendsTrailingNewlineLikeCodex(t *testing.T) {
 	}
 }
 
+func TestApplyPatchAcceptsEndOfFileSentinelLikeCodexGrammar(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.txt")
+	if err := os.WriteFile(target, []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: main.txt",
+			"@@",
+			" one",
+			"+two",
+			"*** End of File",
+			"*** End Patch",
+			"",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatalf("expected EOF sentinel accepted, got %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(content) != "one\ntwo\n" {
+		t.Fatalf("unexpected patched content: %q", string(content))
+	}
+}
+
 func TestApplyPatchAddOverwritesExistingRegularFileLikeCodex(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "duplicate.txt")
