@@ -478,6 +478,19 @@ func TestParallelEditableWorkerContinuesWhenSubagentStopBlocks(t *testing.T) {
 	if len(reviewer.requests) != 2 {
 		t.Fatalf("expected SubagentStop continuation model turn, got %d request(s)", len(reviewer.requests))
 	}
+	firstWorkerThreadID := strings.TrimSpace(reviewer.requests[0].ThreadID)
+	if firstWorkerThreadID == "" || firstWorkerThreadID == session.ID {
+		t.Fatalf("expected parallel worker to use distinct Codex child thread identity, got %q parent=%q", firstWorkerThreadID, session.ID)
+	}
+	if reviewer.requests[0].SessionID != firstWorkerThreadID {
+		t.Fatalf("expected worker session and thread identity to match, got session=%q thread=%q", reviewer.requests[0].SessionID, firstWorkerThreadID)
+	}
+	if reviewer.requests[1].ThreadID != firstWorkerThreadID || reviewer.requests[1].SessionID != firstWorkerThreadID {
+		t.Fatalf("expected worker continuation to reuse child identity, got first=%q second_session=%q second_thread=%q", firstWorkerThreadID, reviewer.requests[1].SessionID, reviewer.requests[1].ThreadID)
+	}
+	if reviewer.requests[0].CodexSubagent != openAICodexSubagentCollabSpawn || reviewer.requests[0].CodexParentThreadID != session.ID {
+		t.Fatalf("expected worker Codex subagent lineage, got subagent=%q parent=%q", reviewer.requests[0].CodexSubagent, reviewer.requests[0].CodexParentThreadID)
+	}
 	if len(reviewer.requests[1].Messages) < 3 || !strings.Contains(reviewer.requests[1].Messages[len(reviewer.requests[1].Messages)-1].Text, "SubagentStop hook requested continuation") {
 		t.Fatalf("expected SubagentStop continuation guidance in second request, got %#v", reviewer.requests[1].Messages)
 	}

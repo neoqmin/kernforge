@@ -331,6 +331,8 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 	}
 
 	turnID := a.newSubagentLifecycleTurnID(plan.Node.ID)
+	parentThreadID := a.codexParentThreadID()
+	subagentThreadID := a.codexSubagentThreadID(plan.Node.ID, turnID)
 	startContexts, err := a.runSubagentStartHook(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, turnID)
 	if err != nil {
 		return parallelEditableWorkerResult{
@@ -404,8 +406,10 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 			MaxTokens:           min(768, max(256, a.Config.MaxTokens/3)),
 			Temperature:         0.1,
 			WorkingDir:          a.Session.WorkingDir,
+			SessionID:           subagentThreadID,
+			ThreadID:            subagentThreadID,
 			CodexSubagent:       openAICodexSubagentCollabSpawn,
-			CodexParentThreadID: a.Session.ID,
+			CodexParentThreadID: parentThreadID,
 		})
 		if err != nil {
 			return parallelEditableWorkerResult{
