@@ -150,6 +150,122 @@ func TestHookEngineMatchesUserPromptSubmitPromptAlias(t *testing.T) {
 	}
 }
 
+func TestSubagentStopHookPayloadIncludesCodexFields(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "provider", "main-model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Session:   session,
+		Store:     store,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	payload := agent.subagentStopHookPayload("plan-02", "reviewer", "reviewer-model", "worker finished")
+
+	if got := toolMetaString(payload, "hook_event_name"); got != string(HookSubagentStop) {
+		t.Fatalf("expected SubagentStop hook event, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "agent_id"); got != "plan-02" {
+		t.Fatalf("expected agent_id, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "agent_type"); got != "reviewer" {
+		t.Fatalf("expected agent_type, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "model"); got != "reviewer-model" {
+		t.Fatalf("expected specialist model, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "last_assistant_message"); got != "worker finished" {
+		t.Fatalf("expected assistant message, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "session_id"); got != session.ID {
+		t.Fatalf("expected session_id %q, got %#v", session.ID, payload)
+	}
+	if got := toolMetaString(payload, "turn_id"); !strings.HasPrefix(got, session.ID+":") {
+		t.Fatalf("expected turn_id to include session id, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "transcript_path"); got != store.sessionPath(session.ID) {
+		t.Fatalf("expected parent transcript path, got %#v", payload)
+	}
+	if payload["agent_transcript_path"] != nil {
+		t.Fatalf("expected nil agent transcript path for in-process worker, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "cwd"); got != root {
+		t.Fatalf("expected cwd %q, got %#v", root, payload)
+	}
+	if got := toolMetaString(payload, "permission_mode"); got != "default" {
+		t.Fatalf("expected permission mode, got %#v", payload)
+	}
+	if got, ok := payload["stop_hook_active"].(bool); !ok || !got {
+		t.Fatalf("expected active stop hook flag, got %#v", payload)
+	}
+}
+
+func TestHookEngineMatchesSubagentStopAgentIdentity(t *testing.T) {
+	engine := &HookEngine{
+		Enabled: true,
+		Rules: []HookRule{
+			{
+				ID:     "subagent-stop-context",
+				Events: []HookEvent{HookSubagentStop},
+				Match: HookMatch{
+					ContainsText: []string{"plan-02", "worker finished"},
+				},
+				Action: HookAction{
+					Type:    "append_context",
+					Message: "subagent completion captured",
+				},
+			},
+		},
+	}
+
+	verdict, err := engine.Evaluate(context.Background(), HookSubagentStop, HookPayload{
+		"agent_id":               "plan-02",
+		"agent_type":             "reviewer",
+		"last_assistant_message": "worker finished",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "subagent completion captured" {
+		t.Fatalf("expected subagent identity to match contains_text, got %#v", verdict)
+	}
+}
+
+func TestHookRuntimeEnrichPayloadPreservesExplicitSubagentModel(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "main-model", "", "default")
+	runtime := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "specialist-model",
+					Events: []HookEvent{HookSubagentStop},
+					Match: HookMatch{
+						Models: []string{"reviewer-model"},
+					},
+					Action: HookAction{
+						Type:    "warn",
+						Message: "matched specialist model",
+					},
+				},
+			},
+		},
+		Session: session,
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookSubagentStop, HookPayload{
+		"model": "reviewer-model",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(verdict.Warns) != 1 || verdict.Warns[0].Message != "matched specialist model" {
+		t.Fatalf("expected explicit subagent model to be preserved, got %#v", verdict)
+	}
+}
+
 func TestBuiltinWindowsSecurityPreset(t *testing.T) {
 	rules, err := builtinHookPresetRules("windows-security")
 	if err != nil {

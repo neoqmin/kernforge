@@ -9515,12 +9515,13 @@ func (rt *runtimeState) runHook(ctx context.Context, event HookEvent, payload Ho
 	if rt.hooks == nil {
 		return HookVerdict{Allow: true}, nil
 	}
-	rt.hooks.Workspace = rt.workspace
-	rt.hooks.Session = rt.session
-	rt.hooks.Config = rt.cfg
-	rt.hooks.FailClosed = configHooksFailClosed(rt.cfg)
-	rt.hooks.Evidence = rt.evidence
-	return rt.hooks.Run(ctx, event, payload)
+	hooks := *rt.hooks
+	hooks.Workspace = rt.workspace
+	hooks.Session = rt.session
+	hooks.Config = rt.cfg
+	hooks.FailClosed = configHooksFailClosed(rt.cfg)
+	hooks.Evidence = rt.evidence
+	return hooks.Run(ctx, event, payload)
 }
 
 func (rt *runtimeState) mcpStatus() []MCPServerStatus {

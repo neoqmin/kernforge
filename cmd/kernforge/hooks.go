@@ -22,6 +22,7 @@ const (
 	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
 	HookPreToolUse       HookEvent = "PreToolUse"
 	HookPostToolUse      HookEvent = "PostToolUse"
+	HookSubagentStop     HookEvent = "SubagentStop"
 	HookPreCompact       HookEvent = "PreCompact"
 	HookPostCompact      HookEvent = "PostCompact"
 	HookPreEdit          HookEvent = "PreEdit"
@@ -278,9 +279,15 @@ func (rt *HookRuntime) enrichPayload(event HookEvent, payload HookPayload) HookP
 	payload["timestamp"] = time.Now().Format(time.RFC3339)
 	payload["interactive"] = rt.Workspace.Perms != nil && rt.Workspace.Perms.prompt != nil
 	if rt.Session != nil {
-		payload["session_id"] = rt.Session.ID
-		payload["provider"] = rt.Session.Provider
-		payload["model"] = rt.Session.Model
+		if strings.TrimSpace(stringValue(payload, "session_id")) == "" {
+			payload["session_id"] = rt.Session.ID
+		}
+		if strings.TrimSpace(stringValue(payload, "provider")) == "" {
+			payload["provider"] = rt.Session.Provider
+		}
+		if strings.TrimSpace(stringValue(payload, "model")) == "" {
+			payload["model"] = rt.Session.Model
+		}
 	}
 	enrichHookSubagentIdentity(payload)
 	addEffectiveExecutionContextMetadata(payload, rt.Workspace, rt.Session)
@@ -915,7 +922,7 @@ func userPromptSubmitHookPayload(prompt string) HookPayload {
 
 func collectPayloadText(payload HookPayload) string {
 	var parts []string
-	for _, key := range []string{"prompt", "user_text", "command", "output", "error", "path", "branch"} {
+	for _, key := range []string{"prompt", "user_text", "command", "output", "error", "path", "branch", "agent_id", "agent_type", "last_assistant_message"} {
 		if text := stringsValueFromAny(payload[key]); text != "" {
 			parts = append(parts, text)
 		}

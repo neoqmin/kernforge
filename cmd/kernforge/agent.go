@@ -7537,6 +7537,85 @@ func (a *Agent) activePermissionModeSnapshot() string {
 	return ""
 }
 
+func (a *Agent) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+	if a == nil || a.Hooks == nil {
+		return HookVerdict{Allow: true}, nil
+	}
+	hooks := *a.Hooks
+	hooks.Workspace = a.Workspace
+	hooks.Session = a.Session
+	hooks.Config = a.Config
+	hooks.FailClosed = configHooksFailClosed(a.Config)
+	hooks.Evidence = a.Evidence
+	return hooks.Run(ctx, event, payload)
+}
+
+func (a *Agent) subagentStopHookPayload(agentID string, agentType string, model string, lastAssistantMessage string) HookPayload {
+	agentID = firstNonBlankString(strings.TrimSpace(agentID), "subagent")
+	agentType = firstNonBlankString(strings.TrimSpace(agentType), "specialist")
+	model = strings.TrimSpace(model)
+	lastAssistantMessage = strings.TrimSpace(lastAssistantMessage)
+
+	sessionID := ""
+	turnID := ""
+	transcriptPath := ""
+	cwd := ""
+	permissionMode := ""
+	if a != nil {
+		permissionMode = strings.TrimSpace(a.activePermissionModeSnapshot())
+		if permissionMode == "" {
+			permissionMode = strings.TrimSpace(a.Config.PermissionMode)
+		}
+		cwd = strings.TrimSpace(workspaceEffectiveActiveRoot(a.Workspace, a.Session))
+		if a.Session != nil {
+			sessionID = strings.TrimSpace(a.Session.ID)
+			if model == "" {
+				model = strings.TrimSpace(a.Session.Model)
+			}
+			if cwd == "" {
+				cwd = strings.TrimSpace(a.Session.WorkingDir)
+			}
+			if a.Store != nil && sessionID != "" {
+				transcriptPath = a.Store.sessionPath(sessionID)
+			}
+		}
+	}
+	if permissionMode == "" {
+		permissionMode = string(ModeDefault)
+	}
+	if sessionID != "" {
+		turnID = mcpTurnMetadataTurnID(sessionID, time.Now())
+	}
+
+	return HookPayload{
+		"agent_id":               agentID,
+		"agent_type":             agentType,
+		"agent_transcript_path":  nullableHookString(""),
+		"cwd":                    cwd,
+		"hook_event_name":        string(HookSubagentStop),
+		"last_assistant_message": nullableHookString(lastAssistantMessage),
+		"model":                  model,
+		"permission_mode":        permissionMode,
+		"session_id":             sessionID,
+		"stop_hook_active":       true,
+		"transcript_path":        nullableHookString(transcriptPath),
+		"turn_id":                turnID,
+	}
+}
+
+func (a *Agent) runSubagentStopHook(ctx context.Context, agentID string, agentType string, model string, lastAssistantMessage string) error {
+	_, err := a.runHook(ctx, HookSubagentStop, a.subagentStopHookPayload(agentID, agentType, model, lastAssistantMessage))
+	return err
+}
+
+func nullableHookString(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func (a *Agent) contextWithMCPToolInvocationMetadata(ctx context.Context, turnMetadata map[string]any) context.Context {
 	ctx = contextWithMCPTurnMetadata(ctx, turnMetadata)
 	if a == nil || a.Session == nil {
