@@ -824,6 +824,45 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchCallWithoutCallID(t *test
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesCodexToolCallStatus(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "use tools"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_patch",
+				Name:      "apply_patch",
+				Status:    "completed",
+				Arguments: mustJSON(map[string]any{"patch": "*** Begin Patch\n*** End Patch"}),
+			}, {
+				ID:        "call_search",
+				Name:      "tool_search",
+				Status:    "in_progress",
+				Arguments: mustJSON(map[string]any{"query": "apply_patch"}),
+			}}},
+			{Role: "tool", ToolCallID: "call_patch", ToolName: "apply_patch", Text: "ok"},
+			{Role: "tool", ToolCallID: "call_search", ToolName: "tool_search", Text: `[]`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	custom := input[1].(map[string]any)
+	search := input[2].(map[string]any)
+	if custom["type"] != "custom_tool_call" || custom["status"] != "completed" {
+		t.Fatalf("expected custom_tool_call status to round-trip, got %#v in %s", custom, body)
+	}
+	if search["type"] != "tool_search_call" || search["status"] != "in_progress" {
+		t.Fatalf("expected tool_search_call status to round-trip, got %#v in %s", search, body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesLocalShellCallOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -3483,11 +3522,13 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 		"output":[{
 			"type":"custom_tool_call",
 			"call_id":"call_patch",
+			"status":"completed",
 			"name":"apply_patch",
 			"input":"*** Begin Patch\n*** End Patch"
 		},{
 			"type":"tool_search_call",
 			"call_id":"call_search",
+			"status":"in_progress",
 			"execution":"client",
 			"arguments":{"query":"apply_patch","limit":5}
 		},{
@@ -3508,7 +3549,7 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 	if len(resp.Message.ToolCalls) != 3 {
 		t.Fatalf("expected custom and client tool_search calls, got %#v", resp.Message.ToolCalls)
 	}
-	if resp.Message.ToolCalls[0].ID != "call_patch" || resp.Message.ToolCalls[0].Name != "apply_patch" {
+	if resp.Message.ToolCalls[0].ID != "call_patch" || resp.Message.ToolCalls[0].Name != "apply_patch" || resp.Message.ToolCalls[0].Status != "completed" {
 		t.Fatalf("unexpected custom tool call: %#v", resp.Message.ToolCalls[0])
 	}
 	var patchArgs map[string]string
@@ -3518,7 +3559,7 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 	if patchArgs["patch"] != "*** Begin Patch\n*** End Patch" {
 		t.Fatalf("expected custom apply_patch input to map to patch argument, got %#v", patchArgs)
 	}
-	if resp.Message.ToolCalls[1].ID != "call_search" || resp.Message.ToolCalls[1].Name != "tool_search" {
+	if resp.Message.ToolCalls[1].ID != "call_search" || resp.Message.ToolCalls[1].Name != "tool_search" || resp.Message.ToolCalls[1].Status != "in_progress" {
 		t.Fatalf("unexpected tool_search call: %#v", resp.Message.ToolCalls[1])
 	}
 	var searchArgs map[string]any
@@ -4263,8 +4304,8 @@ func TestReadOpenAICodexStreamRoutesToolArgumentsByItemIDWithoutOutputIndex(t *t
 
 func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
-		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}`,
-		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"tool_search_call","call_id":"call_search","execution":"client","arguments":{"query":"apply_patch","limit":5}}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_patch","status":"completed","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"tool_search_call","call_id":"call_search","status":"in_progress","execution":"client","arguments":{"query":"apply_patch","limit":5}}}`,
 		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"tool_search_call","call_id":null,"execution":"client","arguments":{"query":"nullable"}}}`,
 		`data: {"type":"response.output_item.done","output_index":3,"item":{"type":"tool_search_call","call_id":"call_server","execution":"server","arguments":{"query":"ignored"}}}`,
 		`data: {"type":"response.completed"}`,
@@ -4280,7 +4321,7 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	if len(resp.Message.ToolCalls) != 3 {
 		t.Fatalf("expected custom and client tool_search calls, got %#v", resp.Message.ToolCalls)
 	}
-	if resp.Message.ToolCalls[0].ID != "call_patch" || resp.Message.ToolCalls[0].Name != "apply_patch" {
+	if resp.Message.ToolCalls[0].ID != "call_patch" || resp.Message.ToolCalls[0].Name != "apply_patch" || resp.Message.ToolCalls[0].Status != "completed" {
 		t.Fatalf("unexpected custom tool call: %#v", resp.Message.ToolCalls[0])
 	}
 	var patchArgs map[string]string
@@ -4290,7 +4331,7 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	if patchArgs["patch"] != "*** Begin Patch\n*** End Patch" {
 		t.Fatalf("expected custom apply_patch input to map to patch argument, got %#v", patchArgs)
 	}
-	if resp.Message.ToolCalls[1].ID != "call_search" || resp.Message.ToolCalls[1].Name != "tool_search" {
+	if resp.Message.ToolCalls[1].ID != "call_search" || resp.Message.ToolCalls[1].Name != "tool_search" || resp.Message.ToolCalls[1].Status != "in_progress" {
 		t.Fatalf("unexpected tool_search call: %#v", resp.Message.ToolCalls[1])
 	}
 	if resp.Message.ToolCalls[2].ID != "" || resp.Message.ToolCalls[2].Name != "tool_search" {

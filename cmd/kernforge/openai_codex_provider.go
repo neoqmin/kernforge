@@ -1333,20 +1333,28 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
 	name := strings.TrimSpace(call.Name)
 	if name == "apply_patch" {
-		return map[string]any{
+		item := map[string]any{
 			"type":    "custom_tool_call",
 			"call_id": callID,
 			"name":    name,
 			"input":   openAICodexApplyPatchInputFromArguments(call.Arguments),
 		}
+		if status := strings.TrimSpace(call.Status); status != "" {
+			item["status"] = status
+		}
+		return item
 	}
 	if name == "tool_search" {
-		return map[string]any{
+		item := map[string]any{
 			"type":      "tool_search_call",
 			"call_id":   openAICodexNullableCallID(callID),
 			"execution": "client",
 			"arguments": openAICodexToolSearchArguments(call.Arguments),
 		}
+		if status := strings.TrimSpace(call.Status); status != "" {
+			item["status"] = status
+		}
+		return item
 	}
 	item := map[string]any{
 		"type":      "function_call",
@@ -1789,6 +1797,7 @@ type openAICodexStreamToolCall struct {
 	ID           string
 	Name         string
 	Namespace    string
+	Status       string
 	Type         string
 	Arguments    strings.Builder
 	ArgsStarted  bool
@@ -2290,6 +2299,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			ID:        strings.TrimSpace(item.ID),
 			Name:      strings.TrimSpace(item.Name),
 			Namespace: strings.TrimSpace(item.Namespace),
+			Status:    strings.TrimSpace(item.Status),
 			Arguments: normalizeOpenAICodexStreamToolCallArguments(item),
 		})
 	}
@@ -2959,6 +2969,7 @@ func openAICodexToolCallFromOutputItem(item openAICodexOutputItem) (ToolCall, bo
 		ID:        callID,
 		Name:      name,
 		Namespace: strings.TrimSpace(item.Namespace),
+		Status:    strings.TrimSpace(item.Status),
 		Arguments: normalizeOpenAICodexOutputItemArguments(item, name),
 	}, true
 }
@@ -2971,6 +2982,7 @@ func openAICodexPopulateStreamToolCall(target *openAICodexStreamToolCall, item o
 	target.ID = firstNonEmptyTrimmed(item.CallID, item.ID, target.ID)
 	target.Name = firstNonEmptyTrimmed(name, target.Name)
 	target.Namespace = firstNonEmptyTrimmed(item.Namespace, target.Namespace)
+	target.Status = firstNonEmptyTrimmed(item.Status, target.Status)
 	target.Type = firstNonEmptyTrimmed(item.Type, target.Type)
 	if strings.TrimSpace(target.Name) == "" {
 		return false

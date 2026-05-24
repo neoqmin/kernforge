@@ -8910,7 +8910,7 @@ func compactMessageRetainedCharCost(msg Message) int {
 		}
 	}
 	for _, call := range msg.ToolCalls {
-		total += len(call.ID) + len(call.Name) + len(call.Arguments)
+		total += len(call.ID) + len(call.Name) + len(call.Namespace) + len(call.Status) + len(call.Arguments)
 	}
 	for _, item := range msg.ToolContentItems {
 		total += toolContentItemApproxChars(item)
