@@ -257,9 +257,7 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 		if item.SupportsReasoningSummaries != nil || strings.TrimSpace(item.DefaultReasoningLevel) != "" || strings.TrimSpace(item.DefaultReasoningSummary) != "" {
 			registerOpenAICodexReasoningDefaults(id, supportsReasoningSummaries, item.DefaultReasoningLevel, item.DefaultReasoningSummary)
 		}
-		if item.SupportsParallelToolCalls != nil {
-			registerOpenAICodexParallelToolCallSupport(id, supportsParallelToolCalls)
-		}
+		registerOpenAICodexParallelToolCallSupport(id, supportsParallelToolCalls)
 		seen[strings.ToLower(id)] = true
 	}
 	return models, nil
