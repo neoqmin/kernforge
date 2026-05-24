@@ -111,8 +111,16 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if !ok || textControls["verbosity"] != "low" {
 		t.Fatalf("expected default verbosity low, got %#v", payload["text"])
 	}
-	if _, ok := textControls["format"].(map[string]any); !ok {
+	format, ok := textControls["format"].(map[string]any)
+	if !ok {
 		t.Fatalf("expected JSON mode format to be preserved, got %#v", payload["text"])
+	}
+	if format["type"] != "json_schema" || format["name"] != "codex_json_object" || format["strict"] != false {
+		t.Fatalf("expected Codex JSON schema text format, got %#v", format)
+	}
+	schema, ok := format["schema"].(map[string]any)
+	if !ok || schema["type"] != "object" || schema["additionalProperties"] != true {
+		t.Fatalf("expected permissive JSON object schema, got %#v", format["schema"])
 	}
 	if _, ok := payload["tools"].([]any); !ok {
 		t.Fatalf("expected responses tools array, got %#v", payload["tools"])
@@ -130,7 +138,7 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 		t.Fatalf("expected assistant tool preamble to carry commentary phase, got %#v", input[1])
 	}
 	encoded := string(body)
-	for _, needle := range []string{`"stream":true`, `"type":"function_call"`, `"call_id":"call_1"`, `"type":"function_call_output"`, `"type":"json_object"`} {
+	for _, needle := range []string{`"stream":true`, `"type":"function_call"`, `"call_id":"call_1"`, `"type":"function_call_output"`, `"type":"json_schema"`} {
 		if !strings.Contains(encoded, needle) {
 			t.Fatalf("expected %q in request body %s", needle, encoded)
 		}
