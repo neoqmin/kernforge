@@ -839,6 +839,38 @@ func TestBuildOpenAICodexRequestBodyPreservesLocalShellCallOutput(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesCompactionItems(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "compact context"},
+			{Role: "assistant", CodexCompactionItems: []MessageCodexCompactionItem{
+				{Type: "compaction", EncryptedContent: "sealed-summary"},
+				{Type: "context_compaction", EncryptedContent: "sealed-context"},
+				{Type: "compaction_trigger"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if input[1].(map[string]any)["type"] != "compaction" || input[1].(map[string]any)["encrypted_content"] != "sealed-summary" {
+		t.Fatalf("expected compaction item, got %#v in %s", input[1], body)
+	}
+	if input[2].(map[string]any)["type"] != "context_compaction" || input[2].(map[string]any)["encrypted_content"] != "sealed-context" {
+		t.Fatalf("expected context_compaction item, got %#v in %s", input[2], body)
+	}
+	if input[3].(map[string]any)["type"] != "compaction_trigger" {
+		t.Fatalf("expected compaction_trigger item, got %#v in %s", input[3], body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyMarksToolSearchNamespaceOutputDeferred(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -2904,6 +2936,36 @@ func TestParseOpenAICodexResponsePreservesLocalShellCall(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesCompactionItems(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"compaction",
+			"encrypted_content":"sealed-summary"
+		},{
+			"type":"context_compaction",
+			"encrypted_content":"sealed-context"
+		},{
+			"type":"compaction_trigger"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.Message.CodexCompactionItems) != 3 {
+		t.Fatalf("expected three compaction items, got %#v", resp.Message.CodexCompactionItems)
+	}
+	if resp.Message.CodexCompactionItems[0].Type != "compaction" || resp.Message.CodexCompactionItems[0].EncryptedContent != "sealed-summary" {
+		t.Fatalf("unexpected compaction item: %#v", resp.Message.CodexCompactionItems[0])
+	}
+	if resp.Message.CodexCompactionItems[1].Type != "context_compaction" || resp.Message.CodexCompactionItems[1].EncryptedContent != "sealed-context" {
+		t.Fatalf("unexpected context compaction item: %#v", resp.Message.CodexCompactionItems[1])
+	}
+	if resp.Message.CodexCompactionItems[2].Type != "compaction_trigger" {
+		t.Fatalf("unexpected compaction trigger item: %#v", resp.Message.CodexCompactionItems[2])
+	}
+}
+
 func TestParseOpenAICodexResponsePreservesReasoningContent(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -3262,6 +3324,25 @@ func TestReadOpenAICodexStreamPreservesLocalShellCall(t *testing.T) {
 	call := resp.Message.LocalShellCalls[0]
 	if call.CallID != "call_shell" || call.Status != "completed" || call.Action["type"] != "exec" {
 		t.Fatalf("unexpected local shell call: %#v", call)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesCompactionItem(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"context_compaction","encrypted_content":"sealed-context"}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.CodexCompactionItems) != 1 {
+		t.Fatalf("expected one compaction item, got %#v", resp.Message.CodexCompactionItems)
+	}
+	item := resp.Message.CodexCompactionItems[0]
+	if item.Type != "context_compaction" || item.EncryptedContent != "sealed-context" {
+		t.Fatalf("unexpected compaction item: %#v", item)
 	}
 }
 

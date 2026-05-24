@@ -868,6 +868,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				"content": content,
 			})
 		case "assistant":
+			items = append(items, openAICodexAssistantCompactionInputItems(msg.CodexCompactionItems)...)
 			if reasoningItem := openAICodexReasoningInputItem(msg); reasoningItem != nil {
 				items = append(items, reasoningItem)
 			}
@@ -997,6 +998,40 @@ func openAICodexAssistantLocalShellInputItems(calls []MessageLocalShellCall) []a
 			"status":  status,
 			"action":  cloneToolDefinitionMap(call.Action),
 		})
+	}
+	return items
+}
+
+func openAICodexAssistantCompactionInputItems(compactions []MessageCodexCompactionItem) []any {
+	if len(compactions) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(compactions))
+	for _, compaction := range compactions {
+		itemType := strings.TrimSpace(compaction.Type)
+		encryptedContent := strings.TrimSpace(compaction.EncryptedContent)
+		switch itemType {
+		case "compaction", "compaction_summary":
+			if encryptedContent == "" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"type":              itemType,
+				"encrypted_content": encryptedContent,
+			})
+		case "context_compaction":
+			item := map[string]any{
+				"type": itemType,
+			}
+			if encryptedContent != "" {
+				item["encrypted_content"] = encryptedContent
+			}
+			items = append(items, item)
+		case "compaction_trigger":
+			items = append(items, map[string]any{
+				"type": itemType,
+			})
+		}
 	}
 	return items
 }
@@ -1443,6 +1478,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	reasoningEncryptedContents := []string{}
 	webSearchCalls := []MessageWebSearchCall{}
 	localShellCalls := []MessageLocalShellCall{}
+	compactionItems := []MessageCodexCompactionItem{}
 	textMessageCount := 0
 	commentaryTextMessageCount := 0
 	messagePhase := ""
@@ -1478,6 +1514,10 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			if call, ok := openAICodexLocalShellCallFromOutputItem(item); ok {
 				localShellCalls = append(localShellCalls, call)
 			}
+		case "compaction", "compaction_summary", "context_compaction", "compaction_trigger":
+			if compaction, ok := openAICodexCompactionItemFromOutputItem(item); ok {
+				compactionItems = append(compactionItems, compaction)
+			}
 		case "reasoning":
 			if reasoningText := openAICodexReasoningItemText(item); strings.TrimSpace(reasoningText) != "" {
 				reasoningTexts = append(reasoningTexts, reasoningText)
@@ -1507,12 +1547,13 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	out.ReasoningEncryptedContent = firstNonEmptyTrimmed(reasoningEncryptedContents...)
 	out.WebSearchCalls = append(out.WebSearchCalls, webSearchCalls...)
 	out.LocalShellCalls = append(out.LocalShellCalls, localShellCalls...)
+	out.CodexCompactionItems = append(out.CodexCompactionItems, compactionItems...)
 	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
 		stopReason = strings.TrimSpace(decoded.IncompleteDetails.Reason)
 	}
-	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 {
+	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 && len(out.CodexCompactionItems) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses output", "", "", nil, data)
 	}
 	return ChatResponse{
@@ -1572,6 +1613,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	hostedImages := []MessageImage{}
 	hostedWebSearchCalls := []MessageWebSearchCall{}
 	localShellCalls := []MessageLocalShellCall{}
+	compactionItems := []MessageCodexCompactionItem{}
 	var completedResponse json.RawMessage
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
@@ -1694,6 +1736,13 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			return
 		}
 		localShellCalls = append(localShellCalls, call)
+	}
+	collectCompactionItem := func(item openAICodexOutputItem) {
+		compaction, ok := openAICodexCompactionItemFromOutputItem(item)
+		if !ok {
+			return
+		}
+		compactionItems = append(compactionItems, compaction)
 	}
 
 	processPayload := func(payload string) (ChatResponse, bool, error) {
@@ -1840,6 +1889,8 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				collectHostedOutputItem(event.Item)
 			} else if event.Item.Type == "local_shell_call" {
 				collectLocalShellCall(event.Item)
+			} else if event.Item.Type == "compaction" || event.Item.Type == "compaction_summary" || event.Item.Type == "context_compaction" || event.Item.Type == "compaction_trigger" {
+				collectCompactionItem(event.Item)
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
 				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
@@ -1976,7 +2027,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				resp.Message.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(hostedItemTexts), "\n"))
 			}
 			completedParsed = &resp
-			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, localShellCalls, reasoning.String(), toolCalls, toolOrder) {
+			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, localShellCalls, compactionItems, reasoning.String(), toolCalls, toolOrder) {
 				return resp, nil
 			}
 		}
@@ -1997,7 +2048,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
 	}
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...), LocalShellCalls: append([]MessageLocalShellCall(nil), localShellCalls...)}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...), LocalShellCalls: append([]MessageLocalShellCall(nil), localShellCalls...), CodexCompactionItems: append([]MessageCodexCompactionItem(nil), compactionItems...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -2036,8 +2087,11 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		if len(out.LocalShellCalls) == 0 && len(completedParsed.Message.LocalShellCalls) > 0 {
 			out.LocalShellCalls = append(out.LocalShellCalls, completedParsed.Message.LocalShellCalls...)
 		}
+		if len(out.CodexCompactionItems) == 0 && len(completedParsed.Message.CodexCompactionItems) > 0 {
+			out.CodexCompactionItems = append(out.CodexCompactionItems, completedParsed.Message.CodexCompactionItems...)
+		}
 	}
-	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 {
+	if out.Text == "" && len(out.ToolCalls) == 0 && len(out.LocalShellCalls) == 0 && len(out.CodexCompactionItems) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
 	return ChatResponse{
@@ -2051,7 +2105,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	}, nil
 }
 
-func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, localShellCalls []MessageLocalShellCall, reasoningText string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
+func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, localShellCalls []MessageLocalShellCall, compactionItems []MessageCodexCompactionItem, reasoningText string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
 	if strings.TrimSpace(streamText) != "" || strings.TrimSpace(reasoningText) != "" {
 		return true
 	}
@@ -2059,6 +2113,9 @@ func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItem
 		return true
 	}
 	if len(localShellCalls) > 0 {
+		return true
+	}
+	if len(compactionItems) > 0 {
 		return true
 	}
 	for _, index := range toolOrder {
@@ -2442,6 +2499,32 @@ func openAICodexLocalShellCallFromOutputItem(item openAICodexOutputItem) (Messag
 		Status: strings.TrimSpace(item.Status),
 		Action: cloneToolDefinitionMap(action),
 	}, true
+}
+
+func openAICodexCompactionItemFromOutputItem(item openAICodexOutputItem) (MessageCodexCompactionItem, bool) {
+	itemType := strings.TrimSpace(item.Type)
+	encryptedContent := strings.TrimSpace(item.EncryptedContent)
+	switch itemType {
+	case "compaction", "compaction_summary":
+		if encryptedContent == "" {
+			return MessageCodexCompactionItem{}, false
+		}
+		return MessageCodexCompactionItem{
+			Type:             itemType,
+			EncryptedContent: encryptedContent,
+		}, true
+	case "context_compaction":
+		return MessageCodexCompactionItem{
+			Type:             itemType,
+			EncryptedContent: encryptedContent,
+		}, true
+	case "compaction_trigger":
+		return MessageCodexCompactionItem{
+			Type: itemType,
+		}, true
+	default:
+		return MessageCodexCompactionItem{}, false
+	}
 }
 
 func openAICodexWebSearchOutputItemQuery(item openAICodexOutputItem) string {
