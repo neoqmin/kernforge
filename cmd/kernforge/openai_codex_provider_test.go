@@ -85,6 +85,10 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if reasoning["summary"] != "auto" {
 		t.Fatalf("expected reasoning summary auto, got %#v", payload["reasoning"])
 	}
+	include, ok := payload["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected reasoning encrypted content include, got %#v", payload["include"])
+	}
 	if _, ok := payload["tools"].([]any); !ok {
 		t.Fatalf("expected responses tools array, got %#v", payload["tools"])
 	}
@@ -135,6 +139,10 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	}
 	if _, ok := metadata["empty"]; ok {
 		t.Fatalf("empty metadata values should be dropped: %#v", metadata)
+	}
+	include, ok := payload["include"].([]any)
+	if !ok || len(include) != 0 {
+		t.Fatalf("expected empty include without reasoning, got %#v", payload["include"])
 	}
 }
 
