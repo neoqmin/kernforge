@@ -1859,6 +1859,67 @@ func TestMCPToolModelOutputSerializesTextContentLikeCodex(t *testing.T) {
 	}
 }
 
+func TestMCPToolModelOutputTruncatesLargeStructuredContentLikeCodex(t *testing.T) {
+	result := map[string]any{
+		"structuredContent": map[string]any{
+			"items": strings.Repeat("large structured value ", 1000),
+		},
+		"content": []any{
+			map[string]any{
+				"type": "text",
+				"text": "ignored when structured content is present",
+			},
+		},
+	}
+
+	modelText, items := mcpToolModelOutput(result, 1250*time.Millisecond)
+	if len(items) != 0 {
+		t.Fatalf("large structured MCP result should remain text output, got %#v", items)
+	}
+	if !strings.HasPrefix(modelText, "Wall time: 1.2500 seconds\nOutput:\n") {
+		t.Fatalf("missing wall-time prefix: %q", modelText)
+	}
+	if !strings.Contains(modelText, "chars truncated") {
+		t.Fatalf("expected large MCP output to be truncated, got length=%d", len(modelText))
+	}
+	if strings.Contains(modelText, "ignored when structured content is present") {
+		t.Fatalf("structured content should take precedence over content array: %q", modelText)
+	}
+	if len(modelText) > mcpToolModelOutputMaxBytes+128 {
+		t.Fatalf("truncated MCP output still too large: %d", len(modelText))
+	}
+}
+
+func TestMCPToolModelOutputTruncatesTextItemsAndPreservesImagesLikeCodex(t *testing.T) {
+	result := map[string]any{
+		"content": []any{
+			map[string]any{
+				"type": "text",
+				"text": strings.Repeat("text payload ", 1500),
+			},
+			map[string]any{
+				"type":     "image",
+				"data":     "AAA",
+				"mimeType": "image/png",
+			},
+		},
+	}
+
+	modelText, items := mcpToolModelOutput(result, 500*time.Millisecond)
+	if modelText != "Wall time: 0.5000 seconds\nOutput:" {
+		t.Fatalf("unexpected model text: %q", modelText)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected header, truncated text, and image items, got %#v", items)
+	}
+	if !strings.Contains(items[1].Text, "chars truncated") {
+		t.Fatalf("expected text content item to be truncated, got length=%d", len(items[1].Text))
+	}
+	if items[2].Type != "input_image" || items[2].ImageURL != "data:image/png;base64,AAA" {
+		t.Fatalf("expected image item to be preserved, got %#v", items[2])
+	}
+}
+
 func TestAgentExpandMentionsInjectsMCPResource(t *testing.T) {
 	dir := t.TempDir()
 	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
