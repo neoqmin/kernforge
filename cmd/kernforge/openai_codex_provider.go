@@ -112,6 +112,23 @@ var openAICodexReasoningDefaults = struct {
 	},
 }
 
+var openAICodexParallelToolCallSupport = struct {
+	sync.RWMutex
+	byModel map[string]bool
+}{
+	byModel: map[string]bool{
+		openAICodexDefaultModel: true,
+		"gpt-5.5-pro":           true,
+		"gpt-5.4":               true,
+		"gpt-5.4-pro":           true,
+		"gpt-5.4-mini":          true,
+		"gpt-5.3-codex":         true,
+		"gpt-5.3-codex-spark":   true,
+		"gpt-5.2":               true,
+		"codex-auto-review":     true,
+	},
+}
+
 type codexOAuthAccessTokenSource interface {
 	AccessToken(ctx context.Context) (string, error)
 }
@@ -310,7 +327,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		"include":             []string{},
 		"tools":               []map[string]any{},
 		"tool_choice":         "auto",
-		"parallel_tool_calls": true,
+		"parallel_tool_calls": openAICodexSupportsParallelToolCalls(model),
 	}
 	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
 		payload["prompt_cache_key"] = threadID
@@ -433,6 +450,27 @@ func registerOpenAICodexReasoningDefaults(model string, supportsSummaries bool, 
 	openAICodexReasoningDefaults.Lock()
 	openAICodexReasoningDefaults.byModel[model] = defaults
 	openAICodexReasoningDefaults.Unlock()
+}
+
+func openAICodexSupportsParallelToolCalls(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || model == codexCLIDefaultModel {
+		model = openAICodexDefaultModel
+	}
+	openAICodexParallelToolCallSupport.RLock()
+	supported, ok := openAICodexParallelToolCallSupport.byModel[model]
+	openAICodexParallelToolCallSupport.RUnlock()
+	return ok && supported
+}
+
+func registerOpenAICodexParallelToolCallSupport(model string, supported bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return
+	}
+	openAICodexParallelToolCallSupport.Lock()
+	openAICodexParallelToolCallSupport.byModel[model] = supported
+	openAICodexParallelToolCallSupport.Unlock()
 }
 
 func normalizeOpenAICodexVerbosity(verbosity string) string {

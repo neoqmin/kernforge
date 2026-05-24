@@ -31,6 +31,7 @@ type CodexCLIModelInfo struct {
 	SupportsReasoningSummaries  bool
 	DefaultReasoningEffort      string
 	DefaultReasoningSummary     string
+	SupportsParallelToolCalls   bool
 }
 
 type CodexCLIClient struct {
@@ -197,6 +198,7 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			SupportsReasoningSummaries  *bool  `json:"supports_reasoning_summaries"`
 			DefaultReasoningLevel       string `json:"default_reasoning_level"`
 			DefaultReasoningSummary     string `json:"default_reasoning_summary"`
+			SupportsParallelToolCalls   *bool  `json:"supports_parallel_tool_calls"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -233,6 +235,10 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 		if item.SupportsReasoningSummaries != nil {
 			supportsReasoningSummaries = *item.SupportsReasoningSummaries
 		}
+		supportsParallelToolCalls := false
+		if item.SupportsParallelToolCalls != nil {
+			supportsParallelToolCalls = *item.SupportsParallelToolCalls
+		}
 		models = append(models, CodexCLIModelInfo{
 			ID:                          id,
 			Name:                        name,
@@ -244,11 +250,15 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			SupportsReasoningSummaries:  supportsReasoningSummaries,
 			DefaultReasoningEffort:      normalizeReasoningEffort(item.DefaultReasoningLevel),
 			DefaultReasoningSummary:     normalizeOpenAICodexReasoningSummary(item.DefaultReasoningSummary),
+			SupportsParallelToolCalls:   supportsParallelToolCalls,
 		})
 		registerCodexModelImageDetailSupport(id, item.SupportsImageDetailOriginal)
 		registerOpenAICodexDefaultVerbosity(id, item.DefaultVerbosity)
 		if item.SupportsReasoningSummaries != nil || strings.TrimSpace(item.DefaultReasoningLevel) != "" || strings.TrimSpace(item.DefaultReasoningSummary) != "" {
 			registerOpenAICodexReasoningDefaults(id, supportsReasoningSummaries, item.DefaultReasoningLevel, item.DefaultReasoningSummary)
+		}
+		if item.SupportsParallelToolCalls != nil {
+			registerOpenAICodexParallelToolCallSupport(id, supportsParallelToolCalls)
 		}
 		seen[strings.ToLower(id)] = true
 	}
