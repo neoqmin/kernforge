@@ -943,6 +943,10 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			emitToolReady(item)
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
 			reasoning.WriteString(event.Delta)
+		case "response.reasoning_summary_part.added":
+			if reasoning.Len() > 0 && !strings.HasSuffix(reasoning.String(), "\n") {
+				reasoning.WriteString("\n")
+			}
 		case "response.output_item.done":
 			if event.Item.Type == "message" {
 				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
