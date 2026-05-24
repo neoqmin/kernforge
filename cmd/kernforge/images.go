@@ -22,8 +22,34 @@ type MessageImage struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
-func messageImageApproxChars(image MessageImage) int {
-	return len(image.Path) + len(image.MediaType) + len(image.Detail) + codexResizedImageBytesEstimate
+func messageImageApproxChars(baseDir string, image MessageImage) int {
+	total := len(image.Path) + len(image.MediaType) + len(image.Detail)
+	if strings.TrimSpace(image.Detail) == imageDetailOriginal {
+		if originalEstimate := originalMessageImageApproxChars(baseDir, image); originalEstimate > 0 {
+			return total + originalEstimate
+		}
+	}
+	return total + codexResizedImageBytesEstimate
+}
+
+func originalMessageImageApproxChars(baseDir string, item MessageImage) int {
+	path := strings.TrimSpace(item.Path)
+	if path == "" {
+		return 0
+	}
+	data, err := os.ReadFile(resolveMessageImagePath(baseDir, path))
+	if err != nil {
+		return 0
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || config.Width <= 0 || config.Height <= 0 {
+		return 0
+	}
+	patches := ceilDivInt(config.Width, codexOriginalImagePatchSize) * ceilDivInt(config.Height, codexOriginalImagePatchSize)
+	if patches > codexOriginalImageMaxPatches {
+		patches = codexOriginalImageMaxPatches
+	}
+	return patches * codexApproxBytesPerToken
 }
 
 type EncodedImage struct {
