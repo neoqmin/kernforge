@@ -1930,7 +1930,6 @@ func TestBuildOpenAICodexRequestBodyDropsOrphanCodexToolOutputItems(t *testing.T
 					Text:   "orphan output",
 				}, {
 					Type:      "tool_search_output",
-					CallID:    "server_search",
 					Status:    "completed",
 					Execution: "server",
 					Tools: []map[string]any{{
@@ -1949,6 +1948,9 @@ func TestBuildOpenAICodexRequestBodyDropsOrphanCodexToolOutputItems(t *testing.T
 	}
 	if !strings.Contains(encoded, `"type":"tool_search_output"`) || !strings.Contains(encoded, `"execution":"server"`) {
 		t.Fatalf("server tool_search_output must be retained: %s", body)
+	}
+	if !strings.Contains(encoded, `"call_id":null`) {
+		t.Fatalf("server tool_search_output without call id should serialize call_id:null like Codex ResponseItem history: %s", body)
 	}
 }
 
@@ -3183,13 +3185,19 @@ func TestParseOpenAICodexResponsePreservesCodexToolOutputItems(t *testing.T) {
 			"status":"completed",
 			"execution":"client",
 			"tools":[{"name":"read_file","description":"Read a file"}]
+		},{
+			"type":"tool_search_output",
+			"call_id":null,
+			"status":"completed",
+			"execution":"server",
+			"tools":[]
 		}]
 	}`))
 	if err != nil {
 		t.Fatalf("parseOpenAICodexResponse: %v", err)
 	}
-	if len(resp.Message.CodexToolOutputItems) != 3 {
-		t.Fatalf("expected three Codex tool output items, got %#v", resp.Message.CodexToolOutputItems)
+	if len(resp.Message.CodexToolOutputItems) != 4 {
+		t.Fatalf("expected four Codex tool output items, got %#v", resp.Message.CodexToolOutputItems)
 	}
 	functionOutput := resp.Message.CodexToolOutputItems[0]
 	if functionOutput.Type != "function_call_output" || functionOutput.CallID != "call_read" || len(functionOutput.ToolContentItems) != 1 || functionOutput.ToolContentItems[0].Text != "file body" {
@@ -3202,6 +3210,10 @@ func TestParseOpenAICodexResponsePreservesCodexToolOutputItems(t *testing.T) {
 	searchOutput := resp.Message.CodexToolOutputItems[2]
 	if searchOutput.Type != "tool_search_output" || searchOutput.CallID != "call_search" || searchOutput.Status != "completed" || searchOutput.Execution != "client" || len(searchOutput.Tools) != 1 {
 		t.Fatalf("unexpected tool search output: %#v", searchOutput)
+	}
+	serverSearchOutput := resp.Message.CodexToolOutputItems[3]
+	if serverSearchOutput.Type != "tool_search_output" || serverSearchOutput.CallID != "" || serverSearchOutput.Execution != "server" {
+		t.Fatalf("unexpected server tool search output without call id: %#v", serverSearchOutput)
 	}
 }
 
