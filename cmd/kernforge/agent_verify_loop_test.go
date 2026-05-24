@@ -10137,6 +10137,181 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 	}
 }
 
+func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: strings.Join([]string{
+						"The `Tavern/BugReport.md` document has been fully created and verified.",
+						"",
+						"27 documented bugs were found.",
+						"",
+						"| Severity | Count |",
+						"|----------|-------|",
+						"| Critical | 4 |",
+						"| High | 7 |",
+						"| Medium | 9 |",
+						"| Low | 6 |",
+						"| **Total** | **26** |",
+						"",
+						"No build/test verification was run because this is a documentation-only artifact.",
+					}, "\n"),
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{
+				Role: "assistant",
+				Text: "NEEDS_REVISION\nThis final-answer reviewer should not run for generated document artifact completion.",
+			},
+			StopReason: "stop",
+		}},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:         mainProvider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(NewWriteFileTool(ws), &staticTool{name: "read_file", output: "read should not run"}),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("expected final document summary, got %q", reply)
+	}
+	if strings.Contains(reply, "27 documented bugs") {
+		t.Fatalf("expected inconsistent model summary to be replaced by synthesized final reply, got %q", reply)
+	}
+	if len(mainProvider.requests) != 2 {
+		t.Fatalf("expected post-final inspection to remain unrequested, got %d main requests", len(mainProvider.requests))
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("expected generated document artifact to skip final reviewer, got %d reviewer requests", len(reviewer.requests))
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected generated document reply to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
+func TestAgentBlocksGeneratedDocumentPostWriteShellValidationWhenRequestOmitsOutputPath(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	shellTool := &staticTool{name: "run_shell", output: "shell should not run"}
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing Tavern/BugReport.md for final validation"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This fallback final answer should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:    mainProvider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), shellTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
+	}
+	if shellTool.calls != 0 {
+		t.Fatalf("post-write shell validation should not execute, got %d call(s)", shellTool.calls)
+	}
+	if len(mainProvider.requests) != 2 {
+		t.Fatalf("expected post-write shell validation to be blocked without a follow-up request, got %d main requests", len(mainProvider.requests))
+	}
+	if !sessionContainsToolResultText(session, "call-1", "generated document artifact turns do not run shell or review validation") {
+		t.Fatalf("expected blocked shell validation tool result, messages=%#v", session.Messages)
+	}
+}
+
 func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
