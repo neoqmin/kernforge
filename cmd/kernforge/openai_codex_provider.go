@@ -42,6 +42,8 @@ const (
 	openAICodexServerModelsETagHeader  = "X-Models-Etag"
 	openAICodexReasoningIncludedHeader = "x-reasoning-included"
 	openAICodexTrustedAccessForCyber   = "trusted_access_for_cyber"
+	openAICodexInstallationIDHeader    = "x-codex-installation-id"
+	openAICodexWindowIDHeader          = "x-codex-window-id"
 )
 
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -218,7 +220,11 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	req.ThreadID = threadID
 	clientMetadata := map[string]string{}
 	if installationID := resolveOpenAICodexInstallationID(); installationID != "" {
-		clientMetadata["x-codex-installation-id"] = installationID
+		clientMetadata[openAICodexInstallationIDHeader] = installationID
+	}
+	windowID := openAICodexWindowID(threadID)
+	if windowID != "" {
+		clientMetadata[openAICodexWindowIDHeader] = windowID
 	}
 
 	body, err := buildOpenAICodexRequestBodyWithClientMetadata(req, clientMetadata)
@@ -243,6 +249,9 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		httpReq.Header.Set("session-id", sessionID)
 		httpReq.Header.Set("thread-id", threadID)
 		httpReq.Header.Set("x-client-request-id", threadID)
+		if windowID != "" {
+			httpReq.Header.Set(openAICodexWindowIDHeader, windowID)
+		}
 		applyProviderTurnStateHeader(httpReq, req.TurnState)
 		applyProviderTurnMetadataHeader(httpReq, req.TurnMetadata)
 		return httpReq, nil
@@ -394,6 +403,14 @@ func applyOpenAICodexAuthHeaders(headers http.Header, accessToken string) {
 	if accountID := codexOAuthJWTChatGPTAccountID(accessToken); accountID != "" {
 		headers.Set("chatgpt-account-id", accountID)
 	}
+}
+
+func openAICodexWindowID(threadID string) string {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ""
+	}
+	return threadID + ":0"
 }
 
 func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
