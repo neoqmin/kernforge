@@ -1738,6 +1738,8 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.Specialists.Profiles[i].Model = strings.TrimSpace(profile.Model)
 		cfg.Specialists.Profiles[i].BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		cfg.Specialists.Profiles[i].APIKey = strings.TrimSpace(profile.APIKey)
+		cfg.Specialists.Profiles[i].ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
+		cfg.Specialists.Profiles[i].ServiceTier = normalizeServiceTier(profile.ServiceTier)
 		cfg.Specialists.Profiles[i].NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 		cfg.Specialists.Profiles[i].Keywords = normalizeTaskStateList(profile.Keywords, 32)
 		cfg.Specialists.Profiles[i].OwnershipPaths = normalizeTaskStateList(profile.OwnershipPaths, 32)

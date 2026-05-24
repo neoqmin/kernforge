@@ -893,7 +893,7 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 				ReasoningEffort: "medium",
 			},
 			Specialists: []SpecialistSubagentProfile{
-				{Name: "planner", Provider: "openai-codex", Model: "gpt-specialist", ReasoningEffort: "xhigh"},
+				{Name: "planner", Provider: "openai-codex", Model: "gpt-specialist", ReasoningEffort: "xhigh", ServiceTier: "fast"},
 			},
 		},
 	}
@@ -911,6 +911,7 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 		Provider:        "openai-codex",
 		Model:           "stale-specialist",
 		ReasoningEffort: "low",
+		ServiceTier:     "flex",
 	}}
 	cfg.ActiveProfileKey = configProfileKey(active)
 	if err := SaveUserConfig(cfg); err != nil {
@@ -929,6 +930,9 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 	}
 	if len(loaded.Specialists.Profiles) != 1 || loaded.Specialists.Profiles[0].Model != "gpt-specialist" || loaded.Specialists.Profiles[0].ReasoningEffort != "xhigh" {
 		t.Fatalf("expected active profile specialist model, got %#v", loaded.Specialists.Profiles)
+	}
+	if loaded.Specialists.Profiles[0].ServiceTier != "priority" {
+		t.Fatalf("expected active profile specialist service tier to normalize, got %#v", loaded.Specialists.Profiles[0])
 	}
 	if loaded.Specialists.Profiles[0].Description != "existing custom planner metadata" {
 		t.Fatalf("expected existing specialist metadata to be preserved, got %#v", loaded.Specialists.Profiles[0])
@@ -1437,6 +1441,7 @@ func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *tes
 		Provider:        "openai-codex",
 		Model:           "stale-specialist",
 		ReasoningEffort: "high",
+		ServiceTier:     "flex",
 	}}
 	cfg.Profiles = []Profile{active}
 	cfg.ActiveProfileKey = configProfileKey(active)
@@ -1457,7 +1462,8 @@ func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *tes
 	if len(loaded.Specialists.Profiles) != 1 ||
 		loaded.Specialists.Profiles[0].Provider != "" ||
 		loaded.Specialists.Profiles[0].Model != "" ||
-		loaded.Specialists.Profiles[0].ReasoningEffort != "" {
+		loaded.Specialists.Profiles[0].ReasoningEffort != "" ||
+		loaded.Specialists.Profiles[0].ServiceTier != "" {
 		t.Fatalf("expected single-model profile to clear specialist model while preserving metadata, got %#v", loaded.Specialists.Profiles)
 	}
 }
