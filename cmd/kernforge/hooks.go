@@ -22,6 +22,7 @@ const (
 	HookUserPromptSubmit  HookEvent = "UserPromptSubmit"
 	HookSessionStart      HookEvent = "SessionStart"
 	HookPermissionRequest HookEvent = "PermissionRequest"
+	HookStop              HookEvent = "Stop"
 	HookPreToolUse        HookEvent = "PreToolUse"
 	HookPostToolUse       HookEvent = "PostToolUse"
 	HookSubagentStart     HookEvent = "SubagentStart"
@@ -110,6 +111,8 @@ type HookVerdict struct {
 	UpdatedInput       HookPayload
 	PermissionDecision string
 	PermissionMessage  string
+	StopDecision       string
+	StopMessage        string
 }
 
 type HookEngine struct {
@@ -166,7 +169,7 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 		}
 		verdict.ContextAdds = append(verdict.ContextAdds, summary)
 	}
-	if verdict.AskMessage != "" {
+	if verdict.AskMessage != "" && verdict.DenyReason == "" {
 		if rt.Ask == nil {
 			return HookVerdict{}, fmt.Errorf("hook confirmation required but interactive confirmation is unavailable")
 		}
@@ -179,6 +182,10 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 		}
 	}
 	if event == HookPermissionRequest && strings.TrimSpace(verdict.PermissionDecision) != "" {
+		verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
+		return verdict, nil
+	}
+	if event == HookStop && strings.TrimSpace(verdict.StopDecision) != "" {
 		verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
 		return verdict, nil
 	}
@@ -441,6 +448,10 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 			if event == HookPermissionRequest {
 				verdict.PermissionDecision = "deny"
 				verdict.PermissionMessage = verdict.DenyReason
+			}
+			if event == HookStop {
+				verdict.StopDecision = "block"
+				verdict.StopMessage = verdict.DenyReason
 			}
 		case "append_context", "append_review_context":
 			message := strings.TrimSpace(rule.Action.Message)
