@@ -3697,6 +3697,20 @@ func TestShouldDeferEndTurnFollowUpForFinalLookingReplyKeepsInProgressText(t *te
 	}
 }
 
+func TestShouldDeferEndTurnFollowUpForFinalLookingReplyKeepsFutureVerification(t *testing.T) {
+	endTurnFalse := false
+	resp := ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: "The file is saved to `main.go`; I need to verify it next.",
+		},
+		EndTurn: &endTurnFalse,
+	}
+	if shouldDeferEndTurnFollowUpForFinalLookingReply(resp) {
+		t.Fatalf("expected future verification wording to request a follow-up")
+	}
+}
+
 func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	root := t.TempDir()
 	provider := &turnStateObservingProviderClient{
