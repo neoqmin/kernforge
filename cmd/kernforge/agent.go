@@ -40,6 +40,7 @@ type Agent struct {
 	VerifyHistory                  *VerificationHistoryStore
 	FunctionFuzz                   *FunctionFuzzStore
 	FuzzCampaigns                  *FuzzCampaignStore
+	Hooks                          *HookRuntime
 	VerifyChanges                  func(context.Context) (VerificationReport, bool)
 	PromptConfirmAutoVerify        func(VerificationPlan) (bool, error)
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)

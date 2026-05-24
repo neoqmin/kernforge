@@ -474,6 +474,7 @@ func run(args []string) error {
 		}
 	}
 	rt.syncAgentReviewerClientFromConfig()
+	rt.reloadHooks()
 	rt.reloadExtensions()
 
 	if promptFlag != "" {
@@ -9467,6 +9468,9 @@ func (rt *runtimeState) reloadHooks() {
 	}
 	if engine == nil {
 		rt.hooks = nil
+		if rt.agent != nil {
+			rt.agent.Hooks = nil
+		}
 		return
 	}
 	rt.hooks = &HookRuntime{
@@ -9485,6 +9489,9 @@ func (rt *runtimeState) reloadHooks() {
 		Config:     rt.cfg,
 		Evidence:   rt.evidence,
 		Overrides:  rt.hookOverrides,
+	}
+	if rt.agent != nil {
+		rt.agent.Hooks = rt.hooks
 	}
 }
 
