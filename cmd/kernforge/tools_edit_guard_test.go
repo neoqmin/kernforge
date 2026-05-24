@@ -440,7 +440,7 @@ func TestRegisteredToolsRejectMalformedInputWithoutPanic(t *testing.T) {
 	}
 }
 
-func TestApplyPatchRejectsContextFreeUpdateHunk(t *testing.T) {
+func TestApplyPatchAppendsContextFreeUpdateHunkLikeCodex(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
 	if err := os.WriteFile(path, []byte("package main\n\nfunc existing() {}\n"), 0o644); err != nil {
@@ -453,8 +453,88 @@ func TestApplyPatchRejectsContextFreeUpdateHunk(t *testing.T) {
 	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
 		"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n+func inserted() {}\n*** End Patch\n",
 	})
-	if !errors.Is(err, ErrEditTargetMismatch) {
-		t.Fatalf("expected context-free hunk to be rejected with ErrEditTargetMismatch, got %v", err)
+	if err != nil {
+		t.Fatalf("expected context-free hunk to append like Codex, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "package main\n\nfunc existing() {}\nfunc inserted() {}\n" {
+		t.Fatalf("unexpected patched content: %q", string(data))
+	}
+}
+
+func TestApplyPatchAcceptsFirstUpdateHunkWithoutContextMarkerLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc existing() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: main.go\n package main\n+import \"fmt\"\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("expected first update hunk without @@ to apply, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "package main\nimport \"fmt\"\n\nfunc existing() {}\n" {
+		t.Fatalf("unexpected patched content: %q", string(data))
+	}
+}
+
+func TestApplyPatchAcceptsHeredocEnvelopeLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "<<'EOF'\n*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\nEOF\n",
+	})
+	if err != nil {
+		t.Fatalf("expected heredoc envelope to apply, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "package main\nfunc main() {}\n" {
+		t.Fatalf("unexpected patched content: %q", string(data))
+	}
+}
+
+func TestApplyPatchRejectsEnvironmentIDWhenUnavailableLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Environment ID: remote\n*** Add File: hello.txt\n+hello\n*** End Patch\n",
+	})
+	if !errors.Is(err, ErrInvalidPatchFormat) {
+		t.Fatalf("expected invalid patch format for unavailable environment selection, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "environment selection is unavailable") {
+		t.Fatalf("expected unavailable environment message, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "hello.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("environment rejected patch must not write file, stat err=%v", statErr)
 	}
 }
 
