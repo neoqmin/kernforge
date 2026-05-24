@@ -101,6 +101,58 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "edit the file"},
+		},
+		Tools: []ToolDefinition{
+			NewApplyPatchTool(Workspace{}).Definition(),
+			{
+				Name:        "read_file",
+				Description: "Read file",
+				InputSchema: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected two tools, got %#v in %s", payload["tools"], body)
+	}
+	applyPatch := tools[0].(map[string]any)
+	if applyPatch["type"] != "custom" || applyPatch["name"] != "apply_patch" {
+		t.Fatalf("expected apply_patch to use Responses custom tool shape, got %#v", applyPatch)
+	}
+	if _, exists := applyPatch["parameters"]; exists {
+		t.Fatalf("custom apply_patch must not be exposed as JSON parameters, got %#v", applyPatch)
+	}
+	format, ok := applyPatch["format"].(map[string]any)
+	if !ok || format["type"] != "grammar" || format["syntax"] != "lark" {
+		t.Fatalf("expected lark grammar format, got %#v", applyPatch["format"])
+	}
+	definition, _ := format["definition"].(string)
+	for _, want := range []string{"start: begin_patch hunk+ end_patch", "*** Begin Patch", "*** End Patch"} {
+		if !strings.Contains(definition, want) {
+			t.Fatalf("expected apply_patch grammar to contain %q, got %q", want, definition)
+		}
+	}
+	readFile := tools[1].(map[string]any)
+	if readFile["type"] != "function" || readFile["name"] != "read_file" {
+		t.Fatalf("expected non-apply_patch tools to remain functions, got %#v", readFile)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesAssistantPhase(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
