@@ -124,7 +124,35 @@ func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPat
 	if sessionHasApprovedDocumentArtifactOnlyHarness(session) {
 		return true
 	}
+	if sessionHasDocumentArtifactQualityAcceptedHarness(session) &&
+		runtimeGateHasGeneratedDocumentArtifactContext(session, changedPaths) {
+		return true
+	}
 	return changedPathsAreGeneratedDocumentArtifacts(session, "", changedPaths)
+}
+
+func runtimeGateHasGeneratedDocumentArtifactContext(session *Session, changedPaths []string) bool {
+	if session == nil {
+		return false
+	}
+	normalizedChangedPaths := normalizeTaskStateList(changedPaths, 64)
+	if len(normalizedChangedPaths) > 0 {
+		return changedPathsMatchDocumentArtifactQuality(session, normalizedChangedPaths) ||
+			changedPathsAreGeneratedDocumentArtifacts(session, "", normalizedChangedPaths)
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
+	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
+		return preWriteRequestLooksLikeGeneratedDocumentArtifact(latestUser)
+	}
+	if session.AcceptanceContract != nil &&
+		generatedDocumentArtifactRequestContextForTurn(session, session.AcceptanceContract.SourcePrompt) != "" {
+		return true
+	}
+	if session.TaskState != nil &&
+		generatedDocumentArtifactRequestContextForTurn(session, session.TaskState.Goal) != "" {
+		return true
+	}
+	return false
 }
 
 func (l *RuntimeGateLedger) Normalize() {
@@ -613,6 +641,9 @@ func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger)
 	if report.Approved {
 		return
 	}
+	if runtimeGateGeneratedDocumentArtifactHarnessBlockersAreAnswerOnly(session, ledger, &report) {
+		return
+	}
 	for _, finding := range report.allFindings() {
 		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
 			continue
@@ -623,6 +654,23 @@ func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger)
 	if len(ledger.Blockers) == 0 {
 		ledger.Warnings = append(ledger.Warnings, "coding harness did not approve the final state")
 	}
+}
+
+func runtimeGateGeneratedDocumentArtifactHarnessBlockersAreAnswerOnly(session *Session, ledger *RuntimeGateLedger, report *CodingHarnessReport) bool {
+	if session == nil || ledger == nil || report == nil {
+		return false
+	}
+	action := normalizeRuntimeGateAction(ledger.Action)
+	if action != runtimeGateActionFinalAnswer && action != runtimeGateActionCompletionAudit {
+		return false
+	}
+	if !sessionHasDocumentArtifactQualityAcceptedHarness(session) {
+		return false
+	}
+	if !runtimeGateHasGeneratedDocumentArtifactContext(session, ledger.ChangedPaths) {
+		return false
+	}
+	return codingHarnessReportRequiresFinalAnswerOnlyRevision(report)
 }
 
 func latestRuntimeGatePatchTransaction(session *Session) *PatchTransaction {

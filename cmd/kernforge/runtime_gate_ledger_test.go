@@ -171,6 +171,135 @@ func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutReques
 	}
 }
 
+func TestRuntimeGateQualityAcceptedDocumentArtifactSkipsStaleReviewWithoutPatchPaths(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+	}}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Mode:         "inspect_and_fix",
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: false,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+				Checks:       []string{"text readable"},
+			}},
+		},
+		Outcome: OutcomeInvariantReport{
+			Findings: []CodingHarnessFinding{{
+				Severity: "blocker",
+				Title:    "Final answer has inconsistent bug counts",
+				Detail:   "The final answer needs a wording-only correction.",
+			}},
+		},
+	}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-stale-code",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Trigger:           "post_change",
+		Branch:            delegationGitBranch(root),
+		ReviewFingerprint: "fp-1",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"main.go"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-1",
+			Stale:             true,
+			StaleReason:       "unreviewed changed files: main.go",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("expected accepted document content to bypass stale code review while final answer is repaired, got %#v", ledger)
+	}
+	if strings.Contains(strings.Join(ledger.Blockers, " "), "review") ||
+		strings.Contains(strings.Join(ledger.StaleReasons, " "), "main.go") {
+		t.Fatalf("expected generated document artifact content gate to suppress stale code review, got %#v", ledger)
+	}
+}
+
+func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "Tavern/BugReport.md 생성 완료",
+		},
+		{
+			Role: "user",
+			Text: "main.go 버그를 수정해",
+		},
+	}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Mode:         "inspect_and_fix",
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+				Checks:       []string{"text readable"},
+			}},
+		},
+	}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-stale-code",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Trigger:           "post_change",
+		Branch:            delegationGitBranch(root),
+		ReviewFingerprint: "fp-1",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"main.go"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-1",
+			Stale:             true,
+			StaleReason:       "unreviewed changed files: main.go",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusBlocked || ledger.Ready {
+		t.Fatalf("stale document artifact state must not waive review freshness for an unrelated code turn, got %#v", ledger)
+	}
+	if !strings.Contains(strings.Join(ledger.Blockers, " "), "latest review is stale") {
+		t.Fatalf("expected stale review blocker for unrelated code turn, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateBlocksUnknownPatchScopeForFinalAnswer(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
