@@ -389,6 +389,44 @@ func TestReadOnlyLookupToolDefinitionsDoNotAdvertiseOwnerNodeID(t *testing.T) {
 	}
 }
 
+func TestResolveLookupPathFallsBackAcrossWorkspaceRootsWithoutOwner(t *testing.T) {
+	root := t.TempDir()
+	active := filepath.Join(root, ".kernforge", "worktrees", "driver-build-fixer")
+	if err := os.MkdirAll(active, 0o755); err != nil {
+		t.Fatalf("MkdirAll active: %v", err)
+	}
+	sourceDir := filepath.Join(root, "Tavern")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sourceDir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "BugReport.md"), []byte("# Tavern bug report\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile BugReport: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     active,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() {
+			return EditRoutingResult{}, fmt.Errorf("path is outside the active workspace root: %s", req.Path)
+		}
+		return ws.resolveEditFallback(req)
+	}
+
+	route, err := ws.ResolveLookupPath("Tavern/BugReport.md", "")
+	if err != nil {
+		t.Fatalf("lookup should fall back to base workspace without owner_node_id: %v", err)
+	}
+	if !sameFilePath(route.AbsolutePath, filepath.Join(root, "Tavern", "BugReport.md")) {
+		t.Fatalf("expected base workspace file, got %#v", route)
+	}
+	if !sameFilePath(route.DisplayRoot, root) {
+		t.Fatalf("expected base workspace display root, got %#v", route)
+	}
+}
+
 func assertLookupToolsRecoverFromOwnerEditMismatch(t *testing.T, wrapSentinel bool) {
 	t.Helper()
 
