@@ -1006,7 +1006,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 				item.ReasoningContent = strings.TrimSpace(msg.ReasoningContent)
 			}
 			for _, tc := range msg.ToolCalls {
-				call := openAIToolCall{ID: tc.ID, Type: "function"}
+				call := openAIToolCall{ID: firstNonEmptyTrimmed(tc.ID, tc.Name), Type: "function"}
 				call.Function.Name = tc.Name
 				call.Function.Arguments = normalizeOpenAIToolCallArguments(tc.Arguments)
 				item.ToolCalls = append(item.ToolCalls, call)
@@ -1017,7 +1017,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 				Role:       "tool",
 				Content:    msg.Text,
 				Name:       msg.ToolName,
-				ToolCallID: msg.ToolCallID,
+				ToolCallID: firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName),
 			})
 		}
 	}

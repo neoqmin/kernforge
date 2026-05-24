@@ -795,6 +795,58 @@ func TestOpenAICompatibleClientDropsUnexpectedToolResponseAfterAssistant(t *test
 	}
 }
 
+func TestOpenAICompatibleClientUsesNameFallbackForMissingToolCallID(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{Name: "read_file", Arguments: `{"path":"main.go"}`},
+			}},
+			{Role: "tool", ToolName: "read_file", Text: "package main"},
+		},
+		Tools: []ToolDefinition{{Name: "read_file"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("expected three messages, got %#v", captured["messages"])
+	}
+	assistant, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assistant message, got %#v", messages[1])
+	}
+	toolCalls, ok := assistant["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", assistant["tool_calls"])
+	}
+	toolCall, ok := toolCalls[0].(map[string]any)
+	if !ok || toolCall["id"] != "read_file" {
+		t.Fatalf("expected tool call id fallback to name, got %#v", toolCalls[0])
+	}
+	tool, ok := messages[2].(map[string]any)
+	if !ok || tool["tool_call_id"] != "read_file" || tool["content"] != "package main" {
+		t.Fatalf("expected matching tool output with fallback id, got %#v", messages[2])
+	}
+	if strings.Contains(fmt.Sprint(messages), "aborted") {
+		t.Fatalf("did not expect synthesized aborted output when matching tool output exists: %#v", messages)
+	}
+}
+
 func TestDeepSeekClientPreservesStreamedReasoningContentForToolLoop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
