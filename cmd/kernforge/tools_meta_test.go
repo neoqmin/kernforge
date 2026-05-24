@@ -1396,6 +1396,17 @@ func TestRunShellExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	if toolMetaString(result.Meta, "command") == "" {
 		t.Fatalf("expected command metadata, got %#v", result.Meta)
 	}
+	if !strings.Contains(result.ModelText, "Wall time: ") ||
+		!strings.Contains(result.ModelText, "Process exited with code 0") ||
+		!strings.Contains(result.ModelText, "\nOutput:\nalpha") {
+		t.Fatalf("expected Codex-style shell model output, got %q", result.ModelText)
+	}
+	if exitCode, ok := result.Meta["exit_code"].(int); !ok || exitCode != 0 {
+		t.Fatalf("expected exit_code metadata, got %#v", result.Meta)
+	}
+	if _, ok := result.Meta["wall_time_seconds"].(float64); !ok {
+		t.Fatalf("expected wall_time_seconds metadata, got %#v", result.Meta)
+	}
 }
 
 func TestRunShellExecuteDetailedIncludesEffectiveWorkspaceRoots(t *testing.T) {

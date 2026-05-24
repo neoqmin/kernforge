@@ -4440,7 +4440,9 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 	originalCommand := stringValue(args, "command")
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	workdir := strings.TrimSpace(stringValue(args, "workdir"))
+	started := time.Now()
 	text, err := t.Execute(ctx, input)
+	wallTime := time.Since(started)
 	command := stringValue(args, "command")
 	if strings.TrimSpace(command) == "" {
 		command = originalCommand
@@ -4457,6 +4459,10 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		"changed_workspace": false,
 		"effect":            "execute",
 	}
+	if exitCode, ok := runShellExitCode(err); ok {
+		meta["exit_code"] = exitCode
+	}
+	meta["wall_time_seconds"] = wallTime.Seconds()
 	if originalCommand != "" && command != originalCommand {
 		meta["hook_rewritten"] = true
 		meta["original_command"] = originalCommand
@@ -4480,7 +4486,34 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 			meta["verification_declined"] = true
 		}
 	}
-	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
+	return ToolExecutionResult{
+		DisplayText: text,
+		ModelText:   runShellModelText(text, wallTime, err),
+		Meta:        meta,
+	}, err
+}
+
+func runShellModelText(output string, wallTime time.Duration, err error) string {
+	sections := []string{fmt.Sprintf("Wall time: %.4f seconds", wallTime.Seconds())}
+	if exitCode, ok := runShellExitCode(err); ok {
+		sections = append(sections, fmt.Sprintf("Process exited with code %d", exitCode))
+	}
+	sections = append(sections, "Output:")
+	if strings.TrimSpace(output) != "" {
+		sections = append(sections, output)
+	}
+	return strings.Join(sections, "\n")
+}
+
+func runShellExitCode(err error) (int, bool) {
+	if err == nil {
+		return 0, true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
 }
 
 func runShellDedicatedToolGuidance(command string) string {
