@@ -839,6 +839,42 @@ func TestBuildOpenAICodexRequestBodyPreservesLocalShellCallOutput(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesLegacyLocalShellIDAsNullCallID(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "run a local command"},
+			{Role: "assistant", LocalShellCalls: []MessageLocalShellCall{{
+				ID:     "legacy_shell",
+				Status: "completed",
+				Action: map[string]any{
+					"type":    "exec",
+					"command": []any{"echo", "hi"},
+				},
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected user and local shell call without synthesized output, got %#v in %s", input, body)
+	}
+	call := input[1].(map[string]any)
+	if call["type"] != "local_shell_call" || call["call_id"] != nil || call["status"] != "completed" {
+		t.Fatalf("expected Codex local_shell_call with null call_id, got %#v", call)
+	}
+	if _, exists := call["id"]; exists {
+		t.Fatalf("legacy local shell id must not be serialized back to Codex, got %#v", call)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySynthesizesMissingLocalShellOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -3134,6 +3170,29 @@ func TestParseOpenAICodexResponsePreservesLocalShellCall(t *testing.T) {
 	call := resp.Message.LocalShellCalls[0]
 	if call.CallID != "call_shell" || call.Status != "completed" || call.Action["type"] != "exec" {
 		t.Fatalf("unexpected local shell call: %#v", call)
+	}
+}
+
+func TestParseOpenAICodexResponsePreservesLegacyLocalShellIDWithoutPromotingCallID(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"local_shell_call",
+			"id":"legacy_shell",
+			"call_id":null,
+			"status":"completed",
+			"action":{"type":"exec","command":["echo","hi"]}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.Message.LocalShellCalls) != 1 {
+		t.Fatalf("expected one local shell call, got %#v", resp.Message.LocalShellCalls)
+	}
+	call := resp.Message.LocalShellCalls[0]
+	if call.ID != "legacy_shell" || call.CallID != "" || call.Status != "completed" || call.Action["type"] != "exec" {
+		t.Fatalf("unexpected legacy local shell call: %#v", call)
 	}
 }
 

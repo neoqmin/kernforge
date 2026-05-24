@@ -8858,7 +8858,7 @@ func compactDropOrphanToolMessages(messages []Message) []Message {
 			}
 		}
 		for _, call := range msg.LocalShellCalls {
-			callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+			callID := strings.TrimSpace(call.CallID)
 			if callID != "" {
 				expected[callID] = true
 				expectedSets.markLocalShell(callID)
