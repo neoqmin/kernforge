@@ -2857,18 +2857,88 @@ func buildMissingReadFileResult(root string, path string, requestedStart int, re
 		lines = append(lines, "Could not inspect parent directory: "+strings.TrimSpace(err.Error()))
 	}
 
+	candidatePaths, candidateSearchTruncated := findMissingReadFileCandidates(root, path, 12, 5000)
+	if len(candidatePaths) > 0 {
+		lines = append(lines, "Possible matching paths:")
+		for _, candidate := range candidatePaths {
+			lines = append(lines, "- "+candidate)
+		}
+		if candidateSearchTruncated {
+			lines = append(lines, "- ... (candidate search truncated)")
+		}
+		lines = append(lines, "If one of these is the intended file, retry read_file with that path.")
+	}
+
 	meta := map[string]any{
-		"path":               resolvedPath,
-		"requested_path":     resolvedPath,
-		"start_line":         requestedStart,
-		"end_line":           requestedEnd,
-		"cache_mode":         "missing",
-		"error_kind":         "not_found",
-		"parent_path":        parentPath,
-		"parent_exists":      parentExists,
-		"parent_entry_count": parentEntryCount,
+		"path":                       resolvedPath,
+		"requested_path":             resolvedPath,
+		"start_line":                 requestedStart,
+		"end_line":                   requestedEnd,
+		"cache_mode":                 "missing",
+		"error_kind":                 "not_found",
+		"parent_path":                parentPath,
+		"parent_exists":              parentExists,
+		"parent_entry_count":         parentEntryCount,
+		"candidate_paths":            candidatePaths,
+		"candidate_search_truncated": candidateSearchTruncated,
 	}
 	return strings.Join(lines, "\n"), meta
+}
+
+func findMissingReadFileCandidates(root string, missingPath string, maxMatches int, maxVisited int) ([]string, bool) {
+	root = cleanAbsPath(root)
+	if root == "" || maxMatches <= 0 || maxVisited <= 0 {
+		return nil, false
+	}
+	targetName := strings.TrimSpace(filepath.Base(missingPath))
+	if targetName == "" || targetName == "." || targetName == string(os.PathSeparator) {
+		return nil, false
+	}
+	info, err := os.Stat(root)
+	if err != nil || info == nil || !info.IsDir() {
+		return nil, false
+	}
+	targetKey := strings.ToLower(targetName)
+	missingClean := cleanAbsPath(missingPath)
+	matches := make([]string, 0, maxMatches)
+	visited := 0
+	truncated := false
+	errStop := errors.New("candidate search limit reached")
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		if entry.IsDir() && entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		visited++
+		if visited > maxVisited {
+			truncated = true
+			return errStop
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if strings.ToLower(entry.Name()) != targetKey {
+			return nil
+		}
+		if samePath(path, missingClean) {
+			return nil
+		}
+		matches = append(matches, relOrAbs(root, path))
+		if len(matches) >= maxMatches {
+			truncated = true
+			return errStop
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errStop) {
+		return matches, truncated
+	}
+	return matches, truncated
 }
 
 func normalizeRenderedRangeBounds(output string, requestedStart int, requestedEnd int) (int, int) {
