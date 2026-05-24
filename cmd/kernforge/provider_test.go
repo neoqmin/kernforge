@@ -352,6 +352,30 @@ func TestOpenAIClientReplaysCodexTurnStateWithinRequestState(t *testing.T) {
 	}
 }
 
+func TestProviderTurnStateRejectsInvalidHeaderValues(t *testing.T) {
+	state := &ProviderTurnState{}
+	for _, value := range []string{
+		"bad\r\nx-evil: 1",
+		"bad\n",
+		"bad\r",
+		"bad\tstate",
+		string([]byte{'b', 'a', 'd', 0x7f}),
+	} {
+		state.Capture(value)
+		if got := state.Value(); got != "" {
+			t.Fatalf("invalid turn state %q should not be captured, got %q", value, got)
+		}
+	}
+	state.Capture(" sticky-turn ")
+	if got := state.Value(); got != "sticky-turn" {
+		t.Fatalf("expected valid turn state to be captured, got %q", got)
+	}
+	state.Capture("ignored-next")
+	if got := state.Value(); got != "sticky-turn" {
+		t.Fatalf("turn state should keep first valid value, got %q", got)
+	}
+}
+
 func assertOpenAICompatibleTurnMetadataHeader(t *testing.T, r *http.Request, wantTurnID string) {
 	t.Helper()
 	raw := strings.TrimSpace(r.Header.Get(codexTurnMetadataHeader))

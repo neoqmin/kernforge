@@ -274,7 +274,7 @@ func (s *ProviderTurnState) Capture(value string) {
 	if s == nil {
 		return
 	}
-	trimmed := strings.TrimSpace(value)
+	trimmed := providerSafeHeaderValue(value)
 	if trimmed == "" {
 		return
 	}
@@ -292,6 +292,22 @@ func applyProviderTurnStateHeader(httpReq *http.Request, state *ProviderTurnStat
 	if value := state.Value(); value != "" {
 		httpReq.Header.Set(codexTurnStateHeader, value)
 	}
+}
+
+func providerSafeHeaderValue(value string) string {
+	if strings.ContainsAny(value, "\r\n") {
+		return ""
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return ""
+		}
+	}
+	return value
 }
 
 func applyProviderTurnMetadataHeader(httpReq *http.Request, metadata map[string]any) {
