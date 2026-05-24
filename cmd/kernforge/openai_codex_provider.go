@@ -133,6 +133,10 @@ type codexOAuthAccessTokenSource interface {
 	AccessToken(ctx context.Context) (string, error)
 }
 
+type codexOAuthUnauthorizedRecovery interface {
+	RefreshAfterUnauthorized(ctx context.Context) (string, error)
+}
+
 var codexOAuthRefreshMu sync.Mutex
 
 type OpenAICodexClient struct {
@@ -208,52 +212,87 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	if err != nil {
 		return ChatResponse{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexAPIURL(c.baseURL, "/responses"), bytes.NewReader(body))
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("accept", "text/event-stream")
-	applyOpenAICodexAuthHeaders(httpReq.Header, accessToken)
-	httpReq.Header.Set("originator", "codex_cli_rs")
-	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
-	httpReq.Header.Set("session-id", sessionID)
-	httpReq.Header.Set("thread-id", threadID)
-	httpReq.Header.Set("x-client-request-id", threadID)
-	applyProviderTurnStateHeader(httpReq, req.TurnState)
-	applyProviderTurnMetadataHeader(httpReq, req.TurnMetadata)
-
 	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
-	resp, err := httpClient.Do(httpReq)
-	if err != nil {
-		return ChatResponse{}, err
-	}
-	defer resp.Body.Close()
-	captureProviderTurnStateHeader(resp, req.TurnState)
 
-	if resp.StatusCode >= 300 {
-		data, err := io.ReadAll(resp.Body)
+	newHTTPRequest := func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexAPIURL(c.baseURL, "/responses"), bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("content-type", "application/json")
+		httpReq.Header.Set("accept", "text/event-stream")
+		applyOpenAICodexAuthHeaders(httpReq.Header, token)
+		httpReq.Header.Set("originator", "codex_cli_rs")
+		httpReq.Header.Set("user-agent", "kernforge/openai-codex")
+		httpReq.Header.Set("session-id", sessionID)
+		httpReq.Header.Set("thread-id", threadID)
+		httpReq.Header.Set("x-client-request-id", threadID)
+		applyProviderTurnStateHeader(httpReq, req.TurnState)
+		applyProviderTurnMetadataHeader(httpReq, req.TurnMetadata)
+		return httpReq, nil
+	}
+
+	for attempt := 0; ; attempt++ {
+		httpReq, err := newHTTPRequest(accessToken)
 		if err != nil {
 			return ChatResponse{}, err
 		}
-		return ChatResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+		resp, err := httpClient.Do(httpReq)
+		if err != nil {
+			return ChatResponse{}, err
+		}
+		captureProviderTurnStateHeader(resp, req.TurnState)
+
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			recovery, ok := tokenSource.(codexOAuthUnauthorizedRecovery)
+			if ok && codexOAuthCanRecoverAfterUnauthorized(tokenSource) {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				refreshedToken, err := recovery.RefreshAfterUnauthorized(ctx)
+				if err != nil {
+					return ChatResponse{}, fmt.Errorf("OpenAI Codex OAuth recovery after 401 failed: %w", err)
+				}
+				refreshedToken = strings.TrimSpace(refreshedToken)
+				if refreshedToken == "" {
+					return ChatResponse{}, fmt.Errorf("OpenAI Codex OAuth recovery after 401 returned no access token")
+				}
+				accessToken = refreshedToken
+				continue
+			}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return ChatResponse{}, err
+			}
+			return ChatResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+		}
+		out, err := readOpenAICodexStream(ctx, resp.Body, req.OnProgressEvent)
+		if err != nil {
+			return ChatResponse{}, err
+		}
+		if serverModel := strings.TrimSpace(resp.Header.Get(openAICodexServerModelHeader)); serverModel != "" {
+			out.ServerModel = serverModel
+		}
+		out.ModelsETag = strings.TrimSpace(resp.Header.Get(openAICodexServerModelsETagHeader))
+		out.ReasoningIncluded = resp.Header.Get(openAICodexReasoningIncludedHeader) != ""
+		if summary := providerCodexRateLimitSummaryFromHeaders(resp.Header); summary != "" {
+			out.RateLimitSummary = summary
+		}
+		return out, nil
 	}
-	out, err := readOpenAICodexStream(ctx, resp.Body, req.OnProgressEvent)
-	if err != nil {
-		return ChatResponse{}, err
+}
+
+func codexOAuthCanRecoverAfterUnauthorized(tokenSource codexOAuthAccessTokenSource) bool {
+	if _, ok := tokenSource.(*CodexOAuthTokenSource); ok && strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" {
+		return false
 	}
-	if serverModel := strings.TrimSpace(resp.Header.Get(openAICodexServerModelHeader)); serverModel != "" {
-		out.ServerModel = serverModel
-	}
-	out.ModelsETag = strings.TrimSpace(resp.Header.Get(openAICodexServerModelsETagHeader))
-	out.ReasoningIncluded = resp.Header.Get(openAICodexReasoningIncludedHeader) != ""
-	if summary := providerCodexRateLimitSummaryFromHeaders(resp.Header); summary != "" {
-		out.RateLimitSummary = summary
-	}
-	return out, nil
+	return true
 }
 
 func FetchOpenAICodexModels(ctx context.Context, baseURL string, tokenSource codexOAuthAccessTokenSource, httpClient *http.Client) ([]CodexCLIModelInfo, error) {
@@ -1554,6 +1593,41 @@ func (s *CodexOAuthTokenSource) AccessToken(ctx context.Context) (string, error)
 	}
 	if strings.TrimSpace(auth.Tokens.RefreshToken) == "" {
 		return "", fmt.Errorf("OpenAI Codex OAuth access token is expired and no refresh token is available; run /codex-auth login")
+	}
+	refreshed, err := s.refresh(ctx, auth.Tokens.RefreshToken)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(refreshed.AccessToken) == "" {
+		return "", fmt.Errorf("OpenAI Codex OAuth refresh returned no access token")
+	}
+	if err := validateCodexOAuthWorkspace(refreshed, s.allowedWorkspaceIDs); err != nil {
+		return "", err
+	}
+	if err := updateCodexOAuthAuthFile(authPath, data, refreshed); err != nil {
+		return "", err
+	}
+	return refreshed.AccessToken, nil
+}
+
+func (s *CodexOAuthTokenSource) RefreshAfterUnauthorized(ctx context.Context) (string, error) {
+	if token := strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)); token != "" {
+		return "", fmt.Errorf("%s is set, so OpenAI Codex OAuth refresh is unavailable", openAICodexAccessTokenEnv)
+	}
+	authPath := s.authPath
+	if authPath == "" {
+		authPath = codexOAuthAuthFilePath()
+	}
+
+	codexOAuthRefreshMu.Lock()
+	defer codexOAuthRefreshMu.Unlock()
+
+	data, auth, err := readCodexOAuthAuthFile(authPath)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(auth.Tokens.RefreshToken) == "" {
+		return "", fmt.Errorf("OpenAI Codex OAuth access token was rejected and no refresh token is available; run /codex-auth login")
 	}
 	refreshed, err := s.refresh(ctx, auth.Tokens.RefreshToken)
 	if err != nil {

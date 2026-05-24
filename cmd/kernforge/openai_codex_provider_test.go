@@ -24,6 +24,24 @@ func (s staticCodexTokenSource) AccessToken(ctx context.Context) (string, error)
 	return s.token, nil
 }
 
+type refreshingCodexTokenSource struct {
+	token          string
+	refreshedToken string
+	accessCalls    int
+	refreshCalls   int
+}
+
+func (s *refreshingCodexTokenSource) AccessToken(ctx context.Context) (string, error) {
+	s.accessCalls++
+	return s.token, nil
+}
+
+func (s *refreshingCodexTokenSource) RefreshAfterUnauthorized(ctx context.Context) (string, error) {
+	s.refreshCalls++
+	s.token = s.refreshedToken
+	return s.refreshedToken, nil
+}
+
 func TestNewProviderClientSupportsOpenAICodexWithoutAPIKey(t *testing.T) {
 	client, err := NewProviderClient(Config{Provider: "openai-codex", Model: "gpt-5.5"})
 	if err != nil {
@@ -991,6 +1009,61 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	}
 	if resp.RateLimitSummary != "primary=12.5% window=10m reset_at=1704069000" {
 		t.Fatalf("expected Codex rate limit summary to be captured, got %q", resp.RateLimitSummary)
+	}
+}
+
+func TestOpenAICodexClientCompleteRefreshesAfterUnauthorized(t *testing.T) {
+	tokenSource := &refreshingCodexTokenSource{
+		token:          "old-token",
+		refreshedToken: "new-token",
+	}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		requestCount++
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get("authorization"); got != "Bearer old-token" {
+				t.Fatalf("unexpected first authorization header: %q", got)
+			}
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+		case 2:
+			if got := r.Header.Get("authorization"); got != "Bearer new-token" {
+				t.Fatalf("unexpected retry authorization header: %q", got)
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		default:
+			t.Fatalf("unexpected request count: %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = tokenSource
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "ready" {
+		t.Fatalf("expected retry response text, got %q", resp.Message.Text)
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected one retry after 401, got %d requests", requestCount)
+	}
+	if tokenSource.accessCalls != 1 || tokenSource.refreshCalls != 1 {
+		t.Fatalf("expected one access and one refresh, got access=%d refresh=%d", tokenSource.accessCalls, tokenSource.refreshCalls)
 	}
 }
 
@@ -2029,6 +2102,54 @@ func TestSaveAndUpdateCodexOAuthAuthFile(t *testing.T) {
 	}
 	if !codexOAuthAuthFileUsable(expiredPath) {
 		t.Fatalf("expired access token with refresh token should be usable")
+	}
+}
+
+func TestCodexOAuthTokenSourceRefreshAfterUnauthorizedForcesRefresh(t *testing.T) {
+	t.Setenv(openAICodexAccessTokenEnv, "")
+	path := filepath.Join(t.TempDir(), "codex_auth.json")
+	newAccessToken := testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "workspace-1")
+	if err := saveCodexOAuthAuthFile(path, codexOAuthTokens{
+		AccessToken:  testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "workspace-1"),
+		RefreshToken: "refresh-old",
+	}); err != nil {
+		t.Fatalf("save auth file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.FormValue("grant_type"); got != "refresh_token" {
+			t.Fatalf("unexpected grant_type: %q", got)
+		}
+		if got := r.FormValue("refresh_token"); got != "refresh-old" {
+			t.Fatalf("unexpected refresh_token: %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"access_token":%q}`, newAccessToken)))
+	}))
+	defer server.Close()
+	oldEndpoint := openAICodexOAuthTokenEndpoint
+	openAICodexOAuthTokenEndpoint = server.URL
+	t.Cleanup(func() {
+		openAICodexOAuthTokenEndpoint = oldEndpoint
+	})
+
+	source := NewCodexOAuthTokenSourceWithWorkspaceIDs(path, server.Client(), []string{"workspace-1"})
+	token, err := source.RefreshAfterUnauthorized(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshAfterUnauthorized: %v", err)
+	}
+	if token != newAccessToken {
+		t.Fatalf("expected refreshed access token, got %q", token)
+	}
+	_, auth, err := readCodexOAuthAuthFile(path)
+	if err != nil {
+		t.Fatalf("read updated auth file: %v", err)
+	}
+	if auth.Tokens.AccessToken != newAccessToken {
+		t.Fatalf("expected saved refreshed access token, got %#v", auth.Tokens)
+	}
+	if auth.Tokens.RefreshToken != "refresh-old" {
+		t.Fatalf("expected saved refresh token to be preserved, got %#v", auth.Tokens)
 	}
 }
 
