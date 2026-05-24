@@ -3683,6 +3683,20 @@ func TestAssistantTextLooksLikeCompletionSummaryDoesNotTreatReportMentionAsDone(
 	}
 }
 
+func TestShouldDeferEndTurnFollowUpForFinalLookingReplyKeepsInProgressText(t *testing.T) {
+	endTurnFalse := false
+	resp := ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: "Still checking the edit before the final answer.",
+		},
+		EndTurn: &endTurnFalse,
+	}
+	if shouldDeferEndTurnFollowUpForFinalLookingReply(resp) {
+		t.Fatalf("expected in-progress final-answer wording to request a follow-up")
+	}
+}
+
 func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	root := t.TempDir()
 	provider := &turnStateObservingProviderClient{
@@ -13436,6 +13450,142 @@ func TestAgentFinalizesPostEditReplyWhenProviderEndTurnFalse(t *testing.T) {
 	}
 	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
 		t.Fatalf("expected final coding harness to approve post-edit reply, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
+func TestAgentContinuesPostEditInProgressEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	endTurnFalse := false
+	inProgress := "Still checking the edit before the final answer."
+	finalReply := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: inProgress,
+				},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: finalReply,
+				},
+				StopReason: "completed",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "main.go 파일을 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected final reply after in-progress continuation, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected in-progress post-edit end_turn=false reply to request a follow-up, got %d requests", len(provider.requests))
+	}
+	foundInProgress := false
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && msg.Text == inProgress {
+			foundInProgress = true
+			if msg.Phase != messagePhaseCommentary {
+				t.Fatalf("expected in-progress post-edit reply to remain commentary, got %#v", msg)
+			}
+		}
+	}
+	if !foundInProgress {
+		t.Fatalf("expected in-progress assistant reply to be retained")
+	}
+}
+
+func TestAgentContinuesGeneratedDocumentInProgressEndTurnFalseAfterArtifactWrite(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	endTurnFalse := false
+	inProgress := "Still checking the generated artifact."
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: inProgress,
+				},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: finalReply,
+				},
+				StopReason: "completed",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected generated document final reply after in-progress continuation, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected generated document in-progress end_turn=false reply to request a follow-up, got %d requests", len(provider.requests))
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected final generated document reply to be accepted, got %#v", session.Messages[len(session.Messages)-1])
 	}
 }
 
