@@ -336,12 +336,12 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 		*index++
 		for *index < len(lines) {
 			current = lines[*index]
-			if strings.HasPrefix(current, "*** ") || strings.HasPrefix(current, "@@") {
-				break
-			}
 			if current == "*** End of File" {
 				*index++
 				continue
+			}
+			if strings.HasPrefix(current, "*** ") || strings.HasPrefix(current, "@@") {
+				break
 			}
 			if current == "" {
 				hunk.lines = append(hunk.lines, patchLine{kind: ' ', text: ""})
