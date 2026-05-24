@@ -510,6 +510,17 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 	input := payload["input"].([]any)
+	call := input[1].(map[string]any)
+	if call["type"] != "tool_search_call" || call["call_id"] != "call_search" || call["execution"] != "client" {
+		t.Fatalf("expected Codex tool_search_call item, got %#v", call)
+	}
+	arguments, ok := call["arguments"].(map[string]any)
+	if !ok || arguments["query"] != "apply_patch" {
+		t.Fatalf("expected native tool_search arguments object, got %#v", call["arguments"])
+	}
+	if _, exists := call["name"]; exists {
+		t.Fatalf("native tool_search_call must not include function name, got %#v", call)
+	}
 	output := input[2].(map[string]any)
 	if output["type"] != "tool_search_output" || output["call_id"] != "call_search" || output["status"] != "completed" || output["execution"] != "client" {
 		t.Fatalf("expected Codex tool_search_output item, got %#v", output)
