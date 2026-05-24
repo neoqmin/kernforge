@@ -268,6 +268,88 @@ func TestDurabilityEvalMicroWorkerBriefAttachesToTaskGraphNode(t *testing.T) {
 	}
 }
 
+func TestDurabilityEvalMicroWorkerContinuesWhenSubagentStopBlocks(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "provider", "model", "", "default")
+	session.TaskState = &TaskState{
+		Goal:        "Keep micro-worker lifecycle hooks recoverable.",
+		PlanSummary: "1. Inspect the failing output",
+		Phase:       "execution",
+	}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{ID: "plan-01", Title: "Inspect the failing output", Kind: "inspection", Status: "ready"},
+		},
+		LastUpdated: time.Now(),
+	}
+	session.TaskGraph.Normalize()
+
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "draft worker answer needs revision",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "revised worker answer with the missing evidence",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:     "model",
+			MaxTokens: 512,
+		},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Session:        session,
+		Store:          store,
+	}
+	agent.Hooks = &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "micro-worker-stop-revision",
+					Events: []HookEvent{HookSubagentStop},
+					Match: HookMatch{
+						ContainsText: []string{"draft worker answer"},
+					},
+					Action: HookAction{
+						Type:    "deny",
+						Message: "add the missing evidence before stopping",
+					},
+				},
+			},
+		},
+	}
+
+	if err := agent.maybeRunInteractiveMicroWorkers(context.Background(), "replan"); err != nil {
+		t.Fatalf("maybeRunInteractiveMicroWorkers: %v", err)
+	}
+	if len(reviewer.requests) != 2 {
+		t.Fatalf("expected SubagentStop continuation model turn, got %d request(s)", len(reviewer.requests))
+	}
+	if len(reviewer.requests[1].Messages) < 3 || !strings.Contains(reviewer.requests[1].Messages[len(reviewer.requests[1].Messages)-1].Text, "SubagentStop hook requested continuation") {
+		t.Fatalf("expected SubagentStop continuation guidance in second request, got %#v", reviewer.requests[1].Messages)
+	}
+	node, ok := session.TaskGraph.Node("plan-01")
+	if !ok {
+		t.Fatalf("expected task graph node to exist")
+	}
+	if !strings.Contains(node.MicroWorkerBrief, "revised worker answer") {
+		t.Fatalf("expected revised worker answer to be recorded, got %#v", node)
+	}
+}
+
 func TestDurabilityEvalExecutorFocusPersistsAcrossSessionStore(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))

@@ -7598,6 +7598,10 @@ func (a *Agent) subagentStopHookPayload(agentID string, agentType string, model 
 }
 
 func (a *Agent) subagentStopHookPayloadWithTurnID(agentID string, agentType string, model string, lastAssistantMessage string, turnID string) HookPayload {
+	return a.subagentStopHookPayloadWithTurnIDAndActive(agentID, agentType, model, lastAssistantMessage, turnID, false)
+}
+
+func (a *Agent) subagentStopHookPayloadWithTurnIDAndActive(agentID string, agentType string, model string, lastAssistantMessage string, turnID string, stopHookActive bool) HookPayload {
 	agentID = firstNonBlankString(strings.TrimSpace(agentID), "subagent")
 	agentType = firstNonBlankString(strings.TrimSpace(agentType), "specialist")
 	lastAssistantMessage = strings.TrimSpace(lastAssistantMessage)
@@ -7616,7 +7620,7 @@ func (a *Agent) subagentStopHookPayloadWithTurnID(agentID string, agentType stri
 		"model":                  model,
 		"permission_mode":        permissionMode,
 		"session_id":             sessionID,
-		"stop_hook_active":       true,
+		"stop_hook_active":       stopHookActive,
 		"transcript_path":        nullableHookString(transcriptPath),
 		"turn_id":                strings.TrimSpace(turnID),
 	}
@@ -7635,8 +7639,18 @@ func (a *Agent) runSubagentStopHook(ctx context.Context, agentID string, agentTy
 }
 
 func (a *Agent) runSubagentStopHookWithTurnID(ctx context.Context, agentID string, agentType string, model string, lastAssistantMessage string, turnID string) error {
-	_, err := a.runHook(ctx, HookSubagentStop, a.subagentStopHookPayloadWithTurnID(agentID, agentType, model, lastAssistantMessage, turnID))
-	return err
+	verdict, err := a.runSubagentStopHookVerdictWithTurnID(ctx, agentID, agentType, model, lastAssistantMessage, turnID, false)
+	if err != nil {
+		return err
+	}
+	if stopHookShouldBlock(verdict) {
+		return fmt.Errorf("%s", subagentStopHookContinuationGuidance(verdict))
+	}
+	return nil
+}
+
+func (a *Agent) runSubagentStopHookVerdictWithTurnID(ctx context.Context, agentID string, agentType string, model string, lastAssistantMessage string, turnID string, stopHookActive bool) (HookVerdict, error) {
+	return a.runHook(ctx, HookSubagentStop, a.subagentStopHookPayloadWithTurnIDAndActive(agentID, agentType, model, lastAssistantMessage, turnID, stopHookActive))
 }
 
 func (a *Agent) stopHookPayload(lastAssistantMessage string, stopHookActive bool, turnID string) HookPayload {
@@ -7736,6 +7750,17 @@ func stopHookContinuationGuidance(verdict HookVerdict) string {
 		reason = "Stop hook requested continuation before the final answer."
 	}
 	return "Stop hook requested continuation before the final answer. Address the following feedback, then provide a revised final answer without repeating completed work:\n\n" + reason
+}
+
+func subagentStopHookContinuationGuidance(verdict HookVerdict) string {
+	reason := strings.TrimSpace(verdict.StopMessage)
+	if reason == "" {
+		reason = strings.TrimSpace(verdict.DenyReason)
+	}
+	if reason == "" {
+		reason = "SubagentStop hook requested continuation before the worker can finish."
+	}
+	return "SubagentStop hook requested continuation before the worker can finish. Address the following feedback, then provide a revised worker answer without repeating completed work:\n\n" + reason
 }
 
 func appendSubagentHookContextGuidance(prompt string, contexts []string) string {

@@ -321,8 +321,8 @@ func TestSubagentStopHookPayloadIncludesCodexFields(t *testing.T) {
 	if got := toolMetaString(payload, "permission_mode"); got != "default" {
 		t.Fatalf("expected permission mode, got %#v", payload)
 	}
-	if got, ok := payload["stop_hook_active"].(bool); !ok || !got {
-		t.Fatalf("expected active stop hook flag, got %#v", payload)
+	if got, ok := payload["stop_hook_active"].(bool); !ok || got {
+		t.Fatalf("expected inactive stop hook flag, got %#v", payload)
 	}
 }
 
@@ -581,6 +581,40 @@ func TestHookRuntimeStopDenyReturnsContinuationDecision(t *testing.T) {
 	}
 	if verdict.StopMessage != "revise before stopping" {
 		t.Fatalf("expected Stop hook message, got %#v", verdict)
+	}
+}
+
+func TestHookRuntimeSubagentStopDenyReturnsContinuationDecision(t *testing.T) {
+	runtime := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "subagent-stop-revision",
+					Events: []HookEvent{HookSubagentStop},
+					Match: HookMatch{
+						ContainsText: []string{"needs revision"},
+					},
+					Action: HookAction{
+						Type:    "deny",
+						Message: "revise worker answer",
+					},
+				},
+			},
+		},
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookSubagentStop, HookPayload{
+		"last_assistant_message": "this worker answer needs revision",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !stopHookShouldBlock(verdict) {
+		t.Fatalf("expected SubagentStop hook block decision, got %#v", verdict)
+	}
+	if verdict.StopMessage != "revise worker answer" {
+		t.Fatalf("expected SubagentStop hook message, got %#v", verdict)
 	}
 }
 
