@@ -78,6 +78,49 @@ func TestHookEngineDenyWins(t *testing.T) {
 	}
 }
 
+func TestHookRuntimeDenySkipsAskPrompt(t *testing.T) {
+	askCalled := false
+	runtime := &HookRuntime{
+		Ask: func(string) (bool, error) {
+			askCalled = true
+			return true, nil
+		},
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:       "ask",
+					Priority: 200,
+					Events:   []HookEvent{HookPreToolUse},
+					Match: HookMatch{
+						ToolNames: []string{"run_shell"},
+					},
+					Action: HookAction{Type: "ask", Message: "continue?"},
+				},
+				{
+					ID:       "deny",
+					Priority: 100,
+					Events:   []HookEvent{HookPreToolUse},
+					Match: HookMatch{
+						ToolNames: []string{"run_shell"},
+					},
+					Action: HookAction{Type: "deny", Message: "blocked"},
+				},
+			},
+		},
+	}
+
+	_, err := runtime.Run(context.Background(), HookPreToolUse, HookPayload{
+		"tool_name": "run_shell",
+	})
+	if err == nil || !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("expected deny error, got %v", err)
+	}
+	if askCalled {
+		t.Fatalf("deny verdict should skip ask prompt")
+	}
+}
+
 func TestHookEnginePermissionRequestAllowAndDenyAreDecisions(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,
@@ -283,6 +326,45 @@ func TestSubagentStopHookPayloadIncludesCodexFields(t *testing.T) {
 	}
 }
 
+func TestStopHookPayloadIncludesCodexFields(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "provider", "main-model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Session:   session,
+		Store:     store,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	payload := agent.stopHookPayload("final draft", false, "turn-123")
+
+	if got := toolMetaString(payload, "hook_event_name"); got != string(HookStop) {
+		t.Fatalf("expected Stop hook event, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "last_assistant_message"); got != "final draft" {
+		t.Fatalf("expected assistant message, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "session_id"); got != session.ID {
+		t.Fatalf("expected session_id %q, got %#v", session.ID, payload)
+	}
+	if got := toolMetaString(payload, "turn_id"); got != "turn-123" {
+		t.Fatalf("expected supplied turn id, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "transcript_path"); got != store.sessionPath(session.ID) {
+		t.Fatalf("expected transcript path, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "cwd"); got != root {
+		t.Fatalf("expected cwd %q, got %#v", root, payload)
+	}
+	if got := toolMetaString(payload, "permission_mode"); got != "default" {
+		t.Fatalf("expected permission mode, got %#v", payload)
+	}
+	if got, ok := payload["stop_hook_active"].(bool); !ok || got {
+		t.Fatalf("expected inactive stop hook flag, got %#v", payload)
+	}
+}
+
 func TestSubagentStartHookPayloadIncludesCodexFields(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
@@ -383,6 +465,40 @@ func TestHookEngineMatchesSubagentStopAgentIdentity(t *testing.T) {
 	}
 	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "subagent completion captured" {
 		t.Fatalf("expected subagent identity to match contains_text, got %#v", verdict)
+	}
+}
+
+func TestHookRuntimeStopDenyReturnsContinuationDecision(t *testing.T) {
+	runtime := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "stop-revision",
+					Events: []HookEvent{HookStop},
+					Match: HookMatch{
+						ContainsText: []string{"needs revision"},
+					},
+					Action: HookAction{
+						Type:    "deny",
+						Message: "revise before stopping",
+					},
+				},
+			},
+		},
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookStop, HookPayload{
+		"last_assistant_message": "this answer needs revision",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !stopHookShouldBlock(verdict) {
+		t.Fatalf("expected Stop hook block decision, got %#v", verdict)
+	}
+	if verdict.StopMessage != "revise before stopping" {
+		t.Fatalf("expected Stop hook message, got %#v", verdict)
 	}
 }
 

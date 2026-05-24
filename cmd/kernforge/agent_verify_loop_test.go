@@ -39,6 +39,65 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	return resp, nil
 }
 
+func TestAgentStopHookBlockContinuesSameTurn(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "draft final"}},
+			{Message: Message{Role: "assistant", Text: "revised final"}},
+		},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+		Hooks: &HookRuntime{
+			Engine: &HookEngine{
+				Enabled: true,
+				Rules: []HookRule{
+					{
+						ID:     "block-draft-final",
+						Events: []HookEvent{HookStop},
+						Match: HookMatch{
+							ContainsText: []string{"draft final"},
+						},
+						Action: HookAction{
+							Type:    "deny",
+							Message: "write the revised final answer",
+						},
+					},
+				},
+			},
+			Session: session,
+		},
+	}
+
+	reply, err := agent.ReplyWithImages(context.Background(), "answer plainly", nil)
+	if err != nil {
+		t.Fatalf("ReplyWithImages: %v", err)
+	}
+	if reply != "revised final" {
+		t.Fatalf("expected revised final answer, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected Stop hook continuation model turn, got %d request(s)", len(provider.requests))
+	}
+	secondMessages := provider.requests[1].Messages
+	if len(secondMessages) == 0 || !strings.Contains(secondMessages[len(secondMessages)-1].Text, "write the revised final answer") {
+		t.Fatalf("expected Stop hook continuation guidance in second request, got %#v", secondMessages)
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && strings.TrimSpace(msg.Text) == "draft final" {
+			t.Fatalf("draft final candidate should have been discarded, messages=%#v", session.Messages)
+		}
+	}
+}
+
 type turnStateObservingProviderClient struct {
 	mu       sync.Mutex
 	replies  []ChatResponse

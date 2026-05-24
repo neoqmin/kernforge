@@ -87,65 +87,72 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
   - 특정 인자 패턴 경고
   - 보안 민감 command 승인 강화
 
-3. `PermissionRequest`
+3. `Stop`
+- root turn의 최종 assistant message가 확정되기 직전
+- 용도:
+  - Codex의 Stop hook처럼 최종 종료를 일시 차단하고 continuation prompt 주입
+  - final answer 품질, 누락 검증 고지, 작업 범위 이탈 등을 마지막에 재검사
+  - `stop_hook_active`로 hook 재진입 상태를 노출해 무한 차단을 피함
+
+4. `PermissionRequest`
 - tool/edit/git 실행에 사용자 권한 승인이 필요한 시점
 - 용도:
   - 사용자 승인 UI가 뜨기 전에 정책 기반 allow/deny 결정
   - 이미 세션에서 승인된 shell/git 권한은 재평가하지 않음
   - Codex의 PermissionRequest처럼 allow/deny decision만 반환하고, 일반 입력 rewrite와 분리
 
-4. `PostToolUse`
+5. `PostToolUse`
 - tool 실행 직후
 - 용도:
   - 결과 텍스트 검사
   - 후속 verification 예약
   - evidence 추출
 
-5. `PreEdit`
+6. `PreEdit`
 - 실제 파일 write 직전
 - 용도:
   - 특정 파일 패턴 보호
   - selection 범위 외 수정 경고
   - checkpoint 강제
 
-6. `PostEdit`
+7. `PostEdit`
 - 파일 write 직후
 - 용도:
   - changed file 분류
   - verification hint 추가
   - memory/evidence annotation
 
-7. `PreVerification`
+8. `PreVerification`
 - verification 실행 직전
 - 용도:
   - 검증 step 추가/제거
   - 강제 검증 누락 탐지
 
-8. `PostVerification`
+9. `PostVerification`
 - verification 실행 직후
 - 용도:
   - failure kind 기반 추가 guidance
   - repeat failure 누적 기록
 
-9. `PreGitPush`
+10. `PreGitPush`
 - `git push` 직전
 - 용도:
   - 민감 artifact 존재 시 경고 또는 차단
 
-10. `PreCreatePR`
+11. `PreCreatePR`
 - `gh pr create` 직전
 - 용도:
   - 제목/body에 보안 체크리스트 누락 시 경고
   - unsigned artifact 포함 시 차단
 
-11. `PreCompact`
+12. `PreCompact`
 - conversation compaction 직전
 - 용도:
   - manual/auto compaction trigger별 정책 적용
   - compaction 전 transcript/checkpoint 정책 확인
   - 중요한 runtime evidence가 누락된 상태의 compaction 차단
 
-12. `PostCompact`
+13. `PostCompact`
 - conversation compaction 성공 직후
 - 용도:
   - compaction 이후 요약/메시지 수 감소 확인
@@ -264,7 +271,30 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 3. `warn` 또는 `append_context`만 매칭되면 권한 결정을 내리지 않고 기존 승인 흐름으로 넘어간다.
 4. `PermissionManager`가 이미 허용한 상태(`bypassPermissions`, `acceptEdits`의 write, remembered shell/git approval 등)는 `PermissionRequest` hook을 재실행하지 않는다.
 
-### 4.5 `PreEdit` / `PostEdit` payload
+### 4.5 `Stop` payload
+
+```json
+{
+  "session_id": "sess-...",
+  "turn_id": "sess-...:stop:1716450000000000000",
+  "transcript_path": "C:/Users/me/.kernforge/sessions/sess-....json",
+  "cwd": "C:/git/kernforge",
+  "hook_event_name": "Stop",
+  "model": "gpt-5.4",
+  "permission_mode": "default",
+  "stop_hook_active": false,
+  "last_assistant_message": "Final answer text..."
+}
+```
+
+동작 규칙:
+1. `allow` 또는 매칭 rule 없음은 최종 답변을 그대로 확정한다.
+2. `deny` action은 일반 에러가 아니라 Codex의 `decision:block`에 해당하는 continuation decision으로 해석한다.
+3. 차단 시 Kernforge는 직전 final-answer candidate를 버리고 `deny` reason을 internal user guidance로 주입한 뒤 같은 turn loop에서 모델을 다시 호출한다.
+4. 두 번째 이후 Stop payload는 `stop_hook_active: true`로 전달된다.
+5. 동일 turn에서 Stop hook이 계속 차단하면 `maxStopHookRevisions` 한도에서 중단해 무한 루프를 막는다.
+
+### 4.6 `PreEdit` / `PostEdit` payload
 
 ```json
 {
@@ -285,7 +315,7 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 }
 ```
 
-### 4.6 `PreVerification` / `PostVerification` payload
+### 4.7 `PreVerification` / `PostVerification` payload
 
 ```json
 {
@@ -305,7 +335,7 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 }
 ```
 
-### 4.6 `PreCompact` / `PostCompact` payload
+### 4.8 `PreCompact` / `PostCompact` payload
 
 ```json
 {
@@ -334,7 +364,7 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 
 `PreCompact` hook이 차단하면 compaction 전 상태가 그대로 유지되어야 한다. `PostCompact` hook이 차단하면 Codex와 동일하게 해당 turn을 중단 상태로 취급한다.
 
-### 4.7 `PreGitPush` / `PreCreatePR` payload
+### 4.9 `PreGitPush` / `PreCreatePR` payload
 
 ```json
 {
@@ -516,6 +546,8 @@ type HookVerdict struct
     UpdatedInput HookPayload
     PermissionDecision string
     PermissionMessage string
+    StopDecision string
+    StopMessage string
 }
 ```
 
@@ -525,6 +557,7 @@ type HookVerdict struct
 3. `warn`는 누적 가능
 4. `append_context`와 `add_verification_step`는 누적 가능
 5. `PermissionRequest`에서는 `allow`/`deny`가 prompt 전 decision으로 해석된다
+6. `Stop`에서는 `deny`가 일반 hook error가 아니라 final answer continuation block으로 해석된다
 
 ### 6.3 PermissionManager와의 관계
 
@@ -658,10 +691,13 @@ const
     HookUserPromptSubmit HookEvent = "UserPromptSubmit"
     HookSessionStart HookEvent = "SessionStart"
     HookPermissionRequest HookEvent = "PermissionRequest"
+    HookStop HookEvent = "Stop"
     HookPreToolUse HookEvent = "PreToolUse"
     HookPostToolUse HookEvent = "PostToolUse"
     HookSubagentStart HookEvent = "SubagentStart"
     HookSubagentStop HookEvent = "SubagentStop"
+    HookPreCompact HookEvent = "PreCompact"
+    HookPostCompact HookEvent = "PostCompact"
     HookPreEdit HookEvent = "PreEdit"
     HookPostEdit HookEvent = "PostEdit"
     HookPreVerification HookEvent = "PreVerification"

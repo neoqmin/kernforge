@@ -78,6 +78,7 @@ const (
 	maxEditTargetMismatchFailuresPerTurn  = 1
 	maxEditTargetMismatchReanchorBlocks   = 1
 	maxToolBudgetExtensions               = 2
+	maxStopHookRevisions                  = 3
 	compactPinnedMessagesToKeep           = 6
 	compactRetainedMessageTokenBudget     = 64_000
 	compactApproxCharsPerToken            = 4
@@ -615,6 +616,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	rawReviewResultReplyRetries := 0
 	commentaryOnlyReplies := 0
 	finalAnswerReviewRevisions := 0
+	stopHookRevisions := 0
+	stopHookActive := false
 	finalHarnessRevisions := 0
 	runtimeGateFinalAnswerRevisions := 0
 	runtimeGateGitWriteNudges := 0
@@ -634,6 +637,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
 	turnStartedAt := time.Now()
+	stopHookTurnID := a.newStopLifecycleTurnID(turnStartedAt)
 	mcpTurnMetadata := a.mcpTurnMetadataForToolCall(turnStartedAt)
 	providerTurnMetadata := providerTurnMetadataFromMCP(mcpTurnMetadata)
 	a.noteTurnStartedConversationEvent(turnStartedAt, mcpTurnMetadata)
@@ -1189,6 +1193,24 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					finalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(internalUserMessage("Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed."))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				stopVerdict, err := a.runStopHook(ctx, reply, stopHookActive, stopHookTurnID)
+				if err != nil {
+					return "", err
+				}
+				if stopHookShouldBlock(stopVerdict) {
+					if stopHookRevisions >= maxStopHookRevisions {
+						return "", fmt.Errorf("Stop hook kept blocking final answer after %d continuation attempt(s): %s", stopHookRevisions, strings.TrimSpace(stopVerdict.StopMessage))
+					}
+					stopHookRevisions++
+					stopHookActive = true
+					finalAnswerOnlyCorrection = false
+					a.discardRecentFinalAnswerCandidate(reply)
+					a.Session.AddMessage(internalUserMessage(stopHookContinuationGuidance(stopVerdict)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -7617,6 +7639,30 @@ func (a *Agent) runSubagentStopHookWithTurnID(ctx context.Context, agentID strin
 	return err
 }
 
+func (a *Agent) stopHookPayload(lastAssistantMessage string, stopHookActive bool, turnID string) HookPayload {
+	lastAssistantMessage = strings.TrimSpace(lastAssistantMessage)
+	sessionID, transcriptPath, cwd, permissionMode, model := a.subagentLifecycleHookMetadata("")
+	if strings.TrimSpace(turnID) == "" {
+		turnID = a.newStopLifecycleTurnID(time.Now())
+	}
+
+	return HookPayload{
+		"cwd":                    cwd,
+		"hook_event_name":        string(HookStop),
+		"last_assistant_message": nullableHookString(lastAssistantMessage),
+		"model":                  model,
+		"permission_mode":        permissionMode,
+		"session_id":             sessionID,
+		"stop_hook_active":       stopHookActive,
+		"transcript_path":        nullableHookString(transcriptPath),
+		"turn_id":                strings.TrimSpace(turnID),
+	}
+}
+
+func (a *Agent) runStopHook(ctx context.Context, lastAssistantMessage string, stopHookActive bool, turnID string) (HookVerdict, error) {
+	return a.runHook(ctx, HookStop, a.stopHookPayload(lastAssistantMessage, stopHookActive, turnID))
+}
+
 func (a *Agent) subagentLifecycleHookMetadata(model string) (string, string, string, string, string) {
 	model = strings.TrimSpace(model)
 	sessionID := ""
@@ -7648,6 +7694,20 @@ func (a *Agent) subagentLifecycleHookMetadata(model string) (string, string, str
 	return sessionID, transcriptPath, cwd, permissionMode, model
 }
 
+func (a *Agent) newStopLifecycleTurnID(startedAt time.Time) string {
+	if a == nil || a.Session == nil {
+		return ""
+	}
+	sessionID := strings.TrimSpace(a.Session.ID)
+	if sessionID == "" {
+		return ""
+	}
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	return fmt.Sprintf("%s:stop:%d", sessionID, startedAt.UnixNano())
+}
+
 func (a *Agent) newSubagentLifecycleTurnID(agentID string) string {
 	if a == nil || a.Session == nil {
 		return ""
@@ -7661,6 +7721,21 @@ func (a *Agent) newSubagentLifecycleTurnID(agentID string) string {
 		safeAgentID = "subagent"
 	}
 	return fmt.Sprintf("%s:subagent:%s:%d", sessionID, safeAgentID, time.Now().UnixNano())
+}
+
+func stopHookShouldBlock(verdict HookVerdict) bool {
+	return strings.EqualFold(strings.TrimSpace(verdict.StopDecision), "block")
+}
+
+func stopHookContinuationGuidance(verdict HookVerdict) string {
+	reason := strings.TrimSpace(verdict.StopMessage)
+	if reason == "" {
+		reason = strings.TrimSpace(verdict.DenyReason)
+	}
+	if reason == "" {
+		reason = "Stop hook requested continuation before the final answer."
+	}
+	return "Stop hook requested continuation before the final answer. Address the following feedback, then provide a revised final answer without repeating completed work:\n\n" + reason
 }
 
 func appendSubagentHookContextGuidance(prompt string, contexts []string) string {
