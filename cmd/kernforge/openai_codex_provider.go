@@ -1442,16 +1442,16 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	}
 
 	streamText := text.String()
-	if strings.TrimSpace(streamText) != "" {
+	if len(finalItemTexts) > 0 {
+		streamText = strings.Join(deduplicateOpenAICodexTexts(finalItemTexts), "\n")
+	} else if strings.TrimSpace(streamText) != "" {
 		prefix := openAICodexDeltaPrefixText(deltaPrefixTexts)
 		if strings.TrimSpace(prefix) != "" && !strings.HasPrefix(streamText, prefix) {
 			streamText = prefix + streamText
 		}
 	} else {
 		texts := itemTexts
-		if len(finalItemTexts) > 0 {
-			texts = finalItemTexts
-		} else if len(texts) == 0 && len(hostedItemTexts) > 0 {
+		if len(texts) == 0 && len(hostedItemTexts) > 0 {
 			texts = hostedItemTexts
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
