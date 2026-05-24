@@ -211,6 +211,27 @@ func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *test
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyUsesCatalogVerbosityDefaults(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.4-mini",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	textControls, ok := payload["text"].(map[string]any)
+	if !ok || textControls["verbosity"] != "medium" {
+		t.Fatalf("expected gpt-5.4-mini default verbosity medium, got %#v", payload["text"])
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
