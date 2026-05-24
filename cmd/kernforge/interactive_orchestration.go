@@ -512,47 +512,73 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		}
 		prompt := buildSpecialistMicroWorkerPrompt(plan.assignment.Profile, a.Session.TaskState, plan.node, trigger, plan.assignment.Reason)
 		prompt = appendSubagentHookContextGuidance(prompt, startContexts)
-		resp, err := a.completeModelTurnWithClient(ctx, plan.client, ChatRequest{
-			Model:  plan.model,
-			System: buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
-			Messages: []Message{{
-				Role: "user",
-				Text: prompt,
-			}},
-			MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
-			Temperature: 0.1,
-			WorkingDir:  a.Session.WorkingDir,
-		})
-		if err != nil {
-			if stopErr := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, "", turnID); stopErr != nil {
+		messages := []Message{{
+			Role: "user",
+			Text: prompt,
+		}}
+		stopHookActive := false
+		for stopHookRevisions := 0; ; stopHookRevisions++ {
+			resp, err := a.completeModelTurnWithClient(ctx, plan.client, ChatRequest{
+				Model:       plan.model,
+				System:      buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
+				Messages:    messages,
+				MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
+				Temperature: 0.1,
+				WorkingDir:  a.Session.WorkingDir,
+			})
+			if err != nil {
+				if stopErr := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, "", turnID); stopErr != nil {
+					results <- microWorkerResult{
+						nodeID:     plan.node.ID,
+						specialist: plan.assignment.Profile.Name,
+						reason:     plan.assignment.Reason,
+						err:        stopErr,
+					}
+				}
+				return
+			}
+			assistantText := strings.TrimSpace(resp.Message.Text)
+			verdict, err := a.runSubagentStopHookVerdictWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, assistantText, turnID, stopHookActive)
+			if err != nil {
 				results <- microWorkerResult{
 					nodeID:     plan.node.ID,
 					specialist: plan.assignment.Profile.Name,
 					reason:     plan.assignment.Reason,
-					err:        stopErr,
+					err:        err,
 				}
+				return
 			}
-			return
-		}
-		assistantText := strings.TrimSpace(resp.Message.Text)
-		if err := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, assistantText, turnID); err != nil {
+			if stopHookShouldBlock(verdict) {
+				if stopHookRevisions >= maxStopHookRevisions {
+					results <- microWorkerResult{
+						nodeID:     plan.node.ID,
+						specialist: plan.assignment.Profile.Name,
+						reason:     plan.assignment.Reason,
+						err:        fmt.Errorf("SubagentStop hook kept blocking worker answer after %d continuation attempt(s): %s", stopHookRevisions, strings.TrimSpace(verdict.StopMessage)),
+					}
+					return
+				}
+				stopHookActive = true
+				if assistantText != "" {
+					messages = append(messages, Message{
+						Role: "assistant",
+						Text: assistantText,
+					})
+				}
+				messages = append(messages, internalUserMessage(subagentStopHookContinuationGuidance(verdict)))
+				continue
+			}
+			brief := compactPromptSection(assistantText, 220)
+			if brief == "" {
+				return
+			}
 			results <- microWorkerResult{
 				nodeID:     plan.node.ID,
+				brief:      brief,
 				specialist: plan.assignment.Profile.Name,
 				reason:     plan.assignment.Reason,
-				err:        err,
 			}
 			return
-		}
-		brief := compactPromptSection(assistantText, 220)
-		if brief == "" {
-			return
-		}
-		results <- microWorkerResult{
-			nodeID:     plan.node.ID,
-			brief:      brief,
-			specialist: plan.assignment.Profile.Name,
-			reason:     plan.assignment.Reason,
 		}
 	}
 	limiter := a.specialistBatchRouteLimiter(routes)

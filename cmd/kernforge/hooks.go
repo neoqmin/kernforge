@@ -186,7 +186,7 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 		verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
 		return verdict, nil
 	}
-	if event == HookStop && strings.TrimSpace(verdict.StopDecision) != "" {
+	if hookEventIsStopLike(event) && strings.TrimSpace(verdict.StopDecision) != "" {
 		verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
 		return verdict, nil
 	}
@@ -484,7 +484,7 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 				verdict.PermissionDecision = "deny"
 				verdict.PermissionMessage = verdict.DenyReason
 			}
-			if event == HookStop {
+			if hookEventIsStopLike(event) {
 				verdict.StopDecision = "block"
 				verdict.StopMessage = verdict.DenyReason
 			}
@@ -539,6 +539,10 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 		}
 	}
 	return verdict, nil
+}
+
+func hookEventIsStopLike(event HookEvent) bool {
+	return event == HookStop || event == HookSubagentStop
 }
 
 func applyHookActionUpdatedInput(event HookEvent, rule HookRule, verdict *HookVerdict, required bool) error {
