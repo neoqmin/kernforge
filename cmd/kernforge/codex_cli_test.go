@@ -56,6 +56,9 @@ func TestBuildCodexCLIArgsUsesModelConfigOverride(t *testing.T) {
 }
 
 func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing.T) {
+	t.Cleanup(func() {
+		registerOpenAICodexParallelToolCallSupport("gpt-5.5", true)
+	})
 	models, err := parseCodexCLIModelsJSON([]byte(strings.Join([]string{
 		"plugin warning before json",
 		`{"models":[` +
@@ -85,6 +88,9 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 	}
 	if !openAICodexSupportsParallelToolCalls("custom-codex") {
 		t.Fatalf("expected parsed model parallel tool-call support to be registered")
+	}
+	if openAICodexSupportsParallelToolCalls("gpt-5.5") {
+		t.Fatalf("expected parsed model without parallel metadata to reset gpt-5.5 parallel support to Codex default false")
 	}
 }
 
