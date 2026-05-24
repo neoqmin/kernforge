@@ -347,26 +347,68 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				if callID == "" || strings.TrimSpace(tc.Name) == "" {
 					continue
 				}
-				items = append(items, map[string]any{
-					"type":      "function_call",
-					"call_id":   callID,
-					"name":      strings.TrimSpace(tc.Name),
-					"arguments": normalizeOpenAIToolCallArguments(tc.Arguments),
-				})
+				items = append(items, openAICodexToolCallInputItem(callID, tc))
 			}
 		case "tool":
 			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
 			if callID == "" {
 				continue
 			}
-			items = append(items, map[string]any{
-				"type":    "function_call_output",
-				"call_id": callID,
-				"output":  toolOutputForResponses(msg),
-			})
+			items = append(items, openAICodexToolCallOutputItem(callID, msg))
 		}
 	}
 	return items, nil
+}
+
+func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
+	name := strings.TrimSpace(call.Name)
+	if name == "apply_patch" {
+		return map[string]any{
+			"type":    "custom_tool_call",
+			"call_id": callID,
+			"name":    name,
+			"input":   openAICodexApplyPatchInputFromArguments(call.Arguments),
+		}
+	}
+	return map[string]any{
+		"type":      "function_call",
+		"call_id":   callID,
+		"name":      name,
+		"arguments": normalizeOpenAIToolCallArguments(call.Arguments),
+	}
+}
+
+func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
+	if strings.TrimSpace(msg.ToolName) == "apply_patch" {
+		return map[string]any{
+			"type":    "custom_tool_call_output",
+			"call_id": callID,
+			"name":    "apply_patch",
+			"output":  toolOutputForResponses(msg),
+		}
+	}
+	return map[string]any{
+		"type":    "function_call_output",
+		"call_id": callID,
+		"output":  toolOutputForResponses(msg),
+	}
+}
+
+func openAICodexApplyPatchInputFromArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+		if patch := strings.TrimSpace(stringValue(payload, "patch")); patch != "" {
+			return patch
+		}
+		if raw := strings.TrimSpace(stringValue(payload, "raw")); raw != "" {
+			return raw
+		}
+	}
+	return trimmed
 }
 
 func openAICodexInputMessagePhase(msg Message) string {
