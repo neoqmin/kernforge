@@ -774,7 +774,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		rawAssistantText := resp.Message.Text
 		resp.Message.Text = sanitizeAssistantMessageText(rawAssistantText, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
-		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
+		if toolRegistryHasTool(a.Tools, "apply_patch") {
 			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
 		}
 		if a.shouldPromoteFinalLookingToolPreambleToFinalCandidate(latestUser, resp.Message.ToolCalls, rawAssistantText, attemptedEditTool, successfulEditTool, unresolvedVerification) {
