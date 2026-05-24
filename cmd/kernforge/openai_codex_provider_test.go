@@ -154,13 +154,42 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	if !ok || len(tools) != 0 {
 		t.Fatalf("expected empty tools array without tools, got %#v", payload["tools"])
 	}
+	reasoning, ok := payload["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "medium" {
+		t.Fatalf("expected default Codex reasoning effort medium, got %#v", payload["reasoning"])
+	}
 	include, ok := payload["include"].([]any)
-	if !ok || len(include) != 0 {
-		t.Fatalf("expected empty include without reasoning, got %#v", payload["include"])
+	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected reasoning encrypted content include, got %#v", payload["include"])
 	}
 	textControls, ok := payload["text"].(map[string]any)
 	if !ok || textControls["verbosity"] != "low" {
 		t.Fatalf("expected default verbosity low, got %#v", payload["text"])
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyUsesCatalogReasoningDefaults(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.2",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	reasoning, ok := payload["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "medium" || reasoning["summary"] != "auto" {
+		t.Fatalf("expected gpt-5.2 reasoning defaults, got %#v", payload["reasoning"])
+	}
+	include, ok := payload["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected reasoning encrypted content include, got %#v", payload["include"])
 	}
 }
 
@@ -215,6 +244,13 @@ func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *test
 	}
 	if _, ok := payload["text"]; ok {
 		t.Fatalf("expected text controls to be omitted for unknown model, got %#v", payload["text"])
+	}
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("expected reasoning to be omitted for unknown model, got %#v", payload["reasoning"])
+	}
+	include, ok := payload["include"].([]any)
+	if !ok || len(include) != 0 {
+		t.Fatalf("expected empty include for unknown model, got %#v", payload["include"])
 	}
 }
 

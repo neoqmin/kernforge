@@ -89,6 +89,29 @@ var openAICodexVerbosityDefaults = struct {
 	},
 }
 
+type openAICodexReasoningModelDefaults struct {
+	SupportsSummaries bool
+	DefaultEffort     string
+	DefaultSummary    string
+}
+
+var openAICodexReasoningDefaults = struct {
+	sync.RWMutex
+	byModel map[string]openAICodexReasoningModelDefaults
+}{
+	byModel: map[string]openAICodexReasoningModelDefaults{
+		openAICodexDefaultModel: {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.5-pro":           {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.4":               {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.4-pro":           {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.4-mini":          {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.3-codex":         {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.3-codex-spark":   {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+		"gpt-5.2":               {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "auto"},
+		"codex-auto-review":     {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
+	},
+}
+
 type codexOAuthAccessTokenSource interface {
 	AccessToken(ctx context.Context) (string, error)
 }
@@ -311,10 +334,8 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	if strings.TrimSpace(req.ReasoningEffort) != "" && !validReasoningEffort(req.ReasoningEffort) {
 		return nil, fmt.Errorf("invalid reasoning effort %q; use undefined, minimal, low, medium, high, or xhigh", strings.TrimSpace(req.ReasoningEffort))
 	}
-	if effort := normalizeReasoningEffort(req.ReasoningEffort); effort != "" {
-		payload["reasoning"] = map[string]any{
-			"effort": effort,
-		}
+	if reasoning, ok := openAICodexReasoningPayload(model, req.ReasoningEffort); ok {
+		payload["reasoning"] = reasoning
 		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
 	if textControls := openAICodexTextControls(model, req.JSONMode); len(textControls) > 0 {
@@ -367,10 +388,66 @@ func registerOpenAICodexDefaultVerbosity(model string, verbosity string) {
 	openAICodexVerbosityDefaults.Unlock()
 }
 
+func openAICodexReasoningPayload(model string, requestedEffort string) (map[string]any, bool) {
+	defaults, ok := openAICodexReasoningDefaultsForModel(model)
+	if !ok || !defaults.SupportsSummaries {
+		return nil, false
+	}
+	reasoning := map[string]any{}
+	effort := normalizeReasoningEffort(requestedEffort)
+	if effort == "" {
+		effort = defaults.DefaultEffort
+	}
+	if effort != "" {
+		reasoning["effort"] = effort
+	}
+	if summary := normalizeOpenAICodexReasoningSummary(defaults.DefaultSummary); summary != "" && summary != "none" {
+		reasoning["summary"] = summary
+	}
+	return reasoning, true
+}
+
+func openAICodexReasoningDefaultsForModel(model string) (openAICodexReasoningModelDefaults, bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || model == codexCLIDefaultModel {
+		model = openAICodexDefaultModel
+	}
+	openAICodexReasoningDefaults.RLock()
+	defaults, ok := openAICodexReasoningDefaults.byModel[model]
+	openAICodexReasoningDefaults.RUnlock()
+	defaults.DefaultEffort = normalizeReasoningEffort(defaults.DefaultEffort)
+	defaults.DefaultSummary = normalizeOpenAICodexReasoningSummary(defaults.DefaultSummary)
+	return defaults, ok
+}
+
+func registerOpenAICodexReasoningDefaults(model string, supportsSummaries bool, defaultEffort string, defaultSummary string) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return
+	}
+	defaults := openAICodexReasoningModelDefaults{
+		SupportsSummaries: supportsSummaries,
+		DefaultEffort:     normalizeReasoningEffort(defaultEffort),
+		DefaultSummary:    normalizeOpenAICodexReasoningSummary(defaultSummary),
+	}
+	openAICodexReasoningDefaults.Lock()
+	openAICodexReasoningDefaults.byModel[model] = defaults
+	openAICodexReasoningDefaults.Unlock()
+}
+
 func normalizeOpenAICodexVerbosity(verbosity string) string {
 	switch strings.ToLower(strings.TrimSpace(verbosity)) {
 	case "low", "medium", "high":
 		return strings.ToLower(strings.TrimSpace(verbosity))
+	default:
+		return ""
+	}
+}
+
+func normalizeOpenAICodexReasoningSummary(summary string) string {
+	switch strings.ToLower(strings.TrimSpace(summary)) {
+	case "auto", "concise", "detailed", "none":
+		return strings.ToLower(strings.TrimSpace(summary))
 	default:
 		return ""
 	}

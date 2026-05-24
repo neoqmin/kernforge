@@ -28,6 +28,9 @@ type CodexCLIModelInfo struct {
 	Priority                    int
 	SupportsImageDetailOriginal bool
 	DefaultVerbosity            string
+	SupportsReasoningSummaries  bool
+	DefaultReasoningEffort      string
+	DefaultReasoningSummary     string
 }
 
 type CodexCLIClient struct {
@@ -191,6 +194,9 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			Priority                    int    `json:"priority"`
 			SupportsImageDetailOriginal bool   `json:"supports_image_detail_original"`
 			DefaultVerbosity            string `json:"default_verbosity"`
+			SupportsReasoningSummaries  *bool  `json:"supports_reasoning_summaries"`
+			DefaultReasoningLevel       string `json:"default_reasoning_level"`
+			DefaultReasoningSummary     string `json:"default_reasoning_summary"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -223,6 +229,10 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 		if name == "" {
 			name = id
 		}
+		supportsReasoningSummaries := false
+		if item.SupportsReasoningSummaries != nil {
+			supportsReasoningSummaries = *item.SupportsReasoningSummaries
+		}
 		models = append(models, CodexCLIModelInfo{
 			ID:                          id,
 			Name:                        name,
@@ -231,9 +241,15 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			Priority:                    item.Priority,
 			SupportsImageDetailOriginal: item.SupportsImageDetailOriginal,
 			DefaultVerbosity:            normalizeOpenAICodexVerbosity(item.DefaultVerbosity),
+			SupportsReasoningSummaries:  supportsReasoningSummaries,
+			DefaultReasoningEffort:      normalizeReasoningEffort(item.DefaultReasoningLevel),
+			DefaultReasoningSummary:     normalizeOpenAICodexReasoningSummary(item.DefaultReasoningSummary),
 		})
 		registerCodexModelImageDetailSupport(id, item.SupportsImageDetailOriginal)
 		registerOpenAICodexDefaultVerbosity(id, item.DefaultVerbosity)
+		if item.SupportsReasoningSummaries != nil || strings.TrimSpace(item.DefaultReasoningLevel) != "" || strings.TrimSpace(item.DefaultReasoningSummary) != "" {
+			registerOpenAICodexReasoningDefaults(id, supportsReasoningSummaries, item.DefaultReasoningLevel, item.DefaultReasoningSummary)
+		}
 		seen[strings.ToLower(id)] = true
 	}
 	return models, nil
