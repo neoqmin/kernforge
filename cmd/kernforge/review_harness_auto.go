@@ -34,15 +34,17 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 	}
 	if skipRequest := postChangeGeneratedDocumentArtifactRequest(a.Session, request, changedPaths); skipRequest != "" {
 		artifactFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, changedPaths)
-		if strings.EqualFold(strings.TrimSpace(lastFingerprint), artifactFingerprint) && sessionHasDocumentArtifactContentAcceptedHarness(a.Session) {
+		if generatedDocumentArtifactQualityAlreadyAccepted(a.Session, artifactFingerprint, lastFingerprint) {
 			return false, false, "", artifactFingerprint, nil
 		}
 		if needsRevision, feedback := a.validateGeneratedDocumentArtifactForPostChangeSkip(skipRequest); needsRevision {
+			a.Session.LastDocumentArtifactFingerprint = ""
 			if a.EmitProgress != nil {
 				a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Generated document artifact quality checks found blockers. Asking the model to revise the document artifact without starting code review.", "생성 문서 산출물 품질 검사에서 차단 항목을 발견했습니다. 코드 리뷰를 시작하지 않고 문서 산출물 수정을 요청합니다."))
 			}
 			return true, true, feedback, artifactFingerprint, nil
 		}
+		a.Session.LastDocumentArtifactFingerprint = artifactFingerprint
 		if a.EmitProgress != nil {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Skipping automatic post-change review because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 자동 변경 후 리뷰를 건너뜁니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다."))
 		}
@@ -135,6 +137,19 @@ func isGeneratedDocumentArtifactQualityFingerprint(fingerprint string) bool {
 	trimmed := strings.TrimSpace(fingerprint)
 	return strings.EqualFold(trimmed, generatedDocumentArtifactQualityFingerprint) ||
 		strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(generatedDocumentArtifactQualityFingerprint)+":")
+}
+
+func generatedDocumentArtifactQualityAlreadyAccepted(session *Session, artifactFingerprint string, lastFingerprint string) bool {
+	if session == nil || strings.TrimSpace(artifactFingerprint) == "" {
+		return false
+	}
+	if !sessionHasDocumentArtifactContentAcceptedHarness(session) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(lastFingerprint), artifactFingerprint) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(session.LastDocumentArtifactFingerprint), artifactFingerprint)
 }
 
 func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) error {

@@ -358,6 +358,16 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifact(t *testing.T) {
 	if len(client.requests) != 0 {
 		t.Fatalf("expected no review model call for generated report artifact, got %d", len(client.requests))
 	}
+	if session.LastDocumentArtifactFingerprint != expectedFingerprint {
+		t.Fatalf("expected accepted document artifact fingerprint to persist on session, got %q", session.LastDocumentArtifactFingerprint)
+	}
+	reviewedAfterContinuation, needsAfterContinuation, feedbackAfterContinuation, fingerprintAfterContinuation, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[0].Text, "")
+	if err != nil {
+		t.Fatalf("repeat generated document post-change skip after continuation: %v", err)
+	}
+	if reviewedAfterContinuation || needsAfterContinuation || feedbackAfterContinuation != "" || fingerprintAfterContinuation != expectedFingerprint {
+		t.Fatalf("expected persisted generated document gate to stay consumed across loop restarts, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewedAfterContinuation, needsAfterContinuation, feedbackAfterContinuation, fingerprintAfterContinuation)
+	}
 	reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, err := agent.maybeRunPostChangeReview(context.Background(), session.Messages[0].Text, fingerprint)
 	if err != nil {
 		t.Fatalf("repeat generated document post-change skip: %v", err)
@@ -451,7 +461,7 @@ func TestPostChangeReviewGeneratedDocumentArtifactFingerprintTracksContent(t *te
 		t.Fatalf("rewrite generated report: %v", err)
 	}
 
-	reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, err := agent.maybeRunPostChangeReview(context.Background(), request, fingerprint)
+	reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain, err := agent.maybeRunPostChangeReview(context.Background(), request, "")
 	if err != nil {
 		t.Fatalf("post-change review after artifact content change: %v", err)
 	}
