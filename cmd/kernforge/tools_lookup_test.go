@@ -612,6 +612,38 @@ func TestReadFileToolReturnsOutOfRangeDiagnosticWithoutError(t *testing.T) {
 	}
 }
 
+func TestReadFileToolReturnsInvalidRangeDiagnosticWithoutError(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\ngamma\ndelta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: base,
+		Root:     base,
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":       "sample.txt",
+		"start_line": 4,
+		"end_line":   2,
+	})
+	if err != nil {
+		t.Fatalf("expected invalid range to return diagnostic without error: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "read_file received an invalid line range") ||
+		!strings.Contains(result.DisplayText, "File line count: 4") {
+		t.Fatalf("expected invalid range diagnostic with file line count, got %q", result.DisplayText)
+	}
+	if got := toolMetaString(result.Meta, "error_kind"); got != "invalid_line_range" {
+		t.Fatalf("expected invalid_line_range metadata, got %#v", result.Meta)
+	}
+	if got := intValue(result.Meta, "file_line_count", 0); got != 4 {
+		t.Fatalf("expected file_line_count=4 metadata, got %#v", result.Meta)
+	}
+}
+
 func TestReadFileToolInvalidatesCacheAfterFileChange(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "cached.txt")
