@@ -1068,6 +1068,38 @@ func TestMCPToolCallIncludesTurnMetadataRequestMeta(t *testing.T) {
 	}
 }
 
+func TestMCPConversationHistorySnapshotOmitsToolMeta(t *testing.T) {
+	history := mcpConversationHistorySnapshot([]Message{
+		{
+			Role:       "tool",
+			ToolCallID: "call-1",
+			ToolName:   "mcp__fake__echo",
+			Text:       "echo",
+			ToolMeta: map[string]any{
+				"mcp_result_structured_content": map[string]any{
+					"request_meta": map[string]any{
+						mcpConversationHistoryMetaKey: "recursive",
+					},
+				},
+			},
+		},
+	})
+	items, ok := history["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("expected one history item, got %#v", history)
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected history item object, got %#v", items[0])
+	}
+	if _, ok := item["tool_meta"]; ok {
+		t.Fatalf("conversation history must not include local tool metadata: %#v", item)
+	}
+	if item["role"] != "tool" || item["tool_call_id"] != "call-1" {
+		t.Fatalf("expected tool identity to remain, got %#v", item)
+	}
+}
+
 func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	dir := t.TempDir()
 	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
@@ -1182,6 +1214,36 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	}
 	if _, ok := turnMeta["active_workspace_root"]; ok {
 		t.Fatalf("did not expect active_workspace_root when cwd equals workspace root: %#v", turnMeta)
+	}
+	history, ok := requestMeta[mcpConversationHistoryMetaKey].(map[string]any)
+	if !ok {
+		t.Fatalf("expected %s metadata, got %#v", mcpConversationHistoryMetaKey, requestMeta)
+	}
+	items, ok := history["items"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("expected non-empty conversation history items, got %#v", history)
+	}
+	sawUserRequest := false
+	sawAssistantToolCall := false
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["role"] == "user" && strings.Contains(fmt.Sprint(item["text"]), "call the MCP echo tool") {
+			sawUserRequest = true
+		}
+		if item["role"] == "assistant" {
+			if calls, ok := item["tool_calls"].([]any); ok && len(calls) > 0 {
+				sawAssistantToolCall = true
+			}
+		}
+	}
+	if !sawUserRequest {
+		t.Fatalf("expected conversation history to include current user request, got %#v", history)
+	}
+	if !sawAssistantToolCall {
+		t.Fatalf("expected conversation history to include assistant tool call, got %#v", history)
 	}
 }
 

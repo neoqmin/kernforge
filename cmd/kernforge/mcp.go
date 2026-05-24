@@ -198,8 +198,10 @@ type MCPPromptTool struct {
 }
 
 type mcpTurnMetadataContextKey struct{}
+type mcpConversationHistoryContextKey struct{}
 
 const mcpTurnMetadataMetaKey = "x-codex-turn-metadata"
+const mcpConversationHistoryMetaKey = "x-codex-conversation-history"
 const mcpTurnMetadataUserInputRequestedKey = "user_input_requested_during_turn"
 const mcpBridgeCallIDMetaKey = "codex_bridge_mcp_call_id"
 const defaultMCPServerEnvironmentID = "local"
@@ -355,17 +357,58 @@ func contextWithMCPTurnMetadata(ctx context.Context, metadata map[string]any) co
 	return context.WithValue(ctx, mcpTurnMetadataContextKey{}, metadata)
 }
 
+func contextWithMCPConversationHistory(ctx context.Context, history map[string]any) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	history = cloneStringAnyMap(history)
+	if len(history) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, mcpConversationHistoryContextKey{}, history)
+}
+
 func mcpToolCallRequestMetaFromContext(ctx context.Context) map[string]any {
 	if ctx == nil {
 		return nil
 	}
-	metadata, ok := ctx.Value(mcpTurnMetadataContextKey{}).(map[string]any)
-	if !ok || len(metadata) == 0 {
+	meta := map[string]any{}
+	if metadata, ok := ctx.Value(mcpTurnMetadataContextKey{}).(map[string]any); ok && len(metadata) > 0 {
+		meta[mcpTurnMetadataMetaKey] = cloneStringAnyMap(metadata)
+	}
+	if history, ok := ctx.Value(mcpConversationHistoryContextKey{}).(map[string]any); ok && len(history) > 0 {
+		meta[mcpConversationHistoryMetaKey] = cloneStringAnyMap(history)
+	}
+	if len(meta) == 0 {
 		return nil
 	}
-	return map[string]any{
-		mcpTurnMetadataMetaKey: cloneStringAnyMap(metadata),
+	return meta
+}
+
+func mcpConversationHistorySnapshot(messages []Message) map[string]any {
+	if len(messages) == 0 {
+		return nil
 	}
+	items := make([]any, 0, len(messages))
+	for _, message := range messages {
+		message.ToolMeta = nil
+		data, err := json.Marshal(message)
+		if err != nil {
+			continue
+		}
+		item := map[string]any{}
+		if err := json.Unmarshal(data, &item); err != nil {
+			continue
+		}
+		if len(item) == 0 {
+			continue
+		}
+		items = append(items, item)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return map[string]any{"items": items}
 }
 
 func withMCPBridgeCallIDMeta(meta map[string]any, callID string) map[string]any {
