@@ -930,6 +930,8 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 
 	var text strings.Builder
 	var reasoning strings.Builder
+	itemTexts := []string{}
+	finalItemTexts := []string{}
 	var completedResponse json.RawMessage
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
@@ -992,6 +994,16 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			ArgumentsPreview: summarizeToolArgumentsPreview(item.Arguments.String()),
 		})
 	}
+	collectMessageItemText := func(item openAICodexOutputItem) {
+		itemText := openAICodexOutputItemText(item)
+		if strings.TrimSpace(itemText) == "" {
+			return
+		}
+		itemTexts = append(itemTexts, itemText)
+		if normalizeOpenAICodexMessagePhase(item.Phase) == messagePhaseFinalAnswer {
+			finalItemTexts = append(finalItemTexts, itemText)
+		}
+	}
 
 	processPayload := func(payload string) (ChatResponse, bool, error) {
 		payload = strings.TrimSpace(payload)
@@ -1046,9 +1058,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		case "response.output_item.added":
 			if event.Item.Type == "message" {
 				messagePhase = mergeOpenAICodexMessagePhase(messagePhase, event.Item.Phase)
-				if addedText := openAICodexOutputItemText(event.Item); strings.TrimSpace(addedText) != "" {
-					text.WriteString(addedText)
-				}
+				collectMessageItemText(event.Item)
 			} else if event.Item.Type == "reasoning" {
 				if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
 					reasoning.WriteString(reasoningText)
@@ -1116,13 +1126,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		case "response.output_item.done":
 			if event.Item.Type == "message" {
 				messagePhase = mergeOpenAICodexMessagePhase(messagePhase, event.Item.Phase)
-			}
-			if event.Item.Type == "message" && text.Len() == 0 {
-				for _, content := range event.Item.Content {
-					if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
-						text.WriteString(content.Text)
-					}
-				}
+				collectMessageItemText(event.Item)
 			} else if event.Item.Type == "reasoning" && reasoning.Len() == 0 {
 				if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
 					reasoning.WriteString(reasoningText)
@@ -1250,7 +1254,15 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		}
 	}
 
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(text.String()), ReasoningContent: strings.TrimSpace(reasoning.String())}
+	streamText := text.String()
+	if strings.TrimSpace(streamText) == "" {
+		texts := itemTexts
+		if len(finalItemTexts) > 0 {
+			texts = finalItemTexts
+		}
+		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
+	}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String())}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
