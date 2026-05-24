@@ -1139,7 +1139,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if len(event.Response) > 0 {
 				completedResponse = append(completedResponse[:0], event.Response...)
 			}
-			if event.EndTurn != nil {
+			if nestedEndTurn := openAICodexEndTurnFromResponsePayload(event.Response); nestedEndTurn != nil {
+				endTurn = nestedEndTurn
+			} else if event.EndTurn != nil {
 				endTurn = event.EndTurn
 			}
 			stopReason = "completed"
@@ -1291,6 +1293,23 @@ func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
 		}
 	}
 	return strings.TrimSpace(decoded.Model)
+}
+
+func openAICodexEndTurnFromResponsePayload(data json.RawMessage) *bool {
+	if len(data) == 0 {
+		return nil
+	}
+	var decoded struct {
+		EndTurn *bool `json:"end_turn,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil
+	}
+	if decoded.EndTurn == nil {
+		return nil
+	}
+	endTurn := *decoded.EndTurn
+	return &endTurn
 }
 
 func openAICodexModelVerificationsFromMetadata(data json.RawMessage) []string {
