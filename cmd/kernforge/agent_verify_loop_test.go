@@ -606,6 +606,41 @@ func TestAgentRunsParallelSafeReadOnlyToolCallsConcurrently(t *testing.T) {
 	}
 }
 
+func TestAgentTreatsBuiltInInspectionToolsAsParallelSafe(t *testing.T) {
+	root := t.TempDir()
+	agent := &Agent{
+		Tools: NewToolRegistry(
+			NewReadFileTool(Workspace{BaseRoot: root, Root: root}),
+			NewListFilesTool(Workspace{BaseRoot: root, Root: root}),
+			NewGrepTool(Workspace{BaseRoot: root, Root: root}),
+			NewGitStatusTool(Workspace{BaseRoot: root, Root: root}),
+			NewGitDiffTool(Workspace{BaseRoot: root, Root: root}),
+		),
+	}
+	calls := []ToolCall{
+		{ID: "call-read", Name: "read_file", Arguments: `{"path":"a.txt"}`},
+		{ID: "call-list", Name: "list_files", Arguments: `{}`},
+		{ID: "call-grep", Name: "grep", Arguments: `{"pattern":"needle"}`},
+		{ID: "call-status", Name: "git_status", Arguments: `{}`},
+		{ID: "call-diff", Name: "git_diff", Arguments: `{}`},
+	}
+	for _, call := range calls {
+		if !agent.Tools.ToolCallReadOnly(call.Name) {
+			t.Fatalf("expected %s to advertise read-only execution", call.Name)
+		}
+		if !agent.Tools.ToolCallSupportsParallel(call.Name) {
+			t.Fatalf("expected %s to advertise parallel execution", call.Name)
+		}
+	}
+	if !agent.shouldExecuteToolCallBatchInParallel(calls, true, nil) {
+		t.Fatalf("expected built-in read-only inspection tools to use the parallel batch path")
+	}
+	viewImageRegistry := NewToolRegistry(NewViewImageTool(Workspace{BaseRoot: root, Root: root}))
+	if !viewImageRegistry.ToolCallSupportsParallel("view_image") {
+		t.Fatalf("expected view_image to advertise parallel execution")
+	}
+}
+
 func scriptedRequestsContainText(requests []ChatRequest, needle string) bool {
 	for _, req := range requests {
 		for _, msg := range req.Messages {
