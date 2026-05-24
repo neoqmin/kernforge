@@ -2364,6 +2364,7 @@ func enrichHookPayloadFromContext(ctx context.Context, payload HookPayload) {
 		"provider",
 		"model",
 		"reasoning_effort",
+		"service_tier",
 		"permission_mode",
 		"active_permission_profile_id",
 		"active_permission_profile",

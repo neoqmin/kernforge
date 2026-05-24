@@ -1467,6 +1467,7 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 		Config: Config{
 			Model:           "model-a",
 			ReasoningEffort: "high",
+			ServiceTier:     "flex",
 			AutoLocale:      boolPtr(false),
 		},
 		Client:    provider,
@@ -1507,6 +1508,9 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	}
 	if got := turnMeta["reasoning_effort"]; got != "high" {
 		t.Fatalf("expected reasoning effort metadata, got %#v in %#v", got, turnMeta)
+	}
+	if got := turnMeta["service_tier"]; got != "flex" {
+		t.Fatalf("expected service tier metadata, got %#v in %#v", got, turnMeta)
 	}
 	if got := turnMeta["provider"]; got != "scripted" {
 		t.Fatalf("expected provider metadata, got %#v in %#v", got, turnMeta)
@@ -1584,6 +1588,25 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	}
 	if !sawAssistantToolCall {
 		t.Fatalf("expected conversation history to include assistant tool call, got %#v", history)
+	}
+}
+
+func TestProviderTurnMetadataFromMCPStripsModelRoutingFields(t *testing.T) {
+	metadata := map[string]any{
+		"provider":         "openai-codex",
+		"model":            "gpt-5.5",
+		"reasoning_effort": "high",
+		"service_tier":     "flex",
+		"turn_id":          "turn-123",
+	}
+	got := providerTurnMetadataFromMCP(metadata)
+	if got["turn_id"] != "turn-123" {
+		t.Fatalf("expected turn metadata to keep non-routing keys, got %#v", got)
+	}
+	for _, key := range []string{"provider", "model", "reasoning_effort", "service_tier"} {
+		if _, exists := got[key]; exists {
+			t.Fatalf("provider turn metadata should strip %s, got %#v", key, got)
+		}
 	}
 }
 

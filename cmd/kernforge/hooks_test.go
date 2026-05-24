@@ -40,6 +40,21 @@ func TestHookEngineMatchesGlobPatterns(t *testing.T) {
 	}
 }
 
+func TestEnrichHookPayloadFromContextIncludesServiceTier(t *testing.T) {
+	ctx := contextWithMCPTurnMetadata(context.Background(), map[string]any{
+		"reasoning_effort": "high",
+		"service_tier":     "flex",
+	})
+	payload := HookPayload{}
+	enrichHookPayloadFromContext(ctx, payload)
+	if got := payload["service_tier"]; got != "flex" {
+		t.Fatalf("expected service tier to be copied from turn metadata, got %#v in %#v", got, payload)
+	}
+	if got := payload["reasoning_effort"]; got != "high" {
+		t.Fatalf("expected reasoning effort to be copied from turn metadata, got %#v in %#v", got, payload)
+	}
+}
+
 func TestHookEngineDenyWins(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,

@@ -7640,6 +7640,9 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 	if effort := normalizeReasoningEffort(a.Config.ReasoningEffort); effort != "" {
 		metadata["reasoning_effort"] = effort
 	}
+	if serviceTier := normalizeServiceTier(a.Config.ServiceTier); serviceTier != "" {
+		metadata["service_tier"] = serviceTier
+	}
 	if !turnStartedAt.IsZero() {
 		metadata["turn_started_at_unix_ms"] = turnStartedAt.UnixMilli()
 	}
@@ -7941,6 +7944,7 @@ func providerTurnMetadataFromMCP(metadata map[string]any) map[string]any {
 	delete(out, "provider")
 	delete(out, "model")
 	delete(out, "reasoning_effort")
+	delete(out, "service_tier")
 	if len(out) == 0 {
 		return nil
 	}
