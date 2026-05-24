@@ -16,7 +16,7 @@ func NewApplyPatchTool(ws Workspace) ApplyPatchTool { return ApplyPatchTool{ws: 
 func (t ApplyPatchTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. Use this as an expert fallback for complex hunk-level edits after reading current file contents; prefer apply_edit_proposal for simple reviewed edit intent. Keep payloads narrow and anchored to current file contents; split large fixes into the first independent hunk, reread, then continue. Every update file section must contain at least one @@ hunk.",
+		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. Use this as an expert fallback for complex hunk-level edits after reading current file contents; prefer apply_edit_proposal for simple reviewed edit intent. Keep payloads narrow and anchored to current file contents; split large fixes into the first independent hunk, reread, then continue. Every update file section must contain at least one hunk; use @@ markers for anchored edits.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -78,6 +78,9 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	doc, err := parsePatchDocument(patchText)
 	if err != nil {
 		return ToolExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidPatchFormat, err)
+	}
+	if strings.TrimSpace(doc.environmentID) != "" {
+		return ToolExecutionResult{}, fmt.Errorf("%w: apply_patch environment selection is unavailable for this session", ErrInvalidPatchFormat)
 	}
 	if len(doc.ops) == 0 {
 		return ToolExecutionResult{}, fmt.Errorf("%w: No files were modified.", ErrInvalidPatchFormat)
@@ -178,7 +181,8 @@ func buildApplyPatchMeta(root string, doc patchDocument) map[string]any {
 }
 
 type patchDocument struct {
-	ops []patchOperation
+	environmentID string
+	ops           []patchOperation
 }
 
 type plannedPatchChange struct {
@@ -233,10 +237,23 @@ func parsePatchDocument(text string) (patchDocument, error) {
 		return patchDocument{}, fmt.Errorf("patch_format_missing_begin: patch must start with *** Begin Patch")
 	}
 
+	environmentID := ""
 	var ops []patchOperation
 	for index < len(lines) {
 		line := next()
 		if strings.TrimSpace(line) == "" {
+			advance()
+			continue
+		}
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "*** Environment ID: ") {
+			if len(ops) > 0 {
+				return patchDocument{}, fmt.Errorf("patch_format_unexpected_line: environment id must appear before patch hunks")
+			}
+			trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(line, " \t"), "*** Environment ID: "))
+			if trimmed == "" {
+				return patchDocument{}, fmt.Errorf("patch_format_empty_environment: apply_patch environment_id cannot be empty")
+			}
+			environmentID = trimmed
 			advance()
 			continue
 		}
@@ -247,7 +264,7 @@ func parsePatchDocument(text string) (patchDocument, error) {
 					return patchDocument{}, fmt.Errorf("patch_format_trailing_content: patch must end with *** End Patch")
 				}
 			}
-			return patchDocument{ops: ops}, nil
+			return patchDocument{environmentID: environmentID, ops: ops}, nil
 		}
 		switch {
 		case strings.HasPrefix(line, "*** Add File: "):
@@ -280,7 +297,26 @@ func normalizePatchDocumentText(text string) string {
 	text = strings.TrimPrefix(text, "\uFEFF")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	return strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	if unwrapped, ok := unwrapPatchHeredocEnvelope(text); ok {
+		return unwrapped
+	}
+	return text
+}
+
+func unwrapPatchHeredocEnvelope(text string) (string, bool) {
+	lines := strings.Split(text, "\n")
+	if len(lines) < 4 {
+		return "", false
+	}
+	first := strings.TrimSpace(lines[0])
+	if first != "<<EOF" && first != "<<'EOF'" && first != "<<\"EOF\"" {
+		return "", false
+	}
+	if !strings.HasSuffix(strings.TrimSpace(lines[len(lines)-1]), "EOF") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n")), true
 }
 
 func normalizePatchDocumentPath(path string) string {
@@ -329,11 +365,13 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 		if strings.HasPrefix(current, "*** ") {
 			break
 		}
-		if !strings.HasPrefix(current, "@@") {
+		hunk := patchHunk{header: "@@"}
+		if strings.HasPrefix(current, "@@") {
+			hunk.header = current
+			*index++
+		} else if len(op.hunks) > 0 || !isPatchChangeLine(current) {
 			return patchOperation{}, fmt.Errorf("patch_format_missing_hunk: update patch hunk must start with @@: %s", current)
 		}
-		hunk := patchHunk{header: current}
-		*index++
 		for *index < len(lines) {
 			current = lines[*index]
 			if current == "*** End of File" {
@@ -361,6 +399,18 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 		return patchOperation{}, fmt.Errorf("patch_format_empty_update: update patch for %s has no hunks", op.path)
 	}
 	return op, nil
+}
+
+func isPatchChangeLine(line string) bool {
+	if line == "" {
+		return true
+	}
+	switch line[0] {
+	case ' ', '+', '-':
+		return true
+	default:
+		return false
+	}
 }
 
 func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ownerNodeID string) (string, bool, []string, string, error) {
@@ -644,7 +694,13 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 			}
 		}
 		if len(oldChunk) == 0 {
-			return "", fmt.Errorf("%w: update hunk has no context or deletion lines", ErrEditTargetMismatch)
+			if len(newChunk) == 0 {
+				return "", fmt.Errorf("%w: update hunk has no context or addition lines", ErrEditTargetMismatch)
+			}
+			oldLines = append(oldLines, newChunk...)
+			cursor = len(oldLines)
+			lineDelta += len(newChunk)
+			continue
 		}
 
 		applyAt, err := locatePatchChunk(oldLines, oldChunk, cursor, hunk.header, lineDelta)

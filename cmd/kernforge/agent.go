@@ -8385,7 +8385,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- If read_file returns a NOTE about cached content, treat that as evidence you already have the relevant lines. Do not reread the same range unless the file likely changed or a missing adjacent range is still required.\n")
 	b.WriteString("- If grep results include [cached-nearby:inside] or [cached-nearby:N], prefer a narrowly targeted next read around the unmatched nearby lines instead of rereading a large surrounding range.\n")
 	b.WriteString("- When using apply_patch, the patch argument must be raw patch text that starts with *** Begin Patch and ends with *** End Patch.\n")
-	b.WriteString("- Every *** Update File: section in apply_patch must contain at least one @@ hunk with context and +/- lines. Never send an update file section with no hunks.\n")
+	b.WriteString("- Every *** Update File: section in apply_patch must contain at least one hunk with context and/or +/- lines. Use @@ markers for anchored edits and never send an update file section with no hunks.\n")
 	b.WriteString("- Never send JSON, markdown code fences, prose, or pseudo-objects as the apply_patch patch string.\n")
 	b.WriteString("- Use replace_in_file only for very small exact substitutions when you have just read the same file path and the exact search text is present exactly as written.\n")
 	b.WriteString("- If there is any risk that the file changed, the path is ambiguous, or the replacement spans multiple lines or repeated matches, read the file again and use apply_patch instead of replace_in_file.\n")
