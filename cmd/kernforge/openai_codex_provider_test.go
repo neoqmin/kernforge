@@ -1495,8 +1495,11 @@ func TestBuildOpenAICodexRequestBodyPreservesAssistantGeneratedImagesLikeCodex(t
 				Role: "assistant",
 				Text: "Image generation completed",
 				Images: []MessageImage{{
-					Path:      "shot.png",
-					MediaType: "image/png",
+					Path:          "shot.png",
+					MediaType:     "image/png",
+					ID:            "ig_original",
+					Status:        "completed",
+					RevisedPrompt: "A precise one-pixel image",
 				}},
 			},
 			{Role: "user", Text: "use the prior image"},
@@ -1522,7 +1525,7 @@ func TestBuildOpenAICodexRequestBodyPreservesAssistantGeneratedImagesLikeCodex(t
 	if imageItem == nil {
 		t.Fatalf("expected assistant image to be replayed as image_generation_call, got %s", body)
 	}
-	if imageItem["id"] != "shot" || imageItem["status"] != "completed" {
+	if imageItem["id"] != "ig_original" || imageItem["status"] != "completed" || imageItem["revised_prompt"] != "A precise one-pixel image" {
 		t.Fatalf("unexpected generated image item metadata: %#v", imageItem)
 	}
 	if imageItem["result"] != base64.StdEncoding.EncodeToString(onePixelPNG) {
@@ -3774,6 +3777,9 @@ func TestReadOpenAICodexStreamSavesImageGenerationOutput(t *testing.T) {
 	wantPath := openAICodexImageGenerationArtifactPath(root, "session/1", "ig/save:1")
 	if len(resp.Message.Images) != 1 || resp.Message.Images[0].Path != wantPath || resp.Message.Images[0].MediaType != "image/png" {
 		t.Fatalf("expected saved image metadata %q, got %#v", wantPath, resp.Message.Images)
+	}
+	if resp.Message.Images[0].ID != "ig/save:1" || resp.Message.Images[0].Status != "completed" || resp.Message.Images[0].RevisedPrompt != "A saved image" {
+		t.Fatalf("expected Codex image generation metadata to be preserved, got %#v", resp.Message.Images[0])
 	}
 	if got, err := os.ReadFile(wantPath); err != nil || string(got) != string(imageData) {
 		t.Fatalf("expected saved image bytes %q at %s, got %q err=%v", string(imageData), wantPath, string(got), err)
