@@ -1050,7 +1050,7 @@ func TestBuildOpenAICodexRequestBodyDefaultsImageDetailHigh(t *testing.T) {
 func TestBuildOpenAICodexRequestBodySerializesServiceTier(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model:       "gpt-5.5",
-		ServiceTier: "flex",
+		ServiceTier: "priority",
 		Messages: []Message{{
 			Role: "user",
 			Text: "hello",
@@ -1064,8 +1064,8 @@ func TestBuildOpenAICodexRequestBodySerializesServiceTier(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if payload["service_tier"] != "flex" {
-		t.Fatalf("expected flex service_tier, got %#v in body %s", payload["service_tier"], body)
+	if payload["service_tier"] != "priority" {
+		t.Fatalf("expected priority service_tier, got %#v in body %s", payload["service_tier"], body)
 	}
 }
 
@@ -1116,7 +1116,7 @@ func TestBuildOpenAICodexRequestBodyOmitsDefaultServiceTier(t *testing.T) {
 func TestBuildOpenAICodexRequestBodyOmitsUnsupportedServiceTier(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model:       "gpt-5.5",
-		ServiceTier: "experimental-tier-id",
+		ServiceTier: "flex",
 		Messages: []Message{{
 			Role: "user",
 			Text: "hello",
@@ -1132,6 +1132,28 @@ func TestBuildOpenAICodexRequestBodyOmitsUnsupportedServiceTier(t *testing.T) {
 	}
 	if _, exists := payload["service_tier"]; exists {
 		t.Fatalf("unsupported service_tier should be omitted to match Codex catalog filtering, got body %s", body)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyOmitsModelUnsupportedServiceTier(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:       "gpt-5.2",
+		ServiceTier: "priority",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, exists := payload["service_tier"]; exists {
+		t.Fatalf("model-unsupported service_tier should be omitted to match Codex catalog filtering, got body %s", body)
 	}
 }
 
