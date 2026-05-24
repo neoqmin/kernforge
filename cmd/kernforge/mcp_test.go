@@ -9,9 +9,53 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+var mcpHelperBarrierMu sync.Mutex
+var mcpHelperBarrierWaiters []chan struct{}
+var mcpHelperStdoutMu sync.Mutex
+
+func mcpHelperBarrierArrive(participants int, timeout time.Duration) bool {
+	if participants <= 1 {
+		return true
+	}
+	ch := make(chan struct{})
+	mcpHelperBarrierMu.Lock()
+	mcpHelperBarrierWaiters = append(mcpHelperBarrierWaiters, ch)
+	if len(mcpHelperBarrierWaiters) >= participants {
+		waiters := mcpHelperBarrierWaiters
+		mcpHelperBarrierWaiters = nil
+		for _, waiter := range waiters {
+			close(waiter)
+		}
+		mcpHelperBarrierMu.Unlock()
+		return true
+	}
+	mcpHelperBarrierMu.Unlock()
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
+		mcpHelperBarrierMu.Lock()
+		for i, waiter := range mcpHelperBarrierWaiters {
+			if waiter == ch {
+				mcpHelperBarrierWaiters = append(mcpHelperBarrierWaiters[:i], mcpHelperBarrierWaiters[i+1:]...)
+				break
+			}
+		}
+		mcpHelperBarrierMu.Unlock()
+		return false
+	}
+}
+
+func writeMCPHelperMessage(payload map[string]any) {
+	mcpHelperStdoutMu.Lock()
+	defer mcpHelperStdoutMu.Unlock()
+	_ = writeRPCMessage(os.Stdout, payload)
+}
 
 func TestMCPHelperProcess(t *testing.T) {
 	if os.Getenv("KERNFORGE_MCP_HELPER") != "1" {
@@ -45,32 +89,73 @@ func TestMCPHelperProcess(t *testing.T) {
 		case "notifications/initialized":
 			continue
 		case "tools/list":
-			_ = writeRPCMessage(os.Stdout, map[string]any{
+			writeMCPHelperMessage(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      msg["id"],
 				"result": map[string]any{
-					"tools": []map[string]any{{
-						"name":        "echo",
-						"description": "Echo a message",
-						"inputSchema": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"message": map[string]any{"type": "string"},
+					"tools": []map[string]any{
+						{
+							"name":        "echo",
+							"description": "Echo a message",
+							"inputSchema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"message": map[string]any{"type": "string"},
+								},
+							},
+							"outputSchema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"echoed": map[string]any{"type": "string"},
+								},
 							},
 						},
-						"outputSchema": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"echoed": map[string]any{"type": "string"},
+						{
+							"name":        "echo_readonly",
+							"description": "Echo a message without mutating server state",
+							"annotations": map[string]any{
+								"readOnlyHint": true,
+							},
+							"inputSchema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"message": map[string]any{"type": "string"},
+								},
 							},
 						},
-					}},
+					},
 				},
 			})
 		case "tools/call":
 			params, _ := msg["params"].(map[string]any)
+			name, _ := params["name"].(string)
 			args, _ := params["arguments"].(map[string]any)
 			message, _ := args["message"].(string)
+			if name == "echo_readonly" && message == "barrier" {
+				id := msg["id"]
+				go func() {
+					if !mcpHelperBarrierArrive(2, 2*time.Second) {
+						writeMCPHelperMessage(map[string]any{
+							"jsonrpc": "2.0",
+							"id":      id,
+							"error": map[string]any{
+								"message": "barrier timeout",
+							},
+						})
+						return
+					}
+					writeMCPHelperMessage(map[string]any{
+						"jsonrpc": "2.0",
+						"id":      id,
+						"result": map[string]any{
+							"structuredContent": map[string]any{
+								"echoed": "barrier",
+							},
+						},
+					})
+				}()
+				continue
+			}
 			structured := map[string]any{
 				"echoed": message,
 			}
@@ -79,7 +164,7 @@ func TestMCPHelperProcess(t *testing.T) {
 					structured["request_meta"] = requestMeta
 				}
 			}
-			_ = writeRPCMessage(os.Stdout, map[string]any{
+			writeMCPHelperMessage(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      msg["id"],
 				"result": map[string]any{
@@ -485,8 +570,8 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	if len(statuses) != 1 {
 		t.Fatalf("expected 1 status, got %d", len(statuses))
 	}
-	if statuses[0].ToolCount != 1 {
-		t.Fatalf("expected 1 remote tool, got %d", statuses[0].ToolCount)
+	if statuses[0].ToolCount != 2 {
+		t.Fatalf("expected 2 remote tools, got %d", statuses[0].ToolCount)
 	}
 	if statuses[0].EnvironmentID != defaultMCPServerEnvironmentID {
 		t.Fatalf("expected default MCP environment %q, got %q", defaultMCPServerEnvironmentID, statuses[0].EnvironmentID)
@@ -499,10 +584,11 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	}
 
 	tools := manager.Tools()
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
 	}
 	foundEcho := false
+	foundReadOnlyEcho := false
 	foundResource := false
 	foundPrompt := false
 	for _, tool := range tools {
@@ -519,6 +605,14 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 			}
 			if out != `{"echoed":"hello"}` {
 				t.Fatalf("unexpected echo output: %q", out)
+			}
+		case "mcp__fake__echo_readonly":
+			foundReadOnlyEcho = true
+			if !tool.(readOnlyToolCallSupport).ReadOnlyToolCall() {
+				t.Fatalf("expected echo_readonly to be read-only")
+			}
+			if !tool.(parallelToolCallSupport).SupportsParallelToolCalls() {
+				t.Fatalf("expected echo_readonly to support parallel tool calls")
 			}
 		case "mcp__resource__fake":
 			foundResource = true
@@ -545,8 +639,8 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 			}
 		}
 	}
-	if !foundEcho || !foundResource || !foundPrompt {
-		t.Fatalf("missing expected synthetic tools: echo=%v resource=%v prompt=%v", foundEcho, foundResource, foundPrompt)
+	if !foundEcho || !foundReadOnlyEcho || !foundResource || !foundPrompt {
+		t.Fatalf("missing expected synthetic tools: echo=%v readonly=%v resource=%v prompt=%v", foundEcho, foundReadOnlyEcho, foundResource, foundPrompt)
 	}
 
 	resources := manager.Resources()
@@ -608,6 +702,78 @@ func TestLoadMCPManagerSkipsInvalidToolSpecsBeforeRegistration(t *testing.T) {
 	}
 }
 
+func TestMCPServerParallelOptInMarksMutableToolsParallelSafe(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:                      "fake",
+		Command:                   os.Args[0],
+		Args:                      []string{"-test.run=TestMCPHelperProcess"},
+		SupportsParallelToolCalls: true,
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	registry := NewToolRegistry(manager.Tools()...)
+	if registry.ToolCallReadOnly("mcp__fake__echo") {
+		t.Fatalf("server opt-in must not make mutable tools read-only")
+	}
+	if !registry.ToolCallSupportsParallel("mcp__fake__echo") {
+		t.Fatalf("expected server opt-in to make mutable MCP tool parallel-safe")
+	}
+}
+
+func TestMCPClientMultiplexesParallelReadOnlyToolCalls(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	registry := NewToolRegistry(manager.Tools()...)
+	if !registry.ToolCallReadOnly("mcp__fake__echo_readonly") {
+		t.Fatalf("expected readOnlyHint tool to be read-only")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := registry.ExecuteDetailed(ctx, "mcp__fake__echo_readonly", `{"message":"barrier"}`)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if result.DisplayText != `{"echoed":"barrier"}` {
+				errs <- fmt.Errorf("unexpected barrier output: %q", result.DisplayText)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestLoadMCPManagerAcceptsExplicitLocalEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
@@ -631,7 +797,7 @@ func TestLoadMCPManagerAcceptsExplicitLocalEnvironment(t *testing.T) {
 	if statuses[0].EnvironmentID != defaultMCPServerEnvironmentID {
 		t.Fatalf("expected explicit local MCP environment, got %#v", statuses[0])
 	}
-	if statuses[0].ToolCount != 1 {
+	if statuses[0].ToolCount != 2 {
 		t.Fatalf("expected local MCP server to start, got %#v", statuses[0])
 	}
 }

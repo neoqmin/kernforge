@@ -44,6 +44,14 @@ type detailedTool interface {
 	ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error)
 }
 
+type readOnlyToolCallSupport interface {
+	ReadOnlyToolCall() bool
+}
+
+type parallelToolCallSupport interface {
+	SupportsParallelToolCalls() bool
+}
+
 type toolWorkspaceProvider interface {
 	hookWorkspace() Workspace
 }
@@ -816,6 +824,30 @@ func (r *ToolRegistry) ToolNames() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func (r *ToolRegistry) ToolCallReadOnly(name string) bool {
+	if r == nil {
+		return false
+	}
+	tool, ok := r.tools[strings.TrimSpace(name)]
+	if !ok || isNilTool(tool) {
+		return false
+	}
+	readOnly, ok := tool.(readOnlyToolCallSupport)
+	return ok && readOnly.ReadOnlyToolCall()
+}
+
+func (r *ToolRegistry) ToolCallSupportsParallel(name string) bool {
+	if r == nil {
+		return false
+	}
+	tool, ok := r.tools[strings.TrimSpace(name)]
+	if !ok || isNilTool(tool) {
+		return false
+	}
+	parallel, ok := tool.(parallelToolCallSupport)
+	return ok && parallel.SupportsParallelToolCalls()
 }
 
 func (r *ToolRegistry) RegistrationIssues() []ToolRegistrationIssue {

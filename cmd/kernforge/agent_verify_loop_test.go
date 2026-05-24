@@ -262,6 +262,13 @@ type staticTool struct {
 	calls  int
 }
 
+type parallelBarrierTool struct {
+	name    string
+	mu      sync.Mutex
+	waiters []chan struct{}
+	calls   int
+}
+
 type metadataEditTool struct {
 	name   string
 	output string
@@ -396,6 +403,50 @@ func (t *staticTool) Execute(ctx context.Context, input any) (string, error) {
 	return t.output, nil
 }
 
+func (t *parallelBarrierTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        t.name,
+		Description: "Wait until two parallel calls arrive.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *parallelBarrierTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t *parallelBarrierTool) SupportsParallelToolCalls() bool {
+	return true
+}
+
+func (t *parallelBarrierTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = input
+	t.mu.Lock()
+	t.calls++
+	ch := make(chan struct{})
+	t.waiters = append(t.waiters, ch)
+	if len(t.waiters) >= 2 {
+		waiters := t.waiters
+		t.waiters = nil
+		for _, waiter := range waiters {
+			close(waiter)
+		}
+		t.mu.Unlock()
+		return "barrier ok", nil
+	}
+	t.mu.Unlock()
+	select {
+	case <-ch:
+		return "barrier ok", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(750 * time.Millisecond):
+		return "", fmt.Errorf("parallel barrier timed out")
+	}
+}
+
 func (t *metadataEditTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        t.name,
@@ -434,6 +485,65 @@ func toolCallResponse(name string, args map[string]any) ChatResponse {
 				Arguments: string(data),
 			}},
 		},
+	}
+}
+
+func TestAgentRunsParallelSafeReadOnlyToolCallsConcurrently(t *testing.T) {
+	root := t.TempDir()
+	tool := &parallelBarrierTool{name: "readonly_parallel"}
+	firstArgs, _ := json.Marshal(map[string]any{"id": 1})
+	secondArgs, _ := json.Marshal(map[string]any{"id": 2})
+	client := &scriptedProviderClient{replies: []ChatResponse{
+		{
+			Message: Message{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{ID: "call-1", Name: "readonly_parallel", Arguments: string(firstArgs)},
+					{ID: "call-2", Name: "readonly_parallel", Arguments: string(secondArgs)},
+				},
+			},
+		},
+		{
+			Message:    Message{Role: "assistant", Text: "parallel tools completed"},
+			StopReason: "stop",
+		},
+	}}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "run both read-only tools"})
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    client,
+		Tools:     NewToolRegistry(tool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "parallel tools completed") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if tool.calls != 2 {
+		t.Fatalf("expected both parallel tool calls to execute, got %d", tool.calls)
+	}
+	successes := 0
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.ToolName != "readonly_parallel" {
+			continue
+		}
+		if msg.IsError {
+			t.Fatalf("parallel read-only tool call unexpectedly failed: %#v", msg)
+		}
+		if strings.Contains(msg.Text, "barrier ok") {
+			successes++
+		}
+	}
+	if successes != 2 {
+		t.Fatalf("expected two successful parallel tool results, got %d", successes)
 	}
 }
 
