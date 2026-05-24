@@ -662,6 +662,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		case "response.output_item.added":
 			if event.Item.Type == "message" {
 				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
+				if addedText := openAICodexOutputItemText(event.Item); strings.TrimSpace(addedText) != "" {
+					text.WriteString(addedText)
+				}
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				item := ensureToolCall(event.OutputIndex)
 				if openAICodexPopulateStreamToolCall(item, event.Item, false) {
@@ -833,6 +836,16 @@ func openAICodexIncompleteReason(response json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(decoded.IncompleteDetails.Reason)
+}
+
+func openAICodexOutputItemText(item openAICodexOutputItem) string {
+	var text strings.Builder
+	for _, content := range item.Content {
+		if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
+			text.WriteString(content.Text)
+		}
+	}
+	return text.String()
 }
 
 func normalizeOpenAICodexMessagePhase(phase string) string {
