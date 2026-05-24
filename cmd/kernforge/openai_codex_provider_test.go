@@ -812,6 +812,45 @@ func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesFunctionCallNamespace(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_mcp",
+				Name:      "mcp__filesystem__read_file",
+				Namespace: "mcp__filesystem__",
+				Arguments: `{"path":"main.go"}`,
+			}}},
+			{Role: "tool", ToolCallID: "call_mcp", ToolName: "mcp__filesystem__read_file", Text: "package main"},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "mcp__filesystem__read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	input := payload["input"].([]any)
+	call := input[1].(map[string]any)
+	if call["type"] != "function_call" || call["call_id"] != "call_mcp" {
+		t.Fatalf("unexpected function call item: %#v", call)
+	}
+	if call["namespace"] != "mcp__filesystem__" {
+		t.Fatalf("expected namespace to be preserved, got %#v in %s", call, body)
+	}
+	if call["name"] != "read_file" {
+		t.Fatalf("expected namespaced call to serialize short function name, got %#v in %s", call, body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutputWithNameFallbackCallID(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -1946,7 +1985,7 @@ func TestParseOpenAICodexResponsePreservesFunctionCallNamespace(t *testing.T) {
 		t.Fatalf("expected one namespaced function call, got %#v", resp.Message.ToolCalls)
 	}
 	call := resp.Message.ToolCalls[0]
-	if call.ID != "call_mcp" || call.Name != "mcp__filesystem__read_file" {
+	if call.ID != "call_mcp" || call.Name != "mcp__filesystem__read_file" || call.Namespace != "mcp__filesystem__" {
 		t.Fatalf("expected namespace and name to be flattened like Codex, got %#v", call)
 	}
 	var args map[string]string
@@ -2319,7 +2358,7 @@ func TestReadOpenAICodexStreamPreservesFunctionCallNamespace(t *testing.T) {
 		t.Fatalf("expected one namespaced function call, got %#v", resp.Message.ToolCalls)
 	}
 	call := resp.Message.ToolCalls[0]
-	if call.ID != "call_mcp" || call.Name != "mcp__filesystem__read_file" {
+	if call.ID != "call_mcp" || call.Name != "mcp__filesystem__read_file" || call.Namespace != "mcp__filesystem__" {
 		t.Fatalf("expected namespace and name to be flattened like Codex, got %#v", call)
 	}
 	if !progressEventsContain(events, progressKindModelStreamToolCall, "mcp__filesystem__read_file") ||
