@@ -925,6 +925,7 @@ type openAICodexOutputItem struct {
 
 func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	var decoded struct {
+		ID                string `json:"id,omitempty"`
 		Status            string `json:"status"`
 		OutputText        string `json:"output_text,omitempty"`
 		EndTurn           *bool  `json:"end_turn,omitempty"`
@@ -1012,6 +1013,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	}
 	return ChatResponse{
 		Message:            out,
+		ResponseID:         strings.TrimSpace(decoded.ID),
 		StopReason:         stopReason,
 		EndTurn:            decoded.EndTurn,
 		ServerModel:        openAICodexServerModelFromResponsePayload(data),
@@ -1070,6 +1072,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	messagePhase := ""
 	completedSeen := false
 	var endTurn *bool
+	responseID := ""
 	serverModel := ""
 	rateLimitSummary := ""
 	modelVerifications := []string{}
@@ -1323,6 +1326,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			completedSeen = true
 			if len(event.Response) > 0 {
 				completedResponse = append(completedResponse[:0], event.Response...)
+				if id := openAICodexResponseIDFromResponsePayload(event.Response); id != "" {
+					responseID = id
+				}
 			}
 			if nestedEndTurn := openAICodexEndTurnFromResponsePayload(event.Response); nestedEndTurn != nil {
 				endTurn = nestedEndTurn
@@ -1426,6 +1432,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			if resp.ServerModel == "" {
 				resp.ServerModel = serverModel
 			}
+			if resp.ResponseID == "" {
+				resp.ResponseID = responseID
+			}
 			if resp.RateLimitSummary == "" {
 				resp.RateLimitSummary = rateLimitSummary
 			}
@@ -1474,6 +1483,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		})
 	}
 	if completedParsed != nil {
+		if responseID == "" {
+			responseID = completedParsed.ResponseID
+		}
 		if out.Text == "" {
 			out.Text = completedParsed.Message.Text
 			out.Phase = completedParsed.Message.Phase
@@ -1493,6 +1505,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	}
 	return ChatResponse{
 		Message:            out,
+		ResponseID:         responseID,
 		StopReason:         stopReason,
 		EndTurn:            endTurn,
 		ServerModel:        serverModel,
@@ -1515,6 +1528,19 @@ func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItem
 		}
 	}
 	return false
+}
+
+func openAICodexResponseIDFromResponsePayload(data json.RawMessage) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var decoded struct {
+		ID string `json:"id,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(decoded.ID)
 }
 
 func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {

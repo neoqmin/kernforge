@@ -86,6 +86,7 @@ type ChatRequest struct {
 
 type ChatResponse struct {
 	Message            Message
+	ResponseID         string
 	StopReason         string
 	EndTurn            *bool
 	RawBody            string
