@@ -20,29 +20,31 @@ import (
 )
 
 type MCPServerConfig struct {
-	Name             string            `json:"name"`
-	Command          string            `json:"command"`
-	Args             []string          `json:"args,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`
-	EnvVars          []MCPServerEnvVar `json:"env_vars,omitempty"`
-	Cwd              string            `json:"cwd,omitempty"`
-	EnvironmentID    string            `json:"environment_id,omitempty"`
-	EnvironmentIDSet bool              `json:"-"`
-	Capabilities     []string          `json:"capabilities,omitempty"`
-	Disabled         bool              `json:"disabled,omitempty"`
-	DisabledSet      bool              `json:"-"`
+	Name                      string            `json:"name"`
+	Command                   string            `json:"command"`
+	Args                      []string          `json:"args,omitempty"`
+	Env                       map[string]string `json:"env,omitempty"`
+	EnvVars                   []MCPServerEnvVar `json:"env_vars,omitempty"`
+	Cwd                       string            `json:"cwd,omitempty"`
+	EnvironmentID             string            `json:"environment_id,omitempty"`
+	EnvironmentIDSet          bool              `json:"-"`
+	Capabilities              []string          `json:"capabilities,omitempty"`
+	SupportsParallelToolCalls bool              `json:"supports_parallel_tool_calls,omitempty"`
+	Disabled                  bool              `json:"disabled,omitempty"`
+	DisabledSet               bool              `json:"-"`
 }
 
 type mcpServerConfigJSON struct {
-	Name          string            `json:"name"`
-	Command       string            `json:"command"`
-	Args          []string          `json:"args,omitempty"`
-	Env           map[string]string `json:"env,omitempty"`
-	EnvVars       []MCPServerEnvVar `json:"env_vars,omitempty"`
-	Cwd           string            `json:"cwd,omitempty"`
-	EnvironmentID *string           `json:"environment_id,omitempty"`
-	Capabilities  []string          `json:"capabilities,omitempty"`
-	Disabled      *bool             `json:"disabled,omitempty"`
+	Name                      string            `json:"name"`
+	Command                   string            `json:"command"`
+	Args                      []string          `json:"args,omitempty"`
+	Env                       map[string]string `json:"env,omitempty"`
+	EnvVars                   []MCPServerEnvVar `json:"env_vars,omitempty"`
+	Cwd                       string            `json:"cwd,omitempty"`
+	EnvironmentID             *string           `json:"environment_id,omitempty"`
+	Capabilities              []string          `json:"capabilities,omitempty"`
+	SupportsParallelToolCalls bool              `json:"supports_parallel_tool_calls,omitempty"`
+	Disabled                  *bool             `json:"disabled,omitempty"`
 }
 
 func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
@@ -52,14 +54,15 @@ func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	*cfg = MCPServerConfig{
-		Name:          raw.Name,
-		Command:       raw.Command,
-		Args:          raw.Args,
-		Env:           raw.Env,
-		EnvVars:       raw.EnvVars,
-		Cwd:           raw.Cwd,
-		EnvironmentID: defaultMCPServerEnvironmentID,
-		Capabilities:  raw.Capabilities,
+		Name:                      raw.Name,
+		Command:                   raw.Command,
+		Args:                      raw.Args,
+		Env:                       raw.Env,
+		EnvVars:                   raw.EnvVars,
+		Cwd:                       raw.Cwd,
+		EnvironmentID:             defaultMCPServerEnvironmentID,
+		Capabilities:              raw.Capabilities,
+		SupportsParallelToolCalls: raw.SupportsParallelToolCalls,
 	}
 	if raw.EnvironmentID != nil {
 		cfg.EnvironmentID = normalizeMCPServerEnvironmentID(*raw.EnvironmentID)
@@ -81,15 +84,16 @@ func (cfg MCPServerConfig) MarshalJSON() ([]byte, error) {
 	environmentID := normalizeMCPServerEnvironmentID(cfg.EnvironmentID)
 
 	return json.Marshal(mcpServerConfigJSON{
-		Name:          cfg.Name,
-		Command:       cfg.Command,
-		Args:          cfg.Args,
-		Env:           cfg.Env,
-		EnvVars:       cfg.EnvVars,
-		Cwd:           cfg.Cwd,
-		EnvironmentID: &environmentID,
-		Capabilities:  cfg.Capabilities,
-		Disabled:      disabled,
+		Name:                      cfg.Name,
+		Command:                   cfg.Command,
+		Args:                      cfg.Args,
+		Env:                       cfg.Env,
+		EnvVars:                   cfg.EnvVars,
+		Cwd:                       cfg.Cwd,
+		EnvironmentID:             &environmentID,
+		Capabilities:              cfg.Capabilities,
+		SupportsParallelToolCalls: cfg.SupportsParallelToolCalls,
+		Disabled:                  disabled,
 	})
 }
 
@@ -103,6 +107,8 @@ type MCPToolDescriptor struct {
 	Description  string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
+	Annotations  map[string]any
+	ReadOnlyHint *bool
 }
 
 type MCPResourceDescriptor struct {
@@ -152,18 +158,27 @@ type MCPManager struct {
 }
 
 type MCPClient struct {
-	config    MCPServerConfig
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Reader
-	mu        sync.Mutex
-	nextID    int64
-	tools     []MCPToolDescriptor
-	resources []MCPResourceDescriptor
-	prompts   []MCPPromptDescriptor
-	status    MCPServerStatus
-	stderrMu  sync.Mutex
-	stderr    []string
+	config       MCPServerConfig
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdout       *bufio.Reader
+	writeMu      sync.Mutex
+	pendingMu    sync.Mutex
+	nextID       int64
+	pending      map[int64]chan mcpRPCResult
+	readLoopOnce sync.Once
+	readErr      error
+	tools        []MCPToolDescriptor
+	resources    []MCPResourceDescriptor
+	prompts      []MCPPromptDescriptor
+	status       MCPServerStatus
+	stderrMu     sync.Mutex
+	stderr       []string
+}
+
+type mcpRPCResult struct {
+	payload map[string]any
+	err     error
 }
 
 type MCPTool struct {
@@ -1072,6 +1087,12 @@ func (c *MCPClient) listTools(ctx context.Context) ([]MCPToolDescriptor, error) 
 			} else if schema, ok := item["output_schema"].(map[string]any); ok && len(schema) > 0 {
 				tool.OutputSchema = schema
 			}
+			if annotations, ok := item["annotations"].(map[string]any); ok && len(annotations) > 0 {
+				tool.Annotations = cloneStringAnyMap(annotations)
+				if hint, ok := mcpReadOnlyHintFromAnnotations(annotations); ok {
+					tool.ReadOnlyHint = &hint
+				}
+			}
 			if strings.TrimSpace(tool.Name) != "" {
 				out = append(out, tool)
 			}
@@ -1083,6 +1104,23 @@ func (c *MCPClient) listTools(ctx context.Context) ([]MCPToolDescriptor, error) 
 		cursor = nextCursor
 	}
 	return out, nil
+}
+
+func mcpReadOnlyHintFromAnnotations(annotations map[string]any) (bool, bool) {
+	for _, key := range []string{"readOnlyHint", "read_only_hint", "readOnly", "read_only"} {
+		raw, ok := annotations[key]
+		if !ok {
+			continue
+		}
+		if value, ok := raw.(bool); ok {
+			return value, true
+		}
+	}
+	return false, false
+}
+
+func (d MCPToolDescriptor) readOnlyHint() bool {
+	return d.ReadOnlyHint != nil && *d.ReadOnlyHint
 }
 
 func (c *MCPClient) listResources(ctx context.Context) ([]MCPResourceDescriptor, error) {
@@ -1557,33 +1595,31 @@ func (c *MCPClient) findPrompt(name string) (MCPPromptDescriptor, bool) {
 }
 
 func (c *MCPClient) request(ctx context.Context, method string, params any) (map[string]any, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.nextID++
-	id := c.nextID
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	responseCh := make(chan mcpRPCResult, 1)
+	id, err := c.registerPendingRequest(responseCh)
+	if err != nil {
+		return nil, err
+	}
+	c.ensureReadLoop()
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
 		"params":  params,
 	}
-	if err := writeRPCMessage(c.stdin, payload); err != nil {
+	c.writeMu.Lock()
+	err = writeRPCMessage(c.stdin, payload)
+	c.writeMu.Unlock()
+	if err != nil {
+		c.unregisterPendingRequest(id)
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
 
-	type result struct {
-		payload map[string]any
-		err     error
-	}
-	done := make(chan result, 1)
-	go func() {
-		resp, err := c.readResponse(id)
-		done <- result{payload: resp, err: err}
-	}()
-
 	select {
-	case out := <-done:
+	case out := <-responseCh:
 		if out.err != nil {
 			if stderr := c.stderrSummary(); stderr != "" {
 				return nil, fmt.Errorf("%w (%s)", out.err, stderr)
@@ -1592,8 +1628,103 @@ func (c *MCPClient) request(ctx context.Context, method string, params any) (map
 		}
 		return out.payload, nil
 	case <-ctx.Done():
+		c.unregisterPendingRequest(id)
 		c.Close()
 		return nil, ctx.Err()
+	}
+}
+
+func (c *MCPClient) registerPendingRequest(ch chan mcpRPCResult) (int64, error) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	c.nextID++
+	id := c.nextID
+	if c.pending == nil {
+		c.pending = map[int64]chan mcpRPCResult{}
+	}
+	c.pending[id] = ch
+	return id, nil
+}
+
+func (c *MCPClient) unregisterPendingRequest(id int64) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	if c.pending != nil {
+		delete(c.pending, id)
+	}
+}
+
+func (c *MCPClient) ensureReadLoop() {
+	c.readLoopOnce.Do(func() {
+		go c.readLoop()
+	})
+}
+
+func (c *MCPClient) readLoop() {
+	for {
+		msg, err := readRPCMessage(c.stdout)
+		if err != nil {
+			c.failPendingRequests(err)
+			return
+		}
+		if method, _ := msg["method"].(string); method != "" {
+			continue
+		}
+		id, ok := rpcMessageID(msg["id"])
+		if !ok {
+			continue
+		}
+		result := mcpRPCResult{}
+		if rawErr, ok := msg["error"]; ok && rawErr != nil {
+			result.err = fmt.Errorf("rpc error: %s", formatRPCError(rawErr))
+		} else if payload, ok := msg["result"].(map[string]any); ok {
+			result.payload = payload
+		} else {
+			result.payload = map[string]any{}
+		}
+		c.deliverPendingResponse(id, result)
+	}
+}
+
+func (c *MCPClient) deliverPendingResponse(id int64, result mcpRPCResult) {
+	c.pendingMu.Lock()
+	ch := c.pending[id]
+	if ch != nil {
+		delete(c.pending, id)
+	}
+	c.pendingMu.Unlock()
+	if ch != nil {
+		ch <- result
+	}
+}
+
+func (c *MCPClient) failPendingRequests(err error) {
+	c.pendingMu.Lock()
+	c.readErr = err
+	pending := c.pending
+	c.pending = map[int64]chan mcpRPCResult{}
+	c.pendingMu.Unlock()
+	for _, ch := range pending {
+		ch <- mcpRPCResult{err: err}
+	}
+}
+
+func rpcMessageID(raw any) (int64, bool) {
+	switch value := raw.(type) {
+	case float64:
+		return int64(value), true
+	case int64:
+		return value, true
+	case int:
+		return int64(value), true
+	case json.Number:
+		n, err := value.Int64()
+		return n, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -1603,29 +1734,9 @@ func (c *MCPClient) notify(method string, params any) error {
 		"method":  method,
 		"params":  params,
 	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return writeRPCMessage(c.stdin, payload)
-}
-
-func (c *MCPClient) readResponse(expectedID int64) (map[string]any, error) {
-	for {
-		msg, err := readRPCMessage(c.stdout)
-		if err != nil {
-			return nil, err
-		}
-		if method, _ := msg["method"].(string); method != "" {
-			continue
-		}
-		if !rpcIDMatches(msg["id"], expectedID) {
-			continue
-		}
-		if rawErr, ok := msg["error"]; ok && rawErr != nil {
-			return nil, fmt.Errorf("rpc error: %s", formatRPCError(rawErr))
-		}
-		if result, ok := msg["result"].(map[string]any); ok {
-			return result, nil
-		}
-		return map[string]any{}, nil
-	}
 }
 
 func (m *MCPManager) ReadResource(ctx context.Context, target string) (string, string, error) {
@@ -1840,20 +1951,6 @@ func readRPCHeaderMessageFromFirstLine(r *bufio.Reader, firstLine string) (map[s
 	return msg, nil
 }
 
-func rpcIDMatches(raw any, expected int64) bool {
-	switch value := raw.(type) {
-	case float64:
-		return int64(value) == expected
-	case int64:
-		return value == expected
-	case json.Number:
-		n, _ := value.Int64()
-		return n == expected
-	default:
-		return false
-	}
-}
-
 func formatRPCError(raw any) string {
 	if obj, ok := raw.(map[string]any); ok {
 		if msg := strings.TrimSpace(stringValue(obj, "message")); msg != "" {
@@ -1909,6 +2006,17 @@ func (t MCPTool) Definition() ToolDefinition {
 		description = mcpToolDescription(t.client.config.Name, t.remote)
 	}
 	return mcpToolDefinition(t.namespaced, t.remote, description)
+}
+
+func (t MCPTool) ReadOnlyToolCall() bool {
+	return t.remote.readOnlyHint()
+}
+
+func (t MCPTool) SupportsParallelToolCalls() bool {
+	if t.client != nil && t.client.config.SupportsParallelToolCalls {
+		return true
+	}
+	return t.remote.readOnlyHint()
 }
 
 func (t MCPTool) Execute(ctx context.Context, input any) (string, error) {

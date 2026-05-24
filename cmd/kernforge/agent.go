@@ -1357,6 +1357,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if saveErr != nil {
 			return "", saveErr
 		}
+		parallelBatchExecuted := false
+		if !deferEditToolsInBatch &&
+			!verificationOutOfScopeFinalOnly &&
+			!verificationDeclinedThisTurn &&
+			!verificationOutOfScopeThisTurn &&
+			!preWriteReviewRequiresReanchor &&
+			!editTargetMismatchRequiresReanchor &&
+			preWriteReviewRepairBlocks == 0 &&
+			a.shouldExecuteToolCallBatchInParallel(resp.Message.ToolCalls, readOnlyAnalysis, turnDisabledTools) {
+			outcome, err := a.executeParallelToolCallBatch(ctx, resp.Message.ToolCalls, toolMsgIndexes, mcpTurnMetadata)
+			if err != nil {
+				return "", err
+			}
+			sawToolResultThisTurn = true
+			iterationHadToolSuccess = outcome.hadSuccess
+			iterationToolError = outcome.errorText
+			parallelBatchExecuted = true
+		}
+		if parallelBatchExecuted {
+			goto toolLoopCompleted
+		}
 		for callIndex, call := range resp.Message.ToolCalls {
 			if err := ctx.Err(); err != nil {
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex, "NOT_EXECUTED: context canceled before this tool could run.")
@@ -1573,7 +1594,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			var result ToolExecutionResult
 			var err error
 			blockedToolResult := false
-			if readOnlyAnalysis && !toolCallAllowedInReadOnlyAnalysis(call) {
+			if readOnlyAnalysis && !a.toolCallAllowedInReadOnlyAnalysis(call) {
 				result = readOnlyAnalysisToolBlockedResult(a.Config, call)
 				err = fmt.Errorf("%w: %s", errReadOnlyAnalysisToolBlocked, strings.TrimSpace(call.Name))
 				blockedToolResult = true
@@ -1962,6 +1983,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			}
 		}
+	toolLoopCompleted:
 		if deferredMixedTools {
 			a.Session.AddMessage(internalUserMessage(mixedToolCallEditDeferralGuidance(a.Config)))
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -6914,6 +6936,160 @@ func toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
 	default:
 		return false
 	}
+}
+
+type parallelToolCallBatchOutcome struct {
+	hadSuccess bool
+	errorText  string
+}
+
+type parallelToolCallExecution struct {
+	call   ToolCall
+	result ToolExecutionResult
+	err    error
+}
+
+func (a *Agent) toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
+	if toolCallAllowedInReadOnlyAnalysis(call) {
+		return true
+	}
+	if a == nil || a.Tools == nil {
+		return false
+	}
+	return a.Tools.ToolCallReadOnly(call.Name)
+}
+
+func (a *Agent) shouldExecuteToolCallBatchInParallel(calls []ToolCall, readOnlyAnalysis bool, disabled map[string]bool) bool {
+	if len(calls) < 2 || a == nil || a.Tools == nil {
+		return false
+	}
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" || disabled[name] || isEditTool(name) {
+			return false
+		}
+		if !toolCallArgumentsAreJSONObject(call.Arguments) {
+			return false
+		}
+		if readOnlyAnalysis && !a.toolCallAllowedInReadOnlyAnalysis(call) {
+			return false
+		}
+		if !a.Tools.ToolCallSupportsParallel(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func toolCallArgumentsAreJSONObject(args string) bool {
+	if strings.TrimSpace(args) == "" {
+		return true
+	}
+	payload := map[string]any{}
+	return json.Unmarshal([]byte(args), &payload) == nil
+}
+
+func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCall, indexes []int, mcpTurnMetadata map[string]any) (parallelToolCallBatchOutcome, error) {
+	outcome := parallelToolCallBatchOutcome{}
+	if len(calls) == 0 {
+		return outcome, nil
+	}
+	results := make([]parallelToolCallExecution, len(calls))
+	provider := ""
+	model := ""
+	if a.Session != nil {
+		provider = a.Session.Provider
+		model = a.Session.Model
+	}
+	var wg sync.WaitGroup
+	for callIndex, call := range calls {
+		if summary := summarizeToolInvocation(a.Config, call); summary != "" {
+			a.emitProgressEvent(ProgressEvent{
+				Kind:             progressKindToolStarted,
+				Message:          summary,
+				ToolName:         call.Name,
+				ToolCallID:       call.ID,
+				ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+			})
+		}
+		a.noteToolConversationStart(call)
+		a.noteToolExecutionStart(call)
+		results[callIndex].call = call
+		wg.Add(1)
+		go func(index int, item ToolCall) {
+			defer wg.Done()
+			toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(provider, model))
+			toolCtx = contextWithMCPTurnMetadata(toolCtx, mcpTurnMetadata)
+			result, err := a.Tools.ExecuteDetailed(toolCtx, item.Name, item.Arguments)
+			result = sanitizeToolExecutionImageDetailForModel(result, provider, model)
+			results[index] = parallelToolCallExecution{
+				call:   item,
+				result: result,
+				err:    err,
+			}
+		}(callIndex, call)
+	}
+	wg.Wait()
+	for callIndex, executed := range results {
+		call := executed.call
+		result := executed.result
+		err := executed.err
+		toolMsgIndex := -1
+		if callIndex >= 0 && callIndex < len(indexes) {
+			toolMsgIndex = indexes[callIndex]
+		}
+		if err == nil {
+			a.noteToolConversationResult(call, result)
+		} else {
+			a.noteToolConversationFailureResult(call, result, err, false)
+		}
+		toolMsg := Message{
+			Role:             "tool",
+			ToolCallID:       call.ID,
+			ToolName:         call.Name,
+			Text:             toolExecutionModelText(result),
+			ToolContentItems: toolExecutionModelContentItems(result),
+			ToolMeta:         result.Meta,
+			IsError:          err != nil,
+		}
+		if err != nil {
+			toolMsg.Text = toolExecutionModelTextWithError(result, err)
+			if currentError := strings.TrimSpace(err.Error()); currentError != "" {
+				outcome.errorText = currentError
+			}
+			if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+				a.emitProgressEvent(ProgressEvent{
+					Kind:             progressKindToolFailed,
+					Message:          summary,
+					ToolName:         call.Name,
+					ToolCallID:       call.ID,
+					ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+					Status:           firstNonEmptyLine(err.Error()),
+				})
+			}
+		} else {
+			outcome.hadSuccess = true
+			if summary := summarizeToolCompletion(a.Config, call, result.DisplayText); summary != "" {
+				a.emitProgressEvent(ProgressEvent{
+					Kind:             progressKindToolCompleted,
+					Message:          summary,
+					ToolName:         call.Name,
+					ToolCallID:       call.ID,
+					ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+				})
+			}
+		}
+		a.setToolExecutionResult(toolMsgIndex, toolMsg)
+		a.noteToolExecutionResultDetailed(call, result, err)
+		accounting := a.accountGoalProgressAfterTool(call)
+		if accounting.StatusChanged && accounting.Goal.Status == goalStatusBudgetLimited {
+			a.Session.AddMessage(internalUserMessage(goalBudgetLimitContextMessage(accounting.Goal)))
+		}
+	}
+	if err := a.Store.Save(a.Session); err != nil {
+		return outcome, err
+	}
+	return outcome, nil
 }
 
 func readOnlyInspectionToolName(name string) bool {
