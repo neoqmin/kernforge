@@ -765,6 +765,69 @@ func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutputWithNameFallbackCallID(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{{Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+			{Role: "user", Text: "continue"},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	encoded := string(body)
+	for _, want := range []string{
+		`"type":"function_call"`,
+		`"call_id":"read_file"`,
+		`"type":"function_call_output"`,
+		`"output":"aborted"`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("expected %q in request body %s", want, encoded)
+		}
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyMatchesToolOutputWithNameFallbackCallID(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{{Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+			{Role: "tool", ToolName: "read_file", Text: "package main"},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	encoded := string(body)
+	for _, want := range []string{
+		`"type":"function_call"`,
+		`"call_id":"read_file"`,
+		`"type":"function_call_output"`,
+		`"output":"package main"`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("expected %q in request body %s", want, encoded)
+		}
+	}
+	if strings.Contains(encoded, `"output":"aborted"`) {
+		t.Fatalf("did not expect synthesized aborted output when matching tool output exists: %s", encoded)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySynthesizesMissingApplyPatchOutputAsCustom(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
