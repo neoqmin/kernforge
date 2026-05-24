@@ -2274,6 +2274,24 @@ func TestReadOpenAICodexStreamPreservesEndTurnFromCompletedResponse(t *testing.T
 	}
 }
 
+func TestReadOpenAICodexStreamPreservesEndTurnFromCompletedResponseWithoutOutput(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"continuing"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","end_turn":false}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "continuing" {
+		t.Fatalf("expected streamed text fallback, got %q", resp.Message.Text)
+	}
+	if resp.EndTurn == nil || *resp.EndTurn {
+		t.Fatalf("expected nested stream end_turn=false to survive fallback, got %#v", resp.EndTurn)
+	}
+}
+
 func TestReadOpenAICodexStreamEmitsToolProgressEvents(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`,
