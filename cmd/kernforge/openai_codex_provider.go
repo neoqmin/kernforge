@@ -276,12 +276,8 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		}
 		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
-	if req.JSONMode {
-		payload["text"] = map[string]any{
-			"format": map[string]any{
-				"type": "json_object",
-			},
-		}
+	if textControls := openAICodexTextControls(model, req.JSONMode); len(textControls) > 0 {
+		payload["text"] = textControls
 	}
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
@@ -298,6 +294,28 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func openAICodexTextControls(model string, jsonMode bool) map[string]any {
+	text := map[string]any{}
+	if verbosity := openAICodexDefaultVerbosity(model); verbosity != "" {
+		text["verbosity"] = verbosity
+	}
+	if jsonMode {
+		text["format"] = map[string]any{
+			"type": "json_object",
+		}
+	}
+	return text
+}
+
+func openAICodexDefaultVerbosity(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.4", "gpt-5.5":
+		return "low"
+	default:
+		return ""
+	}
 }
 
 func openAICodexToolPayload(tool ToolDefinition) map[string]any {
