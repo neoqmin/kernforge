@@ -64,6 +64,7 @@ func (a *Agent) projectAgentsMDContents() string {
 	if root == "" {
 		root = cwd
 	}
+	root = agentsMDProjectRoot(root, cwd)
 	maxBytes := agentsMDMaxBytes
 	if a.Config.ProjectDocMaxBytes != nil {
 		maxBytes = *a.Config.ProjectDocMaxBytes
@@ -138,6 +139,16 @@ func loadProjectAgentsMD(root string, cwd string, maxBytes int, fallbackNames []
 		remaining -= len(data)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func agentsMDProjectRoot(root string, cwd string) string {
+	root = cleanAbsPath(root)
+	cwd = cleanAbsPath(cwd)
+	gitRoot := cleanAbsPath(findGitProjectRoot(cwd))
+	if gitRoot == "" || cwd == "" || !pathContains(gitRoot, cwd) {
+		return root
+	}
+	return gitRoot
 }
 
 func agentsMDSearchDirs(root string, cwd string) []string {
