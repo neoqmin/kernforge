@@ -969,8 +969,11 @@ func openAICodexAssistantImageGenerationInputItems(workingDir string, images []M
 		item := map[string]any{
 			"type":   "image_generation_call",
 			"id":     openAICodexAssistantImageGenerationID(image, index),
-			"status": "completed",
+			"status": firstNonEmptyTrimmed(image.Status, "completed"),
 			"result": "",
+		}
+		if revisedPrompt := strings.TrimSpace(image.RevisedPrompt); revisedPrompt != "" {
+			item["revised_prompt"] = revisedPrompt
 		}
 		if supportsImages {
 			if encoded, err := encodeMessageImages(workingDir, []MessageImage{image}); err == nil && len(encoded) > 0 {
@@ -983,6 +986,9 @@ func openAICodexAssistantImageGenerationInputItems(workingDir string, images []M
 }
 
 func openAICodexAssistantImageGenerationID(image MessageImage, index int) string {
+	if id := strings.TrimSpace(image.ID); id != "" {
+		return id
+	}
 	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(image.Path)))
 	if base != "" {
 		if ext := filepath.Ext(base); ext != "" {
@@ -1947,8 +1953,11 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			if path, err := saveOpenAICodexImageGenerationOutputItem(opts.ImageOutputRoot, opts.SessionID, item); err == nil && strings.TrimSpace(path) != "" {
 				savedPath = path
 				hostedImages = appendUniqueImages(hostedImages, MessageImage{
-					Path:      path,
-					MediaType: "image/png",
+					Path:          path,
+					MediaType:     "image/png",
+					ID:            strings.TrimSpace(item.ID),
+					Status:        strings.TrimSpace(item.Status),
+					RevisedPrompt: strings.TrimSpace(item.RevisedPrompt),
 				})
 			}
 		}

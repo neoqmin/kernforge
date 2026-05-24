@@ -17,13 +17,16 @@ import (
 )
 
 type MessageImage struct {
-	Path      string `json:"path"`
-	MediaType string `json:"media_type"`
-	Detail    string `json:"detail,omitempty"`
+	Path          string `json:"path"`
+	MediaType     string `json:"media_type"`
+	Detail        string `json:"detail,omitempty"`
+	ID            string `json:"id,omitempty"`
+	Status        string `json:"status,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
 }
 
 func messageImageApproxChars(baseDir string, image MessageImage) int {
-	total := len(image.Path) + len(image.MediaType) + len(image.Detail)
+	total := len(image.Path) + len(image.MediaType) + len(image.Detail) + len(image.ID) + len(image.Status) + len(image.RevisedPrompt)
 	if strings.TrimSpace(image.Detail) == imageDetailOriginal {
 		if originalEstimate := originalMessageImageApproxChars(baseDir, image); originalEstimate > 0 {
 			return total + originalEstimate
@@ -417,6 +420,15 @@ func appendUniqueImages(existing []MessageImage, extra ...MessageImage) []Messag
 				existingKey := strings.ToLower(strings.TrimSpace(existing[i].Path))
 				if existingKey == key {
 					existing[i].Detail = strongestImageDetail(existing[i].Detail, item.Detail)
+					if strings.TrimSpace(existing[i].ID) == "" {
+						existing[i].ID = strings.TrimSpace(item.ID)
+					}
+					if strings.TrimSpace(existing[i].Status) == "" {
+						existing[i].Status = strings.TrimSpace(item.Status)
+					}
+					if strings.TrimSpace(existing[i].RevisedPrompt) == "" {
+						existing[i].RevisedPrompt = strings.TrimSpace(item.RevisedPrompt)
+					}
 				}
 			}
 			continue

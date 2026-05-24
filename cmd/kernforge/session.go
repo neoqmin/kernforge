@@ -465,10 +465,20 @@ func (s *Session) ExportText() string {
 		if len(msg.Images) > 0 {
 			for _, image := range msg.Images {
 				detail := strings.TrimSpace(image.Detail)
+				metadata := ""
+				if id := strings.TrimSpace(image.ID); id != "" {
+					metadata += ", id=" + id
+				}
+				if status := strings.TrimSpace(image.Status); status != "" {
+					metadata += ", status=" + status
+				}
+				if revisedPrompt := strings.TrimSpace(image.RevisedPrompt); revisedPrompt != "" {
+					metadata += ", revised_prompt=" + compactPromptSection(revisedPrompt, 120)
+				}
 				if detail != "" {
-					fmt.Fprintf(&b, "- image: %s (%s, detail=%s)\n", image.Path, image.MediaType, detail)
+					fmt.Fprintf(&b, "- image: %s (%s, detail=%s%s)\n", image.Path, image.MediaType, detail, metadata)
 				} else {
-					fmt.Fprintf(&b, "- image: %s (%s)\n", image.Path, image.MediaType)
+					fmt.Fprintf(&b, "- image: %s (%s%s)\n", image.Path, image.MediaType, metadata)
 				}
 			}
 			b.WriteString("\n")
