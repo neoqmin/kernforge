@@ -777,6 +777,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		rawAssistantText := resp.Message.Text
 		resp.Message.Text = sanitizeAssistantMessageText(rawAssistantText, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
+		resp.Message.ToolCalls = stripUnsupportedOwnerNodeIDFromToolCalls(resp.Message.ToolCalls)
 		if toolRegistryHasTool(a.Tools, "apply_patch") {
 			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
 		}
@@ -7552,6 +7553,36 @@ func withToolCallOwnerNodeID(call ToolCall, ownerNodeID string) ToolCall {
 	}
 	call.Arguments = string(encoded)
 	return call
+}
+
+func stripUnsupportedOwnerNodeIDFromToolCalls(calls []ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := make([]ToolCall, len(calls))
+	copy(out, calls)
+	for index := range out {
+		if toolCallSupportsOwnerNodeID(out[index].Name) {
+			continue
+		}
+		if strings.TrimSpace(out[index].Arguments) == "" {
+			continue
+		}
+		args := map[string]any{}
+		if err := json.Unmarshal([]byte(out[index].Arguments), &args); err != nil {
+			continue
+		}
+		if _, ok := args["owner_node_id"]; !ok {
+			continue
+		}
+		delete(args, "owner_node_id")
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			continue
+		}
+		out[index].Arguments = string(encoded)
+	}
+	return out
 }
 
 func assignFocusedOwnerNodeToToolCalls(calls []ToolCall, session *Session) []ToolCall {
