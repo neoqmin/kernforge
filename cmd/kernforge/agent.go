@@ -8851,7 +8851,7 @@ func compactDropOrphanToolMessages(messages []Message) []Message {
 			continue
 		}
 		for _, call := range msg.ToolCalls {
-			callID := firstNonEmptyTrimmed(call.ID, call.Name)
+			callID := openAICodexToolCallHistoryCallID(call)
 			if callID != "" {
 				expected[callID] = true
 				expectedSets.markToolCall(callID, call)

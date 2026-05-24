@@ -795,6 +795,35 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesToolSearchCallWithoutCallID(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "discover tool"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				Name:      "tool_search",
+				Arguments: mustJSON(map[string]any{"query": "apply_patch"}),
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected user and nullable tool_search call without synthesized output, got %#v in %s", input, body)
+	}
+	call := input[1].(map[string]any)
+	if call["type"] != "tool_search_call" || call["call_id"] != nil || call["execution"] != "client" {
+		t.Fatalf("expected Codex tool_search_call with null call_id, got %#v", call)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesLocalShellCallOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -3463,6 +3492,11 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 			"arguments":{"query":"apply_patch","limit":5}
 		},{
 			"type":"tool_search_call",
+			"call_id":null,
+			"execution":"client",
+			"arguments":{"query":"nullable"}
+		},{
+			"type":"tool_search_call",
 			"call_id":"call_server",
 			"execution":"server",
 			"arguments":{"query":"ignored"}
@@ -3471,7 +3505,7 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseOpenAICodexResponse: %v", err)
 	}
-	if len(resp.Message.ToolCalls) != 2 {
+	if len(resp.Message.ToolCalls) != 3 {
 		t.Fatalf("expected custom and client tool_search calls, got %#v", resp.Message.ToolCalls)
 	}
 	if resp.Message.ToolCalls[0].ID != "call_patch" || resp.Message.ToolCalls[0].Name != "apply_patch" {
@@ -3493,6 +3527,10 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 	}
 	if searchArgs["query"] != "apply_patch" || searchArgs["limit"].(float64) != 5 {
 		t.Fatalf("unexpected tool_search arguments: %#v", searchArgs)
+	}
+	nullableSearch := resp.Message.ToolCalls[2]
+	if nullableSearch.ID != "" || nullableSearch.Name != "tool_search" {
+		t.Fatalf("unexpected nullable tool_search call: %#v", nullableSearch)
 	}
 }
 
@@ -4227,7 +4265,8 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}`,
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"tool_search_call","call_id":"call_search","execution":"client","arguments":{"query":"apply_patch","limit":5}}}`,
-		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"tool_search_call","call_id":"call_server","execution":"server","arguments":{"query":"ignored"}}}`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"tool_search_call","call_id":null,"execution":"client","arguments":{"query":"nullable"}}}`,
+		`data: {"type":"response.output_item.done","output_index":3,"item":{"type":"tool_search_call","call_id":"call_server","execution":"server","arguments":{"query":"ignored"}}}`,
 		`data: {"type":"response.completed"}`,
 		"",
 	}, "\n\n"))
@@ -4238,7 +4277,7 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readOpenAICodexStream: %v", err)
 	}
-	if len(resp.Message.ToolCalls) != 2 {
+	if len(resp.Message.ToolCalls) != 3 {
 		t.Fatalf("expected custom and client tool_search calls, got %#v", resp.Message.ToolCalls)
 	}
 	if resp.Message.ToolCalls[0].ID != "call_patch" || resp.Message.ToolCalls[0].Name != "apply_patch" {
@@ -4253,6 +4292,9 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	}
 	if resp.Message.ToolCalls[1].ID != "call_search" || resp.Message.ToolCalls[1].Name != "tool_search" {
 		t.Fatalf("unexpected tool_search call: %#v", resp.Message.ToolCalls[1])
+	}
+	if resp.Message.ToolCalls[2].ID != "" || resp.Message.ToolCalls[2].Name != "tool_search" {
+		t.Fatalf("unexpected nullable tool_search call: %#v", resp.Message.ToolCalls[2])
 	}
 	if progressEventsContain(events, progressKindModelStreamToolReady, "call_server") {
 		t.Fatalf("server-side tool_search call should not be emitted as a client tool call: %#v", events)
