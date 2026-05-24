@@ -2232,6 +2232,36 @@ func TestParseOpenAICodexResponsePreservesFunctionCallNamespace(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponseAcceptsHostedOutputItems(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"image_generation_call",
+			"id":"ig_123",
+			"status":"completed",
+			"revised_prompt":"A clean diagram",
+			"result":"Zm9v"
+		},{
+			"type":"web_search_call",
+			"id":"ws_123",
+			"status":"completed",
+			"action":{"type":"search","query":"codex hosted tools"}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if !strings.Contains(resp.Message.Text, "Image generation completed: ig_123") {
+		t.Fatalf("expected image generation hosted output text, got %q", resp.Message.Text)
+	}
+	if strings.Contains(resp.Message.Text, "Zm9v") {
+		t.Fatalf("hosted image text must not expose raw base64 payload: %q", resp.Message.Text)
+	}
+	if !strings.Contains(resp.Message.Text, "Web search completed: codex hosted tools (ws_123)") {
+		t.Fatalf("expected web search hosted output text, got %q", resp.Message.Text)
+	}
+}
+
 func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"done text"}]}}`,
@@ -2244,6 +2274,37 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	}
 	if resp.Message.Text != "done text" {
 		t.Fatalf("expected done message text, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamSavesImageGenerationOutput(t *testing.T) {
+	imageData := []byte("png-bytes")
+	encoded := base64.StdEncoding.EncodeToString(imageData)
+	stream := strings.NewReader(strings.Join([]string{
+		fmt.Sprintf(`data: {"type":"response.output_item.done","item":{"type":"image_generation_call","id":"ig/save:1","status":"completed","revised_prompt":"A saved image","result":%q}}`, encoded),
+		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"image_generation_call","id":"ig/save:1","status":"completed","revised_prompt":"A saved image","result":"` + encoded + `"}]}}`,
+		"",
+	}, "\n\n"))
+	root := t.TempDir()
+	resp, err := readOpenAICodexStreamWithOptions(context.Background(), stream, openAICodexStreamOptions{
+		SessionID:       "session/1",
+		ImageOutputRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	wantPath := openAICodexImageGenerationArtifactPath(root, "session/1", "ig/save:1")
+	if len(resp.Message.Images) != 1 || resp.Message.Images[0].Path != wantPath || resp.Message.Images[0].MediaType != "image/png" {
+		t.Fatalf("expected saved image metadata %q, got %#v", wantPath, resp.Message.Images)
+	}
+	if got, err := os.ReadFile(wantPath); err != nil || string(got) != string(imageData) {
+		t.Fatalf("expected saved image bytes %q at %s, got %q err=%v", string(imageData), wantPath, string(got), err)
+	}
+	if !strings.Contains(resp.Message.Text, "Saved image: "+wantPath) {
+		t.Fatalf("expected saved image path in response text, got %q", resp.Message.Text)
+	}
+	if strings.Contains(resp.Message.Text, encoded) {
+		t.Fatalf("stream response text must not expose raw base64 payload: %q", resp.Message.Text)
 	}
 }
 

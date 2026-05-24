@@ -277,7 +277,11 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 			}
 			return ChatResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
 		}
-		out, err := readOpenAICodexStream(ctx, resp.Body, req.OnProgressEvent)
+		out, err := readOpenAICodexStreamWithOptions(ctx, resp.Body, openAICodexStreamOptions{
+			OnProgressEvent: req.OnProgressEvent,
+			SessionID:       sessionID,
+			ImageOutputRoot: userConfigDir(),
+		})
 		if err != nil {
 			return ChatResponse{}, err
 		}
@@ -895,18 +899,21 @@ func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, e
 }
 
 type openAICodexOutputItem struct {
-	ID        string          `json:"id,omitempty"`
-	Type      string          `json:"type"`
-	Status    string          `json:"status,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Phase     string          `json:"phase,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Namespace string          `json:"namespace,omitempty"`
-	Input     string          `json:"input,omitempty"`
-	Execution string          `json:"execution,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Content   []struct {
+	ID            string          `json:"id,omitempty"`
+	Type          string          `json:"type"`
+	Status        string          `json:"status,omitempty"`
+	RevisedPrompt string          `json:"revised_prompt,omitempty"`
+	Result        string          `json:"result,omitempty"`
+	Role          string          `json:"role,omitempty"`
+	Phase         string          `json:"phase,omitempty"`
+	CallID        string          `json:"call_id,omitempty"`
+	Name          string          `json:"name,omitempty"`
+	Namespace     string          `json:"namespace,omitempty"`
+	Input         string          `json:"input,omitempty"`
+	Execution     string          `json:"execution,omitempty"`
+	Arguments     json.RawMessage `json:"arguments,omitempty"`
+	Action        json.RawMessage `json:"action,omitempty"`
+	Content       []struct {
 		Type string `json:"type"`
 		Text string `json:"text,omitempty"`
 	} `json:"content,omitempty"`
@@ -979,6 +986,10 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			if reasoningText := openAICodexReasoningItemText(item); strings.TrimSpace(reasoningText) != "" {
 				reasoningTexts = append(reasoningTexts, reasoningText)
 			}
+		case "image_generation_call", "web_search_call":
+			if itemText := openAICodexHostedOutputItemText(item, ""); strings.TrimSpace(itemText) != "" {
+				fallbackTexts = append(fallbackTexts, itemText)
+			}
 		}
 	}
 	texts := fallbackTexts
@@ -1018,6 +1029,12 @@ type openAICodexStreamToolCall struct {
 	ReadyEmitted bool
 }
 
+type openAICodexStreamOptions struct {
+	OnProgressEvent func(ProgressEvent)
+	SessionID       string
+	ImageOutputRoot string
+}
+
 func openAICodexStreamToolCallIndex(toolCalls map[int]*openAICodexStreamToolCall, target *openAICodexStreamToolCall) (int, bool) {
 	for index, item := range toolCalls {
 		if item == target {
@@ -1028,6 +1045,14 @@ func openAICodexStreamToolCallIndex(toolCalls map[int]*openAICodexStreamToolCall
 }
 
 func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent ...func(ProgressEvent)) (ChatResponse, error) {
+	opts := openAICodexStreamOptions{}
+	if len(onProgressEvent) > 0 {
+		opts.OnProgressEvent = onProgressEvent[0]
+	}
+	return readOpenAICodexStreamWithOptions(ctx, body, opts)
+}
+
+func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts openAICodexStreamOptions) (ChatResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), openAICodexSSEMaxLineBytes)
 
@@ -1036,6 +1061,8 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	deltaPrefixTexts := []string{}
 	itemTexts := []string{}
 	finalItemTexts := []string{}
+	hostedItemTexts := []string{}
+	hostedImages := []MessageImage{}
 	var completedResponse json.RawMessage
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
@@ -1047,9 +1074,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	rateLimitSummary := ""
 	modelVerifications := []string{}
 	var progress func(ProgressEvent)
-	if len(onProgressEvent) > 0 {
-		progress = onProgressEvent[0]
-	}
+	progress = opts.OnProgressEvent
 
 	ensureToolCall := func(index int) *openAICodexStreamToolCall {
 		item := toolCalls[index]
@@ -1134,6 +1159,21 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			return
 		}
 		deltaPrefixTexts = append(deltaPrefixTexts, itemText)
+	}
+	collectHostedOutputItem := func(item openAICodexOutputItem) {
+		savedPath := ""
+		if strings.TrimSpace(item.Type) == "image_generation_call" {
+			if path, err := saveOpenAICodexImageGenerationOutputItem(opts.ImageOutputRoot, opts.SessionID, item); err == nil && strings.TrimSpace(path) != "" {
+				savedPath = path
+				hostedImages = appendUniqueImages(hostedImages, MessageImage{
+					Path:      path,
+					MediaType: "image/png",
+				})
+			}
+		}
+		if itemText := openAICodexHostedOutputItemText(item, savedPath); strings.TrimSpace(itemText) != "" {
+			hostedItemTexts = append(hostedItemTexts, itemText)
+		}
 	}
 
 	processPayload := func(payload string) (ChatResponse, bool, error) {
@@ -1267,6 +1307,8 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 				if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
 					reasoning.WriteString(reasoningText)
 				}
+			} else if event.Item.Type == "image_generation_call" || event.Item.Type == "web_search_call" {
+				collectHostedOutputItem(event.Item)
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
 				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
@@ -1389,6 +1431,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if len(resp.ModelVerifications) == 0 {
 				resp.ModelVerifications = append([]string(nil), modelVerifications...)
 			}
+			if len(resp.Message.Images) == 0 && len(hostedImages) > 0 {
+				resp.Message.Images = appendUniqueImages(resp.Message.Images, hostedImages...)
+			}
+			if len(hostedItemTexts) > 0 && (strings.TrimSpace(resp.Message.Text) == "" || !openAICodexResponsePayloadHasMessageText(completedResponse)) {
+				resp.Message.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(hostedItemTexts), "\n"))
+			}
 			return resp, nil
 		}
 	}
@@ -1403,10 +1451,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		texts := itemTexts
 		if len(finalItemTexts) > 0 {
 			texts = finalItemTexts
+		} else if len(texts) == 0 && len(hostedItemTexts) > 0 {
+			texts = hostedItemTexts
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
 	}
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String())}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), Images: appendUniqueImages(nil, hostedImages...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -1449,6 +1499,31 @@ func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
 		}
 	}
 	return strings.TrimSpace(decoded.Model)
+}
+
+func openAICodexResponsePayloadHasMessageText(data json.RawMessage) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var decoded struct {
+		OutputText string                  `json:"output_text,omitempty"`
+		Output     []openAICodexOutputItem `json:"output,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return false
+	}
+	if strings.TrimSpace(decoded.OutputText) != "" {
+		return true
+	}
+	for _, item := range decoded.Output {
+		if strings.TrimSpace(item.Type) != "message" {
+			continue
+		}
+		if strings.TrimSpace(openAICodexOutputItemText(item)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func openAICodexDeltaPrefixText(items []string) string {
@@ -1649,6 +1724,98 @@ func openAICodexReasoningItemText(item openAICodexOutputItem) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func openAICodexHostedOutputItemText(item openAICodexOutputItem, savedPath string) string {
+	switch strings.TrimSpace(item.Type) {
+	case "image_generation_call":
+		return openAICodexImageGenerationOutputItemText(item, savedPath)
+	case "web_search_call":
+		return openAICodexWebSearchOutputItemText(item)
+	default:
+		return ""
+	}
+}
+
+func openAICodexImageGenerationOutputItemText(item openAICodexOutputItem, savedPath string) string {
+	id := firstNonEmptyTrimmed(item.ID, item.CallID, "image_generation")
+	status := firstNonEmptyTrimmed(item.Status, "completed")
+	parts := []string{fmt.Sprintf("Image generation %s: %s", status, id)}
+	if strings.TrimSpace(savedPath) != "" {
+		parts = append(parts, "Saved image: "+strings.TrimSpace(savedPath))
+	}
+	if strings.TrimSpace(item.RevisedPrompt) != "" {
+		parts = append(parts, "Revised prompt: "+strings.TrimSpace(item.RevisedPrompt))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func openAICodexWebSearchOutputItemText(item openAICodexOutputItem) string {
+	id := firstNonEmptyTrimmed(item.ID, item.CallID, "web_search")
+	status := firstNonEmptyTrimmed(item.Status, "completed")
+	query := openAICodexWebSearchOutputItemQuery(item)
+	if query != "" {
+		return fmt.Sprintf("Web search %s: %s (%s)", status, query, id)
+	}
+	return fmt.Sprintf("Web search %s: %s", status, id)
+}
+
+func openAICodexWebSearchOutputItemQuery(item openAICodexOutputItem) string {
+	if len(item.Action) == 0 {
+		return ""
+	}
+	var action struct {
+		Query string `json:"query,omitempty"`
+	}
+	if err := json.Unmarshal(item.Action, &action); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(action.Query)
+}
+
+func saveOpenAICodexImageGenerationOutputItem(root string, sessionID string, item openAICodexOutputItem) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" || strings.TrimSpace(item.Result) == "" {
+		return "", nil
+	}
+	callID := firstNonEmptyTrimmed(item.ID, item.CallID, "generated_image")
+	bytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(item.Result))
+	if err != nil {
+		return "", err
+	}
+	path := openAICodexImageGenerationArtifactPath(root, sessionID, callID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, bytes, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func openAICodexImageGenerationArtifactPath(root string, sessionID string, callID string) string {
+	return filepath.Join(
+		root,
+		"generated_images",
+		sanitizeOpenAICodexImageGenerationPathSegment(sessionID),
+		sanitizeOpenAICodexImageGenerationPathSegment(callID)+".png",
+	)
+}
+
+func sanitizeOpenAICodexImageGenerationPathSegment(value string) string {
+	var b strings.Builder
+	for _, ch := range strings.TrimSpace(value) {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			b.WriteRune(ch)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "generated_image"
+	}
+	return out
 }
 
 func normalizeOpenAICodexMessagePhase(phase string) string {
