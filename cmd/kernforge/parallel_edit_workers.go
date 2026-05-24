@@ -347,17 +347,51 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 		Text: prompt,
 	}}
 	lastText := ""
+	stopHookActive := false
+	stopHookRevisions := 0
+	stopHookHandled := false
+	stopHookFailureResult := func(err error) parallelEditableWorkerResult {
+		stopHookHandled = true
+		return parallelEditableWorkerResult{
+			Plan:    plan,
+			Err:     err,
+			Summary: "Parallel editable worker SubagentStop hook failed for " + plan.Node.Title,
+			Detail:  err.Error(),
+		}
+	}
 	defer func() {
-		if out.Skipped {
+		if out.Skipped || stopHookHandled {
 			return
 		}
 		lastAssistantMessage := firstNonBlankString(out.Detail, out.Summary, lastText)
-		if err := a.runSubagentStopHookWithTurnID(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, lastAssistantMessage, turnID); err != nil && out.Err == nil {
+		verdict, err := a.runSubagentStopHookVerdictWithTurnID(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, lastAssistantMessage, turnID, stopHookActive)
+		if err == nil && stopHookShouldBlock(verdict) {
+			err = fmt.Errorf("%s", subagentStopHookContinuationGuidance(verdict))
+		}
+		if err != nil && out.Err == nil {
 			out.Err = err
 			out.Summary = "Parallel editable worker SubagentStop hook failed for " + plan.Node.Title
 			out.Detail = err.Error()
 		}
 	}()
+	requestStopContinuation := func(lastAssistantMessage string, continuationMessages ...Message) (bool, error) {
+		verdict, err := a.runSubagentStopHookVerdictWithTurnID(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, lastAssistantMessage, turnID, stopHookActive)
+		if err != nil {
+			return false, err
+		}
+		if !stopHookShouldBlock(verdict) {
+			stopHookHandled = true
+			return false, nil
+		}
+		if stopHookRevisions >= maxStopHookRevisions {
+			return false, fmt.Errorf("SubagentStop hook kept blocking worker answer after %d continuation attempt(s): %s", stopHookRevisions, strings.TrimSpace(verdict.StopMessage))
+		}
+		stopHookRevisions++
+		stopHookActive = true
+		messages = append(messages, continuationMessages...)
+		messages = append(messages, internalUserMessage(subagentStopHookContinuationGuidance(verdict)))
+		return true, nil
+	}
 	lastErr := error(nil)
 	lastErrToolName := ""
 
@@ -405,6 +439,24 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 						ErrorToolName: call.Name,
 					}
 				}
+				stopMessage := firstNonBlankString(stripPatchFromText(lastText), result.DisplayText)
+				continuationMessages := []Message{}
+				if lastText != "" {
+					continuationMessages = append(continuationMessages, Message{
+						Role: "assistant",
+						Text: lastText,
+					})
+				}
+				if resultText := strings.TrimSpace(result.DisplayText); resultText != "" {
+					continuationMessages = append(continuationMessages, internalUserMessage("Parallel editable worker patch application result:\n"+resultText))
+				}
+				shouldContinue, stopErr := requestStopContinuation(stopMessage, continuationMessages...)
+				if stopErr != nil {
+					return stopHookFailureResult(stopErr)
+				}
+				if shouldContinue {
+					continue
+				}
 				return parallelEditableWorkerResult{
 					Plan:        plan,
 					Summary:     summarizeParallelEditableWorkerApplyResult(result),
@@ -415,6 +467,16 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 				}
 			}
 			if lastText != "" {
+				shouldContinue, stopErr := requestStopContinuation(lastText, Message{
+					Role: "assistant",
+					Text: lastText,
+				})
+				if stopErr != nil {
+					return stopHookFailureResult(stopErr)
+				}
+				if shouldContinue {
+					continue
+				}
 				return parallelEditableWorkerResult{
 					Plan:    plan,
 					Summary: summarizeParallelEditableWorkerNoop(lastText),
@@ -466,6 +528,14 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 				continue
 			}
 			if strings.TrimSpace(call.Name) == "apply_patch" {
+				stopMessage := firstNonBlankString(lastText, result.DisplayText)
+				shouldContinue, stopErr := requestStopContinuation(stopMessage)
+				if stopErr != nil {
+					return stopHookFailureResult(stopErr)
+				}
+				if shouldContinue {
+					break
+				}
 				return parallelEditableWorkerResult{
 					Plan:        plan,
 					Summary:     summarizeParallelEditableWorkerApplyResult(result),

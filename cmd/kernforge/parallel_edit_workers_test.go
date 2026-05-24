@@ -394,6 +394,98 @@ func TestMaybeRunInteractiveParallelEditableWorkersAppliesPatchForSecondaryEditN
 	}
 }
 
+func TestParallelEditableWorkerContinuesWhenSubagentStopBlocks(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{BaseRoot: root, Root: root}
+	session := NewSession(root, "provider", "main-model", "", "default")
+	session.TaskState = &TaskState{
+		Goal: "Review worker continuation.",
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "draft parallel worker answer needs revision",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "revised parallel worker answer with evidence",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:     "gpt-test",
+			MaxTokens: 1024,
+		},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Session:        session,
+		Workspace:      ws,
+		Tools: NewToolRegistry(
+			NewReadFileTool(ws),
+			NewListFilesTool(ws),
+			NewGrepTool(ws),
+			NewApplyPatchTool(ws),
+		),
+		Hooks: &HookRuntime{
+			Engine: &HookEngine{
+				Enabled: true,
+				Rules: []HookRule{
+					{
+						ID:     "parallel-worker-stop-revision",
+						Events: []HookEvent{HookSubagentStop},
+						Match: HookMatch{
+							ContainsText: []string{"draft parallel worker answer"},
+						},
+						Action: HookAction{
+							Type:    "deny",
+							Message: "add parallel worker evidence before stopping",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := agent.runParallelEditableWorker(context.Background(), parallelEditableWorkerPlan{
+		Node: TaskNode{
+			ID:                 "plan-02",
+			Title:              "Review worker continuation",
+			Kind:               "edit",
+			Status:             "ready",
+			EditableLeasePaths: []string{"driver/monitor.inf"},
+		},
+		Assignment: SpecialistAssignment{
+			Profile: SpecialistSubagentProfile{
+				Name: "reviewer",
+			},
+			Reason: "test continuation",
+		},
+		LeasePaths: []string{"driver/monitor.inf"},
+		Reason:     "test continuation",
+	})
+
+	if result.Err != nil {
+		t.Fatalf("runParallelEditableWorker: %v", result.Err)
+	}
+	if len(reviewer.requests) != 2 {
+		t.Fatalf("expected SubagentStop continuation model turn, got %d request(s)", len(reviewer.requests))
+	}
+	if len(reviewer.requests[1].Messages) < 3 || !strings.Contains(reviewer.requests[1].Messages[len(reviewer.requests[1].Messages)-1].Text, "SubagentStop hook requested continuation") {
+		t.Fatalf("expected SubagentStop continuation guidance in second request, got %#v", reviewer.requests[1].Messages)
+	}
+	if !strings.Contains(result.Detail, "revised parallel worker answer") {
+		t.Fatalf("expected revised worker answer, got %#v", result)
+	}
+}
+
 func containsTaskStateEntry(items []string, target string) bool {
 	for _, item := range items {
 		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(target)) {
