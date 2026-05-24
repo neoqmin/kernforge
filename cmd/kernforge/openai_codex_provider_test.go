@@ -121,8 +121,12 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if !ok || len(input) != 4 {
 		t.Fatalf("expected four input items, got %#v", payload["input"])
 	}
+	user, ok := input[0].(map[string]any)
+	if !ok || user["type"] != "message" || user["role"] != "user" {
+		t.Fatalf("expected user input to be a tagged message item, got %#v", input[0])
+	}
 	assistant, ok := input[1].(map[string]any)
-	if !ok || assistant["phase"] != messagePhaseCommentary {
+	if !ok || assistant["type"] != "message" || assistant["phase"] != messagePhaseCommentary {
 		t.Fatalf("expected assistant tool preamble to carry commentary phase, got %#v", input[1])
 	}
 	encoded := string(body)
@@ -235,8 +239,12 @@ func TestBuildOpenAICodexRequestBodyPreservesDeveloperMessages(t *testing.T) {
 		t.Fatalf("expected developer and user input items, got %#v", payload["input"])
 	}
 	developer, ok := input[0].(map[string]any)
-	if !ok || developer["role"] != "developer" {
+	if !ok || developer["type"] != "message" || developer["role"] != "developer" {
 		t.Fatalf("expected first item to be developer, got %#v", input[0])
+	}
+	user, ok := input[1].(map[string]any)
+	if !ok || user["type"] != "message" || user["role"] != "user" {
+		t.Fatalf("expected second item to be user message, got %#v", input[1])
 	}
 	content, ok := developer["content"].([]any)
 	if !ok || len(content) != 1 {
