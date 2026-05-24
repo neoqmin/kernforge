@@ -752,7 +752,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 			return ChatResponse{}, newProviderMessageError("openai-codex", "stream failed", "", "", nil, []byte(payload))
 		case "response.incomplete":
-			stopReason = "incomplete"
+			reason := openAICodexIncompleteReason(event.Response)
+			message := "Incomplete response returned"
+			if reason != "" {
+				message += ", reason: " + reason
+			}
+			return ChatResponse{}, newProviderMessageError("openai-codex", message, "incomplete", "", reason, []byte(payload))
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -810,6 +815,24 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
 	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn}, nil
+}
+
+func openAICodexIncompleteReason(response json.RawMessage) string {
+	if len(response) == 0 {
+		return ""
+	}
+	var decoded struct {
+		IncompleteDetails *struct {
+			Reason string `json:"reason,omitempty"`
+		} `json:"incomplete_details,omitempty"`
+	}
+	if err := json.Unmarshal(response, &decoded); err != nil {
+		return ""
+	}
+	if decoded.IncompleteDetails == nil {
+		return ""
+	}
+	return strings.TrimSpace(decoded.IncompleteDetails.Reason)
 }
 
 func normalizeOpenAICodexMessagePhase(phase string) string {
