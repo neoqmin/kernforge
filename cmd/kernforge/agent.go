@@ -8868,11 +8868,7 @@ func compactMessageRetainedCharCost(msg Message) int {
 		total += len(call.ID) + len(call.Name) + len(call.Arguments)
 	}
 	for _, item := range msg.ToolContentItems {
-		total += len(item.Text)
-		total += len(item.EncryptedContent)
-		if item.Type == "input_image" {
-			total++
-		}
+		total += toolContentItemApproxChars(item)
 	}
 	if len(msg.Images) > 0 {
 		total += len(msg.Images)

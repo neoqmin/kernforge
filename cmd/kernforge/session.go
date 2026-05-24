@@ -234,7 +234,7 @@ func (s *Session) ApproxChars() int {
 			total += len(tc.ID) + len(tc.Name) + len(tc.Namespace) + len(tc.Arguments)
 		}
 		for _, item := range msg.ToolContentItems {
-			total += len(item.Type) + len(item.Text) + len(item.EncryptedContent)
+			total += toolContentItemApproxChars(item)
 		}
 	}
 	return total

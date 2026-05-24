@@ -12,6 +12,37 @@ import (
 	"time"
 )
 
+func TestToolContentItemApproxCharsDiscountsBase64ImageDataURL(t *testing.T) {
+	payload := strings.Repeat("A", 12000)
+	imageURL := "data:image/png;base64," + payload
+	got := toolContentItemApproxChars(ToolContentItem{
+		Type:     "input_image",
+		ImageURL: imageURL,
+		Detail:   imageDetailHigh,
+	})
+	raw := len("input_image") + len(imageDetailHigh) + len(imageURL)
+	expected := len("input_image") + len(imageDetailHigh) + len(imageURL) - len(payload) + codexResizedImageBytesEstimate
+	if got != expected {
+		t.Fatalf("approx chars = %d, want %d", got, expected)
+	}
+	if got >= raw {
+		t.Fatalf("base64 image payload should be discounted, got=%d raw=%d", got, raw)
+	}
+}
+
+func TestToolContentItemApproxCharsKeepsNonBase64ImageURLRaw(t *testing.T) {
+	imageURL := "https://example.invalid/screenshot.png"
+	got := toolContentItemApproxChars(ToolContentItem{
+		Type:     "input_image",
+		ImageURL: imageURL,
+		Detail:   imageDetailHigh,
+	})
+	expected := len("input_image") + len(imageDetailHigh) + len(imageURL)
+	if got != expected {
+		t.Fatalf("approx chars = %d, want %d", got, expected)
+	}
+}
+
 func TestOpenAIClientUsesVersionedBaseURLWithoutDuplicatingV1(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/chat/completions" {

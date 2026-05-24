@@ -35,14 +35,42 @@ func TestSessionApproxCharsCountsCodexStructuredHistoryItems(t *testing.T) {
 			Type:             "text",
 			Text:             "tool text",
 			EncryptedContent: "sealed-tool",
+		}, {
+			Type:     "input_image",
+			ImageURL: "data:image/png;base64," + strings.Repeat("A", 2048),
+			Detail:   imageDetailHigh,
 		}},
 	})
 
 	approx := session.ApproxChars()
 	minAdded := len("sealed-reasoning") + len("completed") + len("call_shell") +
-		len("context_compaction") + len("sealed-context") + len("sealed-tool")
+		len("context_compaction") + len("sealed-context") + len("sealed-tool") +
+		codexResizedImageBytesEstimate
 	if approx-baseline < minAdded {
 		t.Fatalf("expected approx chars to count structured history items, baseline=%d approx=%d minAdded=%d", baseline, approx, minAdded)
+	}
+}
+
+func TestCompactMessageRetainedCharCostUsesCodexImageEstimate(t *testing.T) {
+	payload := strings.Repeat("B", 12000)
+	imageURL := "data:image/png;base64," + payload
+	msg := Message{
+		Role: "tool",
+		ToolContentItems: []ToolContentItem{{
+			Type:     "input_image",
+			ImageURL: imageURL,
+			Detail:   imageDetailHigh,
+		}},
+	}
+
+	got := compactMessageRetainedCharCost(msg)
+	raw := len("input_image") + len(imageDetailHigh) + len(imageURL)
+	expected := len("input_image") + len(imageDetailHigh) + len(imageURL) - len(payload) + codexResizedImageBytesEstimate
+	if got != expected {
+		t.Fatalf("compact char cost = %d, want %d", got, expected)
+	}
+	if got >= raw {
+		t.Fatalf("compact char cost should discount inline image payload, got=%d raw=%d", got, raw)
 	}
 }
 
