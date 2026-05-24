@@ -27,6 +27,7 @@ type CodexCLIModelInfo struct {
 	Visibility                  string
 	Priority                    int
 	SupportsImageDetailOriginal bool
+	DefaultVerbosity            string
 }
 
 type CodexCLIClient struct {
@@ -189,6 +190,7 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			Visibility                  string `json:"visibility"`
 			Priority                    int    `json:"priority"`
 			SupportsImageDetailOriginal bool   `json:"supports_image_detail_original"`
+			DefaultVerbosity            string `json:"default_verbosity"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -228,8 +230,10 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			Visibility:                  strings.TrimSpace(item.Visibility),
 			Priority:                    item.Priority,
 			SupportsImageDetailOriginal: item.SupportsImageDetailOriginal,
+			DefaultVerbosity:            normalizeOpenAICodexVerbosity(item.DefaultVerbosity),
 		})
 		registerCodexModelImageDetailSupport(id, item.SupportsImageDetailOriginal)
+		registerOpenAICodexDefaultVerbosity(id, item.DefaultVerbosity)
 		seen[strings.ToLower(id)] = true
 	}
 	return models, nil

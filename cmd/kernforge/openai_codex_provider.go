@@ -65,6 +65,23 @@ var (
 	openAICodexDeviceTokenEndpoint = openAICodexDeviceTokenURL
 )
 
+var openAICodexVerbosityDefaults = struct {
+	sync.RWMutex
+	byModel map[string]string
+}{
+	byModel: map[string]string{
+		openAICodexDefaultModel: "low",
+		"gpt-5.5-pro":           "low",
+		"gpt-5.4":               "low",
+		"gpt-5.4-pro":           "low",
+		"gpt-5.4-mini":          "medium",
+		"gpt-5.3-codex":         "low",
+		"gpt-5.3-codex-spark":   "low",
+		"gpt-5.2":               "low",
+		"codex-auto-review":     "low",
+	},
+}
+
 type codexOAuthAccessTokenSource interface {
 	AccessToken(ctx context.Context) (string, error)
 }
@@ -317,9 +334,31 @@ func openAICodexTextControls(model string, jsonMode bool) map[string]any {
 }
 
 func openAICodexDefaultVerbosity(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "gpt-5.4", "gpt-5.5":
-		return "low"
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || model == codexCLIDefaultModel {
+		model = openAICodexDefaultModel
+	}
+	openAICodexVerbosityDefaults.RLock()
+	verbosity := openAICodexVerbosityDefaults.byModel[model]
+	openAICodexVerbosityDefaults.RUnlock()
+	return normalizeOpenAICodexVerbosity(verbosity)
+}
+
+func registerOpenAICodexDefaultVerbosity(model string, verbosity string) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	verbosity = normalizeOpenAICodexVerbosity(verbosity)
+	if model == "" || verbosity == "" {
+		return
+	}
+	openAICodexVerbosityDefaults.Lock()
+	openAICodexVerbosityDefaults.byModel[model] = verbosity
+	openAICodexVerbosityDefaults.Unlock()
+}
+
+func normalizeOpenAICodexVerbosity(verbosity string) string {
+	switch strings.ToLower(strings.TrimSpace(verbosity)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(verbosity))
 	default:
 		return ""
 	}
