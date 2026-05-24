@@ -8191,6 +8191,7 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(agentsMD)
 		b.WriteString("\n")
 	}
+	b.WriteString("AGENTS.md policy: loaded instructions apply to their directory tree, nested files take precedence, and direct system/developer/user instructions override them. Before editing or creating files in a directory outside the loaded AGENTS.md scope, inspect that target path for additional AGENTS.override.md or AGENTS.md instructions and follow the most specific applicable file.\n")
 	fmt.Fprintf(&b, "Provider/model: %s / %s\n", a.Session.Provider, a.Session.Model)
 	permissionMode := a.activePermissionModeSnapshot()
 	if permissionMode == "" {

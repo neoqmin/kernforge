@@ -463,6 +463,32 @@ func TestSystemPromptCombinesGlobalAndProjectAgentsMDInstructions(t *testing.T) 
 	}
 }
 
+func TestSystemPromptExplainsAgentsMDScopePolicy(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	for _, want := range []string{
+		"AGENTS.md policy:",
+		"loaded instructions apply to their directory tree",
+		"nested files take precedence",
+		"outside the loaded AGENTS.md scope",
+		"AGENTS.override.md or AGENTS.md",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected AGENTS.md scope policy %q in system prompt, got %q", want, prompt)
+		}
+	}
+}
+
 func TestSystemPromptUsesExternalUserRequestAfterInternalSteering(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
