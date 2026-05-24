@@ -1454,7 +1454,15 @@ func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRouti
 		}
 		return route, nil
 	}
-	if strings.TrimSpace(ownerNodeID) == "" || !isLookupOwnerFallbackError(err) {
+	if strings.TrimSpace(ownerNodeID) == "" {
+		if isLookupOwnerFallbackError(err) {
+			if baseFallback, ok := w.resolveLookupAcrossWorkspaceRoots(path); ok {
+				return baseFallback, nil
+			}
+		}
+		return EditRoutingResult{}, err
+	}
+	if !isLookupOwnerFallbackError(err) {
 		return EditRoutingResult{}, err
 	}
 	req.OwnerNodeID = ""
@@ -1568,7 +1576,9 @@ func isLookupOwnerFallbackError(err error) bool {
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "cannot find path") ||
 		strings.Contains(text, "no such file") ||
-		strings.Contains(text, "system cannot find")
+		strings.Contains(text, "system cannot find") ||
+		strings.Contains(text, "outside the active workspace root") ||
+		strings.Contains(text, "outside active workspace root")
 }
 
 func (w Workspace) ResolveEditPathWithOptions(req EditRoutingRequest) (EditRoutingResult, error) {
