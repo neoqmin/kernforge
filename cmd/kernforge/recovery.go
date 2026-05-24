@@ -889,7 +889,7 @@ func (rt *runtimeState) executeRecoveryShellActionContext(ctx context.Context, a
 		record.FinishedAt = time.Now()
 		return record
 	}
-	if err := rt.workspace.EnsureShell(command); err != nil {
+	if err := rt.workspace.EnsureShellWithContext(ctx, command); err != nil {
 		record.Output = err.Error()
 		record.FinishedAt = time.Now()
 		return record

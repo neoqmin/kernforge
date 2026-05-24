@@ -753,7 +753,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			return ToolExecutionResult{}, fmt.Errorf("run_shell_bundle_background only supports read-only, verification/build, cache-only, or external-install commands")
 		}
 		if assessment.Class == shellMutationVerificationArtifacts {
-			ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
+			ok, confirmErr := t.ws.ConfirmVerificationPlanWithContext(ctx, VerificationPlan{
 				Mode:         VerificationAdaptive,
 				ChangedPaths: collectVerificationChangedPaths(workDir, nil),
 				Steps: []VerificationStep{{
@@ -770,7 +770,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				continue
 			}
 		}
-		if err := t.ws.EnsureShell(command); err != nil {
+		if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
 			return ToolExecutionResult{}, err
 		}
 		if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
@@ -925,7 +925,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands")
 	}
 	if assessment.Class == shellMutationVerificationArtifacts {
-		ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
+		ok, confirmErr := t.ws.ConfirmVerificationPlanWithContext(ctx, VerificationPlan{
 			Mode:         VerificationAdaptive,
 			ChangedPaths: collectVerificationChangedPaths(workDir, nil),
 			Steps: []VerificationStep{{
@@ -957,7 +957,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 			}, nil
 		}
 	}
-	if err := t.ws.EnsureShell(command); err != nil {
+	if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
 		return ToolExecutionResult{}, err
 	}
 	if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {

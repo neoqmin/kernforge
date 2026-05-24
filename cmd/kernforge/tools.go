@@ -1535,6 +1535,21 @@ func (w Workspace) ResolveShellWorkDir(ownerNodeID string, workdir string) (Shel
 }
 
 func (w Workspace) ConfirmVerificationPlan(plan VerificationPlan) (bool, error) {
+	return w.ConfirmVerificationPlanWithContext(context.Background(), plan)
+}
+
+func (w Workspace) ConfirmVerificationPlanWithContext(ctx context.Context, plan VerificationPlan) (bool, error) {
+	if allowed, decided, message, err := w.permissionRequestHookNoCachedPermission(ctx, ActionShell, verificationPlanPermissionDetail(plan), verificationPlanPermissionInput(plan)); err != nil {
+		return false, err
+	} else if decided {
+		if allowed {
+			return true, nil
+		}
+		if strings.TrimSpace(message) != "" {
+			return false, fmt.Errorf("verification permission denied: %s", message)
+		}
+		return false, fmt.Errorf("verification permission denied by hook")
+	}
 	if w.ConfirmVerification == nil {
 		return true, nil
 	}
@@ -1542,6 +1557,40 @@ func (w Workspace) ConfirmVerificationPlan(plan VerificationPlan) (bool, error) 
 		w.UserInputRequests.MarkRequested()
 	}
 	return w.ConfirmVerification(plan)
+}
+
+func verificationPlanPermissionDetail(plan VerificationPlan) string {
+	var commands []string
+	for _, step := range plan.Steps {
+		if command := strings.TrimSpace(step.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	if len(commands) == 0 {
+		return "verification"
+	}
+	if len(commands) == 1 {
+		return commands[0]
+	}
+	return fmt.Sprintf("verification bundle with %d command(s): %s", len(commands), strings.Join(commands, "; "))
+}
+
+func verificationPlanPermissionInput(plan VerificationPlan) HookPayload {
+	var commands []string
+	for _, step := range plan.Steps {
+		if command := strings.TrimSpace(step.Command); command != "" {
+			commands = append(commands, command)
+		}
+	}
+	commandText := strings.Join(commands, "\n")
+	return HookPayload{
+		"command":                 commandText,
+		"risk_tags":               hookCommandRiskTags(commandText),
+		"verification":            true,
+		"verification_mode":       string(plan.Mode),
+		"verification_step_count": len(plan.Steps),
+		"changed_files":           append([]string(nil), plan.ChangedPaths...),
+	}
 }
 
 func (w Workspace) toolHints() *ToolHints {
@@ -1792,11 +1841,30 @@ func (w Workspace) CheckEditBoundary(path string) error {
 }
 
 func (w Workspace) EnsureWrite(path string) error {
+	return w.EnsureWriteWithContext(context.Background(), path)
+}
+
+func (w Workspace) EnsureWriteWithContext(ctx context.Context, path string) error {
 	if err := w.CheckEditBoundary(path); err != nil {
 		return err
 	}
 	if w.Perms == nil {
 		return nil
+	}
+	if allowed, decided, message, err := w.permissionRequestHook(ctx, ActionWrite, path, HookPayload{
+		"path":          relOrAbs(firstNonBlankString(w.Root, w.BaseRoot), path),
+		"absolute_path": path,
+		"file_tags":     hookFileTags(path),
+	}); err != nil {
+		return fmt.Errorf("%w: write approval hook failed for %s: %v", ErrWriteDenied, path, err)
+	} else if decided {
+		if allowed {
+			return nil
+		}
+		if strings.TrimSpace(message) != "" {
+			return fmt.Errorf("%w: write approval denied for %s: %s", ErrWriteDenied, path, message)
+		}
+		return fmt.Errorf("%w: write approval denied by hook for %s", ErrWriteDenied, path)
 	}
 	ok, err := w.Perms.Allow(ActionWrite, path)
 	if err != nil {
@@ -1917,8 +1985,26 @@ func ensureResolvedPathWithinRoot(root string, target string) (string, error) {
 }
 
 func (w Workspace) EnsureGit(detail string) error {
+	return w.EnsureGitWithContext(context.Background(), detail)
+}
+
+func (w Workspace) EnsureGitWithContext(ctx context.Context, detail string) error {
 	if w.Perms == nil {
 		return nil
+	}
+	if allowed, decided, message, err := w.permissionRequestHook(ctx, ActionGit, detail, HookPayload{
+		"command": "git " + strings.TrimSpace(detail),
+		"detail":  detail,
+	}); err != nil {
+		return err
+	} else if decided {
+		if allowed {
+			return nil
+		}
+		if strings.TrimSpace(message) != "" {
+			return fmt.Errorf("git permission denied: %s", message)
+		}
+		return fmt.Errorf("git permission denied by hook")
 	}
 	ok, err := w.Perms.Allow(ActionGit, detail)
 	if err != nil {
@@ -1978,8 +2064,26 @@ func protectedWorktreeScope(path string) (string, bool) {
 }
 
 func (w Workspace) EnsureShell(command string) error {
+	return w.EnsureShellWithContext(context.Background(), command)
+}
+
+func (w Workspace) EnsureShellWithContext(ctx context.Context, command string) error {
 	if w.Perms == nil {
 		return nil
+	}
+	if allowed, decided, message, err := w.permissionRequestHook(ctx, ActionShell, command, HookPayload{
+		"command":   command,
+		"risk_tags": hookCommandRiskTags(command),
+	}); err != nil {
+		return err
+	} else if decided {
+		if allowed {
+			return nil
+		}
+		if strings.TrimSpace(message) != "" {
+			return fmt.Errorf("shell permission denied: %s", message)
+		}
+		return fmt.Errorf("shell permission denied by hook")
 	}
 	ok, err := w.Perms.Allow(ActionShell, command)
 	if err != nil {
@@ -1989,6 +2093,100 @@ func (w Workspace) EnsureShell(command string) error {
 		return fmt.Errorf("shell permission denied")
 	}
 	return nil
+}
+
+func (w Workspace) permissionRequestHook(ctx context.Context, action Action, detail string, toolInput HookPayload) (bool, bool, string, error) {
+	return w.permissionRequestHookWithOptions(ctx, action, detail, toolInput, true)
+}
+
+func (w Workspace) permissionRequestHookNoCachedPermission(ctx context.Context, action Action, detail string, toolInput HookPayload) (bool, bool, string, error) {
+	return w.permissionRequestHookWithOptions(ctx, action, detail, toolInput, false)
+}
+
+func (w Workspace) permissionRequestHookWithOptions(ctx context.Context, action Action, detail string, toolInput HookPayload, useCachedPermission bool) (bool, bool, string, error) {
+	if w.RunHook == nil {
+		return false, false, "", nil
+	}
+	if useCachedPermission && w.Perms != nil {
+		if allowed, decided, err := w.Perms.allowWithoutPrompt(action); decided || err != nil {
+			if err != nil {
+				return allowed, true, err.Error(), nil
+			}
+			return allowed, decided, "", nil
+		}
+	}
+	if useCachedPermission && w.Perms == nil {
+		return false, false, "", nil
+	}
+	if !useCachedPermission && w.Perms != nil {
+		if _, _, err := w.Perms.allowWithoutPrompt(action); err != nil {
+			return false, true, err.Error(), nil
+		}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	input := HookPayload{}
+	for key, value := range toolInput {
+		if strings.TrimSpace(key) != "" {
+			input[key] = value
+		}
+	}
+	toolName := permissionRequestToolName(action)
+	toolKind := permissionRequestToolKind(action)
+	payload := HookPayload{
+		"tool_name":  toolName,
+		"tool_kind":  toolKind,
+		"tool_input": input,
+		"action":     string(action),
+		"permission": string(action),
+		"detail":     strings.TrimSpace(detail),
+	}
+	for key, value := range input {
+		if _, exists := payload[key]; !exists {
+			payload[key] = value
+		}
+	}
+	verdict, err := w.Hook(ctx, HookPermissionRequest, payload)
+	if err != nil {
+		return false, false, "", err
+	}
+	switch strings.ToLower(strings.TrimSpace(verdict.PermissionDecision)) {
+	case "":
+		return false, false, "", nil
+	case "allow":
+		return true, true, "", nil
+	case "deny":
+		return false, true, strings.TrimSpace(verdict.PermissionMessage), nil
+	default:
+		return false, false, "", fmt.Errorf("unsupported permission request hook decision: %s", verdict.PermissionDecision)
+	}
+}
+
+func permissionRequestToolName(action Action) string {
+	switch action {
+	case ActionShell, ActionShellWrite:
+		return "run_shell"
+	case ActionGit:
+		return "git"
+	case ActionWrite:
+		return "write"
+	default:
+		return string(action)
+	}
+}
+
+func permissionRequestToolKind(action Action) string {
+	switch action {
+	case ActionShell, ActionShellWrite:
+		return "shell"
+	case ActionGit:
+		return "git"
+	case ActionWrite:
+		return "edit"
+	default:
+		return string(action)
+	}
 }
 
 func (w Workspace) defaultShellTimeout() time.Duration {
@@ -2061,8 +2259,54 @@ func (w Workspace) Hook(ctx context.Context, event HookEvent, payload HookPayloa
 	if w.RunHook == nil {
 		return HookVerdict{Allow: true}, nil
 	}
+	if payload == nil {
+		payload = HookPayload{}
+	}
+	enrichHookPayloadFromContext(ctx, payload)
+	if strings.TrimSpace(stringsValueFromAny(payload["event"])) == "" {
+		payload["event"] = string(event)
+	}
+	if strings.TrimSpace(stringsValueFromAny(payload["hook_event_name"])) == "" {
+		payload["hook_event_name"] = string(event)
+	}
 	enrichHookSubagentIdentity(payload)
 	return w.RunHook(ctx, event, payload)
+}
+
+func enrichHookPayloadFromContext(ctx context.Context, payload HookPayload) {
+	if ctx == nil || payload == nil {
+		return
+	}
+	metadata, ok := ctx.Value(mcpTurnMetadataContextKey{}).(map[string]any)
+	if !ok || len(metadata) == 0 {
+		return
+	}
+	for _, key := range []string{
+		"session_id",
+		"thread_id",
+		"turn_id",
+		"trace_id",
+		"thread_source",
+		"provider",
+		"model",
+		"reasoning_effort",
+		"permission_mode",
+		"active_permission_profile_id",
+		"active_permission_profile",
+		"sandbox",
+		"cwd",
+		"workspace_root",
+		"active_workspace_root",
+		"workspace_roots",
+		"workspaces",
+	} {
+		if _, exists := payload[key]; exists {
+			continue
+		}
+		if value, ok := metadata[key]; ok {
+			payload[key] = value
+		}
+	}
 }
 
 func firstLine(text string) string {
@@ -3044,7 +3288,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := t.ws.ConfirmEdit(preview); err != nil {
 			return "", err
 		}
-		if err := t.ws.EnsureWrite(path); err != nil {
+		if err := t.ws.EnsureWriteWithContext(ctx, path); err != nil {
 			return "", err
 		}
 		if err := t.ws.BeforeEditForRoot(reason, editRoot); err != nil {
@@ -3088,7 +3332,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := t.ws.ConfirmEdit(preview); err != nil {
 			return "", err
 		}
-		if err := t.ws.EnsureWrite(path); err != nil {
+		if err := t.ws.EnsureWriteWithContext(ctx, path); err != nil {
 			return "", err
 		}
 		if err := t.ws.BeforeEditForRoot(reason, editRoot); err != nil {
@@ -3408,7 +3652,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	if err := t.ws.ConfirmEdit(preview); err != nil {
 		return "", err
 	}
-	if err := t.ws.EnsureWrite(path); err != nil {
+	if err := t.ws.EnsureWriteWithContext(ctx, path); err != nil {
 		return "", err
 	}
 	if err := t.ws.BeforeEditForRoot("replace in "+displayPath, editRoot); err != nil {
@@ -3707,7 +3951,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	}
 	if assessment.Class == shellMutationVerificationArtifacts {
 		t.ws.Progress("run_shell recognized a verification/build command that may write workspace build artifacts. Source edits are still blocked.")
-		ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
+		ok, confirmErr := t.ws.ConfirmVerificationPlanWithContext(ctx, VerificationPlan{
 			Mode:         VerificationAdaptive,
 			ChangedPaths: collectVerificationChangedPaths(workDir, nil),
 			Steps: []VerificationStep{{
@@ -3734,7 +3978,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		workspaceBeforeShell = snapshot
 	}
-	if err := t.ws.EnsureShell(command); err != nil {
+	if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
 		return "", err
 	}
 	timeout := t.ws.defaultShellTimeout()
@@ -5677,7 +5921,7 @@ func (t GitAddTool) Execute(ctx context.Context, input any) (string, error) {
 	if !all && len(paths) == 0 {
 		return "", fmt.Errorf("paths are required unless all=true")
 	}
-	if err := t.ws.EnsureGit("stage changes with git_add"); err != nil {
+	if err := t.ws.EnsureGitWithContext(ctx, "stage changes with git_add"); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"add"}
@@ -5766,7 +6010,7 @@ func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		return "", fmt.Errorf("message is required")
 	}
-	if err := t.ws.EnsureGit("create commit: " + firstLine(message)); err != nil {
+	if err := t.ws.EnsureGitWithContext(ctx, "create commit: "+firstLine(message)); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"commit", "-m", message}
@@ -5875,7 +6119,7 @@ func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	if err := t.ws.EnsureGit(fmt.Sprintf("push branch %s to %s", branch, remote)); err != nil {
+	if err := t.ws.EnsureGitWithContext(ctx, fmt.Sprintf("push branch %s to %s", branch, remote)); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"push"}
@@ -6008,7 +6252,7 @@ func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error)
 	}); err != nil {
 		return "", err
 	}
-	if err := t.ws.EnsureGit("create pull request for " + branch); err != nil {
+	if err := t.ws.EnsureGitWithContext(ctx, "create pull request for "+branch); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"pr", "create", "--head", branch}

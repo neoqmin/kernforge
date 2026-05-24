@@ -78,6 +78,87 @@ func TestHookEngineDenyWins(t *testing.T) {
 	}
 }
 
+func TestHookEnginePermissionRequestAllowAndDenyAreDecisions(t *testing.T) {
+	engine := &HookEngine{
+		Enabled: true,
+		Rules: []HookRule{
+			{
+				ID:       "allow-shell",
+				Priority: 100,
+				Events:   []HookEvent{HookPermissionRequest},
+				Match: HookMatch{
+					ToolNames: []string{"run_shell"},
+				},
+				Action: HookAction{Type: "allow"},
+			},
+			{
+				ID:       "deny-netsh",
+				Priority: 200,
+				Events:   []HookEvent{HookPermissionRequest},
+				Match: HookMatch{
+					ToolNames:     []string{"run_shell"},
+					CommandsRegex: []string{`(?i)\bnetsh\b`},
+				},
+				Action: HookAction{Type: "deny", Message: "netsh requires manual approval"},
+			},
+		},
+	}
+
+	allowVerdict, err := engine.Evaluate(context.Background(), HookPermissionRequest, HookPayload{
+		"tool_name": "run_shell",
+		"command":   "echo ok",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate allow: %v", err)
+	}
+	if got := allowVerdict.PermissionDecision; got != "allow" {
+		t.Fatalf("expected allow decision, got %#v", allowVerdict)
+	}
+
+	denyVerdict, err := engine.Evaluate(context.Background(), HookPermissionRequest, HookPayload{
+		"tool_name": "run_shell",
+		"command":   "netsh advfirewall show allprofiles",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate deny: %v", err)
+	}
+	if got := denyVerdict.PermissionDecision; got != "deny" {
+		t.Fatalf("expected deny decision, got %#v", denyVerdict)
+	}
+	if got := denyVerdict.PermissionMessage; got != "netsh requires manual approval" {
+		t.Fatalf("expected deny message, got %#v", denyVerdict)
+	}
+}
+
+func TestHookRuntimePermissionRequestDenyReturnsVerdict(t *testing.T) {
+	runtime := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "deny",
+					Events: []HookEvent{HookPermissionRequest},
+					Match: HookMatch{
+						ToolNames: []string{"run_shell"},
+					},
+					Action: HookAction{Type: "deny", Message: "blocked by policy"},
+				},
+			},
+		},
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookPermissionRequest, HookPayload{
+		"tool_name": "run_shell",
+		"command":   "echo denied",
+	})
+	if err != nil {
+		t.Fatalf("PermissionRequest deny should be a decision, got error: %v", err)
+	}
+	if verdict.PermissionDecision != "deny" || verdict.PermissionMessage != "blocked by policy" {
+		t.Fatalf("unexpected permission request verdict: %#v", verdict)
+	}
+}
+
 func TestHookEngineAllowCanRewritePreToolUseInput(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,

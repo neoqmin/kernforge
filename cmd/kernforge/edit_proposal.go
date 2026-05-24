@@ -452,7 +452,7 @@ func applyEditProposal(ctx context.Context, ws Workspace, proposal EditProposal,
 	if err := ws.ConfirmEdit(preview); err != nil {
 		return "", meta, err
 	}
-	if err := ws.EnsureWrite(planned.AbsolutePath); err != nil {
+	if err := ws.EnsureWriteWithContext(ctx, planned.AbsolutePath); err != nil {
 		return "", meta, err
 	}
 	if err := ws.BeforeEditForRoot(editProposalReason(planned), planned.DisplayRoot); err != nil {

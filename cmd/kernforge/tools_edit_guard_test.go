@@ -1740,6 +1740,192 @@ func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 	}
 }
 
+func TestRunShellPermissionRequestHookCanApproveWithoutPrompt(t *testing.T) {
+	root := t.TempDir()
+	var permissionPayload HookPayload
+	promptCalls := 0
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			promptCalls++
+			return false, nil
+		}),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event == HookPermissionRequest {
+				permissionPayload = payload
+				return HookVerdict{
+					Allow:              true,
+					PermissionDecision: "allow",
+				}, nil
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	ctx := contextWithMCPTurnMetadata(context.Background(), map[string]any{
+		"turn_id":         "turn-123",
+		"cwd":             root,
+		"model":           "gpt-test",
+		"permission_mode": string(ModeDefault),
+	})
+	out, err := tool.Execute(ctx, map[string]any{
+		"command": "echo hook-approved",
+	})
+	if err != nil {
+		t.Fatalf("expected PermissionRequest allow to approve shell command, got %v", err)
+	}
+	if !strings.Contains(out, "hook-approved") {
+		t.Fatalf("expected command output, got %q", out)
+	}
+	if promptCalls != 0 {
+		t.Fatalf("PermissionRequest allow should bypass user prompt, got %d prompt(s)", promptCalls)
+	}
+	if got := toolMetaString(permissionPayload, "hook_event_name"); got != string(HookPermissionRequest) {
+		t.Fatalf("expected PermissionRequest payload, got %#v", permissionPayload)
+	}
+	if got := toolMetaString(permissionPayload, "tool_name"); got != "run_shell" {
+		t.Fatalf("expected run_shell tool name, got %#v", permissionPayload)
+	}
+	if got := toolMetaString(permissionPayload, "turn_id"); got != "turn-123" {
+		t.Fatalf("expected turn_id from tool context, got %#v", permissionPayload)
+	}
+	if got := toolMetaString(permissionPayload, "model"); got != "gpt-test" {
+		t.Fatalf("expected model from tool context, got %#v", permissionPayload)
+	}
+	if got := toolMetaString(permissionPayload, "permission_mode"); got != string(ModeDefault) {
+		t.Fatalf("expected permission mode from tool context, got %#v", permissionPayload)
+	}
+	input, ok := permissionPayload["tool_input"].(HookPayload)
+	if !ok || toolMetaString(input, "command") != "echo hook-approved" {
+		t.Fatalf("expected command in tool_input, got %#v", permissionPayload["tool_input"])
+	}
+}
+
+func TestRunShellPermissionRequestHookCanDenyBeforePrompt(t *testing.T) {
+	root := t.TempDir()
+	promptCalls := 0
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			promptCalls++
+			return true, nil
+		}),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			_ = payload
+			if event == HookPermissionRequest {
+				return HookVerdict{
+					Allow:              false,
+					PermissionDecision: "deny",
+					PermissionMessage:  "blocked by PermissionRequest",
+				}, nil
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command": "echo denied",
+	})
+	if err == nil || !strings.Contains(err.Error(), "blocked by PermissionRequest") {
+		t.Fatalf("expected hook denial, got %v", err)
+	}
+	if promptCalls != 0 {
+		t.Fatalf("PermissionRequest deny should bypass user prompt, got %d prompt(s)", promptCalls)
+	}
+}
+
+func TestRunShellRememberedApprovalSkipsPermissionRequestHook(t *testing.T) {
+	root := t.TempDir()
+	promptCalls := 0
+	permissionHookCalls := 0
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			promptCalls++
+			return true, nil
+		}),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			_ = payload
+			if event == HookPermissionRequest {
+				permissionHookCalls++
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	for i := 0; i < 2; i++ {
+		if _, err := tool.Execute(context.Background(), map[string]any{
+			"command": "echo remembered",
+		}); err != nil {
+			t.Fatalf("shell run %d: %v", i+1, err)
+		}
+	}
+	if promptCalls != 1 {
+		t.Fatalf("expected first shell prompt to be remembered, got %d prompt(s)", promptCalls)
+	}
+	if permissionHookCalls != 1 {
+		t.Fatalf("remembered shell approval should skip PermissionRequest hooks, got %d call(s)", permissionHookCalls)
+	}
+}
+
+func TestRunShellRememberedShellApprovalDoesNotSkipVerificationConfirmation(t *testing.T) {
+	root := t.TempDir()
+	shellPromptCalls := 0
+	verificationPromptCalls := 0
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			shellPromptCalls++
+			return true, nil
+		}),
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			verificationPromptCalls++
+			if len(plan.Steps) != 1 || !strings.Contains(plan.Steps[0].Command, "go test") {
+				t.Fatalf("unexpected verification plan: %#v", plan)
+			}
+			return false, nil
+		},
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			_ = event
+			_ = payload
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	if _, err := tool.Execute(context.Background(), map[string]any{
+		"command": "echo remembered",
+	}); err != nil {
+		t.Fatalf("initial shell approval: %v", err)
+	}
+	text, err := tool.Execute(context.Background(), map[string]any{
+		"command": "go test ./...",
+	})
+	if err != nil {
+		t.Fatalf("declined verification command should be a non-error skip, got %v", err)
+	}
+	if !strings.Contains(text, "skipped") {
+		t.Fatalf("expected skipped verification output, got %q", text)
+	}
+	if shellPromptCalls != 1 {
+		t.Fatalf("expected only the initial shell prompt, got %d", shellPromptCalls)
+	}
+	if verificationPromptCalls != 1 {
+		t.Fatalf("remembered shell approval must not bypass verification confirmation, got %d prompt(s)", verificationPromptCalls)
+	}
+}
+
 func TestRunShellPreToolUseRewriteExecutesUpdatedCommand(t *testing.T) {
 	root := t.TempDir()
 	var observed string
@@ -3700,6 +3886,63 @@ func TestRunShellVerificationCommandRequiresConfirmation(t *testing.T) {
 	}
 	if promptCount != 1 {
 		t.Fatalf("expected one confirmation prompt, got %d", promptCount)
+	}
+}
+
+func TestRunShellVerificationPermissionRequestAllowBypassesConfirmation(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/permhook\n\ngo 1.20\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "permhook_test.go"), []byte("package permhook\n\nimport \"testing\"\n\nfunc TestOK(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile test: %v", err)
+	}
+	promptCount := 0
+	permissionHookCalls := 0
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			return true, nil
+		}),
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			_ = plan
+			promptCount++
+			return false, nil
+		},
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event == HookPermissionRequest {
+				permissionHookCalls++
+				if boolValueFromAny(payload["verification"]) {
+					if got := toolMetaString(payload, "command"); got != "go test ./..." {
+						t.Fatalf("expected verification command in PermissionRequest payload, got %#v", payload)
+					}
+					return HookVerdict{
+						Allow:              true,
+						PermissionDecision: "allow",
+					}, nil
+				}
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	text, err := tool.Execute(context.Background(), map[string]any{
+		"command": "go test ./...",
+	})
+	if err != nil {
+		t.Fatalf("expected PermissionRequest allow to bypass verification prompt, got %v", err)
+	}
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("expected command output or failure text, got %q", text)
+	}
+	if promptCount != 0 {
+		t.Fatalf("PermissionRequest allow should bypass verification prompt, got %d prompt(s)", promptCount)
+	}
+	if permissionHookCalls == 0 {
+		t.Fatalf("expected PermissionRequest hook to run")
 	}
 }
 

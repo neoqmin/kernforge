@@ -87,58 +87,65 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
   - 특정 인자 패턴 경고
   - 보안 민감 command 승인 강화
 
-3. `PostToolUse`
+3. `PermissionRequest`
+- tool/edit/git 실행에 사용자 권한 승인이 필요한 시점
+- 용도:
+  - 사용자 승인 UI가 뜨기 전에 정책 기반 allow/deny 결정
+  - 이미 세션에서 승인된 shell/git 권한은 재평가하지 않음
+  - Codex의 PermissionRequest처럼 allow/deny decision만 반환하고, 일반 입력 rewrite와 분리
+
+4. `PostToolUse`
 - tool 실행 직후
 - 용도:
   - 결과 텍스트 검사
   - 후속 verification 예약
   - evidence 추출
 
-4. `PreEdit`
+5. `PreEdit`
 - 실제 파일 write 직전
 - 용도:
   - 특정 파일 패턴 보호
   - selection 범위 외 수정 경고
   - checkpoint 강제
 
-5. `PostEdit`
+6. `PostEdit`
 - 파일 write 직후
 - 용도:
   - changed file 분류
   - verification hint 추가
   - memory/evidence annotation
 
-6. `PreVerification`
+7. `PreVerification`
 - verification 실행 직전
 - 용도:
   - 검증 step 추가/제거
   - 강제 검증 누락 탐지
 
-7. `PostVerification`
+8. `PostVerification`
 - verification 실행 직후
 - 용도:
   - failure kind 기반 추가 guidance
   - repeat failure 누적 기록
 
-8. `PreGitPush`
+9. `PreGitPush`
 - `git push` 직전
 - 용도:
   - 민감 artifact 존재 시 경고 또는 차단
 
-9. `PreCreatePR`
+10. `PreCreatePR`
 - `gh pr create` 직전
 - 용도:
   - 제목/body에 보안 체크리스트 누락 시 경고
   - unsigned artifact 포함 시 차단
 
-10. `PreCompact`
+11. `PreCompact`
 - conversation compaction 직전
 - 용도:
   - manual/auto compaction trigger별 정책 적용
   - compaction 전 transcript/checkpoint 정책 확인
   - 중요한 runtime evidence가 누락된 상태의 compaction 차단
 
-11. `PostCompact`
+12. `PostCompact`
 - conversation compaction 성공 직후
 - 용도:
   - compaction 이후 요약/메시지 수 감소 확인
@@ -228,7 +235,36 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 }
 ```
 
-### 4.4 `PreEdit` / `PostEdit` payload
+### 4.4 `PermissionRequest` payload
+
+```json
+{
+  "session_id": "sess-...",
+  "turn_id": "sess-...:1716450000000000000",
+  "cwd": "C:/git/kernforge",
+  "hook_event_name": "PermissionRequest",
+  "model": "gpt-5.4",
+  "permission_mode": "default",
+  "tool_name": "run_shell",
+  "tool_kind": "shell",
+  "permission": "shell",
+  "action": "shell",
+  "detail": "go test ./...",
+  "tool_input": {
+    "command": "go test ./..."
+  },
+  "command": "go test ./...",
+  "risk_tags": []
+}
+```
+
+동작 규칙:
+1. `allow` action은 해당 권한 요청 1회만 승인한다. 세션 전체 승인으로 저장하지 않는다.
+2. `deny` action은 사용자 prompt를 띄우지 않고 권한 요청을 거부한다.
+3. `warn` 또는 `append_context`만 매칭되면 권한 결정을 내리지 않고 기존 승인 흐름으로 넘어간다.
+4. `PermissionManager`가 이미 허용한 상태(`bypassPermissions`, `acceptEdits`의 write, remembered shell/git approval 등)는 `PermissionRequest` hook을 재실행하지 않는다.
+
+### 4.5 `PreEdit` / `PostEdit` payload
 
 ```json
 {
@@ -249,7 +285,7 @@ MVP에서 지원할 이벤트는 아래 순서로 도입한다.
 }
 ```
 
-### 4.5 `PreVerification` / `PostVerification` payload
+### 4.6 `PreVerification` / `PostVerification` payload
 
 ```json
 {
@@ -474,9 +510,12 @@ type HookVerdict struct
     DenyReason string
     AskMessage string
     ContextAdds []string
+    CheckpointNotes []string
     VerificationAdds []VerificationStep
-    RequireCheckpoint bool
     MatchedRuleIDs []string
+    UpdatedInput HookPayload
+    PermissionDecision string
+    PermissionMessage string
 }
 ```
 
@@ -485,24 +524,29 @@ type HookVerdict struct
 2. `ask`는 deny가 없을 때만 사용자 확인
 3. `warn`는 누적 가능
 4. `append_context`와 `add_verification_step`는 누적 가능
+5. `PermissionRequest`에서는 `allow`/`deny`가 prompt 전 decision으로 해석된다
 
 ### 6.3 PermissionManager와의 관계
 
 권장 순서:
 
 1. `PreToolUse` hook
-2. 기존 `PermissionManager.Allow`
-3. 실제 tool 실행
-4. `PostToolUse` hook
+2. 실행 안전성/변경 분류 검사
+3. `PermissionRequest` hook
+4. 기존 `PermissionManager.Allow`
+5. 실제 tool 실행
+6. `PostToolUse` hook
 
 편집의 경우:
 
 1. `PreEdit` hook
 2. diff preview
-3. `PermissionManager.Allow(ActionWrite, ...)`
-4. auto-checkpoint
-5. 실제 write
-6. `PostEdit` hook
+3. pre-write review gate
+4. `PermissionRequest` hook
+5. `PermissionManager.Allow(ActionWrite, ...)`
+6. auto-checkpoint
+7. 실제 write
+8. `PostEdit` hook
 
 이유:
 - hook은 정책 계층
@@ -612,8 +656,12 @@ type HookEvent string
 const
 (
     HookUserPromptSubmit HookEvent = "UserPromptSubmit"
+    HookSessionStart HookEvent = "SessionStart"
+    HookPermissionRequest HookEvent = "PermissionRequest"
     HookPreToolUse HookEvent = "PreToolUse"
     HookPostToolUse HookEvent = "PostToolUse"
+    HookSubagentStart HookEvent = "SubagentStart"
+    HookSubagentStop HookEvent = "SubagentStop"
     HookPreEdit HookEvent = "PreEdit"
     HookPostEdit HookEvent = "PostEdit"
     HookPreVerification HookEvent = "PreVerification"

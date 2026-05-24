@@ -4226,30 +4226,9 @@ func (m *PermissionManager) SetUserInputRequestTracker(tracker *UserInputRequest
 }
 
 func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
-	switch m.mode {
-	case ModeBypass:
-		return true, nil
-	case ModePlan:
-		if action == ActionRead {
-			return true, nil
-		}
-		return false, fmt.Errorf("permission denied: %s is disabled in plan mode", action)
-	case ModeAcceptEdits:
-		if action == ActionRead || action == ActionWrite {
-			return true, nil
-		}
-	case ModeDefault:
-		if action == ActionRead {
-			return true, nil
-		}
+	if allowed, decided, err := m.allowWithoutPrompt(action); decided || err != nil {
+		return allowed, err
 	}
-	if action == ActionShell && m.shellAllowed {
-		return true, nil
-	}
-	if action == ActionGit && m.gitAllowed {
-		return true, nil
-	}
-
 	if m.prompt == nil {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
 	}
@@ -4265,6 +4244,33 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 		m.shellAllowed = true
 	}
 	return allowed, err
+}
+
+func (m *PermissionManager) allowWithoutPrompt(action Action) (bool, bool, error) {
+	switch m.mode {
+	case ModeBypass:
+		return true, true, nil
+	case ModePlan:
+		if action == ActionRead {
+			return true, true, nil
+		}
+		return false, true, fmt.Errorf("permission denied: %s is disabled in plan mode", action)
+	case ModeAcceptEdits:
+		if action == ActionRead || action == ActionWrite {
+			return true, true, nil
+		}
+	case ModeDefault:
+		if action == ActionRead {
+			return true, true, nil
+		}
+	}
+	if action == ActionShell && m.shellAllowed {
+		return true, true, nil
+	}
+	if action == ActionGit && m.gitAllowed {
+		return true, true, nil
+	}
+	return false, false, nil
 }
 
 func permissionQuestion(action Action, detail string) string {
