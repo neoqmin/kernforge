@@ -1361,6 +1361,44 @@ func TestBuildOpenAICodexRequestBodyClearsAssistantGeneratedImageResultForTextOn
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesAssistantReasoningEncryptedContentLikeCodex(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{
+				Role:                      "assistant",
+				Text:                      "done",
+				ReasoningContent:          "Consider inputs",
+				ReasoningEncryptedContent: "sealed-reasoning",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected reasoning plus assistant message, got %#v in %s", input, body)
+	}
+	reasoningItem, ok := input[0].(map[string]any)
+	if !ok || reasoningItem["type"] != "reasoning" {
+		t.Fatalf("expected reasoning item first, got %#v in %s", input[0], body)
+	}
+	if reasoningItem["encrypted_content"] != "sealed-reasoning" {
+		t.Fatalf("expected encrypted reasoning to be replayed, got %#v", reasoningItem)
+	}
+	summary := reasoningItem["summary"].([]any)
+	summaryItem := summary[0].(map[string]any)
+	if summaryItem["type"] != "summary_text" || summaryItem["text"] != "Consider inputs" {
+		t.Fatalf("expected reasoning summary to be replayed, got %#v", reasoningItem)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySerializesServiceTier(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model:       "gpt-5.5",
@@ -2771,6 +2809,31 @@ func TestParseOpenAICodexResponsePreservesReasoningContent(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesReasoningEncryptedContent(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"reasoning",
+			"id":"reasoning-1",
+			"summary":[{"type":"summary_text","text":"Consider inputs"}],
+			"encrypted_content":"sealed-reasoning"
+		},{
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"output_text","text":"done"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.Message.Text != "done" {
+		t.Fatalf("expected visible message text, got %q", resp.Message.Text)
+	}
+	if resp.Message.ReasoningEncryptedContent != "sealed-reasoning" {
+		t.Fatalf("expected encrypted reasoning to be preserved, got %q", resp.Message.ReasoningEncryptedContent)
+	}
+}
+
 func TestParseOpenAICodexResponseCapturesServerModel(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -3253,6 +3316,25 @@ func TestReadOpenAICodexStreamAccumulatesReasoningDeltas(t *testing.T) {
 	}
 	if resp.Message.ReasoningContent != "step one raw detail" {
 		t.Fatalf("expected reasoning deltas to be preserved, got %q", resp.Message.ReasoningContent)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesReasoningEncryptedContent(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","encrypted_content":"sealed-reasoning"}}`,
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "done" {
+		t.Fatalf("expected visible message text, got %q", resp.Message.Text)
+	}
+	if resp.Message.ReasoningEncryptedContent != "sealed-reasoning" {
+		t.Fatalf("expected encrypted reasoning to be preserved, got %q", resp.Message.ReasoningEncryptedContent)
 	}
 }
 

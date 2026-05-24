@@ -210,7 +210,7 @@ func (s *Session) ApproxChars() int {
 		}
 	}
 	for _, msg := range s.Messages {
-		total += len(msg.Text) + len(msg.ReasoningContent)
+		total += len(msg.Text) + len(msg.ReasoningContent) + len(msg.ReasoningEncryptedContent)
 		for _, image := range msg.Images {
 			total += len(image.Path) + len(image.MediaType) + len(image.Detail)
 		}
@@ -443,6 +443,9 @@ func (s *Session) ExportText() string {
 				}
 			}
 			b.WriteString("\n")
+		}
+		if strings.TrimSpace(msg.ReasoningEncryptedContent) != "" {
+			fmt.Fprintf(&b, "- reasoning encrypted content: present (%d bytes)\n\n", len(msg.ReasoningEncryptedContent))
 		}
 		if msg.Text != "" {
 			b.WriteString(msg.Text)
