@@ -14074,6 +14074,74 @@ func TestAgentRejectsImplicitRunShellPatchBodyLikeCodex(t *testing.T) {
 	}
 }
 
+func TestAgentNormalizesShellApplyPatchBeforeReadOnlyGate(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	command := strings.Join([]string{
+		"apply_patch <<'PATCH'",
+		"*** Begin Patch",
+		"*** Update File: main.go",
+		"@@",
+		" package main",
+		"+",
+		"+func shouldNotPatch() {}",
+		"*** End Patch",
+		"PATCH",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell", map[string]any{"command": command}),
+			{Message: Message{Role: "assistant", Text: "분석-only 요청에서 shell apply_patch 수정 시도는 read-only gate로 차단되었고, main.go 파일은 수정하지 않았습니다."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 분석만 해. 파일은 수정하지 마",
+	}}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewRunShellTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "수정하지 않았습니다") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(content), "shouldNotPatch") {
+		t.Fatalf("read-only shell apply_patch heredoc should not modify file, got %q", string(content))
+	}
+	foundApplyPatchBlock := false
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "apply_patch" && strings.Contains(msg.Text, "read-only analysis") {
+			foundApplyPatchBlock = true
+			if !msg.IsError {
+				t.Fatalf("expected read-only apply_patch block to be an error tool result")
+			}
+			break
+		}
+	}
+	if !foundApplyPatchBlock {
+		t.Fatalf("expected shell heredoc to normalize to blocked apply_patch, messages=%#v", session.Messages)
+	}
+}
+
 func TestRewriteShellApplyPatchToolCallsExtractsHeredocPayload(t *testing.T) {
 	command := strings.Join([]string{
 		"apply_patch <<'PATCH'",
