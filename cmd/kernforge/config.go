@@ -205,57 +205,59 @@ func cloneOpaqueConfigValue(value any) any {
 }
 
 type Config struct {
-	Provider                 string                        `json:"provider"`
-	Model                    string                        `json:"model"`
-	BaseURL                  string                        `json:"base_url"`
-	APIKey                   string                        `json:"api_key"`
-	ProviderKeys             map[string]string             `json:"provider_keys,omitempty"`
-	CodexCLIPath             string                        `json:"codex_cli_path,omitempty"`
-	CodexCLIArgs             []string                      `json:"codex_cli_args,omitempty"`
-	ClaudeCLIPath            string                        `json:"claude_cli_path,omitempty"`
-	ClaudeCLIArgs            []string                      `json:"claude_cli_args,omitempty"`
-	ForcedChatGPTWorkspaceID ForcedChatGPTWorkspaceIDs     `json:"forced_chatgpt_workspace_id,omitempty"`
-	Temperature              float64                       `json:"temperature"`
-	ReasoningEffort          string                        `json:"reasoning_effort,omitempty"`
-	MaxTokens                int                           `json:"max_tokens"`
-	MaxToolIterations        int                           `json:"max_tool_iterations"`
-	MaxRequestRetries        int                           `json:"max_request_retries,omitempty"`
-	RequestRetryDelayMs      int                           `json:"request_retry_delay_ms,omitempty"`
-	RequestTimeoutSecs       int                           `json:"request_timeout_seconds,omitempty"`
-	ProgressDisplay          string                        `json:"progress_display,omitempty"`
-	ModelRoutes              ModelRouteSchedulerConfig     `json:"model_routes,omitempty"`
-	ShellTimeoutSecs         int                           `json:"shell_timeout_seconds,omitempty"`
-	ReadHintSpans            int                           `json:"read_hint_spans,omitempty"`
-	ReadCacheEntries         int                           `json:"read_cache_entries,omitempty"`
-	MSBuildPath              string                        `json:"msbuild_path,omitempty"`
-	CMakePath                string                        `json:"cmake_path,omitempty"`
-	CTestPath                string                        `json:"ctest_path,omitempty"`
-	NinjaPath                string                        `json:"ninja_path,omitempty"`
-	Command                  string                        `json:"command,omitempty"`
-	PermissionMode           string                        `json:"permission_mode"`
-	Shell                    string                        `json:"shell"`
-	SessionDir               string                        `json:"session_dir"`
-	AutoCompactChars         int                           `json:"auto_compact_chars"`
-	AutoCheckpointEdits      *bool                         `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerify               *bool                         `json:"auto_verify,omitempty"`
-	AutoLocale               *bool                         `json:"auto_locale,omitempty"`
-	FuzzFuncOutputLanguage   string                        `json:"fuzz_func_output_language,omitempty"`
-	HooksEnabled             *bool                         `json:"hooks_enabled,omitempty"`
-	HookPresets              []string                      `json:"hook_presets,omitempty"`
-	HooksFailClosed          *bool                         `json:"hooks_fail_closed,omitempty"`
-	BypassHookTrust          bool                          `json:"-"`
-	MemoryFiles              []string                      `json:"memory_files"`
-	SkillPaths               []string                      `json:"skill_paths,omitempty"`
-	EnabledSkills            []string                      `json:"enabled_skills,omitempty"`
-	MCPServers               []MCPServerConfig             `json:"mcp_servers,omitempty"`
-	Profiles                 []Profile                     `json:"profiles,omitempty"`
-	ActiveProfileKey         string                        `json:"active_profile_key,omitempty"`
-	Projects                 map[string]ProjectTrustConfig `json:"projects,omitempty"`
-	ProjectAnalysis          ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
-	Review                   ReviewHarnessConfig           `json:"review,omitempty"`
-	Specialists              SpecialistSubagentsConfig     `json:"specialists,omitempty"`
-	WorktreeIsolation        WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
-	Desktop                  map[string]any                `json:"desktop,omitempty"`
+	Provider                    string                        `json:"provider"`
+	Model                       string                        `json:"model"`
+	BaseURL                     string                        `json:"base_url"`
+	APIKey                      string                        `json:"api_key"`
+	ProviderKeys                map[string]string             `json:"provider_keys,omitempty"`
+	CodexCLIPath                string                        `json:"codex_cli_path,omitempty"`
+	CodexCLIArgs                []string                      `json:"codex_cli_args,omitempty"`
+	ClaudeCLIPath               string                        `json:"claude_cli_path,omitempty"`
+	ClaudeCLIArgs               []string                      `json:"claude_cli_args,omitempty"`
+	ForcedChatGPTWorkspaceID    ForcedChatGPTWorkspaceIDs     `json:"forced_chatgpt_workspace_id,omitempty"`
+	Temperature                 float64                       `json:"temperature"`
+	ReasoningEffort             string                        `json:"reasoning_effort,omitempty"`
+	MaxTokens                   int                           `json:"max_tokens"`
+	MaxToolIterations           int                           `json:"max_tool_iterations"`
+	MaxRequestRetries           int                           `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs         int                           `json:"request_retry_delay_ms,omitempty"`
+	RequestTimeoutSecs          int                           `json:"request_timeout_seconds,omitempty"`
+	ProgressDisplay             string                        `json:"progress_display,omitempty"`
+	ModelRoutes                 ModelRouteSchedulerConfig     `json:"model_routes,omitempty"`
+	ShellTimeoutSecs            int                           `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans               int                           `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries            int                           `json:"read_cache_entries,omitempty"`
+	MSBuildPath                 string                        `json:"msbuild_path,omitempty"`
+	CMakePath                   string                        `json:"cmake_path,omitempty"`
+	CTestPath                   string                        `json:"ctest_path,omitempty"`
+	NinjaPath                   string                        `json:"ninja_path,omitempty"`
+	Command                     string                        `json:"command,omitempty"`
+	PermissionMode              string                        `json:"permission_mode"`
+	Shell                       string                        `json:"shell"`
+	SessionDir                  string                        `json:"session_dir"`
+	AutoCompactChars            int                           `json:"auto_compact_chars"`
+	AutoCheckpointEdits         *bool                         `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify                  *bool                         `json:"auto_verify,omitempty"`
+	AutoLocale                  *bool                         `json:"auto_locale,omitempty"`
+	FuzzFuncOutputLanguage      string                        `json:"fuzz_func_output_language,omitempty"`
+	HooksEnabled                *bool                         `json:"hooks_enabled,omitempty"`
+	HookPresets                 []string                      `json:"hook_presets,omitempty"`
+	HooksFailClosed             *bool                         `json:"hooks_fail_closed,omitempty"`
+	BypassHookTrust             bool                          `json:"-"`
+	MemoryFiles                 []string                      `json:"memory_files"`
+	SkillPaths                  []string                      `json:"skill_paths,omitempty"`
+	EnabledSkills               []string                      `json:"enabled_skills,omitempty"`
+	MCPServers                  []MCPServerConfig             `json:"mcp_servers,omitempty"`
+	Profiles                    []Profile                     `json:"profiles,omitempty"`
+	ActiveProfileKey            string                        `json:"active_profile_key,omitempty"`
+	Projects                    map[string]ProjectTrustConfig `json:"projects,omitempty"`
+	ProjectDocMaxBytes          *int                          `json:"project_doc_max_bytes,omitempty"`
+	ProjectDocFallbackFilenames []string                      `json:"project_doc_fallback_filenames,omitempty"`
+	ProjectAnalysis             ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
+	Review                      ReviewHarnessConfig           `json:"review,omitempty"`
+	Specialists                 SpecialistSubagentsConfig     `json:"specialists,omitempty"`
+	WorktreeIsolation           WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
+	Desktop                     map[string]any                `json:"desktop,omitempty"`
 }
 
 type ConfigLoadOptions struct {
@@ -298,6 +300,7 @@ func DefaultConfig(cwd string) Config {
 		PermissionMode:         "default",
 		Shell:                  defaultShell(),
 		SessionDir:             filepath.Join(userConfigDir(), "sessions"),
+		ProjectDocMaxBytes:     intPtr(agentsMDMaxBytes),
 		AutoCompactChars:       45000,
 		AutoCheckpointEdits:    boolPtr(false),
 		AutoVerify:             boolPtr(true),
@@ -1287,6 +1290,13 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if len(src.Projects) > 0 {
 		dst.Projects = mergeProjectTrustConfigs(dst.Projects, src.Projects)
+	}
+	if src.ProjectDocMaxBytes != nil {
+		value := *src.ProjectDocMaxBytes
+		dst.ProjectDocMaxBytes = &value
+	}
+	if len(src.ProjectDocFallbackFilenames) > 0 {
+		dst.ProjectDocFallbackFilenames = normalizeProjectDocFallbackNames(src.ProjectDocFallbackFilenames)
 	}
 	if src.ProjectAnalysis.Enabled != nil {
 		value := *src.ProjectAnalysis.Enabled

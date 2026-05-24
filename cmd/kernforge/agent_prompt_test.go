@@ -116,6 +116,52 @@ func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
 	}
 }
 
+func TestSystemPromptUsesProjectDocFallbackFilenames(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("fallback project instruction"), 0o644); err != nil {
+		t.Fatalf("write fallback project doc: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config: Config{
+			ProjectDocFallbackFilenames: []string{"CLAUDE.md"},
+		},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "fallback project instruction") {
+		t.Fatalf("expected configured fallback project doc in prompt, got %q", prompt)
+	}
+}
+
+func TestSystemPromptCanDisableProjectAgentsMDInstructions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("disabled project instruction"), 0o644); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config: Config{
+			ProjectDocMaxBytes: intPtr(0),
+		},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if strings.Contains(prompt, "disabled project instruction") || strings.Contains(prompt, "# AGENTS.md instructions for ") {
+		t.Fatalf("expected project docs to be disabled, got %q", prompt)
+	}
+}
+
 func TestSystemPromptUsesExternalUserRequestAfterInternalSteering(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
