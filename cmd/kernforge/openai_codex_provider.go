@@ -1024,7 +1024,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 		case "response.output_item.added":
 			if event.Item.Type == "message" {
-				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
+				messagePhase = mergeOpenAICodexMessagePhase(messagePhase, event.Item.Phase)
 				if addedText := openAICodexOutputItemText(event.Item); strings.TrimSpace(addedText) != "" {
 					text.WriteString(addedText)
 				}
@@ -1094,7 +1094,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 		case "response.output_item.done":
 			if event.Item.Type == "message" {
-				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
+				messagePhase = mergeOpenAICodexMessagePhase(messagePhase, event.Item.Phase)
 			}
 			if event.Item.Type == "message" && text.Len() == 0 {
 				for _, content := range event.Item.Content {
@@ -1447,6 +1447,21 @@ func normalizeOpenAICodexMessagePhase(phase string) string {
 	default:
 		return ""
 	}
+}
+
+func mergeOpenAICodexMessagePhase(current string, next string) string {
+	current = normalizeOpenAICodexMessagePhase(current)
+	next = normalizeOpenAICodexMessagePhase(next)
+	if current == messagePhaseFinalAnswer || next == "" {
+		return current
+	}
+	if next == messagePhaseFinalAnswer {
+		return messagePhaseFinalAnswer
+	}
+	if current == "" {
+		return next
+	}
+	return current
 }
 
 func openAICodexOutputItemIsToolCall(item openAICodexOutputItem) bool {

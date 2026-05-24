@@ -2121,6 +2121,26 @@ func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponseBody(
 	}
 }
 
+func TestReadOpenAICodexStreamKeepsFinalPhaseAfterLaterCommentaryItem(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"final_answer"}}`,
+		`data: {"type":"response.output_text.delta","delta":"done"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"ignored late commentary"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "done" {
+		t.Fatalf("expected streamed text, got %q", resp.Message.Text)
+	}
+	if resp.Message.Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected final-answer phase to win over later commentary, got %q", resp.Message.Phase)
+	}
+}
+
 func TestReadOpenAICodexStreamPreservesEndTurnFromCompletedResponse(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.completed","response":{"status":"completed","end_turn":false,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continuing"}]}]}}`,
