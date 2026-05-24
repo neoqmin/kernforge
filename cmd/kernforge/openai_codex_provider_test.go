@@ -147,6 +147,13 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	if _, ok := metadata["empty"]; ok {
 		t.Fatalf("empty metadata values should be dropped: %#v", metadata)
 	}
+	if payload["tool_choice"] != "auto" {
+		t.Fatalf("expected tool_choice auto even without tools, got %#v", payload["tool_choice"])
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 0 {
+		t.Fatalf("expected empty tools array without tools, got %#v", payload["tools"])
+	}
 	include, ok := payload["include"].([]any)
 	if !ok || len(include) != 0 {
 		t.Fatalf("expected empty include without reasoning, got %#v", payload["include"])

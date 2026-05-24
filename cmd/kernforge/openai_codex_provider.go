@@ -270,6 +270,8 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		"store":               false,
 		"stream":              true,
 		"include":             []string{},
+		"tools":               []map[string]any{},
+		"tool_choice":         "auto",
 		"parallel_tool_calls": true,
 	}
 	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
@@ -303,20 +305,15 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	if textControls := openAICodexTextControls(model, req.JSONMode); len(textControls) > 0 {
 		payload["text"] = textControls
 	}
-	if len(req.Tools) > 0 {
-		tools := make([]map[string]any, 0, len(req.Tools))
-		for _, tool := range req.Tools {
-			item := openAICodexToolPayload(tool)
-			if len(item) == 0 {
-				continue
-			}
-			tools = append(tools, item)
+	tools := make([]map[string]any, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		item := openAICodexToolPayload(tool)
+		if len(item) == 0 {
+			continue
 		}
-		if len(tools) > 0 {
-			payload["tools"] = tools
-			payload["tool_choice"] = "auto"
-		}
+		tools = append(tools, item)
 	}
+	payload["tools"] = tools
 	return json.Marshal(payload)
 }
 
