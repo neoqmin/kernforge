@@ -615,6 +615,7 @@ func TestAgentTreatsBuiltInInspectionToolsAsParallelSafe(t *testing.T) {
 			NewGrepTool(Workspace{BaseRoot: root, Root: root}),
 			NewGitStatusTool(Workspace{BaseRoot: root, Root: root}),
 			NewGitDiffTool(Workspace{BaseRoot: root, Root: root}),
+			NewUpdatePlanTool(Workspace{BaseRoot: root, Root: root}),
 		),
 	}
 	calls := []ToolCall{
@@ -634,6 +635,18 @@ func TestAgentTreatsBuiltInInspectionToolsAsParallelSafe(t *testing.T) {
 	}
 	if !agent.shouldExecuteToolCallBatchInParallel(calls, true, nil) {
 		t.Fatalf("expected built-in read-only inspection tools to use the parallel batch path")
+	}
+	mixedCalls := append([]ToolCall(nil), calls[:2]...)
+	mixedCalls = append(mixedCalls, ToolCall{
+		ID:        "call-plan",
+		Name:      "update_plan",
+		Arguments: `{"items":[{"step":"Inspect","status":"in_progress"}]}`,
+	})
+	if agent.Tools.ToolCallSupportsParallel("update_plan") {
+		t.Fatalf("update_plan should remain write-locked in mixed parallel batches")
+	}
+	if !agent.shouldExecuteToolCallBatchInParallel(mixedCalls, true, nil) {
+		t.Fatalf("expected update_plan to be allowed as the write-locked member of a mixed parallel batch")
 	}
 	viewImageRegistry := NewToolRegistry(NewViewImageTool(Workspace{BaseRoot: root, Root: root}))
 	if !viewImageRegistry.ToolCallSupportsParallel("view_image") {

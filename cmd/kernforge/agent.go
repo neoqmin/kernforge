@@ -7133,6 +7133,7 @@ func (a *Agent) shouldExecuteToolCallBatchInParallel(calls []ToolCall, readOnlyA
 	if len(calls) < 2 || a == nil || a.Tools == nil {
 		return false
 	}
+	hasParallelCapableCall := false
 	for _, call := range calls {
 		name := strings.TrimSpace(call.Name)
 		if name == "" || disabled[name] || isEditTool(name) {
@@ -7144,11 +7145,24 @@ func (a *Agent) shouldExecuteToolCallBatchInParallel(calls []ToolCall, readOnlyA
 		if readOnlyAnalysis && !a.toolCallAllowedInReadOnlyAnalysis(call) {
 			return false
 		}
-		if !a.Tools.ToolCallSupportsParallel(name) {
+		if a.Tools.ToolCallSupportsParallel(name) {
+			hasParallelCapableCall = true
+			continue
+		}
+		if !toolCallAllowedInWriteLockedParallelBatch(call) {
 			return false
 		}
 	}
-	return true
+	return hasParallelCapableCall
+}
+
+func toolCallAllowedInWriteLockedParallelBatch(call ToolCall) bool {
+	switch strings.TrimSpace(call.Name) {
+	case "update_plan":
+		return true
+	default:
+		return false
+	}
 }
 
 func toolCallArgumentsAreJSONObject(args string) bool {
@@ -7173,6 +7187,7 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 	}
 	baseToolCtx := a.contextWithMCPToolInvocationMetadata(ctx, mcpTurnMetadata)
 	var wg sync.WaitGroup
+	var executionLock sync.RWMutex
 	for callIndex, call := range calls {
 		if summary := summarizeToolInvocation(a.Config, call); summary != "" {
 			a.emitProgressEvent(ProgressEvent{
@@ -7189,6 +7204,13 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 		wg.Add(1)
 		go func(index int, item ToolCall) {
 			defer wg.Done()
+			if a.Tools.ToolCallSupportsParallel(item.Name) {
+				executionLock.RLock()
+				defer executionLock.RUnlock()
+			} else {
+				executionLock.Lock()
+				defer executionLock.Unlock()
+			}
 			toolCtx := contextWithOriginalImageDetailSupport(baseToolCtx, canRequestOriginalImageDetail(provider, model))
 			toolCtx = contextWithImageInputSupport(toolCtx, canRequestImageInput(provider, model))
 			toolCtx = contextWithToolCallHookMetadata(toolCtx, item)
