@@ -1280,6 +1280,39 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamUsesAddedMessageTextAsPrefix(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
+		`data: {"type":"response.output_text.delta","delta":"body"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "Intro body" {
+		t.Fatalf("expected added message prefix plus delta, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
+		`data: {"type":"response.output_text.delta","delta":"body"}`,
+		`data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro body"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "Intro body" {
+		t.Fatalf("expected added message prefix to stay single, got %q", resp.Message.Text)
+	}
+}
+
 func TestReadOpenAICodexStreamRejectsMissingCompletedEvent(t *testing.T) {
 	stream := strings.NewReader(`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"partial text"}]}}` + "\n\n")
 	resp, err := readOpenAICodexStream(context.Background(), stream)
