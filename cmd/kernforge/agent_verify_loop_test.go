@@ -13517,6 +13517,70 @@ func TestAgentContinuesPostEditInProgressEndTurnFalse(t *testing.T) {
 	}
 }
 
+func TestAgentContinuesPostEditFutureVerificationEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	endTurnFalse := false
+	inProgress := "main.go 파일을 수정했습니다. 이제 go test를 실행하겠습니다."
+	finalReply := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: inProgress,
+				},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: finalReply,
+				},
+				StopReason: "completed",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "main.go 파일을 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected final reply after future verification continuation, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected future verification reply to request a follow-up, got %d requests", len(provider.requests))
+	}
+	foundInProgress := false
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && msg.Text == inProgress {
+			foundInProgress = true
+			if msg.Phase != messagePhaseCommentary {
+				t.Fatalf("expected future verification reply to remain commentary, got %#v", msg)
+			}
+		}
+	}
+	if !foundInProgress {
+		t.Fatalf("expected future verification assistant reply to be retained")
+	}
+}
+
 func TestAgentContinuesGeneratedDocumentInProgressEndTurnFalseAfterArtifactWrite(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
