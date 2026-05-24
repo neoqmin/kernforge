@@ -1844,6 +1844,10 @@ func TestBuildOpenAICodexRequestBodyRoundTripsCodexToolOutputItems(t *testing.T)
 					ID:        "call_read",
 					Name:      "read_file",
 					Arguments: `{"path":"main.go"}`,
+				}, {
+					ID:        "call_search",
+					Name:      "tool_search",
+					Arguments: `{"query":"read_file"}`,
 				}},
 				CodexToolOutputItems: []MessageCodexToolOutputItem{{
 					Type:   "function_call_output",
@@ -1910,6 +1914,41 @@ func TestBuildOpenAICodexRequestBodyRoundTripsCodexToolOutputItems(t *testing.T)
 	}
 	if strings.Contains(string(body), "aborted") {
 		t.Fatalf("preserved Codex tool output must suppress synthetic aborted output: %s", body)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyDropsOrphanCodexToolOutputItems(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{
+				Role: "assistant",
+				CodexToolOutputItems: []MessageCodexToolOutputItem{{
+					Type:   "function_call_output",
+					CallID: "call_orphan",
+					Text:   "orphan output",
+				}, {
+					Type:      "tool_search_output",
+					CallID:    "server_search",
+					Status:    "completed",
+					Execution: "server",
+					Tools: []map[string]any{{
+						"name": "server_tool",
+					}},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	encoded := string(body)
+	if strings.Contains(encoded, "call_orphan") || strings.Contains(encoded, "orphan output") {
+		t.Fatalf("orphan function_call_output must be removed: %s", body)
+	}
+	if !strings.Contains(encoded, `"type":"tool_search_output"`) || !strings.Contains(encoded, `"execution":"server"`) {
+		t.Fatalf("server tool_search_output must be retained: %s", body)
 	}
 }
 
