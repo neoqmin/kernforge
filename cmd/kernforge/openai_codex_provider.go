@@ -1130,11 +1130,82 @@ func cloneOpenAICodexToolMaps(tools []map[string]any) []map[string]any {
 	return out
 }
 
+type openAICodexExpectedOutputSets struct {
+	functionOrLocal map[string]bool
+	custom          map[string]bool
+	toolSearch      map[string]bool
+}
+
+func newOpenAICodexExpectedOutputSets() openAICodexExpectedOutputSets {
+	return openAICodexExpectedOutputSets{
+		functionOrLocal: map[string]bool{},
+		custom:          map[string]bool{},
+		toolSearch:      map[string]bool{},
+	}
+}
+
+func (sets openAICodexExpectedOutputSets) hasAny() bool {
+	return len(sets.functionOrLocal) > 0 || len(sets.custom) > 0 || len(sets.toolSearch) > 0
+}
+
+func (sets openAICodexExpectedOutputSets) markToolCall(callID string, call ToolCall) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return
+	}
+	switch strings.TrimSpace(call.Name) {
+	case "apply_patch":
+		sets.custom[callID] = true
+	case "tool_search":
+		sets.toolSearch[callID] = true
+	default:
+		sets.functionOrLocal[callID] = true
+	}
+}
+
+func (sets openAICodexExpectedOutputSets) markLocalShell(callID string) {
+	callID = strings.TrimSpace(callID)
+	if callID != "" {
+		sets.functionOrLocal[callID] = true
+	}
+}
+
+func (sets openAICodexExpectedOutputSets) matchesOutput(output MessageCodexToolOutputItem) bool {
+	callID := strings.TrimSpace(output.CallID)
+	switch strings.TrimSpace(output.Type) {
+	case "function_call_output":
+		return callID != "" && sets.functionOrLocal[callID]
+	case "custom_tool_call_output":
+		return callID != "" && sets.custom[callID]
+	case "tool_search_output":
+		if strings.TrimSpace(output.Execution) == "server" {
+			return true
+		}
+		return callID != "" && sets.toolSearch[callID]
+	default:
+		return false
+	}
+}
+
+func filterOpenAICodexAssistantToolOutputItems(outputs []MessageCodexToolOutputItem, expectedSets openAICodexExpectedOutputSets) []MessageCodexToolOutputItem {
+	if len(outputs) == 0 {
+		return nil
+	}
+	out := make([]MessageCodexToolOutputItem, 0, len(outputs))
+	for _, output := range outputs {
+		if expectedSets.matchesOutput(output) {
+			out = append(out, output)
+		}
+	}
+	return out
+}
+
 func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 	if len(messages) == 0 {
 		return messages
 	}
 	expected := map[string]ToolCall{}
+	expectedSets := newOpenAICodexExpectedOutputSets()
 	outputs := map[string]bool{}
 	for _, msg := range messages {
 		switch msg.Role {
@@ -1143,17 +1214,24 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 				callID := firstNonEmptyTrimmed(call.ID, call.Name)
 				if callID != "" {
 					expected[callID] = call
+					expectedSets.markToolCall(callID, call)
 				}
 			}
 			for _, call := range msg.LocalShellCalls {
 				callID := firstNonEmptyTrimmed(call.CallID, call.ID)
 				if callID != "" {
 					expected[callID] = ToolCall{ID: callID}
+					expectedSets.markLocalShell(callID)
 				}
 			}
+		}
+	}
+	for _, msg := range messages {
+		switch msg.Role {
+		case "assistant":
 			for _, output := range msg.CodexToolOutputItems {
 				callID := strings.TrimSpace(output.CallID)
-				if callID != "" {
+				if callID != "" && expectedSets.matchesOutput(output) {
 					outputs[callID] = true
 				}
 			}
@@ -1164,10 +1242,13 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 			}
 		}
 	}
-	if len(expected) == 0 {
+	if len(expected) == 0 && !expectedSets.hasAny() {
 		out := make([]Message, 0, len(messages))
 		for _, msg := range messages {
 			if msg.Role != "tool" {
+				if msg.Role == "assistant" {
+					msg.CodexToolOutputItems = filterOpenAICodexAssistantToolOutputItems(msg.CodexToolOutputItems, expectedSets)
+				}
 				out = append(out, msg)
 			}
 		}
@@ -1189,6 +1270,9 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 			continue
 		}
 
+		if msg.Role == "assistant" {
+			msg.CodexToolOutputItems = filterOpenAICodexAssistantToolOutputItems(msg.CodexToolOutputItems, expectedSets)
+		}
 		out = append(out, msg)
 		if msg.Role != "assistant" || (len(msg.ToolCalls) == 0 && len(msg.LocalShellCalls) == 0) {
 			continue
