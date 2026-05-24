@@ -1019,14 +1019,14 @@ func openAICodexAssistantLocalShellInputItems(calls []MessageLocalShellCall) []a
 	}
 	items := make([]any, 0, len(calls))
 	for _, call := range calls {
-		callID := firstNonEmptyTrimmed(call.CallID, call.ID)
-		if callID == "" || len(call.Action) == 0 {
+		callID := strings.TrimSpace(call.CallID)
+		if len(call.Action) == 0 {
 			continue
 		}
 		status := firstNonEmptyTrimmed(call.Status, "completed")
 		items = append(items, map[string]any{
 			"type":    "local_shell_call",
-			"call_id": callID,
+			"call_id": openAICodexNullableCallID(callID),
 			"status":  status,
 			"action":  cloneToolDefinitionMap(call.Action),
 		})
@@ -1235,7 +1235,7 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 				}
 			}
 			for _, call := range msg.LocalShellCalls {
-				callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+				callID := strings.TrimSpace(call.CallID)
 				if callID != "" {
 					expected[callID] = ToolCall{ID: callID}
 					expectedSets.markLocalShell(callID)
@@ -1310,7 +1310,7 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 			})
 		}
 		for _, call := range msg.LocalShellCalls {
-			callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+			callID := strings.TrimSpace(call.CallID)
 			if callID == "" || outputs[callID] {
 				continue
 			}
@@ -2729,13 +2729,9 @@ func openAICodexLocalShellCallFromOutputItem(item openAICodexOutputItem) (Messag
 	if len(action) == 0 {
 		return MessageLocalShellCall{}, false
 	}
-	callID := firstNonEmptyTrimmed(item.CallID, item.ID)
-	if callID == "" {
-		return MessageLocalShellCall{}, false
-	}
 	return MessageLocalShellCall{
 		ID:     strings.TrimSpace(item.ID),
-		CallID: callID,
+		CallID: strings.TrimSpace(item.CallID),
 		Status: strings.TrimSpace(item.Status),
 		Action: cloneToolDefinitionMap(action),
 	}, true
