@@ -2697,6 +2697,9 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 			if got := r.Header.Get("x-client-request-id"); got != "thread-456" {
 				t.Fatalf("unexpected x-client-request-id: %q", got)
 			}
+			if got := r.Header.Get(openAICodexWindowIDHeader); got != "thread-456:0" {
+				t.Fatalf("unexpected x-codex-window-id: %q", got)
+			}
 			if got := r.Header.Get("chatgpt-account-id"); got != "account-123" {
 				t.Fatalf("unexpected chatgpt-account-id: %q", got)
 			}
@@ -2712,10 +2715,16 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 			if !ok || strings.TrimSpace(fmt.Sprint(metadata["x-codex-installation-id"])) == "" {
 				t.Fatalf("expected x-codex-installation-id metadata, got %#v", payload["client_metadata"])
 			}
+			if metadata[openAICodexWindowIDHeader] != "thread-456:0" {
+				t.Fatalf("expected x-codex-window-id metadata, got %#v", metadata)
+			}
 			w.Header().Set(codexTurnStateHeader, "codex-sticky")
 		case 2:
 			if got := r.Header.Get(codexTurnStateHeader); got != "codex-sticky" {
 				t.Fatalf("second request should replay turn state, got %q", got)
+			}
+			if got := r.Header.Get(openAICodexWindowIDHeader); got != "thread-456:0" {
+				t.Fatalf("second request should replay window id, got %q", got)
 			}
 			assertTurnMetadataHeader(t, r, "turn-abc")
 		default:
