@@ -32,6 +32,58 @@ type ToolContentItem struct {
 	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
+const codexResizedImageBytesEstimate = 7373
+
+func toolContentItemApproxChars(item ToolContentItem) int {
+	total := len(item.Type) + len(item.Text) + len(item.Detail)
+	if strings.TrimSpace(item.ImageURL) != "" {
+		total += imageURLApproxChars(item.ImageURL)
+	}
+	if strings.TrimSpace(item.EncryptedContent) != "" {
+		total += len(item.EncryptedContent)
+	}
+	return total
+}
+
+func imageURLApproxChars(imageURL string) int {
+	imageURL = strings.TrimSpace(imageURL)
+	if imageURL == "" {
+		return 0
+	}
+	payload, ok := base64ImageDataURLPayload(imageURL)
+	if !ok {
+		return len(imageURL)
+	}
+	return len(imageURL) - len(payload) + codexResizedImageBytesEstimate
+}
+
+func base64ImageDataURLPayload(imageURL string) (string, bool) {
+	if len(imageURL) < len("data:") || !strings.EqualFold(imageURL[:len("data:")], "data:") {
+		return "", false
+	}
+	comma := strings.IndexByte(imageURL, ',')
+	if comma < 0 {
+		return "", false
+	}
+	metadata := imageURL[len("data:"):comma]
+	payload := imageURL[comma+1:]
+	parts := strings.Split(metadata, ";")
+	if len(parts) == 0 || !strings.HasPrefix(strings.ToLower(parts[0]), "image/") {
+		return "", false
+	}
+	hasBase64 := false
+	for _, part := range parts[1:] {
+		if strings.EqualFold(part, "base64") {
+			hasBase64 = true
+			break
+		}
+	}
+	if !hasBase64 {
+		return "", false
+	}
+	return payload, true
+}
+
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
