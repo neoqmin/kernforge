@@ -15085,6 +15085,10 @@ func TestStripUnsupportedOwnerNodeIDFromToolCalls(t *testing.T) {
 			Name:      "run_shell",
 			Arguments: `{"command":"go test ./...","owner_node_id":"plan-02"}`,
 		},
+		{
+			Name:      "mcp_custom_tool",
+			Arguments: `{"owner_node_id":"domain-owned-value"}`,
+		},
 	}
 
 	updated := stripUnsupportedOwnerNodeIDFromToolCalls(calls)
@@ -15096,6 +15100,9 @@ func TestStripUnsupportedOwnerNodeIDFromToolCalls(t *testing.T) {
 	}
 	if got := stringValue(toolCallArgumentsMap(updated[2]), "owner_node_id"); got != "plan-02" {
 		t.Fatalf("expected run_shell owner_node_id to be preserved, got %#v", updated[2])
+	}
+	if got := stringValue(toolCallArgumentsMap(updated[3]), "owner_node_id"); got != "domain-owned-value" {
+		t.Fatalf("expected custom tool owner_node_id to be preserved, got %#v", updated[3])
 	}
 }
 

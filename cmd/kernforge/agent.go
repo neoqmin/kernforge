@@ -7562,7 +7562,7 @@ func stripUnsupportedOwnerNodeIDFromToolCalls(calls []ToolCall) []ToolCall {
 	out := make([]ToolCall, len(calls))
 	copy(out, calls)
 	for index := range out {
-		if toolCallSupportsOwnerNodeID(out[index].Name) {
+		if !toolCallForbidsModelOwnerNodeID(out[index].Name) {
 			continue
 		}
 		if strings.TrimSpace(out[index].Arguments) == "" {
@@ -7583,6 +7583,23 @@ func stripUnsupportedOwnerNodeIDFromToolCalls(calls []ToolCall) []ToolCall {
 		out[index].Arguments = string(encoded)
 	}
 	return out
+}
+
+func toolCallForbidsModelOwnerNodeID(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file",
+		"list_files",
+		"grep",
+		"git_status",
+		"git_diff",
+		"check_shell_job",
+		"check_shell_bundle",
+		"get_goal",
+		"update_plan":
+		return true
+	default:
+		return false
+	}
 }
 
 func assignFocusedOwnerNodeToToolCalls(calls []ToolCall, session *Session) []ToolCall {
