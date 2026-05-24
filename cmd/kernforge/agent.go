@@ -7934,6 +7934,29 @@ func (a *Agent) newSubagentLifecycleTurnID(agentID string) string {
 	return fmt.Sprintf("%s:subagent:%s:%d", sessionID, safeAgentID, time.Now().UnixNano())
 }
 
+func (a *Agent) codexParentThreadID() string {
+	if a == nil || a.Session == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.Session.ID)
+}
+
+func (a *Agent) codexSubagentThreadID(agentID string, turnID string) string {
+	turnID = strings.TrimSpace(turnID)
+	if turnID != "" {
+		return turnID
+	}
+	parentThreadID := a.codexParentThreadID()
+	if parentThreadID == "" {
+		return ""
+	}
+	safeAgentID := sanitizeFileName(agentID)
+	if safeAgentID == "" {
+		safeAgentID = "subagent"
+	}
+	return fmt.Sprintf("%s:subagent:%s", parentThreadID, safeAgentID)
+}
+
 func stopHookShouldBlock(verdict HookVerdict) bool {
 	return strings.EqualFold(strings.TrimSpace(verdict.StopDecision), "block")
 }

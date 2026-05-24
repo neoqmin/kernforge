@@ -504,6 +504,8 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 	results := make(chan microWorkerResult, len(plans))
 	runPlan := func(plan microWorkerPlan) {
 		turnID := a.newSubagentLifecycleTurnID(plan.node.ID)
+		parentThreadID := a.codexParentThreadID()
+		subagentThreadID := a.codexSubagentThreadID(plan.node.ID, turnID)
 		startContexts, err := a.runSubagentStartHook(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, turnID)
 		if err != nil {
 			results <- microWorkerResult{
@@ -529,8 +531,10 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 				MaxTokens:           min(256, max(128, a.Config.MaxTokens/6)),
 				Temperature:         0.1,
 				WorkingDir:          a.Session.WorkingDir,
+				SessionID:           subagentThreadID,
+				ThreadID:            subagentThreadID,
 				CodexSubagent:       openAICodexSubagentCollabSpawn,
-				CodexParentThreadID: a.Session.ID,
+				CodexParentThreadID: parentThreadID,
 			})
 			if err != nil {
 				if stopErr := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, "", turnID); stopErr != nil {
