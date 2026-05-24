@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,6 +74,45 @@ func TestSystemPromptIncludesActivePermissionProfileSnapshot(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Active permission profile: "+builtInPermissionProfileDangerFullAccess) {
 		t.Fatalf("expected live permission profile snapshot in system prompt, got %q", prompt)
+	}
+}
+
+func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root project instruction"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("nested default instruction should lose to override"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.override.md"), []byte("nested override instruction"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.override.md: %v", err)
+	}
+	session := NewSession(nested, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     nested,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "# AGENTS.md instructions for "+nested) {
+		t.Fatalf("expected AGENTS.md contextual header, got %q", prompt)
+	}
+	rootIndex := strings.Index(prompt, "root project instruction")
+	nestedIndex := strings.Index(prompt, "nested override instruction")
+	if rootIndex < 0 || nestedIndex < 0 || rootIndex > nestedIndex {
+		t.Fatalf("expected root AGENTS.md before nested override, got %q", prompt)
+	}
+	if strings.Contains(prompt, "nested default instruction should lose to override") {
+		t.Fatalf("expected AGENTS.override.md to win over AGENTS.md in same directory, got %q", prompt)
 	}
 }
 

@@ -7997,6 +7997,11 @@ func (a *Agent) systemPrompt() string {
 	if workspaceRoots := workspaceEffectiveRoots(a.Workspace, a.Session); len(workspaceRoots) > 0 {
 		fmt.Fprintf(&b, "Workspace roots: %s\n", strings.Join(workspaceRoots, ", "))
 	}
+	if agentsMD := strings.TrimSpace(a.projectAgentsMDPromptSection()); agentsMD != "" {
+		b.WriteString("\n")
+		b.WriteString(agentsMD)
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "Provider/model: %s / %s\n", a.Session.Provider, a.Session.Model)
 	permissionMode := a.activePermissionModeSnapshot()
 	if permissionMode == "" {
