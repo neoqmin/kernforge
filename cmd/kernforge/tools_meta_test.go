@@ -1325,6 +1325,32 @@ func TestReadFileExecuteDetailedReturnsMissingPathHint(t *testing.T) {
 	}
 }
 
+func TestReadFileMissingPathHintIncludesSameBasenameCandidates(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(reportPath, []byte("# report\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewReadFileTool(Workspace{BaseRoot: root, Root: root})
+	registry := NewToolRegistry(tool)
+
+	result, err := registry.ExecuteDetailed(context.Background(), "read_file", `{"path":"BugReport.md"}`)
+	if err == nil {
+		t.Fatalf("expected missing file error")
+	}
+	if !strings.Contains(result.DisplayText, "Possible matching paths:") ||
+		!strings.Contains(result.DisplayText, "Tavern/BugReport.md") {
+		t.Fatalf("expected same-basename candidate hint, got %q", result.DisplayText)
+	}
+	candidates := toolMetaStringSlice(result.Meta, "candidate_paths")
+	if len(candidates) != 1 || candidates[0] != filepath.ToSlash(filepath.Join("Tavern", "BugReport.md")) {
+		t.Fatalf("expected Tavern/BugReport.md candidate metadata, got %#v", result.Meta)
+	}
+}
+
 func TestRunShellExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	root := t.TempDir()
 	ws := Workspace{
