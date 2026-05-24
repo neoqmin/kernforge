@@ -488,11 +488,21 @@ func openAICodexTextControls(model string, jsonMode bool) map[string]any {
 		text["verbosity"] = verbosity
 	}
 	if jsonMode {
-		text["format"] = map[string]any{
-			"type": "json_object",
-		}
+		text["format"] = openAICodexJSONModeTextFormat()
 	}
 	return text
+}
+
+func openAICodexJSONModeTextFormat() map[string]any {
+	return map[string]any{
+		"type":   "json_schema",
+		"strict": false,
+		"name":   "codex_json_object",
+		"schema": map[string]any{
+			"type":                 "object",
+			"additionalProperties": true,
+		},
+	}
 }
 
 func openAICodexDefaultVerbosity(model string) string {
