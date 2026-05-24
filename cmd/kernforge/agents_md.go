@@ -31,14 +31,18 @@ func (a *Agent) projectAgentsMDPromptSection() string {
 	if root == "" {
 		root = cwd
 	}
-	contents := loadProjectAgentsMD(root, cwd, agentsMDMaxBytes)
+	maxBytes := agentsMDMaxBytes
+	if a.Config.ProjectDocMaxBytes != nil {
+		maxBytes = *a.Config.ProjectDocMaxBytes
+	}
+	contents := loadProjectAgentsMD(root, cwd, maxBytes, a.Config.ProjectDocFallbackFilenames)
 	if strings.TrimSpace(contents) == "" {
 		return ""
 	}
 	return fmt.Sprintf("# AGENTS.md instructions for %s\n\n<INSTRUCTIONS>\n%s\n</INSTRUCTIONS>", cwd, strings.TrimSpace(contents))
 }
 
-func loadProjectAgentsMD(root string, cwd string, maxBytes int) string {
+func loadProjectAgentsMD(root string, cwd string, maxBytes int, fallbackNames []string) string {
 	if maxBytes <= 0 {
 		return ""
 	}
@@ -52,7 +56,7 @@ func loadProjectAgentsMD(root string, cwd string, maxBytes int) string {
 		if remaining <= 0 {
 			break
 		}
-		path := firstAgentsMDPath(dir)
+		path := firstAgentsMDPath(dir, fallbackNames)
 		if path == "" {
 			continue
 		}
@@ -105,8 +109,8 @@ func agentsMDSearchDirs(root string, cwd string) []string {
 	return dirs
 }
 
-func firstAgentsMDPath(dir string) string {
-	for _, name := range []string{localAgentsMDFilename, defaultAgentsMDFilename} {
+func firstAgentsMDPath(dir string, fallbackNames []string) string {
+	for _, name := range candidateAgentsMDFilenames(fallbackNames) {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
 		if err != nil || info == nil || info.IsDir() {
@@ -115,6 +119,41 @@ func firstAgentsMDPath(dir string) string {
 		return path
 	}
 	return ""
+}
+
+func candidateAgentsMDFilenames(fallbackNames []string) []string {
+	names := []string{localAgentsMDFilename, defaultAgentsMDFilename}
+	seen := map[string]struct{}{
+		strings.ToLower(localAgentsMDFilename):   {},
+		strings.ToLower(defaultAgentsMDFilename): {},
+	}
+	for _, name := range normalizeProjectDocFallbackNames(fallbackNames) {
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
+func normalizeProjectDocFallbackNames(names []string) []string {
+	normalized := make([]string, 0, len(names))
+	seen := map[string]struct{}{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || filepath.IsAbs(name) || filepath.Base(name) != name {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	return normalized
 }
 
 func cleanAbsPath(path string) string {
