@@ -245,7 +245,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		"input":               input,
 		"store":               false,
 		"stream":              true,
-		"include":             []string{"reasoning.encrypted_content"},
+		"include":             []string{},
 		"parallel_tool_calls": true,
 	}
 	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
@@ -275,6 +275,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 			"effort":  effort,
 			"summary": "auto",
 		}
+		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
 	if req.JSONMode {
 		payload["text"] = map[string]any{
