@@ -620,6 +620,61 @@ func TestLoadHookEngineFromWorkspaceFile(t *testing.T) {
 	}
 }
 
+func TestRuntimeReloadHooksAttachesStartupHookRuntime(t *testing.T) {
+	root := t.TempDir()
+	hooksDir := filepath.Join(root, userConfigDirName)
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	hooksJSON := `{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "startup-prompt-context",
+      "events": ["UserPromptSubmit"],
+      "match": {"contains_text": ["startup hook"]},
+      "action": {"type": "append_context", "message": "loaded at startup"}
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(hooksJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	markConfigProjectTrustedForTest(t, &cfg, root)
+	session := NewSession(root, cfg.Provider, cfg.Model, cfg.BaseURL, cfg.PermissionMode)
+	rt := &runtimeState{
+		cfg:     cfg,
+		ui:      NewUI(),
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Perms:    NewPermissionManager(ModeBypass, nil),
+		},
+		agent: &Agent{Session: session},
+	}
+
+	rt.reloadHooks()
+	if rt.hooks == nil {
+		t.Fatal("expected startup hook runtime to be loaded")
+	}
+	if rt.agent.Hooks != rt.hooks {
+		t.Fatalf("expected agent hook runtime to match runtimeState hook runtime")
+	}
+
+	verdict, err := rt.runHook(context.Background(), HookUserPromptSubmit, HookPayload{
+		"prompt": "exercise startup hook",
+	})
+	if err != nil {
+		t.Fatalf("runHook: %v", err)
+	}
+	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "loaded at startup" {
+		t.Fatalf("expected startup hook rule to run, got %#v", verdict)
+	}
+}
+
 func TestLoadHookEngineSkipsWorkspaceFileUntilProjectTrusted(t *testing.T) {
 	root := t.TempDir()
 	hooksDir := filepath.Join(root, userConfigDirName)
