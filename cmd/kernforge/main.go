@@ -6667,7 +6667,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		for _, status := range statuses {
 			environmentID := mcpStatusEnvironmentID(status)
 			if strings.TrimSpace(status.Error) != "" {
-				fmt.Fprintf(rt.writer, "%s  env=%s  error=%s\n", status.Name, environmentID, status.Error)
+				fmt.Fprintf(rt.writer, "%s  transport=%s  env=%s  error=%s\n", status.Name, valueOrDefault(status.Transport, "stdio"), environmentID, status.Error)
 				continue
 			}
 			extra := ""
@@ -6676,7 +6676,13 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 					extra = webResearchMCPStatusSummary(server, os.Getenv)
 				}
 			}
-			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  env=%s  cwd=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, environmentID, status.Cwd, extra)
+			location := status.Cwd
+			locationLabel := "cwd"
+			if strings.TrimSpace(status.URL) != "" {
+				location = status.URL
+				locationLabel = "url"
+			}
+			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  transport=%s  env=%s  %s=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, valueOrDefault(status.Transport, "stdio"), environmentID, locationLabel, location, extra)
 		}
 	case "resources":
 		items := rt.mcpResources()

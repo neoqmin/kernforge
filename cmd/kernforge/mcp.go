@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,36 +24,55 @@ import (
 )
 
 type MCPServerConfig struct {
-	Name                      string            `json:"name"`
-	Command                   string            `json:"command"`
-	Args                      []string          `json:"args,omitempty"`
-	Env                       map[string]string `json:"env,omitempty"`
-	EnvVars                   []MCPServerEnvVar `json:"env_vars,omitempty"`
-	Cwd                       string            `json:"cwd,omitempty"`
-	EnvironmentID             string            `json:"environment_id,omitempty"`
-	EnvironmentIDSet          bool              `json:"-"`
-	Capabilities              []string          `json:"capabilities,omitempty"`
-	SupportsParallelToolCalls bool              `json:"supports_parallel_tool_calls,omitempty"`
-	Disabled                  bool              `json:"disabled,omitempty"`
-	DisabledSet               bool              `json:"-"`
+	Name                      string                `json:"name"`
+	Command                   string                `json:"command,omitempty"`
+	Args                      []string              `json:"args,omitempty"`
+	Env                       map[string]string     `json:"env,omitempty"`
+	EnvVars                   []MCPServerEnvVar     `json:"env_vars,omitempty"`
+	Cwd                       string                `json:"cwd,omitempty"`
+	URL                       string                `json:"url,omitempty"`
+	BearerTokenEnvVar         string                `json:"bearer_token_env_var,omitempty"`
+	HTTPHeaders               map[string]string     `json:"http_headers,omitempty"`
+	EnvHTTPHeaders            map[string]string     `json:"env_http_headers,omitempty"`
+	OAuth                     *MCPServerOAuthConfig `json:"oauth,omitempty"`
+	OAuthResource             string                `json:"oauth_resource,omitempty"`
+	EnvironmentID             string                `json:"environment_id,omitempty"`
+	EnvironmentIDSet          bool                  `json:"-"`
+	Capabilities              []string              `json:"capabilities,omitempty"`
+	SupportsParallelToolCalls bool                  `json:"supports_parallel_tool_calls,omitempty"`
+	Disabled                  bool                  `json:"disabled,omitempty"`
+	DisabledSet               bool                  `json:"-"`
 }
 
 type mcpServerConfigJSON struct {
-	Name                      string            `json:"name"`
-	Command                   string            `json:"command"`
-	Args                      []string          `json:"args,omitempty"`
-	Env                       map[string]string `json:"env,omitempty"`
-	EnvVars                   []MCPServerEnvVar `json:"env_vars,omitempty"`
-	Cwd                       string            `json:"cwd,omitempty"`
-	EnvironmentID             *string           `json:"environment_id,omitempty"`
-	Capabilities              []string          `json:"capabilities,omitempty"`
-	SupportsParallelToolCalls bool              `json:"supports_parallel_tool_calls,omitempty"`
-	Disabled                  *bool             `json:"disabled,omitempty"`
+	Name                      string                `json:"name"`
+	Command                   string                `json:"command,omitempty"`
+	Args                      []string              `json:"args,omitempty"`
+	Env                       map[string]string     `json:"env,omitempty"`
+	EnvVars                   []MCPServerEnvVar     `json:"env_vars,omitempty"`
+	Cwd                       string                `json:"cwd,omitempty"`
+	URL                       string                `json:"url,omitempty"`
+	BearerTokenEnvVar         string                `json:"bearer_token_env_var,omitempty"`
+	HTTPHeaders               map[string]string     `json:"http_headers,omitempty"`
+	EnvHTTPHeaders            map[string]string     `json:"env_http_headers,omitempty"`
+	OAuth                     *MCPServerOAuthConfig `json:"oauth,omitempty"`
+	OAuthResource             string                `json:"oauth_resource,omitempty"`
+	EnvironmentID             *string               `json:"environment_id,omitempty"`
+	Capabilities              []string              `json:"capabilities,omitempty"`
+	SupportsParallelToolCalls bool                  `json:"supports_parallel_tool_calls,omitempty"`
+	Disabled                  *bool                 `json:"disabled,omitempty"`
+}
+
+type MCPServerOAuthConfig struct {
+	ClientID string `json:"client_id,omitempty"`
 }
 
 func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
 	var raw mcpServerConfigJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if err := validateRawMCPServerConfig(raw); err != nil {
 		return err
 	}
 
@@ -60,6 +83,12 @@ func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
 		Env:                       raw.Env,
 		EnvVars:                   raw.EnvVars,
 		Cwd:                       raw.Cwd,
+		URL:                       raw.URL,
+		BearerTokenEnvVar:         raw.BearerTokenEnvVar,
+		HTTPHeaders:               raw.HTTPHeaders,
+		EnvHTTPHeaders:            raw.EnvHTTPHeaders,
+		OAuth:                     raw.OAuth,
+		OAuthResource:             raw.OAuthResource,
 		EnvironmentID:             defaultMCPServerEnvironmentID,
 		Capabilities:              raw.Capabilities,
 		SupportsParallelToolCalls: raw.SupportsParallelToolCalls,
@@ -71,6 +100,46 @@ func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
 	if raw.Disabled != nil {
 		cfg.Disabled = *raw.Disabled
 		cfg.DisabledSet = true
+	}
+	return nil
+}
+
+func validateRawMCPServerConfig(raw mcpServerConfigJSON) error {
+	hasCommand := strings.TrimSpace(raw.Command) != ""
+	hasURL := strings.TrimSpace(raw.URL) != ""
+	if hasCommand && hasURL {
+		return fmt.Errorf("mcp server cannot set both command and url")
+	}
+	if hasCommand {
+		if strings.TrimSpace(raw.BearerTokenEnvVar) != "" {
+			return fmt.Errorf("bearer_token_env_var is not supported for stdio")
+		}
+		if len(raw.HTTPHeaders) > 0 {
+			return fmt.Errorf("http_headers is not supported for stdio")
+		}
+		if len(raw.EnvHTTPHeaders) > 0 {
+			return fmt.Errorf("env_http_headers is not supported for stdio")
+		}
+		if raw.OAuth != nil {
+			return fmt.Errorf("oauth is not supported for stdio")
+		}
+		if strings.TrimSpace(raw.OAuthResource) != "" {
+			return fmt.Errorf("oauth_resource is not supported for stdio")
+		}
+	}
+	if hasURL {
+		if len(raw.Args) > 0 {
+			return fmt.Errorf("args is not supported for streamable_http")
+		}
+		if len(raw.Env) > 0 {
+			return fmt.Errorf("env is not supported for streamable_http")
+		}
+		if len(raw.EnvVars) > 0 {
+			return fmt.Errorf("env_vars is not supported for streamable_http")
+		}
+		if strings.TrimSpace(raw.Cwd) != "" {
+			return fmt.Errorf("cwd is not supported for streamable_http")
+		}
 	}
 	return nil
 }
@@ -90,6 +159,12 @@ func (cfg MCPServerConfig) MarshalJSON() ([]byte, error) {
 		Env:                       cfg.Env,
 		EnvVars:                   cfg.EnvVars,
 		Cwd:                       cfg.Cwd,
+		URL:                       cfg.URL,
+		BearerTokenEnvVar:         cfg.BearerTokenEnvVar,
+		HTTPHeaders:               cfg.HTTPHeaders,
+		EnvHTTPHeaders:            cfg.EnvHTTPHeaders,
+		OAuth:                     cfg.OAuth,
+		OAuthResource:             cfg.OAuthResource,
 		EnvironmentID:             &environmentID,
 		Capabilities:              cfg.Capabilities,
 		SupportsParallelToolCalls: cfg.SupportsParallelToolCalls,
@@ -142,7 +217,9 @@ type MCPPromptRef struct {
 
 type MCPServerStatus struct {
 	Name          string
+	Transport     string
 	Command       string
+	URL           string
 	Cwd           string
 	EnvironmentID string
 	ToolCount     int
@@ -162,6 +239,7 @@ type MCPClient struct {
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	stdout       *bufio.Reader
+	http         *mcpHTTPTransport
 	writeMu      sync.Mutex
 	pendingMu    sync.Mutex
 	nextID       int64
@@ -174,6 +252,14 @@ type MCPClient struct {
 	status       MCPServerStatus
 	stderrMu     sync.Mutex
 	stderr       []string
+}
+
+type mcpHTTPTransport struct {
+	endpoint  string
+	client    *http.Client
+	headers   map[string]string
+	sessionID string
+	mu        sync.Mutex
 }
 
 type mcpRPCResult struct {
@@ -461,7 +547,7 @@ func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []str
 		}
 		name := deriveMCPServerName(cfg)
 		if name == "" {
-			warnings = append(warnings, "mcp server is missing name/command")
+			warnings = append(warnings, "mcp server is missing name/command/url")
 			continue
 		}
 		usedNames[name]++
@@ -473,7 +559,9 @@ func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []str
 		if err != nil {
 			manager.status = append(manager.status, MCPServerStatus{
 				Name:          cfg.Name,
+				Transport:     mcpServerTransport(cfg),
 				Command:       cfg.Command,
+				URL:           cfg.URL,
 				Cwd:           resolveMCPServerCwd(ws, cfg),
 				EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
 				Error:         err.Error(),
@@ -492,6 +580,15 @@ func deriveMCPServerName(cfg MCPServerConfig) string {
 	if trimmed := strings.TrimSpace(cfg.Name); trimmed != "" {
 		return trimmed
 	}
+	if trimmed := strings.TrimSpace(cfg.URL); trimmed != "" {
+		if parsed, err := url.Parse(trimmed); err == nil {
+			host := strings.TrimSpace(parsed.Hostname())
+			if host != "" {
+				return host
+			}
+		}
+		return "streamable-http"
+	}
 	command := strings.TrimSpace(cfg.Command)
 	if command == "" {
 		return ""
@@ -501,7 +598,17 @@ func deriveMCPServerName(cfg MCPServerConfig) string {
 	return base
 }
 
+func mcpServerTransport(cfg MCPServerConfig) string {
+	if strings.TrimSpace(cfg.URL) != "" {
+		return "streamable_http"
+	}
+	return "stdio"
+}
+
 func resolveMCPServerCwd(ws Workspace, cfg MCPServerConfig) string {
+	if strings.TrimSpace(cfg.URL) != "" {
+		return ""
+	}
 	if strings.TrimSpace(cfg.Cwd) == "" {
 		return ws.Root
 	}
@@ -526,6 +633,9 @@ func normalizeMCPServerEnvironmentID(environmentID string) string {
 func validateMCPServerEnvironment(cfg MCPServerConfig) error {
 	environmentID := effectiveMCPServerEnvironmentID(cfg)
 	if environmentID == defaultMCPServerEnvironmentID {
+		return nil
+	}
+	if strings.TrimSpace(cfg.URL) != "" {
 		return nil
 	}
 	if strings.TrimSpace(cfg.Command) != "" {
@@ -642,6 +752,9 @@ func applyMCPNodeProxyOptIn(env map[string]string) {
 }
 
 func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, error) {
+	if strings.TrimSpace(cfg.URL) != "" {
+		return startMCPHTTPClient(cfg)
+	}
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, nil, fmt.Errorf("missing command")
 	}
@@ -679,6 +792,7 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		stdout: bufio.NewReader(stdout),
 		status: MCPServerStatus{
 			Name:          cfg.Name,
+			Transport:     mcpServerTransport(cfg),
 			Command:       cfg.Command,
 			Cwd:           cmd.Dir,
 			EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
@@ -715,6 +829,96 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		warnings = append(warnings, fmt.Sprintf("mcp server %s prompts: %v", cfg.Name, err))
 	}
 	return client, warnings, nil
+}
+
+func startMCPHTTPClient(cfg MCPServerConfig) (*MCPClient, []string, error) {
+	endpoint := strings.TrimSpace(cfg.URL)
+	if endpoint == "" {
+		return nil, nil, fmt.Errorf("missing url")
+	}
+	parsed, err := url.ParseRequestURI(endpoint)
+	if err != nil || parsed == nil || parsed.Scheme == "" || parsed.Host == "" {
+		return nil, nil, fmt.Errorf("invalid streamable_http url %q", endpoint)
+	}
+	if err := validateMCPServerEnvironment(cfg); err != nil {
+		return nil, nil, err
+	}
+	headers := buildMCPHTTPHeaders(cfg)
+	if envName := strings.TrimSpace(cfg.BearerTokenEnvVar); envName != "" {
+		if token := strings.TrimSpace(os.Getenv(envName)); token != "" {
+			headers["Authorization"] = "Bearer " + token
+		}
+	}
+	client := &MCPClient{
+		config: cfg,
+		http: &mcpHTTPTransport{
+			endpoint: endpoint,
+			client: &http.Client{
+				Timeout: 30 * time.Second,
+			},
+			headers: headers,
+		},
+		status: MCPServerStatus{
+			Name:          cfg.Name,
+			Transport:     mcpServerTransport(cfg),
+			URL:           endpoint,
+			EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.initialize(ctx); err != nil {
+		client.Close()
+		return nil, nil, err
+	}
+	tools, err := client.listTools(ctx)
+	if err != nil {
+		client.Close()
+		return nil, nil, err
+	}
+	warnings := []string{}
+	tools, toolWarnings := filterValidMCPToolDescriptors(cfg.Name, tools)
+	warnings = append(warnings, toolWarnings...)
+	client.tools = tools
+	client.status.ToolCount = len(tools)
+	if resources, err := client.listResources(ctx); err == nil {
+		client.resources = resources
+		client.status.ResourceCount = len(resources)
+	} else if !isOptionalMCPMethodError(err) {
+		warnings = append(warnings, fmt.Sprintf("mcp server %s resources: %v", cfg.Name, err))
+	}
+	if prompts, err := client.listPrompts(ctx); err == nil {
+		client.prompts = prompts
+		client.status.PromptCount = len(prompts)
+	} else if !isOptionalMCPMethodError(err) {
+		warnings = append(warnings, fmt.Sprintf("mcp server %s prompts: %v", cfg.Name, err))
+	}
+	return client, warnings, nil
+}
+
+func buildMCPHTTPHeaders(cfg MCPServerConfig) map[string]string {
+	headers := map[string]string{}
+	for name, value := range cfg.HTTPHeaders {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		headers[name] = value
+	}
+	for name, envName := range cfg.EnvHTTPHeaders {
+		name = strings.TrimSpace(name)
+		envName = strings.TrimSpace(envName)
+		if name == "" || envName == "" {
+			continue
+		}
+		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+			headers[name] = value
+		}
+	}
+	return headers
 }
 
 func (m *MCPManager) Close() {
@@ -1729,6 +1933,9 @@ func (c *MCPClient) findPrompt(name string) (MCPPromptDescriptor, bool) {
 }
 
 func (c *MCPClient) request(ctx context.Context, method string, params any) (map[string]any, error) {
+	if c.http != nil {
+		return c.httpRequest(ctx, method, params)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1766,6 +1973,147 @@ func (c *MCPClient) request(ctx context.Context, method string, params any) (map
 		c.Close()
 		return nil, ctx.Err()
 	}
+}
+
+func (c *MCPClient) httpRequest(ctx context.Context, method string, params any) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id := c.nextHTTPRequestID()
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  method,
+		"params":  params,
+	}
+	msg, err := c.postHTTPRPC(ctx, payload)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", method, err)
+	}
+	if rawErr, ok := msg["error"]; ok && rawErr != nil {
+		return nil, fmt.Errorf("rpc error: %s", formatRPCError(rawErr))
+	}
+	if result, ok := msg["result"].(map[string]any); ok {
+		return result, nil
+	}
+	return map[string]any{}, nil
+}
+
+func (c *MCPClient) nextHTTPRequestID() int64 {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	c.nextID++
+	return c.nextID
+}
+
+func (c *MCPClient) postHTTPRPC(ctx context.Context, payload map[string]any) (map[string]any, error) {
+	if c == nil || c.http == nil {
+		return nil, fmt.Errorf("http transport is not configured")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.http.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream, application/json")
+	req.Header.Set("Content-Type", "application/json")
+	c.http.mu.Lock()
+	for name, value := range c.http.headers {
+		req.Header.Set(name, value)
+	}
+	if c.http.sessionID != "" {
+		req.Header.Set("mcp-session-id", c.http.sessionID)
+	}
+	c.http.mu.Unlock()
+	resp, err := c.http.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+		return map[string]any{}, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("streamable HTTP session expired with 404 Not Found")
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("streamable HTTP authentication required")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("streamable HTTP returned %s: %s", resp.Status, strings.TrimSpace(string(preview)))
+	}
+	if sessionID := strings.TrimSpace(resp.Header.Get("mcp-session-id")); sessionID != "" {
+		c.http.mu.Lock()
+		c.http.sessionID = sessionID
+		c.http.mu.Unlock()
+	}
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	mediaType := strings.ToLower(contentType)
+	if parsed, _, err := mime.ParseMediaType(contentType); err == nil {
+		mediaType = strings.ToLower(parsed)
+	}
+	switch mediaType {
+	case "", "application/json":
+		var msg map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	case "text/event-stream":
+		return readMCPHTTPSSEMessage(resp.Body)
+	default:
+		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("unexpected streamable HTTP content type %q: %s", contentType, strings.TrimSpace(string(preview)))
+	}
+}
+
+func readMCPHTTPSSEMessage(r io.Reader) (map[string]any, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var dataLines []string
+	flush := func() (map[string]any, bool, error) {
+		if len(dataLines) == 0 {
+			return nil, false, nil
+		}
+		data := strings.Join(dataLines, "\n")
+		dataLines = nil
+		if strings.TrimSpace(data) == "" {
+			return nil, false, nil
+		}
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(data), &msg); err != nil {
+			return nil, true, err
+		}
+		return msg, true, nil
+	}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			msg, ok, err := flush()
+			if ok || err != nil {
+				return msg, err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimPrefix(line, "data:"))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	msg, ok, err := flush()
+	if ok || err != nil {
+		return msg, err
+	}
+	return nil, io.EOF
 }
 
 func (c *MCPClient) registerPendingRequest(ch chan mcpRPCResult) (int64, error) {
@@ -1867,6 +2215,13 @@ func (c *MCPClient) notify(method string, params any) error {
 		"jsonrpc": "2.0",
 		"method":  method,
 		"params":  params,
+	}
+	if c.http != nil {
+		_, err := c.postHTTPRPC(context.Background(), payload)
+		if err == io.EOF {
+			return nil
+		}
+		return err
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -2124,7 +2479,14 @@ func valueOrDefault(value, fallback string) string {
 }
 
 func (c *MCPClient) Close() error {
-	if c == nil || c.cmd == nil || c.cmd.Process == nil {
+	if c == nil {
+		return nil
+	}
+	if c.http != nil {
+		c.closeHTTP()
+		c.http = nil
+	}
+	if c.cmd == nil || c.cmd.Process == nil {
 		return nil
 	}
 	_ = c.stdin.Close()
@@ -2132,6 +2494,35 @@ func (c *MCPClient) Close() error {
 	_, _ = c.cmd.Process.Wait()
 	c.cmd = nil
 	return nil
+}
+
+func (c *MCPClient) closeHTTP() {
+	c.http.mu.Lock()
+	sessionID := c.http.sessionID
+	endpoint := c.http.endpoint
+	headers := map[string]string{}
+	for name, value := range c.http.headers {
+		headers[name] = value
+	}
+	c.http.mu.Unlock()
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	req.Header.Set("mcp-session-id", sessionID)
+	resp, err := c.http.client.Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func (t MCPTool) Definition() ToolDefinition {

@@ -1541,6 +1541,17 @@ func normalizeConfigPaths(cfg *Config) {
 	for i, server := range cfg.MCPServers {
 		cfg.MCPServers[i].Name = strings.TrimSpace(server.Name)
 		cfg.MCPServers[i].Command = strings.TrimSpace(server.Command)
+		cfg.MCPServers[i].URL = strings.TrimSpace(server.URL)
+		cfg.MCPServers[i].BearerTokenEnvVar = strings.TrimSpace(server.BearerTokenEnvVar)
+		cfg.MCPServers[i].OAuthResource = strings.TrimSpace(server.OAuthResource)
+		if server.OAuth != nil {
+			cfg.MCPServers[i].OAuth = &MCPServerOAuthConfig{
+				ClientID: strings.TrimSpace(server.OAuth.ClientID),
+			}
+			if cfg.MCPServers[i].OAuth.ClientID == "" {
+				cfg.MCPServers[i].OAuth = nil
+			}
+		}
 		if strings.TrimSpace(server.Cwd) != "" {
 			cfg.MCPServers[i].Cwd = expandHome(server.Cwd)
 		}
@@ -1572,6 +1583,29 @@ func normalizeConfigPaths(cfg *Config) {
 				cleaned[trimmedKey] = strings.TrimSpace(value)
 			}
 			cfg.MCPServers[i].Env = cleaned
+		}
+		if len(server.HTTPHeaders) > 0 {
+			cleaned := make(map[string]string, len(server.HTTPHeaders))
+			for key, value := range server.HTTPHeaders {
+				trimmedKey := strings.TrimSpace(key)
+				if trimmedKey == "" {
+					continue
+				}
+				cleaned[trimmedKey] = strings.TrimSpace(value)
+			}
+			cfg.MCPServers[i].HTTPHeaders = cleaned
+		}
+		if len(server.EnvHTTPHeaders) > 0 {
+			cleaned := make(map[string]string, len(server.EnvHTTPHeaders))
+			for key, value := range server.EnvHTTPHeaders {
+				trimmedKey := strings.TrimSpace(key)
+				trimmedValue := strings.TrimSpace(value)
+				if trimmedKey == "" || trimmedValue == "" {
+					continue
+				}
+				cleaned[trimmedKey] = trimmedValue
+			}
+			cfg.MCPServers[i].EnvHTTPHeaders = cleaned
 		}
 	}
 	cfg.Provider = normalizeProviderName(cfg.Provider)
@@ -2790,11 +2824,43 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 	}
 	if strings.TrimSpace(overlay.Command) != "" {
 		merged.Command = overlay.Command
+		merged.URL = ""
+		merged.BearerTokenEnvVar = ""
+		merged.HTTPHeaders = nil
+		merged.EnvHTTPHeaders = nil
+		merged.OAuth = nil
+		merged.OAuthResource = ""
 	}
-	if len(overlay.Args) > 0 {
+	if strings.TrimSpace(overlay.URL) != "" {
+		merged.URL = overlay.URL
+		merged.Command = ""
+		merged.Args = nil
+		merged.Env = nil
+		merged.EnvVars = nil
+		merged.Cwd = ""
+	}
+	if strings.TrimSpace(overlay.BearerTokenEnvVar) != "" && strings.TrimSpace(merged.URL) != "" {
+		merged.BearerTokenEnvVar = overlay.BearerTokenEnvVar
+	}
+	if len(overlay.HTTPHeaders) > 0 && strings.TrimSpace(merged.URL) != "" {
+		merged.HTTPHeaders = mergeMCPServerEnv(base.HTTPHeaders, overlay.HTTPHeaders)
+	}
+	if len(overlay.EnvHTTPHeaders) > 0 && strings.TrimSpace(merged.URL) != "" {
+		merged.EnvHTTPHeaders = mergeMCPServerEnv(base.EnvHTTPHeaders, overlay.EnvHTTPHeaders)
+	}
+	if overlay.OAuth != nil && strings.TrimSpace(merged.URL) != "" {
+		merged.OAuth = &MCPServerOAuthConfig{ClientID: strings.TrimSpace(overlay.OAuth.ClientID)}
+		if merged.OAuth.ClientID == "" {
+			merged.OAuth = nil
+		}
+	}
+	if strings.TrimSpace(overlay.OAuthResource) != "" && strings.TrimSpace(merged.URL) != "" {
+		merged.OAuthResource = strings.TrimSpace(overlay.OAuthResource)
+	}
+	if len(overlay.Args) > 0 && strings.TrimSpace(merged.URL) == "" {
 		merged.Args = append([]string(nil), overlay.Args...)
 	}
-	if strings.TrimSpace(overlay.Cwd) != "" {
+	if strings.TrimSpace(overlay.Cwd) != "" && strings.TrimSpace(merged.URL) == "" {
 		merged.Cwd = overlay.Cwd
 	}
 	if overlay.EnvironmentIDSet || normalizeMCPServerEnvironmentID(overlay.EnvironmentID) != defaultMCPServerEnvironmentID {
@@ -2808,8 +2874,10 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 		merged.Disabled = overlay.Disabled
 		merged.DisabledSet = overlay.DisabledSet || overlay.Disabled
 	}
-	merged.Env = mergeMCPServerEnv(base.Env, overlay.Env)
-	merged.EnvVars = mergeMCPServerEnvVars(base.EnvVars, overlay.EnvVars)
+	if strings.TrimSpace(merged.URL) == "" {
+		merged.Env = mergeMCPServerEnv(base.Env, overlay.Env)
+		merged.EnvVars = mergeMCPServerEnvVars(base.EnvVars, overlay.EnvVars)
+	}
 	return merged
 }
 
@@ -2823,6 +2891,15 @@ func cloneMCPServerConfig(server MCPServerConfig) MCPServerConfig {
 	}
 	if server.Env != nil {
 		cloned.Env = mergeMCPServerEnv(nil, server.Env)
+	}
+	if server.HTTPHeaders != nil {
+		cloned.HTTPHeaders = mergeMCPServerEnv(nil, server.HTTPHeaders)
+	}
+	if server.EnvHTTPHeaders != nil {
+		cloned.EnvHTTPHeaders = mergeMCPServerEnv(nil, server.EnvHTTPHeaders)
+	}
+	if server.OAuth != nil {
+		cloned.OAuth = &MCPServerOAuthConfig{ClientID: server.OAuth.ClientID}
 	}
 	if server.EnvVars != nil {
 		cloned.EnvVars = append([]MCPServerEnvVar(nil), server.EnvVars...)

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -650,6 +652,165 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	prompts := manager.Prompts()
 	if len(prompts) != 1 || prompts[0].Prompt.Name != "summarize" {
 		t.Fatalf("unexpected prompts: %#v", prompts)
+	}
+}
+
+func TestLoadMCPManagerStartsStreamableHTTPServerAndCallsTools(t *testing.T) {
+	t.Setenv("MCP_HTTP_TOKEN", "test-token")
+	t.Setenv("MCP_HTTP_ENV_HEADER", "env-value")
+	sessionID := "session-123"
+	var sawSession bool
+	var sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if r.Header.Get("mcp-session-id") == sessionID {
+				sawDelete = true
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("unexpected authorization header %q", got)
+		}
+		if got := r.Header.Get("X-Static"); got != "static-value" {
+			t.Fatalf("unexpected static header %q", got)
+		}
+		if got := r.Header.Get("X-Env"); got != "env-value" {
+			t.Fatalf("unexpected env header %q", got)
+		}
+		if r.Header.Get("mcp-session-id") == sessionID {
+			sawSession = true
+		}
+		var msg map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		method, _ := msg["method"].(string)
+		if strings.HasPrefix(method, "notifications/") {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("mcp-session-id", sessionID)
+		switch method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities": map[string]any{
+						"tools": map[string]any{},
+					},
+					"serverInfo": map[string]any{
+						"name":    "http",
+						"version": "1.0.0",
+					},
+				},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"tools": []map[string]any{{
+						"name":        "echo",
+						"description": "Echo a message",
+						"inputSchema": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"message": map[string]any{"type": "string"},
+							},
+						},
+					}},
+				},
+			})
+		case "resources/list", "prompts/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result":  map[string]any{},
+			})
+		case "tools/call":
+			params, _ := msg["params"].(map[string]any)
+			args, _ := params["arguments"].(map[string]any)
+			message, _ := args["message"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"result": map[string]any{
+					"structuredContent": map[string]any{
+						"echoed": message,
+					},
+				},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      msg["id"],
+				"error": map[string]any{
+					"message": "unsupported method",
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:              "http",
+		URL:               server.URL,
+		BearerTokenEnvVar: "MCP_HTTP_TOKEN",
+		HTTPHeaders: map[string]string{
+			"X-Static": "static-value",
+		},
+		EnvHTTPHeaders: map[string]string{
+			"X-Env": "MCP_HTTP_ENV_HEADER",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	statuses := manager.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	if statuses[0].Transport != "streamable_http" || statuses[0].URL != server.URL {
+		t.Fatalf("unexpected HTTP MCP status: %#v", statuses[0])
+	}
+	tools := manager.Tools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	out, err := tools[0].Execute(context.Background(), map[string]any{"message": "hello"})
+	if err != nil {
+		t.Fatalf("Execute echo: %v", err)
+	}
+	if out != `{"echoed":"hello"}` {
+		t.Fatalf("unexpected echo output: %q", out)
+	}
+	if !sawSession {
+		t.Fatalf("expected subsequent HTTP requests to include mcp-session-id")
+	}
+	manager.Close()
+	if !sawDelete {
+		t.Fatalf("expected HTTP MCP session delete on close")
+	}
+}
+
+func TestReadMCPHTTPSSEMessageParsesFirstDataEvent(t *testing.T) {
+	msg, err := readMCPHTTPSSEMessage(strings.NewReader("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n"))
+	if err != nil {
+		t.Fatalf("readMCPHTTPSSEMessage: %v", err)
+	}
+	result, ok := msg["result"].(map[string]any)
+	if !ok || result["ok"] != true {
+		t.Fatalf("unexpected SSE JSON-RPC message: %#v", msg)
 	}
 }
 

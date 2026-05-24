@@ -2060,6 +2060,106 @@ func TestMCPServerEnvVarsRejectUnsupportedSource(t *testing.T) {
 	}
 }
 
+func TestMCPServerConfigSupportsStreamableHTTPOptions(t *testing.T) {
+	var cfg Config
+	err := json.Unmarshal([]byte(`{
+		"mcp_servers": [
+			{
+				"name": "http",
+				"url": "https://example.com/mcp",
+				"bearer_token_env_var": "MCP_TOKEN",
+				"http_headers": {
+					"X-Static": "value"
+				},
+				"env_http_headers": {
+					"X-Env": "MCP_ENV_TOKEN"
+				},
+				"oauth": {
+					"client_id": "client-123"
+				},
+				"oauth_resource": "https://resource.example.com"
+			}
+		]
+	}`), &cfg)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	server := cfg.MCPServers[0]
+	if server.URL != "https://example.com/mcp" {
+		t.Fatalf("expected URL to deserialize, got %#v", server)
+	}
+	if server.BearerTokenEnvVar != "MCP_TOKEN" {
+		t.Fatalf("expected bearer token env var, got %#v", server)
+	}
+	if server.HTTPHeaders["X-Static"] != "value" || server.EnvHTTPHeaders["X-Env"] != "MCP_ENV_TOKEN" {
+		t.Fatalf("expected HTTP headers to deserialize, got %#v", server)
+	}
+	if server.OAuth == nil || server.OAuth.ClientID != "client-123" {
+		t.Fatalf("expected OAuth client id, got %#v", server.OAuth)
+	}
+	if server.OAuthResource != "https://resource.example.com" {
+		t.Fatalf("expected OAuth resource, got %#v", server)
+	}
+	encoded, err := json.Marshal(server)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, needle := range []string{
+		`"url":"https://example.com/mcp"`,
+		`"bearer_token_env_var":"MCP_TOKEN"`,
+		`"oauth_resource":"https://resource.example.com"`,
+		`"client_id":"client-123"`,
+	} {
+		if !strings.Contains(string(encoded), needle) {
+			t.Fatalf("expected marshaled streamable HTTP config to contain %s, got %s", needle, encoded)
+		}
+	}
+	if strings.Contains(string(encoded), `"command"`) {
+		t.Fatalf("streamable HTTP config should not serialize an empty command, got %s", encoded)
+	}
+}
+
+func TestMCPServerConfigRejectsMixedTransportFields(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{
+			name:    "command and url",
+			body:    `{"name":"bad","command":"node","url":"https://example.com/mcp"}`,
+			message: "cannot set both command and url",
+		},
+		{
+			name:    "stdio oauth",
+			body:    `{"name":"bad","command":"node","oauth_resource":"https://resource.example.com"}`,
+			message: "oauth_resource is not supported for stdio",
+		},
+		{
+			name:    "http args",
+			body:    `{"name":"bad","url":"https://example.com/mcp","args":["server.js"]}`,
+			message: "args is not supported for streamable_http",
+		},
+		{
+			name:    "http env vars",
+			body:    `{"name":"bad","url":"https://example.com/mcp","env_vars":["TOKEN"]}`,
+			message: "env_vars is not supported for streamable_http",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var server MCPServerConfig
+			err := json.Unmarshal([]byte(tt.body), &server)
+			if err == nil {
+				t.Fatalf("expected unmarshal to fail")
+			}
+			if !strings.Contains(err.Error(), tt.message) {
+				t.Fatalf("expected error containing %q, got %v", tt.message, err)
+			}
+		})
+	}
+}
+
 func TestNormalizeConfigPathsNormalizesMCPEnvironmentID(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{
@@ -2225,6 +2325,55 @@ func TestMergeMCPServerConfigMergesEnvVars(t *testing.T) {
 		if merged.EnvVars[i] != want[i] {
 			t.Fatalf("expected merged env_vars %#v, got %#v", want, merged.EnvVars)
 		}
+	}
+}
+
+func TestMergeMCPServerConfigSwitchesTransportCleanly(t *testing.T) {
+	base := MCPServerConfig{
+		Name:    "docs",
+		Command: "node",
+		Args:    []string{"server.js"},
+		Env: map[string]string{
+			"TOKEN": "local",
+		},
+		EnvVars: []MCPServerEnvVar{
+			{Name: "EXTRA_TOKEN"},
+		},
+		Cwd: ".",
+	}
+	overlay := MCPServerConfig{
+		Name:              "docs",
+		URL:               "https://example.com/mcp",
+		BearerTokenEnvVar: "MCP_TOKEN",
+		HTTPHeaders: map[string]string{
+			"X-Static": "value",
+		},
+		EnvHTTPHeaders: map[string]string{
+			"X-Env": "MCP_ENV_TOKEN",
+		},
+		OAuth: &MCPServerOAuthConfig{
+			ClientID: "client-123",
+		},
+		OAuthResource: "https://resource.example.com",
+	}
+
+	merged := mergeMCPServerConfig(base, overlay)
+	if merged.Command != "" || len(merged.Args) != 0 || len(merged.Env) != 0 || len(merged.EnvVars) != 0 || merged.Cwd != "" {
+		t.Fatalf("expected stdio fields to be cleared after URL overlay, got %#v", merged)
+	}
+	if merged.URL != overlay.URL || merged.BearerTokenEnvVar != overlay.BearerTokenEnvVar {
+		t.Fatalf("expected HTTP transport to apply, got %#v", merged)
+	}
+	if merged.HTTPHeaders["X-Static"] != "value" || merged.EnvHTTPHeaders["X-Env"] != "MCP_ENV_TOKEN" {
+		t.Fatalf("expected HTTP headers to merge, got %#v", merged)
+	}
+	if merged.OAuth == nil || merged.OAuth.ClientID != "client-123" || merged.OAuthResource != "https://resource.example.com" {
+		t.Fatalf("expected OAuth config to merge, got %#v", merged)
+	}
+
+	stdio := mergeMCPServerConfig(merged, MCPServerConfig{Name: "docs", Command: "node"})
+	if stdio.URL != "" || stdio.BearerTokenEnvVar != "" || len(stdio.HTTPHeaders) != 0 || len(stdio.EnvHTTPHeaders) != 0 || stdio.OAuth != nil || stdio.OAuthResource != "" {
+		t.Fatalf("expected HTTP fields to be cleared after command overlay, got %#v", stdio)
 	}
 }
 
