@@ -10238,6 +10238,70 @@ func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *te
 	}
 }
 
+func TestAgentGeneratedDocumentArtifactFinalizesDespiteProviderEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	endTurnFalse := false
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				EndTurn:    &endTurnFalse,
+				StopReason: "stop",
+			},
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    mainProvider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), &staticTool{name: "read_file", output: "read should not run"}),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+		t.Fatalf("expected generated document final reply, got %q", reply)
+	}
+	if len(mainProvider.requests) != 2 {
+		t.Fatalf("expected end_turn=false final reply to stop before post-final read_file, got %d requests", len(mainProvider.requests))
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected generated document reply to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
 func TestAgentBlocksGeneratedDocumentPostWriteShellValidationWhenRequestOmitsOutputPath(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
