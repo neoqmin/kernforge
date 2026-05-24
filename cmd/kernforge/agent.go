@@ -1608,7 +1608,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				patchProbe := a.beginPatchTransactionToolProbe(call)
 				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
-				toolCtx = contextWithMCPTurnMetadata(toolCtx, mcpTurnMetadata)
+				toolCtx = a.contextWithMCPToolInvocationMetadata(toolCtx, mcpTurnMetadata)
 				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
@@ -7001,6 +7001,7 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 		provider = a.Session.Provider
 		model = a.Session.Model
 	}
+	baseToolCtx := a.contextWithMCPToolInvocationMetadata(ctx, mcpTurnMetadata)
 	var wg sync.WaitGroup
 	for callIndex, call := range calls {
 		if summary := summarizeToolInvocation(a.Config, call); summary != "" {
@@ -7018,8 +7019,7 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 		wg.Add(1)
 		go func(index int, item ToolCall) {
 			defer wg.Done()
-			toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(provider, model))
-			toolCtx = contextWithMCPTurnMetadata(toolCtx, mcpTurnMetadata)
+			toolCtx := contextWithOriginalImageDetailSupport(baseToolCtx, canRequestOriginalImageDetail(provider, model))
 			result, err := a.Tools.ExecuteDetailed(toolCtx, item.Name, item.Arguments)
 			result = sanitizeToolExecutionImageDetailForModel(result, provider, model)
 			results[index] = parallelToolCallExecution{
@@ -7532,6 +7532,14 @@ func (a *Agent) activePermissionModeSnapshot() string {
 		return strings.TrimSpace(a.Session.PermissionMode)
 	}
 	return ""
+}
+
+func (a *Agent) contextWithMCPToolInvocationMetadata(ctx context.Context, turnMetadata map[string]any) context.Context {
+	ctx = contextWithMCPTurnMetadata(ctx, turnMetadata)
+	if a == nil || a.Session == nil {
+		return ctx
+	}
+	return contextWithMCPConversationHistory(ctx, mcpConversationHistorySnapshot(a.Session.Messages))
 }
 
 func providerTurnMetadataFromMCP(metadata map[string]any) map[string]any {
