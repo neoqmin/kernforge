@@ -272,8 +272,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	}
 	if effort := normalizeReasoningEffort(req.ReasoningEffort); effort != "" {
 		payload["reasoning"] = map[string]any{
-			"effort":  effort,
-			"summary": "auto",
+			"effort": effort,
 		}
 		payload["include"] = []string{"reasoning.encrypted_content"}
 	}

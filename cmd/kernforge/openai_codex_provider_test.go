@@ -82,8 +82,8 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if !ok || reasoning["effort"] != "high" {
 		t.Fatalf("expected reasoning effort high, got %#v", payload["reasoning"])
 	}
-	if reasoning["summary"] != "auto" {
-		t.Fatalf("expected reasoning summary auto, got %#v", payload["reasoning"])
+	if _, ok := reasoning["summary"]; ok {
+		t.Fatalf("expected default reasoning summary to be omitted, got %#v", payload["reasoning"])
 	}
 	include, ok := payload["include"].([]any)
 	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
