@@ -1663,6 +1663,9 @@ func TestUpdatePlanExecuteDetailedReturnsCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteDetailed: %v", err)
 	}
+	if result.DisplayText != "Plan updated" {
+		t.Fatalf("expected Codex-compatible plan output, got %q", result.DisplayText)
+	}
 	if len(captured) != 3 {
 		t.Fatalf("expected captured plan items, got %#v", captured)
 	}

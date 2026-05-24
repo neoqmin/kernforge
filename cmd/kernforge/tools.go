@@ -7050,14 +7050,7 @@ func (t UpdatePlanTool) Execute(ctx context.Context, input any) (string, error) 
 		})
 	}
 	t.ws.UpdatePlan(items)
-	if len(items) == 0 {
-		return "cleared plan", nil
-	}
-	var lines []string
-	for _, item := range items {
-		lines = append(lines, fmt.Sprintf("[%s] %s", item.Status, item.Step))
-	}
-	return strings.Join(lines, "\n"), nil
+	return "Plan updated", nil
 }
 
 func (t UpdatePlanTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
