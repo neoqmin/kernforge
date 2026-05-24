@@ -2729,6 +2729,14 @@ func (t MCPResourceTool) Definition() ToolDefinition {
 	}
 }
 
+func (t MCPResourceTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t MCPResourceTool) SupportsParallelToolCalls() bool {
+	return true
+}
+
 func (t MCPResourceTool) Execute(ctx context.Context, input any) (string, error) {
 	args, err := requireToolInputObject(input, t.Definition().Name)
 	if err != nil {
@@ -2754,6 +2762,14 @@ func (t MCPPromptTool) Definition() ToolDefinition {
 			"required": []string{"name"},
 		},
 	}
+}
+
+func (t MCPPromptTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t MCPPromptTool) SupportsParallelToolCalls() bool {
+	return true
 }
 
 func (t MCPPromptTool) Execute(ctx context.Context, input any) (string, error) {
