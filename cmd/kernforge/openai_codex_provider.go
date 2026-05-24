@@ -679,12 +679,31 @@ func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
 			"input":   openAICodexApplyPatchInputFromArguments(call.Arguments),
 		}
 	}
-	return map[string]any{
+	item := map[string]any{
 		"type":      "function_call",
 		"call_id":   callID,
-		"name":      name,
+		"name":      openAICodexFunctionCallWireName(call),
 		"arguments": normalizeOpenAIToolCallArguments(call.Arguments),
 	}
+	if namespace := strings.TrimSpace(call.Namespace); namespace != "" {
+		item["namespace"] = namespace
+	}
+	return item
+}
+
+func openAICodexFunctionCallWireName(call ToolCall) string {
+	name := strings.TrimSpace(call.Name)
+	namespace := strings.TrimSpace(call.Namespace)
+	if namespace == "" || name == "" {
+		return name
+	}
+	if strings.HasPrefix(name, namespace) {
+		stripped := strings.TrimSpace(strings.TrimPrefix(name, namespace))
+		if stripped != "" {
+			return stripped
+		}
+	}
+	return name
 }
 
 func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
@@ -898,6 +917,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 type openAICodexStreamToolCall struct {
 	ID           string
 	Name         string
+	Namespace    string
 	Type         string
 	Arguments    strings.Builder
 	ArgsStarted  bool
@@ -1237,6 +1257,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		out.ToolCalls = append(out.ToolCalls, ToolCall{
 			ID:        strings.TrimSpace(item.ID),
 			Name:      strings.TrimSpace(item.Name),
+			Namespace: strings.TrimSpace(item.Namespace),
 			Arguments: normalizeOpenAICodexStreamToolCallArguments(item),
 		})
 	}
@@ -1491,6 +1512,7 @@ func openAICodexToolCallFromOutputItem(item openAICodexOutputItem) (ToolCall, bo
 	return ToolCall{
 		ID:        callID,
 		Name:      name,
+		Namespace: strings.TrimSpace(item.Namespace),
 		Arguments: normalizeOpenAICodexOutputItemArguments(item, name),
 	}, true
 }
@@ -1502,6 +1524,7 @@ func openAICodexPopulateStreamToolCall(target *openAICodexStreamToolCall, item o
 	name := openAICodexOutputItemToolName(item)
 	target.ID = firstNonEmptyTrimmed(item.CallID, item.ID, target.ID)
 	target.Name = firstNonEmptyTrimmed(name, target.Name)
+	target.Namespace = firstNonEmptyTrimmed(item.Namespace, target.Namespace)
 	target.Type = firstNonEmptyTrimmed(item.Type, target.Type)
 	if strings.TrimSpace(target.ID) == "" || strings.TrimSpace(target.Name) == "" {
 		return false
