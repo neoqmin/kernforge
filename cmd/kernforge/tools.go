@@ -399,6 +399,7 @@ func snapshotToolDefinition(def ToolDefinition) ToolDefinition {
 	def.Name = strings.TrimSpace(def.Name)
 	def.InputSchema = normalizeToolInputSchema(cloneToolDefinitionMap(def.InputSchema))
 	def.OutputSchema = cloneToolDefinitionMap(def.OutputSchema)
+	def.HostedOptions = cloneToolDefinitionMap(def.HostedOptions)
 	return def
 }
 

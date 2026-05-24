@@ -649,9 +649,7 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 		}
 	}
 	if name == "web_search" {
-		return map[string]any{
-			"type": "web_search",
-		}
+		return openAICodexWebSearchToolPayload(tool)
 	}
 	if namespace, childName, ok := splitOpenAICodexMCPToolName(name); ok {
 		description := strings.TrimSpace(tool.Description)
@@ -685,6 +683,32 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 	}
 	if tool.DeferLoading {
 		item["defer_loading"] = true
+	}
+	return item
+}
+
+func openAICodexWebSearchToolPayload(tool ToolDefinition) map[string]any {
+	item := map[string]any{
+		"type":                "web_search",
+		"external_web_access": false,
+	}
+	options := tool.HostedOptions
+	if len(options) == 0 {
+		return item
+	}
+	if _, ok := options["external_web_access"]; ok {
+		item["external_web_access"] = boolValue(options, "external_web_access", false)
+	}
+	for _, key := range []string{"filters", "user_location"} {
+		if nested, ok := options[key].(map[string]any); ok && len(nested) > 0 {
+			item[key] = cloneToolDefinitionMap(nested)
+		}
+	}
+	if searchContextSize := strings.TrimSpace(stringValue(options, "search_context_size")); searchContextSize != "" {
+		item["search_context_size"] = searchContextSize
+	}
+	if searchContentTypes := stringSliceValue(options, "search_content_types"); len(searchContentTypes) > 0 {
+		item["search_content_types"] = searchContentTypes
 	}
 	return item
 }

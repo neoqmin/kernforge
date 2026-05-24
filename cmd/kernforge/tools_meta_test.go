@@ -44,11 +44,18 @@ func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
 			},
 		},
 	}
+	hostedOptions := map[string]any{
+		"external_web_access": true,
+		"filters": map[string]any{
+			"allowed_domains": []any{"example.com"},
+		},
+	}
 	tool := &mutableRegistryTool{
 		def: ToolDefinition{
-			Name:        " mutable ",
-			Description: "registered description",
-			InputSchema: schema,
+			Name:          " mutable ",
+			Description:   "registered description",
+			InputSchema:   schema,
+			HostedOptions: hostedOptions,
 		},
 		output: "ok",
 	}
@@ -57,6 +64,8 @@ func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
 	tool.def.Description = "mutated description"
 	schema["type"] = "array"
 	schema["properties"].(map[string]any)["path"].(map[string]any)["type"] = "number"
+	hostedOptions["external_web_access"] = false
+	hostedOptions["filters"].(map[string]any)["allowed_domains"] = []any{"mutated.test"}
 
 	defs := registry.Definitions()
 	if len(defs) != 1 {
@@ -73,12 +82,21 @@ func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
 	if defs[0].InputSchema["type"] != "object" || pathSchema["type"] != "string" {
 		t.Fatalf("schema was not snapshotted: %#v", defs[0].InputSchema)
 	}
+	if defs[0].HostedOptions["external_web_access"] != true {
+		t.Fatalf("hosted options were not snapshotted: %#v", defs[0].HostedOptions)
+	}
+	filters := defs[0].HostedOptions["filters"].(map[string]any)
+	domains := filters["allowed_domains"].([]any)
+	if len(domains) != 1 || domains[0] != "example.com" {
+		t.Fatalf("nested hosted options were not snapshotted: %#v", defs[0].HostedOptions)
+	}
 
 	defs[0].Description = "caller mutation"
 	defs[0].InputSchema["type"] = "caller mutation"
+	defs[0].HostedOptions["external_web_access"] = false
 
 	defs = registry.Definitions()
-	if defs[0].Description != "registered description" || defs[0].InputSchema["type"] != "object" {
+	if defs[0].Description != "registered description" || defs[0].InputSchema["type"] != "object" || defs[0].HostedOptions["external_web_access"] != true {
 		t.Fatalf("returned definitions must not mutate registry snapshot: %#v", defs[0])
 	}
 
