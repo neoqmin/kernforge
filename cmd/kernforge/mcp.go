@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type MCPServerConfig struct {
@@ -43,6 +44,8 @@ type MCPServerConfig struct {
 	Disabled                  bool                  `json:"disabled,omitempty"`
 	DisabledSet               bool                  `json:"-"`
 }
+
+const mcpToolModelOutputMaxBytes = 12000
 
 type mcpServerConfigJSON struct {
 	Name                      string                `json:"name"`
@@ -1783,17 +1786,114 @@ func mcpToolModelOutput(result map[string]any, wallTime time.Duration) (string, 
 			Text: header,
 		})
 		items = append(items, contentItems...)
-		return header, normalizeToolContentItems(items)
+		return header, truncateMCPToolContentItems(normalizeToolContentItems(items), mcpToolModelOutputMaxBytes)
 	}
 	text := strings.TrimSpace(mcpToolSerializedModelText(result))
 	if text == "" {
 		return header, nil
 	}
-	return header + "\n" + text, nil
+	return truncateMCPToolModelText(header+"\n"+text, mcpToolModelOutputMaxBytes), nil
 }
 
 func mcpToolWallTimeHeader(wallTime time.Duration) string {
 	return fmt.Sprintf("Wall time: %.4f seconds\nOutput:", wallTime.Seconds())
+}
+
+func truncateMCPToolModelText(text string, maxBytes int) string {
+	if text == "" {
+		return ""
+	}
+	if maxBytes <= 0 {
+		return fmt.Sprintf("…%d chars truncated…", utf8.RuneCountInString(text))
+	}
+	if len(text) <= maxBytes {
+		return text
+	}
+	return truncateMiddleChars(text, maxBytes)
+}
+
+func truncateMCPToolContentItems(items []ToolContentItem, maxBytes int) []ToolContentItem {
+	if len(items) == 0 || maxBytes <= 0 {
+		return items
+	}
+	remaining := maxBytes
+	omittedTextItems := 0
+	out := make([]ToolContentItem, 0, len(items))
+	for _, item := range items {
+		if item.Type != "input_text" {
+			out = append(out, item)
+			continue
+		}
+		if remaining == 0 {
+			omittedTextItems++
+			continue
+		}
+		if len(item.Text) <= remaining {
+			out = append(out, item)
+			remaining -= len(item.Text)
+			continue
+		}
+		item.Text = truncateMiddleChars(item.Text, remaining)
+		if item.Text == "" {
+			omittedTextItems++
+		} else {
+			out = append(out, item)
+		}
+		remaining = 0
+	}
+	if omittedTextItems > 0 {
+		out = append(out, ToolContentItem{
+			Type: "input_text",
+			Text: fmt.Sprintf("[omitted %d text items ...]", omittedTextItems),
+		})
+	}
+	return normalizeToolContentItems(out)
+}
+
+func truncateMiddleChars(text string, maxBytes int) string {
+	if text == "" {
+		return ""
+	}
+	totalChars := utf8.RuneCountInString(text)
+	if maxBytes <= 0 {
+		return fmt.Sprintf("…%d chars truncated…", totalChars)
+	}
+	if len(text) <= maxBytes {
+		return text
+	}
+	leftBudget := maxBytes / 2
+	rightBudget := maxBytes - leftBudget
+	tailStartTarget := len(text) - rightBudget
+	prefixEnd := 0
+	suffixStart := len(text)
+	removedChars := 0
+	suffixStarted := false
+	for idx := 0; idx < len(text); {
+		_, size := utf8.DecodeRuneInString(text[idx:])
+		if size <= 0 {
+			break
+		}
+		charEnd := idx + size
+		if charEnd <= leftBudget {
+			prefixEnd = charEnd
+			idx = charEnd
+			continue
+		}
+		if idx >= tailStartTarget {
+			if !suffixStarted {
+				suffixStart = idx
+				suffixStarted = true
+			}
+			idx = charEnd
+			continue
+		}
+		removedChars++
+		idx = charEnd
+	}
+	if suffixStart < prefixEnd {
+		suffixStart = prefixEnd
+	}
+	return text[:prefixEnd] + fmt.Sprintf("…%d chars truncated…", removedChars) + text[suffixStart:]
 }
 
 func mcpToolSerializedModelText(result map[string]any) string {
