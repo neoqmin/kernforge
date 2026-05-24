@@ -308,6 +308,87 @@ func TestLookupToolsRecoverWhenOwnedLookupReturnsMissingPath(t *testing.T) {
 	}
 }
 
+func TestLookupToolsRecoverAcrossWorkspaceRootsAfterOwnerMismatch(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, ".kernforge", "worktrees", "driver-build-fixer")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatalf("MkdirAll current: %v", err)
+	}
+	sourceDir := filepath.Join(root, "Tavern")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sourceDir: %v", err)
+	}
+	sourceFile := filepath.Join(sourceDir, "BugReport.md")
+	if err := os.WriteFile(sourceFile, []byte("# Tavern bug report\nBUG-001\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile sourceFile: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     current,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			return EditRoutingResult{}, fmt.Errorf("%w: path %s is outside editable ownership for specialist driver-build-fixer", ErrEditTargetMismatch, req.Path)
+		}
+		if req.lookupIntent() {
+			return EditRoutingResult{}, fmt.Errorf("path is outside the active workspace root: %s", req.Path)
+		}
+		return ws.resolveEditFallback(req)
+	}
+
+	readTool := NewReadFileTool(ws)
+	readResult, err := readTool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":          "Tavern/BugReport.md",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("read_file should fall back across workspace roots after owner mismatch: %v", err)
+	}
+	if !strings.Contains(readResult.DisplayText, "BUG-001") {
+		t.Fatalf("expected read_file to return base workspace content, got %q", readResult.DisplayText)
+	}
+
+	listTool := NewListFilesTool(ws)
+	listResult, err := listTool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":          "Tavern",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("list_files should fall back across workspace roots after owner mismatch: %v", err)
+	}
+	if !strings.Contains(listResult.DisplayText, "BugReport.md") {
+		t.Fatalf("expected list_files to include base workspace file, got %q", listResult.DisplayText)
+	}
+
+	grepTool := NewGrepTool(ws)
+	grepResult, err := grepTool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":       "BUG-001",
+		"path":          "Tavern",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("grep should fall back across workspace roots after owner mismatch: %v", err)
+	}
+	if !strings.Contains(grepResult.DisplayText, "BugReport.md") {
+		t.Fatalf("expected grep to find base workspace content, got %q", grepResult.DisplayText)
+	}
+}
+
+func TestReadOnlyLookupToolDefinitionsDoNotAdvertiseOwnerNodeID(t *testing.T) {
+	for _, def := range []ToolDefinition{
+		NewListFilesTool(Workspace{}).Definition(),
+		NewReadFileTool(Workspace{}).Definition(),
+		NewGrepTool(Workspace{}).Definition(),
+	} {
+		properties, _ := def.InputSchema["properties"].(map[string]any)
+		if _, ok := properties["owner_node_id"]; ok {
+			t.Fatalf("%s should not advertise owner_node_id for read-only lookup", def.Name)
+		}
+	}
+}
+
 func assertLookupToolsRecoverFromOwnerEditMismatch(t *testing.T, wrapSentinel bool) {
 	t.Helper()
 
