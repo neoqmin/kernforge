@@ -63,7 +63,7 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 			`{"slug":"gpt-5.5","display_name":"duplicate","supported_in_api":true,"visibility":"list","priority":1},` +
 			`{"slug":"hidden-model","display_name":"Hidden","supported_in_api":true,"visibility":"hide"},` +
 			`{"slug":"unsupported-model","display_name":"Unsupported","supported_in_api":false,"visibility":"list"},` +
-			`{"id":"custom-codex","name":"Custom Codex","visibility":"list","default_verbosity":"high"}` +
+			`{"id":"custom-codex","name":"Custom Codex","visibility":"list","default_verbosity":"high","supports_reasoning_summaries":true,"default_reasoning_level":"high","default_reasoning_summary":"detailed"}` +
 			`]}`,
 		"plugin warning after json",
 	}, "\n")))
@@ -72,13 +72,16 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 	}
 	want := []CodexCLIModelInfo{
 		{ID: "gpt-5.5", Name: "GPT-5.5", SupportedInAPI: true, Visibility: "list", Priority: 0, SupportsImageDetailOriginal: true, DefaultVerbosity: "low"},
-		{ID: "custom-codex", Name: "Custom Codex", SupportedInAPI: true, Visibility: "list", Priority: 0, DefaultVerbosity: "high"},
+		{ID: "custom-codex", Name: "Custom Codex", SupportedInAPI: true, Visibility: "list", Priority: 0, DefaultVerbosity: "high", SupportsReasoningSummaries: true, DefaultReasoningEffort: "high", DefaultReasoningSummary: "detailed"},
 	}
 	if !reflect.DeepEqual(models, want) {
 		t.Fatalf("models = %#v, want %#v", models, want)
 	}
 	if got := openAICodexDefaultVerbosity("custom-codex"); got != "high" {
 		t.Fatalf("expected parsed model verbosity to be registered, got %q", got)
+	}
+	if defaults, ok := openAICodexReasoningDefaultsForModel("custom-codex"); !ok || !defaults.SupportsSummaries || defaults.DefaultEffort != "high" || defaults.DefaultSummary != "detailed" {
+		t.Fatalf("expected parsed model reasoning defaults to be registered, got %#v ok=%v", defaults, ok)
 	}
 }
 
