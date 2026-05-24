@@ -125,6 +125,43 @@ func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
 	}
 }
 
+func TestSystemPromptDiscoversGitRootAgentsMDFromNestedSessionRoot(t *testing.T) {
+	setTempUserConfigHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("repo root instruction"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("nested instruction"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	session := NewSession(nested, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: nested,
+			Root:     nested,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	rootIndex := strings.Index(prompt, "repo root instruction")
+	nestedIndex := strings.Index(prompt, "nested instruction")
+	if rootIndex < 0 || nestedIndex < 0 {
+		t.Fatalf("expected repo root and nested AGENTS.md instructions, got %q", prompt)
+	}
+	if rootIndex > nestedIndex {
+		t.Fatalf("expected repo root AGENTS.md before nested AGENTS.md, got %q", prompt)
+	}
+}
+
 func TestSystemPromptUsesProjectDocFallbackFilenames(t *testing.T) {
 	setTempUserConfigHome(t)
 	root := t.TempDir()
