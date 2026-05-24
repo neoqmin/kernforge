@@ -20,6 +20,7 @@ const (
 
 const (
 	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
+	HookSessionStart     HookEvent = "SessionStart"
 	HookPreToolUse       HookEvent = "PreToolUse"
 	HookPostToolUse      HookEvent = "PostToolUse"
 	HookSubagentStop     HookEvent = "SubagentStop"
@@ -922,7 +923,7 @@ func userPromptSubmitHookPayload(prompt string) HookPayload {
 
 func collectPayloadText(payload HookPayload) string {
 	var parts []string
-	for _, key := range []string{"prompt", "user_text", "command", "output", "error", "path", "branch", "agent_id", "agent_type", "last_assistant_message"} {
+	for _, key := range []string{"prompt", "user_text", "command", "output", "error", "path", "branch", "source", "agent_id", "agent_type", "last_assistant_message"} {
 		if text := stringsValueFromAny(payload[key]); text != "" {
 			parts = append(parts, text)
 		}

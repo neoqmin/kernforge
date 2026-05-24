@@ -476,6 +476,9 @@ func run(args []string) error {
 	rt.syncAgentReviewerClientFromConfig()
 	rt.reloadHooks()
 	rt.reloadExtensions()
+	if err := rt.runSessionStartHook(context.Background(), sessionStartHookSourceForResumeID(resumeFlag)); err != nil {
+		return err
+	}
 
 	if promptFlag != "" {
 		return rt.runSinglePrompt(promptFlag, cliImages)
@@ -521,6 +524,13 @@ func loadOrCreateSession(store *SessionStore, resumeID, cwd string, cfg Config) 
 		_ = store.Save(sess)
 	}
 	return sess, nil
+}
+
+func sessionStartHookSourceForResumeID(resumeID string) string {
+	if strings.TrimSpace(resumeID) != "" {
+		return "resume"
+	}
+	return "startup"
 }
 
 func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
@@ -9522,6 +9532,67 @@ func (rt *runtimeState) runHook(ctx context.Context, event HookEvent, payload Ho
 	hooks.FailClosed = configHooksFailClosed(rt.cfg)
 	hooks.Evidence = rt.evidence
 	return hooks.Run(ctx, event, payload)
+}
+
+func (rt *runtimeState) sessionStartHookPayload(source string) HookPayload {
+	source = strings.TrimSpace(strings.ToLower(source))
+	if source == "" {
+		source = "startup"
+	}
+	sessionID := ""
+	transcriptPath := ""
+	cwd := ""
+	model := ""
+	permissionMode := strings.TrimSpace(rt.activePermissionModeSnapshot())
+	if permissionMode == "" {
+		permissionMode = strings.TrimSpace(rt.cfg.PermissionMode)
+	}
+	if rt.session != nil {
+		sessionID = strings.TrimSpace(rt.session.ID)
+		model = strings.TrimSpace(rt.session.Model)
+		cwd = strings.TrimSpace(workspaceEffectiveActiveRoot(rt.workspace, rt.session))
+		if cwd == "" {
+			cwd = strings.TrimSpace(rt.session.WorkingDir)
+		}
+		if rt.store != nil && sessionID != "" {
+			transcriptPath = rt.store.sessionPath(sessionID)
+		}
+	}
+	if model == "" {
+		model = strings.TrimSpace(rt.cfg.Model)
+	}
+	if permissionMode == "" {
+		permissionMode = string(ModeDefault)
+	}
+	return HookPayload{
+		"cwd":             cwd,
+		"hook_event_name": string(HookSessionStart),
+		"model":           model,
+		"permission_mode": permissionMode,
+		"session_id":      sessionID,
+		"source":          source,
+		"transcript_path": nullableHookString(transcriptPath),
+		"trigger":         source,
+	}
+}
+
+func (rt *runtimeState) runSessionStartHook(ctx context.Context, source string) error {
+	if rt == nil || rt.hooks == nil {
+		return nil
+	}
+	verdict, err := rt.runHook(ctx, HookSessionStart, rt.sessionStartHookPayload(source))
+	if err != nil {
+		return err
+	}
+	if len(verdict.ContextAdds) == 0 || rt.session == nil {
+		return nil
+	}
+	message := "SessionStart hook context:\n- " + strings.Join(verdict.ContextAdds, "\n- ")
+	rt.session.AddMessage(internalUserMessage(message))
+	if rt.store != nil {
+		return rt.store.Save(rt.session)
+	}
+	return nil
 }
 
 func (rt *runtimeState) mcpStatus() []MCPServerStatus {
