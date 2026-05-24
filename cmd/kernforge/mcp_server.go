@@ -541,6 +541,9 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		FuzzCampaigns: rt.fuzzCampaigns,
 	}
 	rt.reloadHooks()
+	if err := rt.runSessionStartHook(context.Background(), sessionStartHookSourceForResumeID(resumeID)); err != nil {
+		return nil, err
+	}
 	return rt, nil
 }
 

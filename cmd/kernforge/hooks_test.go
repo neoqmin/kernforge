@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -263,6 +264,108 @@ func TestHookRuntimeEnrichPayloadPreservesExplicitSubagentModel(t *testing.T) {
 	}
 	if len(verdict.Warns) != 1 || verdict.Warns[0].Message != "matched specialist model" {
 		t.Fatalf("expected explicit subagent model to be preserved, got %#v", verdict)
+	}
+}
+
+func TestSessionStartHookPayloadIncludesCodexFields(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "provider", "main-model", "", "default")
+	rt := &runtimeState{
+		cfg:     DefaultConfig(root),
+		store:   store,
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	payload := rt.sessionStartHookPayload("resume")
+
+	if got := toolMetaString(payload, "hook_event_name"); got != string(HookSessionStart) {
+		t.Fatalf("expected SessionStart hook event, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "source"); got != "resume" {
+		t.Fatalf("expected resume source, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "trigger"); got != "resume" {
+		t.Fatalf("expected trigger alias, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "session_id"); got != session.ID {
+		t.Fatalf("expected session id %q, got %#v", session.ID, payload)
+	}
+	if got := toolMetaString(payload, "transcript_path"); got != store.sessionPath(session.ID) {
+		t.Fatalf("expected transcript path, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "cwd"); got != root {
+		t.Fatalf("expected cwd %q, got %#v", root, payload)
+	}
+	if got := toolMetaString(payload, "model"); got != "main-model" {
+		t.Fatalf("expected model, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "permission_mode"); got != "default" {
+		t.Fatalf("expected permission mode, got %#v", payload)
+	}
+	if text := collectPayloadText(payload); !strings.Contains(text, "resume") {
+		t.Fatalf("expected collectPayloadText to include source, got %q", text)
+	}
+}
+
+func TestRuntimeRunsSessionStartHookAndRecordsContext(t *testing.T) {
+	root := t.TempDir()
+	hooksDir := filepath.Join(root, userConfigDirName)
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	hooksJSON := `{
+  "enabled": true,
+  "rules": [
+    {
+      "id": "session-start-context",
+      "events": ["SessionStart"],
+      "match": {"contains_text": ["startup"]},
+      "action": {"type": "append_context", "message": "startup hook context"}
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(hooksJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	markConfigProjectTrustedForTest(t, &cfg, root)
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, cfg.Provider, cfg.Model, cfg.BaseURL, cfg.PermissionMode)
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	rt := &runtimeState{
+		cfg:     cfg,
+		store:   store,
+		writer:  io.Discard,
+		ui:      NewUI(),
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Perms:    NewPermissionManager(ModeBypass, nil),
+		},
+	}
+	rt.reloadHooks()
+
+	if err := rt.runSessionStartHook(context.Background(), "startup"); err != nil {
+		t.Fatalf("runSessionStartHook: %v", err)
+	}
+	if len(session.Messages) != 1 || !session.Messages[0].Internal || !strings.Contains(session.Messages[0].Text, "startup hook context") {
+		t.Fatalf("expected internal SessionStart hook context message, got %#v", session.Messages)
+	}
+	loaded, err := store.Load(session.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Messages) != 1 || !strings.Contains(loaded.Messages[0].Text, "startup hook context") {
+		t.Fatalf("expected persisted SessionStart hook context, got %#v", loaded.Messages)
 	}
 }
 
