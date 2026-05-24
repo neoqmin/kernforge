@@ -43,6 +43,22 @@ func TestToolContentItemApproxCharsKeepsNonBase64ImageURLRaw(t *testing.T) {
 	}
 }
 
+func TestToolContentItemApproxCharsEstimatesEncryptedContent(t *testing.T) {
+	encryptedContent := strings.Repeat("A", 1868)
+	got := toolContentItemApproxChars(ToolContentItem{
+		Type:             "encrypted_content",
+		EncryptedContent: encryptedContent,
+	})
+	raw := len("encrypted_content") + len(encryptedContent)
+	expected := len("encrypted_content") + encryptedToolContentApproxChars(len(encryptedContent))
+	if got != expected {
+		t.Fatalf("approx chars = %d, want %d", got, expected)
+	}
+	if got >= raw {
+		t.Fatalf("encrypted content should use plaintext-sized estimate, got=%d raw=%d", got, raw)
+	}
+}
+
 func TestOpenAIClientUsesVersionedBaseURLWithoutDuplicatingV1(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/chat/completions" {
