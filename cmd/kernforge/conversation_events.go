@@ -817,18 +817,39 @@ func normalizeRuntimeError(err error) NormalizedRuntimeError {
 	}
 	out.mergeFromText(err.Error())
 	out.mergeFromText(out.Raw)
-	if out.StatusCode == http.StatusTooManyRequests || out.Code == "429" || strings.Contains(strings.ToLower(out.Raw+" "+out.Message), "rate-limit") || strings.Contains(strings.ToLower(out.Raw+" "+out.Message), "rate limited") || strings.Contains(strings.ToLower(out.Raw+" "+out.Message), "too many requests") {
+	combinedText := strings.ToLower(strings.TrimSpace(out.Raw + " " + out.Message + " " + out.Code))
+	if out.StatusCode == http.StatusTooManyRequests || out.Code == "429" || strings.Contains(combinedText, "rate-limit") || strings.Contains(combinedText, "rate limited") || strings.Contains(combinedText, "too many requests") {
 		out.Category = "rate_limit"
 		out.Retryable = true
 	}
-	if strings.Contains(strings.ToLower(out.Raw+" "+out.Message), "timeout") {
+	if strings.Contains(combinedText, "timeout") {
 		out.Category = "timeout"
+		out.Retryable = true
+	}
+	if containsAny(combinedText, "context_length_exceeded", "context window", "exceeds the context") {
+		out.Category = "context_window"
+		out.Retryable = false
+	}
+	if containsAny(combinedText, "insufficient_quota", "quota exceeded", "current quota", "billing details", "spend cap", "spend limit") {
+		out.Category = "quota"
+		out.Retryable = false
+	}
+	if containsAny(combinedText, "cyber_policy", "cyber policy") {
+		out.Category = "cyber_policy"
+		out.Retryable = false
+	}
+	if containsAny(combinedText, "invalid_prompt", "invalid prompt") {
+		out.Category = "invalid_request"
+		out.Retryable = false
+	}
+	if containsAny(combinedText, "server_overloaded", "server overloaded", "overloaded", "service unavailable") {
+		out.Category = "server_overloaded"
 		out.Retryable = true
 	}
 	if out.Code == "" && out.StatusCode > 0 {
 		out.Code = strconv.Itoa(out.StatusCode)
 	}
-	if strings.Contains(strings.ToLower(out.Raw+" "+out.Message), "byok") || strings.Contains(strings.ToLower(out.Raw+" "+out.Message), "add your own key") {
+	if strings.Contains(combinedText, "byok") || strings.Contains(combinedText, "add your own key") {
 		out.BYOKHint = true
 	}
 	return out

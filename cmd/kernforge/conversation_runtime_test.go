@@ -353,6 +353,67 @@ func TestNormalizeRuntimeErrorUsesCodexRateLimitReachedTypeMessage(t *testing.T)
 	}
 }
 
+func TestNormalizeRuntimeErrorClassifiesCodexResponseFailures(t *testing.T) {
+	cases := []struct {
+		name      string
+		code      string
+		message   string
+		category  string
+		retryable bool
+	}{
+		{
+			name:      "context-window",
+			code:      "context_length_exceeded",
+			message:   "Your input exceeds the context window of this model. Please adjust your input and try again.",
+			category:  "context_window",
+			retryable: false,
+		},
+		{
+			name:      "quota",
+			code:      "insufficient_quota",
+			message:   "You exceeded your current quota, please check your plan and billing details.",
+			category:  "quota",
+			retryable: false,
+		},
+		{
+			name:      "cyber-policy",
+			code:      "cyber_policy",
+			message:   "This request was flagged for cyber policy.",
+			category:  "cyber_policy",
+			retryable: false,
+		},
+		{
+			name:      "invalid-prompt",
+			code:      "invalid_prompt",
+			message:   "Invalid prompt: access to this content is limited.",
+			category:  "invalid_request",
+			retryable: false,
+		},
+		{
+			name:      "server-overloaded",
+			code:      "server_overloaded",
+			message:   "The server is overloaded. Please try again later.",
+			category:  "server_overloaded",
+			retryable: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			normalized := normalizeRuntimeError(&ProviderAPIError{
+				Provider: "openai-codex",
+				Message:  tc.message,
+				Code:     tc.code,
+				RawBody:  `{"error":{"code":"` + tc.code + `","message":"` + tc.message + `"}}`,
+			})
+			if normalized.Category != tc.category || normalized.Retryable != tc.retryable {
+				t.Fatalf("unexpected normalized error for %s: %#v", tc.name, normalized)
+			}
+		})
+	}
+}
+
 func TestToolSuccessIsRecordedInConversationEvents(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
