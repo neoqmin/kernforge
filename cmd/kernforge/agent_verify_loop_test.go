@@ -3747,6 +3747,36 @@ func TestShouldDeferEndTurnFollowUpForFinalLookingReplyKeepsInProgressText(t *te
 	}
 }
 
+func TestShouldDeferEndTurnFollowUpForFinalLookingReplyAcceptsFinalCandidatePhase(t *testing.T) {
+	endTurnFalse := false
+	resp := ChatResponse{
+		Message: Message{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswerCandidate,
+			Text:  "Done.",
+		},
+		EndTurn: &endTurnFalse,
+	}
+	if !shouldDeferEndTurnFollowUpForFinalLookingReply(resp) {
+		t.Fatalf("expected final-answer candidate phase to defer follow-up even for short text")
+	}
+}
+
+func TestShouldDeferEndTurnFollowUpForFinalLookingReplyDoesNotAcceptInProgressFinalPhase(t *testing.T) {
+	endTurnFalse := false
+	resp := ChatResponse{
+		Message: Message{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswerCandidate,
+			Text:  "Checking the report now before the final answer.",
+		},
+		EndTurn: &endTurnFalse,
+	}
+	if shouldDeferEndTurnFollowUpForFinalLookingReply(resp) {
+		t.Fatalf("expected in-progress text to request a follow-up even with final-answer candidate phase")
+	}
+}
+
 func TestShouldDeferEndTurnFollowUpForFinalLookingReplyKeepsFutureVerification(t *testing.T) {
 	endTurnFalse := false
 	resp := ChatResponse{

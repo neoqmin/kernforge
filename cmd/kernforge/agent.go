@@ -2664,8 +2664,15 @@ func shouldDeferEndTurnFollowUpForFinalLookingReply(resp ChatResponse) bool {
 	if len(resp.Message.ToolCalls) > 0 {
 		return false
 	}
+	if strings.TrimSpace(resp.Message.Text) == "" {
+		return false
+	}
 	if assistantTextLooksLikeInProgress(resp.Message.Text) {
 		return false
+	}
+	switch strings.TrimSpace(resp.Message.Phase) {
+	case messagePhaseFinalAnswerCandidate, messagePhaseFinalAnswer:
+		return true
 	}
 	return assistantTextLooksLikeCompletionSummary(resp.Message.Text)
 }
