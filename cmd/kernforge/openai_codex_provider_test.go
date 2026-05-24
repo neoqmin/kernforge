@@ -1165,6 +1165,31 @@ func TestParseOpenAICodexResponsePreservesEndTurn(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesReasoningContent(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"reasoning",
+			"id":"reasoning-1",
+			"summary":[{"type":"summary_text","text":"Consider inputs"}],
+			"content":[{"type":"reasoning_text","text":"Detailed trace"}]
+		},{
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"output_text","text":"done"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.Message.Text != "done" {
+		t.Fatalf("expected visible message text, got %q", resp.Message.Text)
+	}
+	if resp.Message.ReasoningContent != "Consider inputs\nDetailed trace" {
+		t.Fatalf("expected reasoning content to be preserved, got %q", resp.Message.ReasoningContent)
+	}
+}
+
 func TestParseOpenAICodexResponseUsesFinalTextOverCommentary(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -1310,6 +1335,43 @@ func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.
 	}
 	if resp.Message.Text != "Intro body" {
 		t.Fatalf("expected added message prefix to stay single, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamAccumulatesReasoningDeltas(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"reasoning-1","summary":[{"type":"summary_text","text":""}]}}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"step one"}`,
+		`data: {"type":"response.reasoning_text.delta","delta":" raw detail"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "done" {
+		t.Fatalf("expected visible message text, got %q", resp.Message.Text)
+	}
+	if resp.Message.ReasoningContent != "step one raw detail" {
+		t.Fatalf("expected reasoning deltas to be preserved, got %q", resp.Message.ReasoningContent)
+	}
+}
+
+func TestReadOpenAICodexStreamUsesDoneReasoningWhenNoDeltas(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","summary":[{"type":"summary_text","text":"Consider inputs"}],"content":[{"type":"reasoning_text","text":"Detailed trace"}]}}`,
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.ReasoningContent != "Consider inputs\nDetailed trace" {
+		t.Fatalf("expected done reasoning content, got %q", resp.Message.ReasoningContent)
 	}
 }
 
