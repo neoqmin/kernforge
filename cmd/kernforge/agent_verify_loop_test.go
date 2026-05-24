@@ -4886,6 +4886,52 @@ func TestCompactRetainedMessagesWithinBudgetDropsOrphanToolOutputAtBoundary(t *t
 	}
 }
 
+func TestCompactDropOrphanToolMessagesFiltersCodexToolOutputItems(t *testing.T) {
+	messages := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{ID: "call_read", Name: "read_file"},
+				{ID: "call_patch", Name: "apply_patch"},
+				{ID: "call_search", Name: "tool_search"},
+			},
+			LocalShellCalls: []MessageLocalShellCall{{
+				CallID: "call_shell",
+				Status: "completed",
+			}},
+		},
+		{
+			Role: "assistant",
+			CodexToolOutputItems: []MessageCodexToolOutputItem{
+				{Type: "function_call_output", CallID: "call_read", Text: "read ok"},
+				{Type: "custom_tool_call_output", CallID: "call_patch", Text: "patch ok"},
+				{Type: "tool_search_output", CallID: "call_search", Execution: "client"},
+				{Type: "function_call_output", CallID: "call_shell", Text: "shell ok"},
+				{Type: "function_call_output", CallID: "call_missing", Text: "orphan"},
+				{Type: "tool_search_output", CallID: "call_missing_search", Execution: "client"},
+				{Type: "tool_search_output", Execution: "server"},
+			},
+		},
+	}
+
+	filtered := compactDropOrphanToolMessages(messages)
+	if len(filtered) != 2 {
+		t.Fatalf("expected both assistant messages to remain, got %#v", filtered)
+	}
+	outputs := filtered[1].CodexToolOutputItems
+	if len(outputs) != 5 {
+		t.Fatalf("expected matching outputs plus server search output, got %#v", outputs)
+	}
+	for _, output := range outputs {
+		if output.CallID == "call_missing" || output.CallID == "call_missing_search" {
+			t.Fatalf("expected orphan Codex output item to be dropped, got %#v", outputs)
+		}
+	}
+	if outputs[4].Type != "tool_search_output" || outputs[4].Execution != "server" {
+		t.Fatalf("expected server tool search output without a call id to survive, got %#v", outputs)
+	}
+}
+
 func TestMessageLooksLikeCompactContextOnlyKeepsStructuredHistoryItems(t *testing.T) {
 	msg := Message{
 		Role: "user",
