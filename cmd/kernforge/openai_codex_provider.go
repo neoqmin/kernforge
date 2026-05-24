@@ -851,6 +851,9 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				"content": content,
 			})
 		case "assistant":
+			if reasoningItem := openAICodexReasoningInputItem(msg); reasoningItem != nil {
+				items = append(items, reasoningItem)
+			}
 			if strings.TrimSpace(msg.Text) != "" {
 				item := map[string]any{
 					"type": "message",
@@ -882,6 +885,24 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 		}
 	}
 	return items, nil
+}
+
+func openAICodexReasoningInputItem(msg Message) map[string]any {
+	encryptedContent := strings.TrimSpace(msg.ReasoningEncryptedContent)
+	if encryptedContent == "" {
+		return nil
+	}
+	item := map[string]any{
+		"type":              "reasoning",
+		"encrypted_content": encryptedContent,
+	}
+	if summary := strings.TrimSpace(msg.ReasoningContent); summary != "" {
+		item["summary"] = []map[string]any{{
+			"type": "summary_text",
+			"text": summary,
+		}}
+	}
+	return item
 }
 
 func openAICodexAssistantImageGenerationInputItems(workingDir string, images []MessageImage, supportsImages bool) []any {
@@ -1285,21 +1306,22 @@ func openAICodexStripUnsupportedImageContentItems(items []ToolContentItem) []Too
 }
 
 type openAICodexOutputItem struct {
-	ID            string          `json:"id,omitempty"`
-	Type          string          `json:"type"`
-	Status        string          `json:"status,omitempty"`
-	RevisedPrompt string          `json:"revised_prompt,omitempty"`
-	Result        string          `json:"result,omitempty"`
-	Role          string          `json:"role,omitempty"`
-	Phase         string          `json:"phase,omitempty"`
-	CallID        string          `json:"call_id,omitempty"`
-	Name          string          `json:"name,omitempty"`
-	Namespace     string          `json:"namespace,omitempty"`
-	Input         string          `json:"input,omitempty"`
-	Execution     string          `json:"execution,omitempty"`
-	Arguments     json.RawMessage `json:"arguments,omitempty"`
-	Action        json.RawMessage `json:"action,omitempty"`
-	Content       []struct {
+	ID               string          `json:"id,omitempty"`
+	Type             string          `json:"type"`
+	Status           string          `json:"status,omitempty"`
+	RevisedPrompt    string          `json:"revised_prompt,omitempty"`
+	Result           string          `json:"result,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Phase            string          `json:"phase,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Namespace        string          `json:"namespace,omitempty"`
+	Input            string          `json:"input,omitempty"`
+	Execution        string          `json:"execution,omitempty"`
+	Arguments        json.RawMessage `json:"arguments,omitempty"`
+	Action           json.RawMessage `json:"action,omitempty"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	Content          []struct {
 		Type string `json:"type"`
 		Text string `json:"text,omitempty"`
 	} `json:"content,omitempty"`
@@ -1338,6 +1360,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	fallbackTexts := []string{}
 	finalTexts := []string{}
 	reasoningTexts := []string{}
+	reasoningEncryptedContents := []string{}
 	textMessageCount := 0
 	commentaryTextMessageCount := 0
 	messagePhase := ""
@@ -1373,6 +1396,9 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			if reasoningText := openAICodexReasoningItemText(item); strings.TrimSpace(reasoningText) != "" {
 				reasoningTexts = append(reasoningTexts, reasoningText)
 			}
+			if encryptedContent := openAICodexReasoningEncryptedContent(item); encryptedContent != "" {
+				reasoningEncryptedContents = append(reasoningEncryptedContents, encryptedContent)
+			}
 		case "image_generation_call", "web_search_call":
 			if itemText := openAICodexHostedOutputItemText(item, ""); strings.TrimSpace(itemText) != "" {
 				fallbackTexts = append(fallbackTexts, itemText)
@@ -1389,6 +1415,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	}
 	out.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(texts), "\n"))
 	out.ReasoningContent = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(reasoningTexts), "\n"))
+	out.ReasoningEncryptedContent = firstNonEmptyTrimmed(reasoningEncryptedContents...)
 	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
@@ -1446,6 +1473,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 
 	var text strings.Builder
 	var reasoning strings.Builder
+	reasoningEncryptedContent := ""
 	deltaPrefixTexts := []string{}
 	itemTexts := []string{}
 	finalItemTexts := []string{}
@@ -1626,6 +1654,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
 					reasoning.WriteString(reasoningText)
 				}
+				if reasoningEncryptedContent == "" {
+					reasoningEncryptedContent = openAICodexReasoningEncryptedContent(event.Item)
+				}
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
 				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
@@ -1693,9 +1724,14 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			if event.Item.Type == "message" {
 				messagePhase = mergeOpenAICodexMessagePhase(messagePhase, event.Item.Phase)
 				collectMessageItemText(event.Item)
-			} else if event.Item.Type == "reasoning" && reasoning.Len() == 0 {
-				if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
-					reasoning.WriteString(reasoningText)
+			} else if event.Item.Type == "reasoning" {
+				if reasoning.Len() == 0 {
+					if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
+						reasoning.WriteString(reasoningText)
+					}
+				}
+				if reasoningEncryptedContent == "" {
+					reasoningEncryptedContent = openAICodexReasoningEncryptedContent(event.Item)
 				}
 			} else if event.Item.Type == "image_generation_call" || event.Item.Type == "web_search_call" {
 				collectHostedOutputItem(event.Item)
@@ -1856,7 +1892,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
 	}
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), Images: appendUniqueImages(nil, hostedImages...)}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -1879,6 +1915,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		if out.ReasoningContent == "" {
 			out.ReasoningContent = completedParsed.Message.ReasoningContent
+		}
+		if out.ReasoningEncryptedContent == "" {
+			out.ReasoningEncryptedContent = completedParsed.Message.ReasoningEncryptedContent
 		}
 		if len(out.ToolCalls) == 0 && len(completedParsed.Message.ToolCalls) > 0 {
 			out.ToolCalls = append(out.ToolCalls, completedParsed.Message.ToolCalls...)
@@ -2207,6 +2246,13 @@ func openAICodexReasoningItemText(item openAICodexOutputItem) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func openAICodexReasoningEncryptedContent(item openAICodexOutputItem) string {
+	if strings.TrimSpace(item.Type) != "reasoning" {
+		return ""
+	}
+	return strings.TrimSpace(item.EncryptedContent)
 }
 
 func openAICodexHostedOutputItemText(item openAICodexOutputItem, savedPath string) string {
