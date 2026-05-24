@@ -605,12 +605,75 @@ func TestBuildOpenAICodexRequestBodyUsesNativeHostedTools(t *testing.T) {
 	if webSearch["type"] != "web_search" {
 		t.Fatalf("expected native web_search tool, got %#v", webSearch)
 	}
+	if webSearch["external_web_access"] != false {
+		t.Fatalf("expected native web_search to default to cached access, got %#v", webSearch)
+	}
 	if _, exists := webSearch["name"]; exists {
 		t.Fatalf("native web_search must not include function name, got %#v", webSearch)
 	}
 	readFile := tools[2].(map[string]any)
 	if readFile["type"] != "function" || readFile["name"] != "read_file" {
 		t.Fatalf("expected ordinary tool to remain a function, got %#v", readFile)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyPreservesHostedWebSearchOptions(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "use hosted web search"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "web_search",
+				Description: "Search the web",
+				InputSchema: map[string]any{"type": "object"},
+				HostedOptions: map[string]any{
+					"external_web_access": true,
+					"filters": map[string]any{
+						"allowed_domains": []any{"example.com"},
+					},
+					"user_location": map[string]any{
+						"type":     "approximate",
+						"country":  "US",
+						"timezone": "America/Los_Angeles",
+					},
+					"search_context_size":  "low",
+					"search_content_types": []any{"text", "image"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected one hosted tool, got %#v in %s", payload["tools"], body)
+	}
+	webSearch := tools[0].(map[string]any)
+	if webSearch["type"] != "web_search" || webSearch["external_web_access"] != true {
+		t.Fatalf("expected live native web_search tool, got %#v", webSearch)
+	}
+	filters := webSearch["filters"].(map[string]any)
+	if domains := filters["allowed_domains"].([]any); len(domains) != 1 || domains[0] != "example.com" {
+		t.Fatalf("expected allowed domain filter, got %#v", filters)
+	}
+	location := webSearch["user_location"].(map[string]any)
+	if location["type"] != "approximate" || location["country"] != "US" || location["timezone"] != "America/Los_Angeles" {
+		t.Fatalf("expected approximate user location, got %#v", location)
+	}
+	if webSearch["search_context_size"] != "low" {
+		t.Fatalf("expected search_context_size=low, got %#v", webSearch)
+	}
+	contentTypes := webSearch["search_content_types"].([]any)
+	if len(contentTypes) != 2 || contentTypes[0] != "text" || contentTypes[1] != "image" {
+		t.Fatalf("expected text/image content types, got %#v", contentTypes)
 	}
 }
 

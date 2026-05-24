@@ -16,11 +16,12 @@ import (
 )
 
 type ToolDefinition struct {
-	Name         string         `json:"name"`
-	Description  string         `json:"description"`
-	InputSchema  map[string]any `json:"input_schema"`
-	OutputSchema map[string]any `json:"output_schema,omitempty"`
-	DeferLoading bool           `json:"defer_loading,omitempty"`
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	InputSchema   map[string]any `json:"input_schema"`
+	OutputSchema  map[string]any `json:"output_schema,omitempty"`
+	HostedOptions map[string]any `json:"hosted_options,omitempty"`
+	DeferLoading  bool           `json:"defer_loading,omitempty"`
 }
 
 type ToolContentItem struct {
