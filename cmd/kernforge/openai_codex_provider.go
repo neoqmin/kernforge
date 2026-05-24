@@ -130,6 +130,16 @@ var openAICodexParallelToolCallSupport = struct {
 	},
 }
 
+var openAICodexServiceTierSupport = struct {
+	sync.RWMutex
+	byModel map[string]map[string]bool
+}{
+	byModel: map[string]map[string]bool{
+		openAICodexDefaultModel: map[string]bool{"priority": true},
+		"gpt-5.4":               map[string]bool{"priority": true},
+	},
+}
+
 type codexOAuthAccessTokenSource interface {
 	AccessToken(ctx context.Context) (string, error)
 }
@@ -420,7 +430,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
 		payload["prompt_cache_key"] = threadID
 	}
-	if serviceTier := openAICodexServiceTierForRequest(req.ServiceTier); serviceTier != "" {
+	if serviceTier := openAICodexServiceTierForRequest(model, req.ServiceTier); serviceTier != "" {
 		payload["service_tier"] = serviceTier
 	}
 	if len(clientMetadata) > 0 {
@@ -462,14 +472,22 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	return json.Marshal(payload)
 }
 
-func openAICodexServiceTierForRequest(serviceTier string) string {
+func openAICodexServiceTierForRequest(model string, serviceTier string) string {
 	normalized := normalizeServiceTier(serviceTier)
-	switch normalized {
-	case "", "priority", "flex":
-		return normalized
-	default:
+	if normalized == "" {
 		return ""
 	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || model == codexCLIDefaultModel {
+		model = openAICodexDefaultModel
+	}
+	openAICodexServiceTierSupport.RLock()
+	supported := openAICodexServiceTierSupport.byModel[model][normalized]
+	openAICodexServiceTierSupport.RUnlock()
+	if supported {
+		return normalized
+	}
+	return ""
 }
 
 func openAICodexTextControls(model string, jsonMode bool) map[string]any {
