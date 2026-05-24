@@ -727,7 +727,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		})
 	}
 
-	for _, msg := range req.Messages {
+	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
 		blocked := anthropicMessage{Role: msg.Role}
 		switch msg.Role {
 		case "system":
@@ -1836,7 +1836,7 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			Content: req.System,
 		})
 	}
-	for _, msg := range req.Messages {
+	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
 		switch msg.Role {
 		case "system":
 			continue

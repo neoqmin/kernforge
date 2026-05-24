@@ -825,6 +825,86 @@ func TestOpenAICompatibleClientDropsUnexpectedToolResponseAfterAssistant(t *test
 	}
 }
 
+func TestAnthropicClientSynthesizesMissingToolResultLikeCodex(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "anthropic-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "claude-test",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_expected", Name: "read_file", Arguments: `{"path":"main.go"}`},
+			}},
+			{Role: "user", Text: "continue"},
+		},
+		Tools: []ToolDefinition{{Name: "read_file"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok || len(messages) != 4 {
+		t.Fatalf("expected user, assistant, synthesized tool_result, user messages; got %#v", captured["messages"])
+	}
+	toolResultMessage, ok := messages[2].(map[string]any)
+	if !ok || toolResultMessage["role"] != "user" {
+		t.Fatalf("expected synthesized Anthropic tool_result user message, got %#v", messages[2])
+	}
+	content, ok := toolResultMessage["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected one tool_result content block, got %#v", toolResultMessage["content"])
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok || block["type"] != "tool_result" || block["tool_use_id"] != "call_expected" || block["content"] != "aborted" {
+		t.Fatalf("expected missing tool_result to be synthesized like Codex, got %#v", content[0])
+	}
+}
+
+func TestOllamaClientDropsOrphanToolOutputLikeCodex(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done_reason":"stop"}`))
+	}))
+	defer server.Close()
+
+	client := NewOllamaClient(server.URL, "")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "llama-test",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "tool", ToolCallID: "call_orphan", ToolName: "write_file", Text: "wrote other.md"},
+			{Role: "user", Text: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected orphan tool output to be dropped, got %#v", captured["messages"])
+	}
+	for _, item := range messages {
+		if strings.Contains(fmt.Sprint(item), "call_orphan") || strings.Contains(fmt.Sprint(item), "wrote other.md") {
+			t.Fatalf("orphan tool output leaked into Ollama request: %#v", messages)
+		}
+	}
+}
+
 func TestOpenAICompatibleClientUsesNameFallbackForMissingToolCallID(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
