@@ -40,7 +40,11 @@ func toolContentItemApproxChars(item ToolContentItem) int {
 		total += imageURLApproxChars(item.ImageURL)
 	}
 	if strings.TrimSpace(item.EncryptedContent) != "" {
-		total += len(item.EncryptedContent)
+		if strings.TrimSpace(item.Type) == "encrypted_content" {
+			total += encryptedToolContentApproxChars(len(item.EncryptedContent))
+		} else {
+			total += len(item.EncryptedContent)
+		}
 	}
 	return total
 }
@@ -82,6 +86,13 @@ func base64ImageDataURLPayload(imageURL string) (string, bool) {
 		return "", false
 	}
 	return payload, true
+}
+
+func encryptedToolContentApproxChars(encodedLen int) int {
+	if encodedLen <= 0 {
+		return 0
+	}
+	return (encodedLen*9 + 15) / 16
 }
 
 type ToolCall struct {
