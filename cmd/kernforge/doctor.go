@@ -494,6 +494,15 @@ func kernforgeDoctorMCPCheck(cfg Config) kernforgeDoctorCheck {
 			disabled++
 			continue
 		}
+		if envVar := strings.TrimSpace(server.BearerTokenEnvVar); envVar != "" && strings.TrimSpace(os.Getenv(envVar)) == "" {
+			missingEnv = append(missingEnv, fmt.Sprintf("%s:%s", firstNonBlankString(server.Name, server.URL, server.Command, "mcp"), envVar))
+		}
+		for _, envVar := range server.EnvHTTPHeaders {
+			envVar = strings.TrimSpace(envVar)
+			if envVar != "" && strings.TrimSpace(os.Getenv(envVar)) == "" {
+				missingEnv = append(missingEnv, fmt.Sprintf("%s:%s", firstNonBlankString(server.Name, server.URL, server.Command, "mcp"), envVar))
+			}
+		}
 		for _, envVar := range server.EnvVars {
 			name := strings.TrimSpace(envVar.Name)
 			if name == "" {
