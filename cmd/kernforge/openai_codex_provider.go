@@ -691,6 +691,14 @@ func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
 			"input":   openAICodexApplyPatchInputFromArguments(call.Arguments),
 		}
 	}
+	if name == "tool_search" {
+		return map[string]any{
+			"type":      "tool_search_call",
+			"call_id":   callID,
+			"execution": "client",
+			"arguments": openAICodexToolSearchArguments(call.Arguments),
+		}
+	}
 	item := map[string]any{
 		"type":      "function_call",
 		"call_id":   callID,
@@ -762,6 +770,22 @@ func openAICodexToolSearchOutputTools(msg Message) []any {
 		return rawTools
 	}
 	return []any{}
+}
+
+func openAICodexToolSearchArguments(arguments string) any {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return map[string]any{}
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
+		if decoded != nil {
+			return decoded
+		}
+	}
+	return map[string]any{
+		"query": trimmed,
+	}
 }
 
 func openAICodexApplyPatchInputFromArguments(arguments string) string {
