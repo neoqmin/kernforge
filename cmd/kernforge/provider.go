@@ -1583,7 +1583,7 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 		expected := map[string]ToolCall{}
 		expectedOrder := make([]string, 0, len(msg.ToolCalls))
 		for _, call := range msg.ToolCalls {
-			callID := strings.TrimSpace(call.ID)
+			callID := firstNonEmptyTrimmed(call.ID, call.Name)
 			if callID != "" {
 				expected[callID] = call
 				expectedOrder = append(expectedOrder, callID)
@@ -1598,7 +1598,7 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 		next := index + 1
 		for next < len(messages) && messages[next].Role == "tool" {
 			toolMsg := messages[next]
-			toolCallID := strings.TrimSpace(toolMsg.ToolCallID)
+			toolCallID := firstNonEmptyTrimmed(toolMsg.ToolCallID, toolMsg.ToolName)
 			if _, ok := expected[toolCallID]; ok {
 				seen[toolCallID] = true
 				out = append(out, toolMsg)
@@ -1616,7 +1616,7 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 			isError := strings.HasPrefix(text, "ERROR:")
 			out = append(out, Message{
 				Role:       "tool",
-				ToolCallID: call.ID,
+				ToolCallID: callID,
 				ToolName:   call.Name,
 				Text:       text,
 				IsError:    isError,
