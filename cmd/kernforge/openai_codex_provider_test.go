@@ -153,6 +153,49 @@ func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyRoundTripsApplyPatchAsCustomItems(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "edit"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_patch",
+				Name:      "apply_patch",
+				Arguments: mustJSON(map[string]any{"patch": patch}),
+			}}},
+			{Role: "tool", ToolCallID: "call_patch", ToolName: "apply_patch", Text: "Patch applied."},
+		},
+		Tools: []ToolDefinition{NewApplyPatchTool(Workspace{}).Definition()},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("expected three input items, got %#v in %s", payload["input"], body)
+	}
+	call := input[1].(map[string]any)
+	if call["type"] != "custom_tool_call" || call["name"] != "apply_patch" || call["call_id"] != "call_patch" {
+		t.Fatalf("expected custom apply_patch call item, got %#v", call)
+	}
+	if call["input"] != strings.TrimSpace(patch) {
+		t.Fatalf("expected raw patch input, got %#v", call["input"])
+	}
+	if _, exists := call["arguments"]; exists {
+		t.Fatalf("custom apply_patch call must not use JSON arguments, got %#v", call)
+	}
+	output := input[2].(map[string]any)
+	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_patch" || output["name"] != "apply_patch" {
+		t.Fatalf("expected custom apply_patch output item, got %#v", output)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesAssistantPhase(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
