@@ -1291,6 +1291,26 @@ func TestReadOpenAICodexStreamRejectsMissingCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamReturnsIncompleteReason(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}}`,
+		`data: {"type":"response.output_text.delta","delta":" content"}`,
+		`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}`,
+		"",
+	}, "\n\n"))
+	_, err := readOpenAICodexStream(context.Background(), stream)
+	if err == nil {
+		t.Fatalf("expected incomplete stream error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "Incomplete response returned, reason: content_filter") {
+		t.Fatalf("expected incomplete reason in error, got %v", err)
+	}
+	if strings.Contains(text, "stream closed before response.completed") {
+		t.Fatalf("incomplete stream error should not be reported as missing completed event: %v", err)
+	}
+}
+
 func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponseBody(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
