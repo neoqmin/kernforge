@@ -1608,6 +1608,23 @@ func TestReadOpenAICodexStreamCapturesCreatedResponseModelHeader(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamCapturesRateLimitEvent(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":12.5,"window_minutes":10,"reset_at":1704069000},"secondary":{"used_percent":40,"window_minutes":60}},"credits":{"has_credits":true,"unlimited":false,"balance":"42"}}`,
+		`data: {"type":"response.output_text.delta","delta":"done"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	want := "primary=12.5% window=10m reset_at=1704069000, secondary=40% window=60m, credits(has_credits=true unlimited=false balance=42)"
+	if resp.RateLimitSummary != want {
+		t.Fatalf("expected rate limit event summary %q, got %q", want, resp.RateLimitSummary)
+	}
+}
+
 func TestReadOpenAICodexStreamAccumulatesReasoningDeltas(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"reasoning-1","summary":[{"type":"summary_text","text":""}]}}`,

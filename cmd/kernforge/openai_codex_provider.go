@@ -209,7 +209,9 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 	out.ModelsETag = strings.TrimSpace(resp.Header.Get(openAICodexServerModelsETagHeader))
 	out.ReasoningIncluded = resp.Header.Get(openAICodexReasoningIncludedHeader) != ""
-	out.RateLimitSummary = providerCodexRateLimitSummaryFromHeaders(resp.Header)
+	if summary := providerCodexRateLimitSummaryFromHeaders(resp.Header); summary != "" {
+		out.RateLimitSummary = summary
+	}
 	return out, nil
 }
 
@@ -690,6 +692,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	completedSeen := false
 	var endTurn *bool
 	serverModel := ""
+	rateLimitSummary := ""
 	var progress func(ProgressEvent)
 	if len(onProgressEvent) > 0 {
 		progress = onProgressEvent[0]
@@ -774,6 +777,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		}
 		if model := openAICodexServerModelFromResponsePayload(event.Response); model != "" {
 			serverModel = model
+		}
+		if event.Type == "codex.rate_limits" {
+			if summary := openAICodexRateLimitSummaryFromEventPayload([]byte(payload)); summary != "" {
+				rateLimitSummary = summary
+			}
+			return ChatResponse{}, false, nil
 		}
 		switch event.Type {
 		case "response.output_text.delta":
@@ -973,6 +982,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if resp.ServerModel == "" {
 				resp.ServerModel = serverModel
 			}
+			if resp.RateLimitSummary == "" {
+				resp.RateLimitSummary = rateLimitSummary
+			}
 			return resp, nil
 		}
 	}
@@ -992,7 +1004,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	if out.Text == "" && len(out.ToolCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
-	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn, ServerModel: serverModel}, nil
+	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn, ServerModel: serverModel, RateLimitSummary: rateLimitSummary}, nil
 }
 
 func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
@@ -1012,6 +1024,67 @@ func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
 		}
 	}
 	return strings.TrimSpace(decoded.Model)
+}
+
+func openAICodexRateLimitSummaryFromEventPayload(data []byte) string {
+	var decoded struct {
+		Type       string `json:"type"`
+		RateLimits *struct {
+			Primary   *openAICodexRateLimitEventWindow `json:"primary,omitempty"`
+			Secondary *openAICodexRateLimitEventWindow `json:"secondary,omitempty"`
+		} `json:"rate_limits,omitempty"`
+		Credits *struct {
+			HasCredits bool   `json:"has_credits"`
+			Unlimited  bool   `json:"unlimited"`
+			Balance    string `json:"balance,omitempty"`
+		} `json:"credits,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return ""
+	}
+	if decoded.Type != "codex.rate_limits" {
+		return ""
+	}
+	parts := []string{}
+	if decoded.RateLimits != nil {
+		if primary := openAICodexRateLimitEventWindowSummary(decoded.RateLimits.Primary, "primary"); primary != "" {
+			parts = append(parts, primary)
+		}
+		if secondary := openAICodexRateLimitEventWindowSummary(decoded.RateLimits.Secondary, "secondary"); secondary != "" {
+			parts = append(parts, secondary)
+		}
+	}
+	if decoded.Credits != nil {
+		credits := []string{
+			fmt.Sprintf("has_credits=%t", decoded.Credits.HasCredits),
+			fmt.Sprintf("unlimited=%t", decoded.Credits.Unlimited),
+		}
+		if balance := strings.TrimSpace(decoded.Credits.Balance); balance != "" {
+			credits = append(credits, "balance="+balance)
+		}
+		parts = append(parts, "credits("+strings.Join(credits, " ")+")")
+	}
+	return strings.Join(parts, ", ")
+}
+
+type openAICodexRateLimitEventWindow struct {
+	UsedPercent   float64 `json:"used_percent"`
+	WindowMinutes *int64  `json:"window_minutes,omitempty"`
+	ResetAt       *int64  `json:"reset_at,omitempty"`
+}
+
+func openAICodexRateLimitEventWindowSummary(window *openAICodexRateLimitEventWindow, label string) string {
+	if window == nil {
+		return ""
+	}
+	parts := []string{label + "=" + fmt.Sprintf("%g", window.UsedPercent) + "%"}
+	if window.WindowMinutes != nil {
+		parts = append(parts, fmt.Sprintf("window=%dm", *window.WindowMinutes))
+	}
+	if window.ResetAt != nil {
+		parts = append(parts, fmt.Sprintf("reset_at=%d", *window.ResetAt))
+	}
+	return strings.Join(parts, " ")
 }
 
 func openAICodexIncompleteReason(response json.RawMessage) string {
