@@ -274,8 +274,8 @@ func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *test
 	if _, ok := payload["text"]; ok {
 		t.Fatalf("expected text controls to be omitted for unknown model, got %#v", payload["text"])
 	}
-	if _, ok := payload["reasoning"]; ok {
-		t.Fatalf("expected reasoning to be omitted for unknown model, got %#v", payload["reasoning"])
+	if reasoning, ok := payload["reasoning"]; !ok || reasoning != nil {
+		t.Fatalf("expected reasoning null for unknown model, got %#v ok=%v", payload["reasoning"], ok)
 	}
 	if payload["parallel_tool_calls"] != false {
 		t.Fatalf("expected unknown model to disable parallel tool calls, got %#v", payload["parallel_tool_calls"])
