@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -84,7 +86,7 @@ func TestCompactAndSessionCostsCountMessageImages(t *testing.T) {
 		Role:   "user",
 		Images: []MessageImage{image},
 	}
-	expected := messageImageApproxChars(image)
+	expected := messageImageApproxChars("", image)
 	if got := compactMessageRetainedCharCost(msg); got != expected {
 		t.Fatalf("compact image char cost = %d, want %d", got, expected)
 	}
@@ -94,6 +96,29 @@ func TestCompactAndSessionCostsCountMessageImages(t *testing.T) {
 	session.AddMessage(msg)
 	if got := session.ApproxChars() - baseline; got < expected {
 		t.Fatalf("session image char cost = %d, want at least %d", got, expected)
+	}
+}
+
+func TestSessionApproxCharsUsesOriginalImagePatchEstimate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(path, largePNGForTest(t, 96, 64), 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	image := MessageImage{
+		Path:      "shot.png",
+		MediaType: "image/png",
+		Detail:    imageDetailOriginal,
+	}
+	session := NewSession(dir, "openai-codex", "gpt-5", "", "default")
+	baseline := session.ApproxChars()
+	session.AddMessage(Message{
+		Role:   "user",
+		Images: []MessageImage{image},
+	})
+	expected := len(image.Path) + len(image.MediaType) + len(image.Detail) + 3*2*codexApproxBytesPerToken
+	if got := session.ApproxChars() - baseline; got != expected {
+		t.Fatalf("session original image char cost = %d, want %d", got, expected)
 	}
 }
 

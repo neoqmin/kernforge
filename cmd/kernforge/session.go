@@ -212,7 +212,7 @@ func (s *Session) ApproxChars() int {
 	for _, msg := range s.Messages {
 		total += len(msg.Text) + len(msg.ReasoningContent) + len(msg.ReasoningEncryptedContent)
 		for _, image := range msg.Images {
-			total += messageImageApproxChars(image)
+			total += messageImageApproxChars(s.WorkingDir, image)
 		}
 		for _, call := range msg.WebSearchCalls {
 			total += len(call.Status)
