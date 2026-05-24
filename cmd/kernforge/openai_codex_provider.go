@@ -918,8 +918,11 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				items = append(items, item)
 			}
 			for _, tc := range msg.ToolCalls {
-				callID := firstNonEmptyTrimmed(tc.ID, tc.Name)
-				if callID == "" || strings.TrimSpace(tc.Name) == "" {
+				callID := openAICodexToolCallHistoryCallID(tc)
+				if callID == "" && strings.TrimSpace(tc.Name) != "tool_search" {
+					continue
+				}
+				if strings.TrimSpace(tc.Name) == "" {
 					continue
 				}
 				items = append(items, openAICodexToolCallInputItem(callID, tc))
@@ -1228,7 +1231,7 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 		switch msg.Role {
 		case "assistant":
 			for _, call := range msg.ToolCalls {
-				callID := firstNonEmptyTrimmed(call.ID, call.Name)
+				callID := openAICodexToolCallHistoryCallID(call)
 				if callID != "" {
 					expected[callID] = call
 					expectedSets.markToolCall(callID, call)
@@ -1295,7 +1298,7 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 			continue
 		}
 		for _, call := range msg.ToolCalls {
-			callID := firstNonEmptyTrimmed(call.ID, call.Name)
+			callID := openAICodexToolCallHistoryCallID(call)
 			if callID == "" || outputs[callID] {
 				continue
 			}
@@ -1340,7 +1343,7 @@ func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
 	if name == "tool_search" {
 		return map[string]any{
 			"type":      "tool_search_call",
-			"call_id":   callID,
+			"call_id":   openAICodexNullableCallID(callID),
 			"execution": "client",
 			"arguments": openAICodexToolSearchArguments(call.Arguments),
 		}
@@ -1355,6 +1358,13 @@ func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
 		item["namespace"] = namespace
 	}
 	return item
+}
+
+func openAICodexToolCallHistoryCallID(call ToolCall) string {
+	if strings.TrimSpace(call.Name) == "tool_search" {
+		return strings.TrimSpace(call.ID)
+	}
+	return firstNonEmptyTrimmed(call.ID, call.Name)
 }
 
 func openAICodexFunctionCallWireName(call ToolCall) string {
@@ -2270,7 +2280,10 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...), LocalShellCalls: append([]MessageLocalShellCall(nil), localShellCalls...), CodexCompactionItems: append([]MessageCodexCompactionItem(nil), compactionItems...), CodexToolOutputItems: append([]MessageCodexToolOutputItem(nil), codexToolOutputItems...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
-		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
+		if item == nil || strings.TrimSpace(item.Name) == "" {
+			continue
+		}
+		if strings.TrimSpace(item.ID) == "" && strings.TrimSpace(item.Name) != "tool_search" {
 			continue
 		}
 		out.ToolCalls = append(out.ToolCalls, ToolCall{
@@ -2360,7 +2373,10 @@ func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItem
 	}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
-		if item != nil && strings.TrimSpace(item.ID) != "" && strings.TrimSpace(item.Name) != "" {
+		if item == nil || strings.TrimSpace(item.Name) == "" {
+			continue
+		}
+		if strings.TrimSpace(item.ID) != "" || strings.TrimSpace(item.Name) == "tool_search" {
 			return true
 		}
 	}
@@ -2928,13 +2944,16 @@ func openAICodexToolCallFromOutputItem(item openAICodexOutputItem) (ToolCall, bo
 	if !openAICodexOutputItemIsToolCall(item) {
 		return ToolCall{}, false
 	}
-	callID := firstNonEmptyTrimmed(item.CallID, item.ID)
-	if callID == "" {
-		return ToolCall{}, false
-	}
 	name := openAICodexOutputItemToolName(item)
 	if name == "" {
 		return ToolCall{}, false
+	}
+	callID := strings.TrimSpace(item.CallID)
+	if name != "tool_search" {
+		callID = firstNonEmptyTrimmed(item.CallID, item.ID)
+		if callID == "" {
+			return ToolCall{}, false
+		}
 	}
 	return ToolCall{
 		ID:        callID,
@@ -2953,7 +2972,10 @@ func openAICodexPopulateStreamToolCall(target *openAICodexStreamToolCall, item o
 	target.Name = firstNonEmptyTrimmed(name, target.Name)
 	target.Namespace = firstNonEmptyTrimmed(item.Namespace, target.Namespace)
 	target.Type = firstNonEmptyTrimmed(item.Type, target.Type)
-	if strings.TrimSpace(target.ID) == "" || strings.TrimSpace(target.Name) == "" {
+	if strings.TrimSpace(target.Name) == "" {
+		return false
+	}
+	if strings.TrimSpace(target.ID) == "" && strings.TrimSpace(target.Name) != "tool_search" {
 		return false
 	}
 	if openAICodexOutputItemHasArguments(item) {
