@@ -101,6 +101,40 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testing.T) {
+	body, err := buildOpenAICodexRequestBodyWithClientMetadata(ChatRequest{
+		Model:    "gpt-5.5",
+		ThreadID: "thread-456",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	}, map[string]string{
+		"x-codex-installation-id": "install-123",
+		"empty":                   "  ",
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBodyWithClientMetadata: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["prompt_cache_key"] != "thread-456" {
+		t.Fatalf("expected prompt_cache_key to use thread id, got %#v", payload["prompt_cache_key"])
+	}
+	metadata, ok := payload["client_metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected client_metadata object, got %#v", payload["client_metadata"])
+	}
+	if metadata["x-codex-installation-id"] != "install-123" {
+		t.Fatalf("expected installation id metadata, got %#v", metadata)
+	}
+	if _, ok := metadata["empty"]; ok {
+		t.Fatalf("empty metadata values should be dropped: %#v", metadata)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -1033,6 +1067,24 @@ func mapsEqualForTest(got map[string]any, want map[string]any) bool {
 	return true
 }
 
+func TestResolveOpenAICodexInstallationIDPersistsValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "installation_id")
+	first, err := resolveOpenAICodexInstallationIDAtPath(path)
+	if err != nil {
+		t.Fatalf("resolveOpenAICodexInstallationIDAtPath first: %v", err)
+	}
+	if strings.TrimSpace(first) == "" {
+		t.Fatalf("expected generated installation id")
+	}
+	second, err := resolveOpenAICodexInstallationIDAtPath(path)
+	if err != nil {
+		t.Fatalf("resolveOpenAICodexInstallationIDAtPath second: %v", err)
+	}
+	if second != first {
+		t.Fatalf("expected persisted installation id %q, got %q", first, second)
+	}
+}
+
 func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1052,6 +1104,17 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 				t.Fatalf("unexpected x-client-request-id: %q", got)
 			}
 			assertTurnMetadataHeader(t, r, "turn-abc")
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			if payload["prompt_cache_key"] != "thread-456" {
+				t.Fatalf("expected prompt_cache_key to use thread id, got %#v", payload["prompt_cache_key"])
+			}
+			metadata, ok := payload["client_metadata"].(map[string]any)
+			if !ok || strings.TrimSpace(fmt.Sprint(metadata["x-codex-installation-id"])) == "" {
+				t.Fatalf("expected x-codex-installation-id metadata, got %#v", payload["client_metadata"])
+			}
 			w.Header().Set(codexTurnStateHeader, "codex-sticky")
 		case 2:
 			if got := r.Header.Get(codexTurnStateHeader); got != "codex-sticky" {
