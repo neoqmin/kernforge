@@ -618,6 +618,12 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 			}
 		case "mcp__resource__fake":
 			foundResource = true
+			if !tool.(readOnlyToolCallSupport).ReadOnlyToolCall() {
+				t.Fatalf("expected synthetic resource tool to be read-only")
+			}
+			if !tool.(parallelToolCallSupport).SupportsParallelToolCalls() {
+				t.Fatalf("expected synthetic resource tool to support parallel tool calls")
+			}
 			out, err := tool.Execute(context.Background(), map[string]any{"uri": "project"})
 			if err != nil {
 				t.Fatalf("Execute resource: %v", err)
@@ -627,6 +633,12 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 			}
 		case "mcp__prompt__fake":
 			foundPrompt = true
+			if !tool.(readOnlyToolCallSupport).ReadOnlyToolCall() {
+				t.Fatalf("expected synthetic prompt tool to be read-only")
+			}
+			if !tool.(parallelToolCallSupport).SupportsParallelToolCalls() {
+				t.Fatalf("expected synthetic prompt tool to support parallel tool calls")
+			}
 			out, err := tool.Execute(context.Background(), map[string]any{
 				"name": "summarize",
 				"arguments": map[string]any{
