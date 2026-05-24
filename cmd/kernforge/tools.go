@@ -2663,6 +2663,22 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		}
 		return ToolExecutionResult{}, err
 	}
+	start := startArg
+	end := endArg
+	if start < 1 {
+		start = 1
+	}
+	if end > 0 && end < start {
+		_, normalizedEnd, err := readRenderedFileRange(ctx, path, start, end)
+		if err != nil {
+			return ToolExecutionResult{}, err
+		}
+		display, meta := buildInvalidReadFileRangeResult(displayRoot, path, startArg, endArg, normalizedEnd)
+		return ToolExecutionResult{
+			DisplayText: display,
+			Meta:        meta,
+		}, nil
+	}
 	cacheKey := readFileCacheKey(path, startArg, endArg)
 	if cached, ok := t.lookupCachedRead(cacheKey, info); ok {
 		normalizedStart, normalizedEnd := normalizeRenderedRangeBounds(cached, startArg, endArg)
@@ -2677,11 +2693,6 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			DisplayText: "NOTE: returning content from a cached overlapping read_file range.\n" + covered,
 			Meta:        buildReadFileMeta(displayRoot, path, startArg, endArg, normalizedStart, normalizedEnd, covered, "covered"),
 		}, nil
-	}
-	start := startArg
-	end := endArg
-	if start < 1 {
-		start = 1
 	}
 	if overlap, ok := t.lookupPartialOverlap(path, start, end, info); ok {
 		renderedLines, normalizedEnd, readErr := readRenderedRangeWithCachedOverlap(ctx, path, start, end, overlap)
@@ -2762,6 +2773,30 @@ func buildOutOfRangeReadFileResult(root string, path string, requestedStart int,
 		"file_line_count": lineCount,
 		"cache_mode":      "out_of_range",
 		"error_kind":      "range_out_of_bounds",
+	}
+	return strings.Join(lines, "\n"), meta
+}
+
+func buildInvalidReadFileRangeResult(root string, path string, requestedStart int, requestedEnd int, lineCount int) (string, map[string]any) {
+	resolvedPath := relOrAbs(root, path)
+	lines := []string{
+		"read_file received an invalid line range: " + resolvedPath,
+		fmt.Sprintf("Requested start_line: %d", requestedStart),
+		fmt.Sprintf("Requested end_line: %d", requestedEnd),
+		fmt.Sprintf("File line count: %d", lineCount),
+		"Use end_line greater than or equal to start_line, or omit end_line to read through the file.",
+	}
+	meta := map[string]any{
+		"path":            resolvedPath,
+		"requested_path":  resolvedPath,
+		"start_line":      requestedStart,
+		"end_line":        requestedEnd,
+		"actual_start":    0,
+		"actual_end":      lineCount,
+		"line_count":      0,
+		"file_line_count": lineCount,
+		"cache_mode":      "invalid_range",
+		"error_kind":      "invalid_line_range",
 	}
 	return strings.Join(lines, "\n"), meta
 }
@@ -3037,6 +3072,7 @@ func readRenderedFileRange(ctx context.Context, path string, start, end int) ([]
 	if start < 1 {
 		start = 1
 	}
+	invalidRequestedRange := end > 0 && end < start
 
 	file, err := os.Open(path)
 	if err != nil {
@@ -3066,6 +3102,9 @@ func readRenderedFileRange(ctx context.Context, path string, start, end int) ([]
 
 		lineNumber++
 		lastLine = lineNumber
+		if invalidRequestedRange {
+			continue
+		}
 		if lineNumber < start {
 			continue
 		}
@@ -3077,7 +3116,7 @@ func readRenderedFileRange(ctx context.Context, path string, start, end int) ([]
 	if err := scanner.Err(); err != nil {
 		return nil, 0, err
 	}
-	if end == 0 || end > lastLine {
+	if invalidRequestedRange || end == 0 || end > lastLine {
 		end = lastLine
 	}
 	return renderedLines, end, nil
