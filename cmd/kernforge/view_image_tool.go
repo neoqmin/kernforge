@@ -19,6 +19,10 @@ func NewViewImageTool(ws Workspace) ViewImageTool {
 	return ViewImageTool{ws: ws}
 }
 
+func (t ViewImageTool) SupportsParallelToolCalls() bool {
+	return true
+}
+
 func (t ViewImageTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "view_image",

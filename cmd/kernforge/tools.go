@@ -2463,6 +2463,14 @@ var errListFilesMaxEntriesReached = errors.New("max entries reached")
 
 func NewListFilesTool(ws Workspace) ListFilesTool { return ListFilesTool{ws: ws} }
 
+func (t ListFilesTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t ListFilesTool) SupportsParallelToolCalls() bool {
+	return true
+}
+
 func (t ListFilesTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "list_files",
@@ -2679,6 +2687,14 @@ func NewReadFileTool(ws Workspace) *ReadFileTool {
 		cache:    make(map[string]readFileCacheEntry),
 		maxCache: ws.defaultReadCacheEntries(),
 	}
+}
+
+func (t *ReadFileTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t *ReadFileTool) SupportsParallelToolCalls() bool {
+	return true
 }
 
 func (t *ReadFileTool) sharedToolHintsMaxReadSpans() int {
@@ -3335,6 +3351,14 @@ func readFileMaxInt(a, b int) int {
 type GrepTool struct{ ws Workspace }
 
 func NewGrepTool(ws Workspace) *GrepTool { return &GrepTool{ws: ws} }
+
+func (t *GrepTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t *GrepTool) SupportsParallelToolCalls() bool {
+	return true
+}
 
 func (t *GrepTool) sharedToolHintsMaxReadSpans() int {
 	return t.ws.defaultReadHintSpans()
@@ -6293,6 +6317,14 @@ type GitStatusTool struct{ ws Workspace }
 
 func NewGitStatusTool(ws Workspace) GitStatusTool { return GitStatusTool{ws: ws} }
 
+func (t GitStatusTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t GitStatusTool) SupportsParallelToolCalls() bool {
+	return true
+}
+
 type GitAddTool struct{ ws Workspace }
 
 func NewGitAddTool(ws Workspace) GitAddTool { return GitAddTool{ws: ws} }
@@ -6783,6 +6815,14 @@ func (t GitStatusTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 type GitDiffTool struct{ ws Workspace }
 
 func NewGitDiffTool(ws Workspace) GitDiffTool { return GitDiffTool{ws: ws} }
+
+func (t GitDiffTool) ReadOnlyToolCall() bool {
+	return true
+}
+
+func (t GitDiffTool) SupportsParallelToolCalls() bool {
+	return true
+}
 
 func (t GitDiffTool) Definition() ToolDefinition {
 	return ToolDefinition{
