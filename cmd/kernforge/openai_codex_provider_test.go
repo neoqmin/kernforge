@@ -1403,6 +1403,24 @@ func TestReadOpenAICodexStreamAcceptsLargeSSEDataLine(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamParsesMultilineSSEDataEvent(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta",`,
+		`data: "delta":"multi line"}`,
+		"",
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "multi line" {
+		t.Fatalf("expected multiline SSE event text, got %q", resp.Message.Text)
+	}
+}
+
 func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
