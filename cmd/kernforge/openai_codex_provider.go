@@ -417,6 +417,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		"tools":               []map[string]any{},
 		"tool_choice":         "auto",
 		"parallel_tool_calls": openAICodexSupportsParallelToolCalls(model),
+		"reasoning":           nil,
 	}
 	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
 		payload["prompt_cache_key"] = threadID
