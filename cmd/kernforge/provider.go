@@ -468,6 +468,9 @@ func toolOutputForResponses(msg Message) any {
 	if len(items) == 0 {
 		return msg.Text
 	}
+	if len(items) == 1 && items[0].Type == "input_text" {
+		return items[0].Text
+	}
 	out := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		switch strings.TrimSpace(item.Type) {

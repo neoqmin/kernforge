@@ -553,6 +553,53 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContentItems(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyCollapsesSingleTextToolContentItem(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "run tool"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_text", Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_text",
+				ToolName:   "read_file",
+				Text:       "fallback text",
+				ToolContentItems: []ToolContentItem{{
+					Type: "input_text",
+					Text: "file contents",
+				}},
+			},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read file",
+			InputSchema: map[string]any{
+				"type": "object",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	for _, raw := range input {
+		item := raw.(map[string]any)
+		if item["type"] != "function_call_output" {
+			continue
+		}
+		if item["output"] != "file contents" {
+			t.Fatalf("expected single text content item to collapse to string output, got %#v in %s", item["output"], body)
+		}
+		return
+	}
+	t.Fatalf("missing function_call_output in %s", body)
+}
+
 func assertCodexLocalImageContent(t *testing.T, content []any, openIndex int) map[string]any {
 	t.Helper()
 	if openIndex < 0 || openIndex+2 >= len(content) {
