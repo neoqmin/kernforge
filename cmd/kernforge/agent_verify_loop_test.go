@@ -15176,6 +15176,10 @@ func TestStripUnsupportedOwnerNodeIDFromToolCalls(t *testing.T) {
 			Arguments: `{"pattern":"package","owner_node_id":"plan-02"}`,
 		},
 		{
+			Name:      "list_files",
+			Arguments: `{"path":".","owner_node_id":"plan-02"}`,
+		},
+		{
 			Name:      "run_shell",
 			Arguments: `{"command":"go test ./...","owner_node_id":"plan-02"}`,
 		},
@@ -15192,11 +15196,14 @@ func TestStripUnsupportedOwnerNodeIDFromToolCalls(t *testing.T) {
 	if got := stringValue(toolCallArgumentsMap(updated[1]), "owner_node_id"); got != "" {
 		t.Fatalf("expected grep owner_node_id to be stripped, got %#v", updated[1])
 	}
-	if got := stringValue(toolCallArgumentsMap(updated[2]), "owner_node_id"); got != "plan-02" {
-		t.Fatalf("expected run_shell owner_node_id to be preserved, got %#v", updated[2])
+	if got := stringValue(toolCallArgumentsMap(updated[2]), "owner_node_id"); got != "" {
+		t.Fatalf("expected list_files owner_node_id to be stripped, got %#v", updated[2])
 	}
-	if got := stringValue(toolCallArgumentsMap(updated[3]), "owner_node_id"); got != "domain-owned-value" {
-		t.Fatalf("expected custom tool owner_node_id to be preserved, got %#v", updated[3])
+	if got := stringValue(toolCallArgumentsMap(updated[3]), "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected run_shell owner_node_id to be preserved, got %#v", updated[3])
+	}
+	if got := stringValue(toolCallArgumentsMap(updated[4]), "owner_node_id"); got != "domain-owned-value" {
+		t.Fatalf("expected custom tool owner_node_id to be preserved, got %#v", updated[4])
 	}
 }
 
@@ -15268,5 +15275,76 @@ func TestAgentStripsUnsupportedOwnerNodeIDFromReadOnlyToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(toolResult.Text, "package main") {
 		t.Fatalf("expected read_file result content, got %q", toolResult.Text)
+	}
+}
+
+func TestAgentStripsUnsupportedOwnerNodeIDFromListFilesToolCall(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			return EditRoutingResult{}, fmt.Errorf("%w: list_files should not carry owner_node_id", ErrEditTargetMismatch)
+		}
+		return ws.resolveEditFallback(req)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{
+				"path":          ".",
+				"owner_node_id": "plan-02",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "listing completed.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "list files")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "listing completed") {
+		t.Fatalf("expected final reply after list_files, got %q", reply)
+	}
+	if len(session.Messages) < 3 {
+		t.Fatalf("expected user, assistant tool call, and tool result messages, got %#v", session.Messages)
+	}
+	assistantCall := session.Messages[1]
+	if len(assistantCall.ToolCalls) != 1 {
+		t.Fatalf("expected one assistant tool call, got %#v", assistantCall.ToolCalls)
+	}
+	if got := stringValue(toolCallArgumentsMap(assistantCall.ToolCalls[0]), "owner_node_id"); got != "" {
+		t.Fatalf("expected assistant list_files call to be sanitized before execution, got %#v", assistantCall.ToolCalls[0])
+	}
+	toolResult := session.Messages[2]
+	if toolResult.IsError {
+		t.Fatalf("expected list_files to execute without ownership mismatch, got %#v", toolResult)
+	}
+	if !strings.Contains(toolResult.Text, "main.go") {
+		t.Fatalf("expected list_files result content, got %q", toolResult.Text)
 	}
 }
