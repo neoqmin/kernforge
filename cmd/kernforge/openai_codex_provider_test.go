@@ -1716,6 +1716,25 @@ func TestReadOpenAICodexStreamAccumulatesReasoningDeltas(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamPreservesReasoningSummarySectionBreaks(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"reasoning-1","summary":[{"type":"summary_text","text":""}]}}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"first section"}`,
+		`data: {"type":"response.reasoning_summary_part.added","summary_index":1}`,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"second section"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.ReasoningContent != "first section\nsecond section" {
+		t.Fatalf("expected reasoning section break to be preserved, got %q", resp.Message.ReasoningContent)
+	}
+}
+
 func TestReadOpenAICodexStreamUsesDoneReasoningWhenNoDeltas(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","summary":[{"type":"summary_text","text":"Consider inputs"}],"content":[{"type":"reasoning_text","text":"Detailed trace"}]}}`,
