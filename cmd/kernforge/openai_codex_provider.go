@@ -616,6 +616,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				continue
 			}
 			items = append(items, map[string]any{
+				"type": "message",
 				"role": "developer",
 				"content": []map[string]any{{
 					"type": "input_text",
@@ -631,12 +632,14 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				continue
 			}
 			items = append(items, map[string]any{
+				"type":    "message",
 				"role":    "user",
 				"content": content,
 			})
 		case "assistant":
 			if strings.TrimSpace(msg.Text) != "" {
 				item := map[string]any{
+					"type": "message",
 					"role": "assistant",
 					"content": []map[string]any{{
 						"type": "output_text",
