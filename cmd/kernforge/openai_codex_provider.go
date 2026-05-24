@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -456,6 +457,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 		}
 		tools = append(tools, item)
 	}
+	tools = mergeOpenAICodexNamespaceTools(tools)
 	payload["tools"] = tools
 	return json.Marshal(payload)
 }
@@ -631,6 +633,23 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 			"type": "web_search",
 		}
 	}
+	if namespace, childName, ok := splitOpenAICodexMCPToolName(name); ok {
+		description := strings.TrimSpace(tool.Description)
+		return map[string]any{
+			"type":        "namespace",
+			"name":        namespace,
+			"description": openAICodexNamespaceDescription(namespace, ""),
+			"tools": []any{
+				map[string]any{
+					"type":        "function",
+					"name":        childName,
+					"description": description,
+					"strict":      false,
+					"parameters":  openAICodexToolParameters(tool.InputSchema),
+				},
+			},
+		}
+	}
 	item := map[string]any{
 		"type":        "function",
 		"name":        name,
@@ -639,6 +658,99 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 		"parameters":  openAICodexToolParameters(tool.InputSchema),
 	}
 	return item
+}
+
+func splitOpenAICodexMCPToolName(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	if !strings.HasPrefix(name, "mcp__") {
+		return "", "", false
+	}
+	index := strings.LastIndex(name, "__")
+	if index <= len("mcp__") || index+len("__") >= len(name) {
+		return "", "", false
+	}
+	namespace := name[:index+len("__")]
+	childName := name[index+len("__"):]
+	if namespace == "" || childName == "" {
+		return "", "", false
+	}
+	return namespace, childName, true
+}
+
+func openAICodexNamespaceDescription(namespace string, description string) string {
+	description = strings.TrimSpace(description)
+	if description != "" {
+		return description
+	}
+	return fmt.Sprintf("Tools in the %s namespace.", strings.TrimSpace(namespace))
+}
+
+func mergeOpenAICodexNamespaceTools(tools []map[string]any) []map[string]any {
+	if len(tools) == 0 {
+		return tools
+	}
+	merged := make([]map[string]any, 0, len(tools))
+	namespaceIndices := map[string]int{}
+	for _, tool := range tools {
+		if strings.TrimSpace(stringsValueFromAny(tool["type"])) != "namespace" {
+			merged = append(merged, tool)
+			continue
+		}
+		namespace := strings.TrimSpace(stringsValueFromAny(tool["name"]))
+		if namespace == "" {
+			merged = append(merged, tool)
+			continue
+		}
+		existingIndex, ok := namespaceIndices[namespace]
+		if !ok {
+			namespaceIndices[namespace] = len(merged)
+			merged = append(merged, tool)
+			continue
+		}
+		existing := merged[existingIndex]
+		if strings.TrimSpace(stringsValueFromAny(existing["description"])) == "" {
+			if description := strings.TrimSpace(stringsValueFromAny(tool["description"])); description != "" {
+				existing["description"] = description
+			}
+		}
+		existing["tools"] = appendOpenAICodexNamespaceToolItems(existing["tools"], tool["tools"])
+	}
+	for _, tool := range merged {
+		if strings.TrimSpace(stringsValueFromAny(tool["type"])) != "namespace" {
+			continue
+		}
+		if strings.TrimSpace(stringsValueFromAny(tool["description"])) == "" {
+			if namespace := strings.TrimSpace(stringsValueFromAny(tool["name"])); namespace != "" {
+				tool["description"] = openAICodexNamespaceDescription(namespace, "")
+			}
+		}
+		sortOpenAICodexNamespaceTools(tool)
+	}
+	return merged
+}
+
+func appendOpenAICodexNamespaceToolItems(existing any, incoming any) []any {
+	items := make([]any, 0)
+	if current, ok := existing.([]any); ok {
+		items = append(items, current...)
+	}
+	if next, ok := incoming.([]any); ok {
+		items = append(items, next...)
+	}
+	return items
+}
+
+func sortOpenAICodexNamespaceTools(namespace map[string]any) {
+	items, ok := namespace["tools"].([]any)
+	if !ok || len(items) < 2 {
+		return
+	}
+	sort.SliceStable(items, func(i int, j int) bool {
+		left, _ := items[i].(map[string]any)
+		right, _ := items[j].(map[string]any)
+		return strings.TrimSpace(stringsValueFromAny(left["name"])) < strings.TrimSpace(stringsValueFromAny(right["name"]))
+	})
+	namespace["tools"] = items
 }
 
 func openAICodexToolParameters(schema map[string]any) map[string]any {

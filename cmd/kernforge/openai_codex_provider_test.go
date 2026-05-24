@@ -362,6 +362,82 @@ func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyUsesNamespaceForMCPTools(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "use mcp"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "mcp__web_research__search_web",
+				Description: "[MCP:web_research] Search web",
+				InputSchema: map[string]any{
+					"type": "object",
+				},
+			},
+			{
+				Name:        "read_file",
+				Description: "Read file",
+				InputSchema: map[string]any{
+					"type": "object",
+				},
+			},
+			{
+				Name:        "mcp__web_research__fetch_url",
+				Description: "[MCP:web_research] Fetch URL",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"url": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected merged namespace plus ordinary tool, got %#v in %s", payload["tools"], body)
+	}
+	namespace := tools[0].(map[string]any)
+	if namespace["type"] != "namespace" || namespace["name"] != "mcp__web_research__" {
+		t.Fatalf("expected MCP tools to use Responses namespace shape, got %#v", namespace)
+	}
+	if namespace["description"] != "Tools in the mcp__web_research__ namespace." {
+		t.Fatalf("expected default namespace description, got %#v", namespace["description"])
+	}
+	namespaceTools, ok := namespace["tools"].([]any)
+	if !ok || len(namespaceTools) != 2 {
+		t.Fatalf("expected two child namespace tools, got %#v", namespace["tools"])
+	}
+	fetchURL := namespaceTools[0].(map[string]any)
+	searchWeb := namespaceTools[1].(map[string]any)
+	if fetchURL["type"] != "function" || fetchURL["name"] != "fetch_url" {
+		t.Fatalf("expected namespace child tools to be sorted by child name, got %#v", namespaceTools)
+	}
+	if searchWeb["type"] != "function" || searchWeb["name"] != "search_web" {
+		t.Fatalf("expected namespace child name without namespace prefix, got %#v", searchWeb)
+	}
+	if strict, ok := searchWeb["strict"].(bool); !ok || strict {
+		t.Fatalf("expected namespace function strict=false to match Codex Responses shape, got %#v", searchWeb["strict"])
+	}
+	if _, exists := namespace["parameters"]; exists {
+		t.Fatalf("namespace wrapper must not expose function parameters, got %#v", namespace)
+	}
+	readFile := tools[1].(map[string]any)
+	if readFile["type"] != "function" || readFile["name"] != "read_file" {
+		t.Fatalf("expected ordinary tools to remain functions, got %#v", readFile)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyUsesNativeToolSearchTool(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
