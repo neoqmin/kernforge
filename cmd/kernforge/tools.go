@@ -3318,12 +3318,30 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 	if strings.TrimSpace(ownerNodeID) != "" {
 		displayRoot = firstNonBlankString(route.DisplayRoot, route.WorktreeRoot, t.ws.Root)
 	}
-	re, err := regexp.Compile(stringValue(args, "pattern"))
-	if err != nil {
-		return ToolExecutionResult{}, err
-	}
+	pattern := stringValue(args, "pattern")
 	glob := stringValue(args, "glob")
 	maxResults := intValue(args, "max_results", 100)
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		display, meta := buildInvalidGrepPatternResult(displayRoot, root, pattern, glob, maxResults, err)
+		return ToolExecutionResult{
+			DisplayText: display,
+			Meta:        meta,
+		}, err
+	}
+	if _, err := os.Stat(root); err != nil {
+		if os.IsNotExist(err) {
+			display, meta := buildMissingGrepPathResult(displayRoot, root, re.String(), glob, maxResults)
+			return ToolExecutionResult{
+				DisplayText: display,
+				Meta:        meta,
+			}, fmt.Errorf("grep target does not exist: %s", relOrAbs(displayRoot, root))
+		}
+		return ToolExecutionResult{}, err
+	}
 	var matches []string
 	matchedFiles := map[string]struct{}{}
 	stop := fmt.Errorf("max results reached")
@@ -3413,6 +3431,71 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 			"matched_paths": paths,
 		},
 	}, nil
+}
+
+func buildInvalidGrepPatternResult(displayRoot string, path string, pattern string, glob string, maxResults int, patternErr error) (string, map[string]any) {
+	resolvedPath := relOrAbs(displayRoot, path)
+	detail := strings.TrimSpace(fmt.Sprint(patternErr))
+	lines := []string{
+		"grep received an invalid regular expression: " + pattern,
+	}
+	if detail != "" {
+		lines = append(lines, "Reason: "+detail)
+	}
+	lines = append(lines,
+		"",
+		"Revise the pattern and retry grep. Escape regex metacharacters when you intended a literal search.",
+	)
+	return strings.Join(lines, "\n"), map[string]any{
+		"path":          resolvedPath,
+		"pattern":       pattern,
+		"glob":          glob,
+		"match_count":   0,
+		"file_count":    0,
+		"max_results":   maxResults,
+		"truncated":     false,
+		"matched_paths": []string{},
+		"error_kind":    "invalid_pattern",
+	}
+}
+
+func buildMissingGrepPathResult(displayRoot string, path string, pattern string, glob string, maxResults int) (string, map[string]any) {
+	resolvedPath := relOrAbs(displayRoot, path)
+	candidatePaths, candidatesTruncated := findMissingReadFileCandidates(displayRoot, path, 16, 5000)
+	parentExists := false
+	if parent := strings.TrimSpace(filepath.Dir(path)); parent != "" && parent != "." {
+		if info, err := os.Stat(parent); err == nil && info.IsDir() {
+			parentExists = true
+		}
+	}
+	lines := []string{
+		"grep target does not exist: " + resolvedPath,
+		"",
+		"The requested search root is missing. Confirm the path with list_files or choose one of the candidate paths below.",
+	}
+	if len(candidatePaths) > 0 {
+		lines = append(lines, "", "Candidate paths with the same filename:")
+		for _, candidate := range candidatePaths {
+			lines = append(lines, "- "+candidate)
+		}
+		if candidatesTruncated {
+			lines = append(lines, "- ... (more candidates omitted)")
+		}
+	}
+	return strings.Join(lines, "\n"), map[string]any{
+		"path":                       resolvedPath,
+		"pattern":                    pattern,
+		"glob":                       glob,
+		"match_count":                0,
+		"file_count":                 0,
+		"max_results":                maxResults,
+		"truncated":                  false,
+		"matched_paths":              []string{},
+		"error_kind":                 "missing_path",
+		"parent_exists":              parentExists,
+		"candidate_paths":            candidatePaths,
+		"candidate_search_truncated": candidatesTruncated,
+	}
 }
 
 func (t GrepTool) grepReadCacheHint(path string, lineNo int, info fs.FileInfo) string {
