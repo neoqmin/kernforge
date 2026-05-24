@@ -150,7 +150,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("accept", "text/event-stream")
-	httpReq.Header.Set("authorization", "Bearer "+accessToken)
+	applyOpenAICodexAuthHeaders(httpReq.Header, accessToken)
 	httpReq.Header.Set("originator", "codex_cli_rs")
 	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
 	httpReq.Header.Set("session-id", sessionID)
@@ -208,7 +208,7 @@ func FetchOpenAICodexModels(ctx context.Context, baseURL string, tokenSource cod
 		return nil, err
 	}
 	httpReq.Header.Set("accept", "application/json")
-	httpReq.Header.Set("authorization", "Bearer "+accessToken)
+	applyOpenAICodexAuthHeaders(httpReq.Header, accessToken)
 	httpReq.Header.Set("originator", "codex_cli_rs")
 	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
 
@@ -225,6 +225,13 @@ func FetchOpenAICodexModels(ctx context.Context, baseURL string, tokenSource cod
 		return nil, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, "", resp.Header)
 	}
 	return parseCodexCLIModelsJSON(data)
+}
+
+func applyOpenAICodexAuthHeaders(headers http.Header, accessToken string) {
+	headers.Set("authorization", "Bearer "+accessToken)
+	if accountID := codexOAuthJWTChatGPTAccountID(accessToken); accountID != "" {
+		headers.Set("chatgpt-account-id", accountID)
+	}
 }
 
 func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {

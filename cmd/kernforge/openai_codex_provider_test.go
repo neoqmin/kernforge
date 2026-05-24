@@ -733,6 +733,7 @@ func TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget(t *testing.
 }
 
 func TestFetchOpenAICodexModelsUsesOAuthBackend(t *testing.T) {
+	accessToken := testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "account-123")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -740,15 +741,18 @@ func TestFetchOpenAICodexModelsUsesOAuthBackend(t *testing.T) {
 		if got := r.URL.Query().Get("client_version"); got != "1.0.0" {
 			t.Fatalf("unexpected client_version: %q", got)
 		}
-		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+		if got := r.Header.Get("authorization"); got != "Bearer "+accessToken {
 			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if got := r.Header.Get("chatgpt-account-id"); got != "account-123" {
+			t.Fatalf("unexpected chatgpt-account-id header: %q", got)
 		}
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list","supports_image_detail_original":true},{"slug":"hidden","display_name":"Hidden","supported_in_api":true,"visibility":"hidden"}]}`))
 	}))
 	defer server.Close()
 
-	models, err := FetchOpenAICodexModels(context.Background(), server.URL, staticCodexTokenSource{token: "test-token"}, server.Client())
+	models, err := FetchOpenAICodexModels(context.Background(), server.URL, staticCodexTokenSource{token: accessToken}, server.Client())
 	if err != nil {
 		t.Fatalf("FetchOpenAICodexModels: %v", err)
 	}
@@ -908,6 +912,7 @@ func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
 }
 
 func TestOpenAICodexClientGenerateImagePostsTypedRequest(t *testing.T) {
+	accessToken := testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "account-123")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/images/generations" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -915,8 +920,11 @@ func TestOpenAICodexClientGenerateImagePostsTypedRequest(t *testing.T) {
 		if got := r.Method; got != http.MethodPost {
 			t.Fatalf("unexpected method: %s", got)
 		}
-		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+		if got := r.Header.Get("authorization"); got != "Bearer "+accessToken {
 			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if got := r.Header.Get("chatgpt-account-id"); got != "account-123" {
+			t.Fatalf("unexpected chatgpt-account-id header: %q", got)
 		}
 		if got := r.Header.Get("x-extra"); got != "present" {
 			t.Fatalf("missing extra header, got %q", got)
@@ -941,7 +949,7 @@ func TestOpenAICodexClientGenerateImagePostsTypedRequest(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAICodexClient(server.URL)
-	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	client.tokenSource = staticCodexTokenSource{token: accessToken}
 	headers := http.Header{"x-extra": []string{"present"}}
 	resp, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
 		Prompt:     "a red fox in a field",
@@ -1128,6 +1136,7 @@ func TestResolveOpenAICodexInstallationIDPersistsValue(t *testing.T) {
 }
 
 func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
+	accessToken := testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "account-123")
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
@@ -1144,6 +1153,9 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 			}
 			if got := r.Header.Get("x-client-request-id"); got != "thread-456" {
 				t.Fatalf("unexpected x-client-request-id: %q", got)
+			}
+			if got := r.Header.Get("chatgpt-account-id"); got != "account-123" {
+				t.Fatalf("unexpected chatgpt-account-id: %q", got)
 			}
 			assertTurnMetadataHeader(t, r, "turn-abc")
 			var payload map[string]any
@@ -1173,7 +1185,7 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAICodexClient(server.URL)
-	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	client.tokenSource = staticCodexTokenSource{token: accessToken}
 	state := &ProviderTurnState{}
 	for i := 0; i < 2; i++ {
 		_, err := client.Complete(context.Background(), ChatRequest{

@@ -95,7 +95,7 @@ func (c *OpenAICodexClient) postImageRequest(ctx context.Context, path string, r
 	copyHTTPHeaders(httpReq.Header, extraHeaders)
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("accept", "application/json")
-	httpReq.Header.Set("authorization", "Bearer "+accessToken)
+	applyOpenAICodexAuthHeaders(httpReq.Header, accessToken)
 	httpReq.Header.Set("originator", "codex_cli_rs")
 	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
 
