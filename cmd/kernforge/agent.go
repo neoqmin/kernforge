@@ -2647,6 +2647,9 @@ func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, r
 	if len(resp.Message.ToolCalls) > 0 || strings.TrimSpace(resp.Message.Text) == "" {
 		return false
 	}
+	if assistantTextLooksLikeInProgress(resp.Message.Text) {
+		return false
+	}
 	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
@@ -2655,6 +2658,9 @@ func shouldDeferEndTurnFollowUpForFinalLookingReply(resp ChatResponse) bool {
 		return false
 	}
 	if len(resp.Message.ToolCalls) > 0 {
+		return false
+	}
+	if assistantTextLooksLikeInProgress(resp.Message.Text) {
 		return false
 	}
 	return assistantTextLooksLikeCompletionSummary(resp.Message.Text)
@@ -2668,6 +2674,9 @@ func (a *Agent) shouldDeferEndTurnFollowUpForPostWorkReply(request string, resp 
 		return false
 	}
 	if len(resp.Message.ToolCalls) > 0 || strings.TrimSpace(resp.Message.Text) == "" {
+		return false
+	}
+	if assistantTextLooksLikeInProgress(resp.Message.Text) {
 		return false
 	}
 	if attemptedEditTool || successfulEditTool || sessionHasCurrentTurnFinalGateEvidence(a.Session) {
@@ -3813,6 +3822,41 @@ func assistantTextLooksLikeCompletionSummary(text string) bool {
 		}
 	}
 	return false
+}
+
+func assistantTextLooksLikeInProgress(text string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	if normalized == "" {
+		return false
+	}
+	return containsAny(normalized,
+		"still checking",
+		"still reviewing",
+		"still working",
+		"checking the",
+		"reviewing the",
+		"working on",
+		"i am checking",
+		"i am reviewing",
+		"i'm checking",
+		"i'm reviewing",
+		"will check",
+		"will review",
+		"need to inspect",
+		"need to review",
+		"not finished",
+		"not done yet",
+		"continuing",
+		"진행 중",
+		"확인 중",
+		"검토 중",
+		"작업 중",
+		"수정 중",
+		"테스트 중",
+		"아직 확인",
+		"아직 검토",
+		"계속 진행",
+	)
 }
 
 func assistantToolCallTextLooksLikeCompletionSummary(text string) bool {
