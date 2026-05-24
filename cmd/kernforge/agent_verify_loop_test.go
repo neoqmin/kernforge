@@ -15070,3 +15070,102 @@ func TestAssignFocusedOwnerNodeToToolCallsPreservesExplicitOwner(t *testing.T) {
 		t.Fatalf("expected explicit owner_node_id to be preserved, got %#v", updated[0])
 	}
 }
+
+func TestStripUnsupportedOwnerNodeIDFromToolCalls(t *testing.T) {
+	calls := []ToolCall{
+		{
+			Name:      "read_file",
+			Arguments: `{"path":"main.go","owner_node_id":"plan-02"}`,
+		},
+		{
+			Name:      "grep",
+			Arguments: `{"pattern":"package","owner_node_id":"plan-02"}`,
+		},
+		{
+			Name:      "run_shell",
+			Arguments: `{"command":"go test ./...","owner_node_id":"plan-02"}`,
+		},
+	}
+
+	updated := stripUnsupportedOwnerNodeIDFromToolCalls(calls)
+	if got := stringValue(toolCallArgumentsMap(updated[0]), "owner_node_id"); got != "" {
+		t.Fatalf("expected read_file owner_node_id to be stripped, got %#v", updated[0])
+	}
+	if got := stringValue(toolCallArgumentsMap(updated[1]), "owner_node_id"); got != "" {
+		t.Fatalf("expected grep owner_node_id to be stripped, got %#v", updated[1])
+	}
+	if got := stringValue(toolCallArgumentsMap(updated[2]), "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected run_shell owner_node_id to be preserved, got %#v", updated[2])
+	}
+}
+
+func TestAgentStripsUnsupportedOwnerNodeIDFromReadOnlyToolCalls(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			return EditRoutingResult{}, fmt.Errorf("%w: read-only lookup should not carry owner_node_id", ErrEditTargetMismatch)
+		}
+		return ws.resolveEditFallback(req)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{
+				"path":          "main.go",
+				"owner_node_id": "plan-02",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "main.go inspection completed.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "read main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "inspection completed") {
+		t.Fatalf("expected final reply after read_file, got %q", reply)
+	}
+	if len(session.Messages) < 3 {
+		t.Fatalf("expected user, assistant tool call, and tool result messages, got %#v", session.Messages)
+	}
+	assistantCall := session.Messages[1]
+	if len(assistantCall.ToolCalls) != 1 {
+		t.Fatalf("expected one assistant tool call, got %#v", assistantCall.ToolCalls)
+	}
+	if got := stringValue(toolCallArgumentsMap(assistantCall.ToolCalls[0]), "owner_node_id"); got != "" {
+		t.Fatalf("expected assistant read_file call to be sanitized before execution, got %#v", assistantCall.ToolCalls[0])
+	}
+	toolResult := session.Messages[2]
+	if toolResult.IsError {
+		t.Fatalf("expected read_file to execute without ownership mismatch, got %#v", toolResult)
+	}
+	if !strings.Contains(toolResult.Text, "package main") {
+		t.Fatalf("expected read_file result content, got %q", toolResult.Text)
+	}
+}
