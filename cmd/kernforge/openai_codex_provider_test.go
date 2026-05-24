@@ -2025,6 +2025,7 @@ func TestParseOpenAICodexResponsePreservesMessagePhase(t *testing.T) {
 
 func TestParseOpenAICodexResponsePreservesEndTurn(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
+		"id":"resp_parse_1",
 		"status":"completed",
 		"end_turn":false,
 		"output":[{
@@ -2038,6 +2039,9 @@ func TestParseOpenAICodexResponsePreservesEndTurn(t *testing.T) {
 	}
 	if resp.EndTurn == nil || *resp.EndTurn {
 		t.Fatalf("expected end_turn=false to be preserved, got %#v", resp.EndTurn)
+	}
+	if resp.ResponseID != "resp_parse_1" {
+		t.Fatalf("expected response id to be preserved, got %q", resp.ResponseID)
 	}
 }
 
@@ -2657,7 +2661,7 @@ func TestReadOpenAICodexStreamUsesFinalMessageItemWhenCompletedResponseHasNoOutp
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"still working"}]}}`,
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"done"}]}}`,
-		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","end_turn":true}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_stream_1","status":"completed","end_turn":true}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -2672,6 +2676,9 @@ func TestReadOpenAICodexStreamUsesFinalMessageItemWhenCompletedResponseHasNoOutp
 	}
 	if resp.EndTurn == nil || !*resp.EndTurn {
 		t.Fatalf("expected nested stream end_turn=true to survive fallback, got %#v", resp.EndTurn)
+	}
+	if resp.ResponseID != "resp_stream_1" {
+		t.Fatalf("expected stream response id to be preserved, got %q", resp.ResponseID)
 	}
 }
 
