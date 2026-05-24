@@ -1459,9 +1459,66 @@ func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRouti
 	req.OwnerNodeID = ""
 	fallback, fallbackErr := w.ResolveEditPathWithOptions(req)
 	if fallbackErr != nil {
+		if baseFallback, ok := w.resolveLookupAcrossWorkspaceRoots(path); ok {
+			return baseFallback, nil
+		}
 		return EditRoutingResult{}, err
 	}
 	return fallback, nil
+}
+
+func (w Workspace) resolveLookupAcrossWorkspaceRoots(path string) (EditRoutingResult, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "."
+	}
+	type candidate struct {
+		root string
+		abs  string
+	}
+	candidates := make([]candidate, 0, 2)
+	seenRoots := map[string]struct{}{}
+	for _, root := range []string{w.Root, w.BaseRoot} {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		cleanRoot, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		key := strings.ToLower(filepath.Clean(cleanRoot))
+		if _, ok := seenRoots[key]; ok {
+			continue
+		}
+		seenRoots[key] = struct{}{}
+		abs, err := w.resolveAgainstRoot(root, path)
+		if err != nil {
+			continue
+		}
+		abs, err = ensureResolvedPathWithinRoot(root, abs)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{root: root, abs: abs})
+	}
+	if len(candidates) == 0 {
+		return EditRoutingResult{}, false
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate.abs); err == nil {
+			return EditRoutingResult{
+				AbsolutePath: candidate.abs,
+				DisplayRoot:  candidate.root,
+			}, true
+		} else if err != nil && !os.IsNotExist(err) {
+			return EditRoutingResult{}, false
+		}
+	}
+	return EditRoutingResult{
+		AbsolutePath: candidates[0].abs,
+		DisplayRoot:  candidates[0].root,
+	}, true
 }
 
 func (w Workspace) lookupFallbackForMissingOwnedWorktreeRoute(req EditRoutingRequest, route EditRoutingResult) (EditRoutingResult, bool) {
@@ -2399,10 +2456,9 @@ func (t ListFilesTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":          map[string]any{"type": "string"},
-				"recursive":     map[string]any{"type": "boolean"},
-				"max_entries":   map[string]any{"type": "integer"},
-				"owner_node_id": map[string]any{"type": "string"},
+				"path":        map[string]any{"type": "string"},
+				"recursive":   map[string]any{"type": "boolean"},
+				"max_entries": map[string]any{"type": "integer"},
 			},
 		},
 	}
@@ -2565,10 +2621,9 @@ func (t *ReadFileTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":          map[string]any{"type": "string"},
-				"start_line":    map[string]any{"type": "integer"},
-				"end_line":      map[string]any{"type": "integer"},
-				"owner_node_id": map[string]any{"type": "string"},
+				"path":       map[string]any{"type": "string"},
+				"start_line": map[string]any{"type": "integer"},
+				"end_line":   map[string]any{"type": "integer"},
 			},
 			"required": []string{"path"},
 		},
@@ -3112,11 +3167,10 @@ func (t GrepTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern":       map[string]any{"type": "string"},
-				"path":          map[string]any{"type": "string"},
-				"glob":          map[string]any{"type": "string"},
-				"max_results":   map[string]any{"type": "integer"},
-				"owner_node_id": map[string]any{"type": "string"},
+				"pattern":     map[string]any{"type": "string"},
+				"path":        map[string]any{"type": "string"},
+				"glob":        map[string]any{"type": "string"},
+				"max_results": map[string]any{"type": "integer"},
 			},
 			"required": []string{"pattern"},
 		},
