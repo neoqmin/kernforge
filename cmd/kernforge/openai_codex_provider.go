@@ -1090,7 +1090,7 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 		}
 
 		out = append(out, msg)
-		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+		if msg.Role != "assistant" || (len(msg.ToolCalls) == 0 && len(msg.LocalShellCalls) == 0) {
 			continue
 		}
 		for _, call := range msg.ToolCalls {

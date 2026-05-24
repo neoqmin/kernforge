@@ -839,6 +839,39 @@ func TestBuildOpenAICodexRequestBodyPreservesLocalShellCallOutput(t *testing.T) 
 	}
 }
 
+func TestBuildOpenAICodexRequestBodySynthesizesMissingLocalShellOutput(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "run a local command"},
+			{Role: "assistant", LocalShellCalls: []MessageLocalShellCall{{
+				CallID: "call_shell",
+				Status: "completed",
+				Action: map[string]any{
+					"type":    "exec",
+					"command": []any{"echo", "hi"},
+				},
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 3 {
+		t.Fatalf("expected user, local shell call, and synthesized output, got %#v in %s", input, body)
+	}
+	output := input[2].(map[string]any)
+	if output["type"] != "function_call_output" || output["call_id"] != "call_shell" || output["output"] != "aborted" {
+		t.Fatalf("expected synthesized local shell output, got %#v in %s", output, body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesCompactionItems(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
