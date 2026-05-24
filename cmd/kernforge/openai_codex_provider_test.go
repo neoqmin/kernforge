@@ -150,6 +150,9 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	if payload["tool_choice"] != "auto" {
 		t.Fatalf("expected tool_choice auto even without tools, got %#v", payload["tool_choice"])
 	}
+	if payload["parallel_tool_calls"] != true {
+		t.Fatalf("expected gpt-5.5 to enable parallel tool calls, got %#v", payload["parallel_tool_calls"])
+	}
 	tools, ok := payload["tools"].([]any)
 	if !ok || len(tools) != 0 {
 		t.Fatalf("expected empty tools array without tools, got %#v", payload["tools"])
@@ -247,6 +250,9 @@ func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *test
 	}
 	if _, ok := payload["reasoning"]; ok {
 		t.Fatalf("expected reasoning to be omitted for unknown model, got %#v", payload["reasoning"])
+	}
+	if payload["parallel_tool_calls"] != false {
+		t.Fatalf("expected unknown model to disable parallel tool calls, got %#v", payload["parallel_tool_calls"])
 	}
 	include, ok := payload["include"].([]any)
 	if !ok || len(include) != 0 {
