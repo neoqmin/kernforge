@@ -656,17 +656,10 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		})
 	}
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
-			continue
-		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	processPayload := func(payload string) (ChatResponse, bool, error) {
+		payload = strings.TrimSpace(payload)
 		if payload == "" || payload == "[DONE]" {
-			continue
+			return ChatResponse{}, false, nil
 		}
 		var event struct {
 			Type        string                `json:"type"`
@@ -687,10 +680,10 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			} `json:"error,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			return ChatResponse{}, err
+			return ChatResponse{}, false, err
 		}
 		if event.Error != nil {
-			return ChatResponse{}, newProviderMessageError("openai-codex", event.Error.Message, event.Error.Type, event.Error.Param, event.Error.Code, []byte(payload))
+			return ChatResponse{}, false, newProviderMessageError("openai-codex", event.Error.Message, event.Error.Type, event.Error.Param, event.Error.Code, []byte(payload))
 		}
 		switch event.Type {
 		case "response.output_text.delta":
@@ -799,25 +792,64 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if len(event.Response) > 0 {
 				resp, err := parseOpenAICodexResponse(event.Response)
 				if err != nil {
-					return ChatResponse{}, err
+					return ChatResponse{}, false, err
 				}
-				return resp, nil
+				return resp, true, nil
 			}
-			return ChatResponse{}, newProviderMessageError("openai-codex", "stream failed", "", "", nil, []byte(payload))
+			return ChatResponse{}, false, newProviderMessageError("openai-codex", "stream failed", "", "", nil, []byte(payload))
 		case "response.incomplete":
 			reason := openAICodexIncompleteReason(event.Response)
 			message := "Incomplete response returned"
 			if reason != "" {
 				message += ", reason: " + reason
 			}
-			return ChatResponse{}, newProviderMessageError("openai-codex", message, "incomplete", "", reason, []byte(payload))
+			return ChatResponse{}, false, newProviderMessageError("openai-codex", message, "incomplete", "", reason, []byte(payload))
 		}
+		return ChatResponse{}, false, nil
+	}
+
+	pendingData := []string{}
+	flushPendingData := func() (ChatResponse, bool, error) {
+		if len(pendingData) == 0 {
+			return ChatResponse{}, false, nil
+		}
+		payload := strings.Join(pendingData, "\n")
+		pendingData = pendingData[:0]
+		return processPayload(payload)
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			resp, done, err := flushPendingData()
+			if err != nil {
+				return ChatResponse{}, err
+			}
+			if done {
+				return resp, nil
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") || strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		pendingData = append(pendingData, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 	}
 	if err := scanner.Err(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ChatResponse{}, ctxErr
 		}
 		return ChatResponse{}, err
+	}
+	resp, done, err := flushPendingData()
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	if done {
+		return resp, nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ChatResponse{}, ctxErr
