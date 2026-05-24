@@ -1674,6 +1674,42 @@ func TestBuildOpenAICodexRequestBodyPreservesAssistantReasoningEncryptedContentL
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesAssistantReasoningSummaryWithoutEncryptedContent(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{
+				Role:             "assistant",
+				ReasoningContent: "Reasoning summary only",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 1 {
+		t.Fatalf("expected reasoning-only assistant history item, got %#v in %s", input, body)
+	}
+	reasoningItem, ok := input[0].(map[string]any)
+	if !ok || reasoningItem["type"] != "reasoning" {
+		t.Fatalf("expected reasoning item, got %#v in %s", input[0], body)
+	}
+	if value, exists := reasoningItem["encrypted_content"]; !exists || value != nil {
+		t.Fatalf("Codex reasoning history should preserve null encrypted_content, got %#v", reasoningItem)
+	}
+	summary := reasoningItem["summary"].([]any)
+	summaryItem := summary[0].(map[string]any)
+	if summaryItem["type"] != "summary_text" || summaryItem["text"] != "Reasoning summary only" {
+		t.Fatalf("expected reasoning summary to be replayed, got %#v", reasoningItem)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesAssistantWebSearchCallsLikeCodex(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",

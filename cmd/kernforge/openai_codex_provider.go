@@ -975,17 +975,23 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 
 func openAICodexReasoningInputItem(msg Message) map[string]any {
 	encryptedContent := strings.TrimSpace(msg.ReasoningEncryptedContent)
-	if encryptedContent == "" {
+	summaryText := strings.TrimSpace(msg.ReasoningContent)
+	if encryptedContent == "" && summaryText == "" {
 		return nil
 	}
 	item := map[string]any{
-		"type":              "reasoning",
-		"encrypted_content": encryptedContent,
+		"type":    "reasoning",
+		"summary": []map[string]any{},
 	}
-	if summary := strings.TrimSpace(msg.ReasoningContent); summary != "" {
+	if encryptedContent != "" {
+		item["encrypted_content"] = encryptedContent
+	} else {
+		item["encrypted_content"] = nil
+	}
+	if summaryText != "" {
 		item["summary"] = []map[string]any{{
 			"type": "summary_text",
-			"text": summary,
+			"text": summaryText,
 		}}
 	}
 	return item
