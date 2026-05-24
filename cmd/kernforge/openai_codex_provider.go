@@ -34,6 +34,29 @@ const (
 	openAICodexTokenRefreshSkew = 2 * time.Minute
 )
 
+const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+
+const openAICodexApplyPatchLarkGrammar = `start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF
+`
+
 var (
 	openAICodexOAuthTokenEndpoint  = openAICodexOAuthTokenURL
 	openAICodexDeviceCodeEndpoint  = openAICodexDeviceCodeURL
@@ -233,18 +256,9 @@ func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, tool := range req.Tools {
-			name := strings.TrimSpace(tool.Name)
-			if name == "" {
+			item := openAICodexToolPayload(tool)
+			if len(item) == 0 {
 				continue
-			}
-			item := map[string]any{
-				"type":        "function",
-				"name":        name,
-				"description": strings.TrimSpace(tool.Description),
-				"parameters":  openAICodexToolParameters(tool.InputSchema),
-			}
-			if len(tool.OutputSchema) > 0 {
-				item["output_schema"] = tool.OutputSchema
 			}
 			tools = append(tools, item)
 		}
@@ -254,6 +268,35 @@ func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func openAICodexToolPayload(tool ToolDefinition) map[string]any {
+	name := strings.TrimSpace(tool.Name)
+	if name == "" {
+		return nil
+	}
+	if name == "apply_patch" {
+		return map[string]any{
+			"type":        "custom",
+			"name":        name,
+			"description": openAICodexApplyPatchDescription,
+			"format": map[string]any{
+				"type":       "grammar",
+				"syntax":     "lark",
+				"definition": openAICodexApplyPatchLarkGrammar,
+			},
+		}
+	}
+	item := map[string]any{
+		"type":        "function",
+		"name":        name,
+		"description": strings.TrimSpace(tool.Description),
+		"parameters":  openAICodexToolParameters(tool.InputSchema),
+	}
+	if len(tool.OutputSchema) > 0 {
+		item["output_schema"] = tool.OutputSchema
+	}
+	return item
 }
 
 func openAICodexToolParameters(schema map[string]any) map[string]any {
