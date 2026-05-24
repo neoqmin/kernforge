@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -194,6 +195,31 @@ func TestDurabilityEvalMicroWorkerBriefAttachesToTaskGraphNode(t *testing.T) {
 		Session:        session,
 		Store:          store,
 	}
+	var hookWarningsMu sync.Mutex
+	var hookWarnings []string
+	agent.Hooks = &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "micro-worker-stop",
+					Events: []HookEvent{HookSubagentStop},
+					Match: HookMatch{
+						ContainsText: []string{"plan-02"},
+					},
+					Action: HookAction{
+						Type:    "warn",
+						Message: "micro worker stopped",
+					},
+				},
+			},
+		},
+		Print: func(message string) {
+			hookWarningsMu.Lock()
+			defer hookWarningsMu.Unlock()
+			hookWarnings = append(hookWarnings, message)
+		},
+	}
 
 	if err := agent.maybeRunInteractiveMicroWorkers(context.Background(), "replan"); err != nil {
 		t.Fatalf("maybeRunInteractiveMicroWorkers: %v", err)
@@ -209,6 +235,11 @@ func TestDurabilityEvalMicroWorkerBriefAttachesToTaskGraphNode(t *testing.T) {
 	}
 	if len(reviewer.requests) != 2 {
 		t.Fatalf("expected two reviewer micro-worker requests, got %d", len(reviewer.requests))
+	}
+	hookWarningsMu.Lock()
+	defer hookWarningsMu.Unlock()
+	if len(hookWarnings) != 1 || !strings.Contains(hookWarnings[0], "micro worker stopped") {
+		t.Fatalf("expected SubagentStop hook warning for plan-02, got %#v", hookWarnings)
 	}
 }
 

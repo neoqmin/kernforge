@@ -458,6 +458,7 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		brief      string
 		specialist string
 		reason     string
+		err        error
 	}
 	type microWorkerPlan struct {
 		node       TaskNode
@@ -512,7 +513,17 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		if err != nil {
 			return
 		}
-		brief := compactPromptSection(strings.TrimSpace(resp.Message.Text), 220)
+		assistantText := strings.TrimSpace(resp.Message.Text)
+		if err := a.runSubagentStopHook(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, assistantText); err != nil {
+			results <- microWorkerResult{
+				nodeID:     plan.node.ID,
+				specialist: plan.assignment.Profile.Name,
+				reason:     plan.assignment.Reason,
+				err:        err,
+			}
+			return
+		}
+		brief := compactPromptSection(assistantText, 220)
 		if brief == "" {
 			return
 		}
@@ -538,13 +549,23 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 	wg.Wait()
 	close(results)
 	updated := false
+	var firstErr error
 	for result := range results {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			continue
+		}
 		if strings.TrimSpace(result.nodeID) == "" || strings.TrimSpace(result.brief) == "" {
 			continue
 		}
 		a.Session.RecordTaskGraphSpecialistAssignment(result.nodeID, result.specialist, result.reason)
 		a.Session.RecordTaskGraphMicroWorkerBrief(result.nodeID, result.brief)
 		updated = true
+	}
+	if firstErr != nil {
+		return firstErr
 	}
 	if updated && a.Store != nil {
 		return a.Store.Save(a.Session)

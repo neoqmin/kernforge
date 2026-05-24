@@ -320,7 +320,7 @@ func buildParallelEditableWorkerPlan(node TaskNode, assignment SpecialistAssignm
 	}, true
 }
 
-func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEditableWorkerPlan) parallelEditableWorkerResult {
+func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEditableWorkerPlan) (out parallelEditableWorkerResult) {
 	client, model := a.specialistClient(plan.Assignment.Profile)
 	if client == nil || strings.TrimSpace(model) == "" {
 		return parallelEditableWorkerResult{Plan: plan, Skipped: true}
@@ -335,6 +335,17 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 		Text: buildSpecialistEditableWorkerPrompt(a.Session.TaskState, plan),
 	}}
 	lastText := ""
+	defer func() {
+		if out.Skipped {
+			return
+		}
+		lastAssistantMessage := firstNonBlankString(out.Detail, out.Summary, lastText)
+		if err := a.runSubagentStopHook(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, lastAssistantMessage); err != nil && out.Err == nil {
+			out.Err = err
+			out.Summary = "Parallel editable worker SubagentStop hook failed for " + plan.Node.Title
+			out.Detail = err.Error()
+		}
+	}()
 	lastErr := error(nil)
 	lastErrToolName := ""
 
