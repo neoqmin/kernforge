@@ -310,7 +310,9 @@ func completionAuditAcceptance(root string, session *Session, artifact *Completi
 	if contract.VerificationRequired {
 		status := completionAuditStatusPassed
 		evidence := "Verification requirement is recorded and checked below."
-		if session.LastVerification == nil {
+		if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
+			evidence = "Generated document artifact quality gate accepted this documentation-only change; code verification is not required for this artifact turn."
+		} else if session.LastVerification == nil {
 			status = completionAuditStatusBlocked
 			evidence = "Verification is required but no verification report is recorded."
 		} else if session.LastVerification.HasFailures() {
@@ -330,6 +332,15 @@ func completionAuditAcceptance(root string, session *Session, artifact *Completi
 }
 
 func completionAuditVerification(session *Session, artifact *CompletionAuditArtifact) {
+	if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest verification has no failures",
+			Evidence:    "Generated document artifact quality gate accepted this documentation-only change; code verification is not required for this artifact turn.",
+			Status:      completionAuditStatusPassed,
+			Source:      "verification",
+		})
+		return
+	}
 	if session.LastVerification == nil {
 		status := completionAuditStatusUnknown
 		evidence := "No verification report is recorded."
@@ -690,7 +701,10 @@ func completionAuditChangedFiles(session *Session, artifact *CompletionAuditArti
 	}
 	status := completionAuditStatusWarning
 	evidence := strings.Join(limitStrings(artifact.ChangedFiles, 8), ", ")
-	if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification) == completionAuditStatusPassed {
+	if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
+		status = completionAuditStatusPassed
+		evidence = "Generated document artifact quality gate accounted for changed files: " + evidence
+	} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification) == completionAuditStatusPassed {
 		status = completionAuditStatusPassed
 		evidence = "Changed files listed for final review; latest verification: " + session.LastVerification.SummaryLine() + "; files: " + evidence
 	}
@@ -704,6 +718,15 @@ func completionAuditChangedFiles(session *Session, artifact *CompletionAuditArti
 
 func completionAuditReviewGate(root string, session *Session, artifact *CompletionAuditArtifact) {
 	if artifact == nil {
+		return
+	}
+	if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    "Generated document artifact quality gate accepted this documentation-only change; code review is not required for this artifact turn.",
+			Status:      completionAuditStatusPassed,
+			Source:      "review",
+		})
 		return
 	}
 	var review *ReviewRun
@@ -815,6 +838,17 @@ func completionAuditReviewFreshnessIssue(root string, review ReviewRun, artifact
 		return "unreviewed changed files: " + strings.Join(limitStrings(missing, 6), ", ")
 	}
 	return ""
+}
+
+func completionAuditGeneratedDocumentArtifactGateAccepted(session *Session, artifact *CompletionAuditArtifact) bool {
+	if session == nil || artifact == nil {
+		return false
+	}
+	request := strings.TrimSpace(artifact.Objective)
+	if request == "" {
+		request = codingHarnessSourcePrompt(session)
+	}
+	return generatedDocumentArtifactGateAcceptedForRequest(session, request, artifact.ChangedFiles)
 }
 
 func completionAuditRuntimeGate(root string, session *Session, artifact *CompletionAuditArtifact) {

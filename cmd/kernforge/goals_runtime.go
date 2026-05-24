@@ -415,20 +415,28 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	rt.session.SetPlanNodeLifecycle("plan-01", "completed", "Implementation pass inspected current goal state.")
 	rt.session.SetPlanNodeLifecycle("plan-02", "completed", "Implementation pass completed or confirmed no code change was needed.")
 
-	reviewRoot := rt.goalWorkspaceRoot()
-	reviewReply, err := rt.runGoalReviewHarnessReply(ctx, goal, iteration, reviewRoot)
-	iteration.ReviewReply = compactPromptSection(reviewReply, 900)
-	if err != nil {
-		return rt.finishGoalIterationError(goal, iteration, err)
-	}
-	decision := parseGoalReviewDecision(reviewReply)
-	iteration.ReviewerVerdict = decision.Verdict
-	iteration.ReviewerFeedback = compactPromptSection(decision.Feedback, 900)
-	if decision.NeedsRevision {
-		repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalRepairPrompt(goal, iteration, decision, reviewRoot, rt.checkpoints))
-		iteration.RepairReply = compactPromptSection(repairReply, 900)
-		if repairErr != nil {
-			return rt.finishGoalIterationError(goal, iteration, repairErr)
+	documentArtifactGateAccepted := rt.goalIterationGeneratedDocumentArtifactGateAccepted(goal)
+	if documentArtifactGateAccepted {
+		reviewReply := "APPROVED: generated document artifact quality gate accepted this documentation-only change; skipping goal review model."
+		iteration.ReviewReply = reviewReply
+		iteration.ReviewerVerdict = "approved"
+		iteration.ReviewerFeedback = reviewReply
+	} else {
+		reviewRoot := rt.goalWorkspaceRoot()
+		reviewReply, err := rt.runGoalReviewHarnessReply(ctx, goal, iteration, reviewRoot)
+		iteration.ReviewReply = compactPromptSection(reviewReply, 900)
+		if err != nil {
+			return rt.finishGoalIterationError(goal, iteration, err)
+		}
+		decision := parseGoalReviewDecision(reviewReply)
+		iteration.ReviewerVerdict = decision.Verdict
+		iteration.ReviewerFeedback = compactPromptSection(decision.Feedback, 900)
+		if decision.NeedsRevision {
+			repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalRepairPrompt(goal, iteration, decision, reviewRoot, rt.checkpoints))
+			iteration.RepairReply = compactPromptSection(repairReply, 900)
+			if repairErr != nil {
+				return rt.finishGoalIterationError(goal, iteration, repairErr)
+			}
 		}
 	}
 	rt.session.SetPlanNodeLifecycle("plan-03", "completed", "Review pass completed and concrete findings were repaired or cleared.")
@@ -474,7 +482,13 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		goal.applyProgress(progress)
 		if audit.Ready {
 			semanticCommand := startGoalCommand(iteration.Index, "semantic-review", "independent semantic goal review")
-			semanticReview, semanticErr := rt.runGoalSemanticReview(ctx, goal, audit, iteration)
+			var semanticReview GoalSemanticReview
+			var semanticErr error
+			if documentArtifactGateAccepted {
+				semanticReview = generatedDocumentArtifactGoalSemanticReview()
+			} else {
+				semanticReview, semanticErr = rt.runGoalSemanticReview(ctx, goal, audit, iteration)
+			}
 			semanticCommand.finish(statusForErr(semanticErr), semanticReviewSummaryOrError(semanticReview, semanticErr))
 			iteration.Commands = append(iteration.Commands, semanticCommand)
 			if isGoalCancellationError(semanticErr) {
@@ -543,6 +557,30 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	}
 	goal.updateUsageTelemetry(rt.session)
 	return rt.finishGoalIteration(goal, iteration), goalStatusStopsAutonomousLoop(goal.Status), nil
+}
+
+func (rt *runtimeState) goalIterationGeneratedDocumentArtifactGateAccepted(goal GoalState) bool {
+	if rt == nil || rt.session == nil {
+		return false
+	}
+	root := workspaceSnapshotRoot(rt.workspace)
+	if strings.TrimSpace(root) == "" {
+		root = rt.session.WorkingDir
+	}
+	changedPaths := delegationChangedFiles(root)
+	if len(changedPaths) == 0 {
+		changedPaths = documentArtifactHarnessChangedPaths(rt.session)
+	}
+	return generatedDocumentArtifactGateAcceptedForRequest(rt.session, goal.Objective, changedPaths)
+}
+
+func generatedDocumentArtifactGoalSemanticReview() GoalSemanticReview {
+	return GoalSemanticReview{
+		Verdict:    "approved",
+		Approved:   true,
+		Feedback:   "Generated document artifact quality gate accepted this documentation-only change; semantic review model was not required.",
+		ReviewedAt: time.Now(),
+	}
 }
 
 func (rt *runtimeState) finishGoalIterationError(goal GoalState, iteration GoalIteration, err error) (GoalState, bool, error) {
