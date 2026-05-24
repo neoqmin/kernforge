@@ -8845,21 +8845,31 @@ func compactDropOrphanToolMessages(messages []Message) []Message {
 		return messages
 	}
 	expected := map[string]bool{}
+	expectedSets := newOpenAICodexExpectedOutputSets()
+	for _, msg := range messages {
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			callID := firstNonEmptyTrimmed(call.ID, call.Name)
+			if callID != "" {
+				expected[callID] = true
+				expectedSets.markToolCall(callID, call)
+			}
+		}
+		for _, call := range msg.LocalShellCalls {
+			callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+			if callID != "" {
+				expected[callID] = true
+				expectedSets.markLocalShell(callID)
+			}
+		}
+	}
+
 	out := make([]Message, 0, len(messages))
 	for _, msg := range messages {
 		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
-			for _, call := range msg.ToolCalls {
-				callID := firstNonEmptyTrimmed(call.ID, call.Name)
-				if callID != "" {
-					expected[callID] = true
-				}
-			}
-			for _, call := range msg.LocalShellCalls {
-				callID := firstNonEmptyTrimmed(call.CallID, call.ID)
-				if callID != "" {
-					expected[callID] = true
-				}
-			}
+			msg.CodexToolOutputItems = filterOpenAICodexAssistantToolOutputItems(msg.CodexToolOutputItems, expectedSets)
 			out = append(out, msg)
 			continue
 		}
