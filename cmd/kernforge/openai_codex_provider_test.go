@@ -82,6 +82,9 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if !ok || reasoning["effort"] != "high" {
 		t.Fatalf("expected reasoning effort high, got %#v", payload["reasoning"])
 	}
+	if reasoning["summary"] != "auto" {
+		t.Fatalf("expected reasoning summary auto, got %#v", payload["reasoning"])
+	}
 	if _, ok := payload["tools"].([]any); !ok {
 		t.Fatalf("expected responses tools array, got %#v", payload["tools"])
 	}

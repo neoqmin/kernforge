@@ -272,7 +272,8 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	}
 	if effort := normalizeReasoningEffort(req.ReasoningEffort); effort != "" {
 		payload["reasoning"] = map[string]any{
-			"effort": effort,
+			"effort":  effort,
+			"summary": "auto",
 		}
 	}
 	if req.JSONMode {
