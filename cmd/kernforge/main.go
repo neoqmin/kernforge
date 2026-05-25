@@ -568,7 +568,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 	if mcp != nil {
 		items = append(items, mcp.Tools()...)
 	}
-	return NewToolRegistry(items...)
+	return NewToolRegistryWithDefaultHookWorkspace(ws, items...)
 }
 
 func formatToolRegistrationIssues(issues []ToolRegistrationIssue) []string {
