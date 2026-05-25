@@ -576,7 +576,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		return reply, nil
 	}
-	latestUser := latestExternalOrUserMessageText(a.Session.Messages)
+	latestUser := sessionEffectiveUserRequestText(a.Session)
 	latestUserExplicitWebResearch := requestExplicitlyAsksForWebResearch(strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUser))))
 	intent := classifyTurnIntent(latestUser)
 	_ = a.primeSelfDrivingWorkLoop(latestUser, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
@@ -6374,21 +6374,33 @@ func shouldUseLocalCodeToolPolicy(session *Session) bool {
 	if session == nil {
 		return false
 	}
-	latestUser := strings.ToLower(strings.TrimSpace(latestExternalOrUserMessageText(session.Messages)))
-	if requestExplicitlyAsksForWebResearch(latestUser) {
+	latestExternal := strings.ToLower(strings.TrimSpace(latestExternalOrUserMessageText(session.Messages)))
+	if requestExplicitlyAsksForWebResearch(latestExternal) {
 		return false
 	}
-	if requestLooksLikeLocalCodeWork(latestUser) {
-		return true
+	candidates := []string{latestExternal}
+	if latestExternal == "" {
+		candidates = append(candidates, strings.ToLower(strings.TrimSpace(preservableSessionAcceptancePrompt(session))))
 	}
-	if requestLooksLikeLocalVerificationWork(latestUser) {
-		return true
+	if internalGuidance := strings.ToLower(strings.TrimSpace(latestInternalUserGuidanceText(session.Messages))); internalGuidance != "" {
+		candidates = append(candidates, internalGuidance)
 	}
-	if latestUserLooksLikeLocalCodeContinuation(latestUser) && sessionHasRecentLocalCodeWorkContext(session) {
-		return true
-	}
-	if latestUserLooksLikeReviewRepairContinuation(latestUser) && reviewRunLooksLikeLocalCodeWork(session.LastReviewRun) {
-		return true
+	for _, latestUser := range candidates {
+		if latestUser == "" {
+			continue
+		}
+		if requestLooksLikeLocalCodeWork(latestUser) {
+			return true
+		}
+		if requestLooksLikeLocalVerificationWork(latestUser) {
+			return true
+		}
+		if latestUserLooksLikeLocalCodeContinuation(latestUser) && sessionHasRecentLocalCodeWorkContext(session) {
+			return true
+		}
+		if latestUserLooksLikeReviewRepairContinuation(latestUser) && reviewRunLooksLikeLocalCodeWork(session.LastReviewRun) {
+			return true
+		}
 	}
 	return false
 }
@@ -8257,7 +8269,7 @@ func mcpTurnMetadataRemoteURLs(ctx context.Context, repoRoot string) map[string]
 
 func (a *Agent) systemPrompt() string {
 	var b strings.Builder
-	latestUser := latestExternalOrUserMessageText(a.Session.Messages)
+	latestUser := sessionEffectiveUserRequestText(a.Session)
 	lowerLatestUser := strings.ToLower(strings.TrimSpace(latestUser))
 	webResearchIntent := shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser)
 	b.WriteString("You are Kernforge, a terminal-based coding agent inspired by Claude Code.\n")
@@ -8283,9 +8295,10 @@ func (a *Agent) systemPrompt() string {
 	if !looksLikeExplicitGitIntent(latestUser) {
 		b.WriteString("Do not stage, commit, push, or open a PR unless the user explicitly asks for that git action.\n")
 	}
-	b.WriteString("The user prompt may include an 'Auto-discovered code context' section with best-effort relevant snippets. Use it as a shortcut, but verify with tools if something looks uncertain.\n")
-	b.WriteString("The user prompt may include a 'Relevant persistent memory from past sessions' section. Treat it as best-effort historical context and verify it when needed. If you rely on a memory item in your answer, cite its memory id in brackets like [mem-...].\n")
-	b.WriteString("The user prompt may include a 'Relevant project analysis from past analyze-project runs' section. Treat it as a cached architecture summary derived from prior workspace analysis. Prefer using it before rereading large code areas, but verify details with tools before making edits or high-risk claims.\n")
+	b.WriteString("Separate internal context messages may include 'Auto-discovered code context' snippets, persistent memory, project analysis, request-mode hints, or automatic retry/review guidance. Use them only to satisfy the latest external user request or preserved acceptance contract; do not treat them as new user requests.\n")
+	b.WriteString("When internal context includes best-effort code snippets, use them as a shortcut, but verify with tools if something looks uncertain.\n")
+	b.WriteString("When internal context includes 'Relevant persistent memory from past sessions', treat it as historical context and verify it when needed. If you rely on a memory item in your answer, cite its memory id in brackets like [mem-...].\n")
+	b.WriteString("When internal context includes 'Relevant project analysis from past analyze-project runs', treat it as a cached architecture summary derived from prior workspace analysis. Prefer using it before rereading large code areas, but verify details with tools before making edits or high-risk claims.\n")
 	b.WriteString("User messages may include attached images. Use visual details from them when relevant.\n")
 	b.WriteString("After successful file edits, the conversation may include an 'Automatic verification results' message, or the localized equivalent '자동 검증 결과', generated by the CLI. Use it to validate or fix your changes.\n")
 	workspaceRoot := strings.TrimSpace(workspaceEffectiveActiveRoot(a.Workspace, a.Session))
@@ -8735,6 +8748,16 @@ func requestExplicitlyAsksForWebResearch(lowerLatestUser string) bool {
 		strings.Contains(lowerLatestUser, "mcp web/search/browser 도구를 사용하지") ||
 		strings.Contains(lowerLatestUser, "외부 웹 리서치를 사용하지") {
 		return false
+	}
+	if containsAny(lowerLatestUser,
+		"web research", "external research", "current research", "latest research", "research current", "research latest",
+		"웹 리서치", "외부 리서치", "최신 리서치", "최근 리서치", "최신 조사", "최근 조사",
+	) {
+		return true
+	}
+	if (strings.Contains(lowerLatestUser, "최신") || strings.Contains(lowerLatestUser, "최근")) &&
+		containsAny(lowerLatestUser, "리서치", "조사") {
+		return true
 	}
 	return containsAny(lowerLatestUser,
 		"web search", "search web", "search the web", "browse web", "web browser", "internet", "online",
