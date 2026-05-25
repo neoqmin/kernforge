@@ -6425,6 +6425,35 @@ func TestAgentBlocksDocumentReadBeforeParentListing(t *testing.T) {
 	}
 }
 
+func TestDocumentReadBlockPreservesDocumentAuthoringContinuation(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "보고서 생성 중입니다."},
+		{Role: "user", Text: "계속 진행해"},
+	}
+
+	block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls([]ToolCall{{
+		Name:      "read_file",
+		Arguments: `{"path":"Tavern/BugReport.md"}`,
+	}}, session)
+	if !block || targetPath != "Tavern/BugReport.md" || parentPath != "Tavern" {
+		t.Fatalf("expected continuation document authoring to block unconfirmed document read, block=%t target=%q parent=%q", block, targetPath, parentPath)
+	}
+
+	session.Messages[len(session.Messages)-1] = Message{Role: "user", Text: "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해"}
+	block, _, _ = shouldBlockUnconfirmedDocumentReadToolCalls([]ToolCall{{
+		Name:      "read_file",
+		Arguments: `{"path":"cmd/kernforge/agent.go"}`,
+	}}, session)
+	if block {
+		t.Fatalf("broader-scope steering must not keep document-authoring read guards active")
+	}
+}
+
 func TestAgentBlocksDocumentReadWhenParentListedButTargetMissing(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {

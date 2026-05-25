@@ -6256,7 +6256,7 @@ func hasMutatingGitToolCalls(calls []ToolCall) bool {
 }
 
 func shouldBlockUnconfirmedDocumentReadToolCalls(calls []ToolCall, session *Session) (bool, string, string) {
-	if session == nil || !looksLikeDocumentAuthoringIntent(latestExternalOrUserMessageText(session.Messages)) {
+	if session == nil || documentAuthoringIntentForToolTurn(session) == "" {
 		return false, "", ""
 	}
 	for _, call := range calls {
@@ -6274,6 +6274,26 @@ func shouldBlockUnconfirmedDocumentReadToolCalls(calls []ToolCall, session *Sess
 		return true, targetPath, parentPath
 	}
 	return false, "", ""
+}
+
+func documentAuthoringIntentForToolTurn(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
+	if latestUser != "" {
+		if looksLikeDocumentAuthoringIntent(latestUser) {
+			return latestUser
+		}
+		if !controlRequestContinuesCurrentWorkContext(latestUser) {
+			return ""
+		}
+	}
+	effective := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
+	if looksLikeDocumentAuthoringIntent(effective) {
+		return effective
+	}
+	return ""
 }
 
 func shouldBlockLocalToolCallsBeforeWebResearch(calls []ToolCall, session *Session, mcp *MCPManager) bool {
