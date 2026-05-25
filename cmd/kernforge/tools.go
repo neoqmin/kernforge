@@ -106,9 +106,11 @@ type sharedToolHintsCapacityAware interface {
 }
 
 type ToolRegistry struct {
-	tools       map[string]Tool
-	definitions map[string]ToolDefinition
-	issues      []ToolRegistrationIssue
+	tools                   map[string]Tool
+	definitions             map[string]ToolDefinition
+	issues                  []ToolRegistrationIssue
+	defaultHookWorkspace    Workspace
+	hasDefaultHookWorkspace bool
 }
 
 type ToolRegistrationIssue struct {
@@ -129,6 +131,14 @@ func (i ToolRegistrationIssue) Summary() string {
 }
 
 func NewToolRegistry(items ...Tool) *ToolRegistry {
+	return newToolRegistry(Workspace{}, false, items...)
+}
+
+func NewToolRegistryWithDefaultHookWorkspace(ws Workspace, items ...Tool) *ToolRegistry {
+	return newToolRegistry(ws, true, items...)
+}
+
+func newToolRegistry(defaultHookWorkspace Workspace, hasDefaultHookWorkspace bool, items ...Tool) *ToolRegistry {
 	sharedHints := &ToolHints{maxReadSpans: sharedToolHintsLimit(items)}
 	byName := make(map[string]Tool, len(items))
 	definitions := make(map[string]ToolDefinition, len(items))
@@ -160,7 +170,13 @@ func NewToolRegistry(items ...Tool) *ToolRegistry {
 			definitions[def.Name] = def
 		}
 	}
-	return &ToolRegistry{tools: byName, definitions: definitions, issues: issues}
+	return &ToolRegistry{
+		tools:                   byName,
+		definitions:             definitions,
+		issues:                  issues,
+		defaultHookWorkspace:    defaultHookWorkspace,
+		hasDefaultHookWorkspace: hasDefaultHookWorkspace,
+	}
 }
 
 func sharedToolHintsLimit(items []Tool) int {
@@ -930,7 +946,7 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 			return ToolExecutionResult{}, fmt.Errorf("%w: tool %s received invalid JSON: %v", ErrInvalidToolArgumentsJSON, name, err)
 		}
 	}
-	hookState, err := runDefaultPreToolUseHook(ctx, tool, name, payload)
+	hookState, err := runDefaultPreToolUseHook(ctx, tool, name, payload, r.defaultHookWorkspace, r.hasDefaultHookWorkspace)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -949,7 +965,7 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 		if err != nil {
 			result.Meta["error"] = err.Error()
 		} else {
-			result = runDefaultPostToolUseHook(ctx, tool, name, payload, result)
+			result = runDefaultPostToolUseHook(ctx, tool, name, payload, result, r.defaultHookWorkspace, r.hasDefaultHookWorkspace)
 		}
 		return result, err
 	}
@@ -965,7 +981,7 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 		Meta:        meta,
 	}
 	if err == nil {
-		result = runDefaultPostToolUseHook(ctx, tool, name, payload, result)
+		result = runDefaultPostToolUseHook(ctx, tool, name, payload, result, r.defaultHookWorkspace, r.hasDefaultHookWorkspace)
 	}
 	return result, err
 }
@@ -976,8 +992,8 @@ type defaultToolUseHookState struct {
 	originalInput map[string]any
 }
 
-func runDefaultPreToolUseHook(ctx context.Context, tool Tool, name string, payload map[string]any) (defaultToolUseHookState, error) {
-	ws, ok := defaultToolUseHookWorkspace(tool)
+func runDefaultPreToolUseHook(ctx context.Context, tool Tool, name string, payload map[string]any, fallback Workspace, hasFallback bool) (defaultToolUseHookState, error) {
+	ws, ok := defaultToolUseHookWorkspace(tool, fallback, hasFallback)
 	if !ok {
 		return defaultToolUseHookState{}, nil
 	}
@@ -997,8 +1013,8 @@ func runDefaultPreToolUseHook(ctx context.Context, tool Tool, name string, paylo
 	return state, nil
 }
 
-func runDefaultPostToolUseHook(ctx context.Context, tool Tool, name string, payload map[string]any, result ToolExecutionResult) ToolExecutionResult {
-	ws, ok := defaultToolUseHookWorkspace(tool)
+func runDefaultPostToolUseHook(ctx context.Context, tool Tool, name string, payload map[string]any, result ToolExecutionResult, fallback Workspace, hasFallback bool) ToolExecutionResult {
+	ws, ok := defaultToolUseHookWorkspace(tool, fallback, hasFallback)
 	if !ok {
 		return result
 	}
@@ -1070,7 +1086,7 @@ func applyPostToolUseHookFeedback(result ToolExecutionResult, feedback string) T
 	return result
 }
 
-func defaultToolUseHookWorkspace(tool Tool) (Workspace, bool) {
+func defaultToolUseHookWorkspace(tool Tool, fallback Workspace, hasFallback bool) (Workspace, bool) {
 	if tool == nil {
 		return Workspace{}, false
 	}
@@ -1079,6 +1095,9 @@ func defaultToolUseHookWorkspace(tool Tool) (Workspace, bool) {
 	}
 	provider, ok := tool.(toolWorkspaceProvider)
 	if !ok {
+		if hasFallback {
+			return fallback, true
+		}
 		return Workspace{}, false
 	}
 	return provider.hookWorkspace(), true

@@ -12,9 +12,10 @@ import (
 )
 
 type mutableRegistryTool struct {
-	def    ToolDefinition
-	output string
-	hidden bool
+	def       ToolDefinition
+	output    string
+	hidden    bool
+	lastInput map[string]any
 }
 
 func (t *mutableRegistryTool) Definition() ToolDefinition {
@@ -27,6 +28,9 @@ func (t *mutableRegistryTool) Definition() ToolDefinition {
 func (t *mutableRegistryTool) Execute(ctx context.Context, input any) (string, error) {
 	if t == nil {
 		return "", fmt.Errorf("nil mutable registry tool")
+	}
+	if args, ok := input.(map[string]any); ok {
+		t.lastInput = cloneStringAnyMap(args)
 	}
 	return t.output, nil
 }
@@ -1138,6 +1142,89 @@ func TestToolRegistryRunsDefaultFunctionToolHooks(t *testing.T) {
 	contextAdds := stringSliceFromAny(result.Meta["post_tool_use_context_adds"])
 	if len(contextAdds) != 1 || contextAdds[0] != "post hook context" {
 		t.Fatalf("expected post hook context metadata, got %#v", result.Meta)
+	}
+}
+
+func TestToolRegistryDefaultWorkspaceHooksPlainFunctionTools(t *testing.T) {
+	var prePayload HookPayload
+	var postPayload HookPayload
+	root := t.TempDir()
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			switch event {
+			case HookPreToolUse:
+				prePayload = payload
+				return HookVerdict{
+					Allow:        true,
+					UpdatedInput: HookPayload{"message": "rewritten"},
+				}, nil
+			case HookPostToolUse:
+				postPayload = payload
+				return HookVerdict{Allow: true}, nil
+			default:
+				return HookVerdict{Allow: true}, nil
+			}
+		},
+	}
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "plain_function",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+			},
+		},
+		output: "plain output",
+	}
+	registry := NewToolRegistryWithDefaultHookWorkspace(ws, tool)
+
+	result, err := registry.ExecuteDetailed(context.Background(), "plain_function", `{"message":"original"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	input, ok := prePayload["tool_input"].(map[string]any)
+	if !ok || stringsValueFromAny(input["message"]) != "original" {
+		t.Fatalf("expected pre hook to receive original input, got %#v", prePayload)
+	}
+	if stringsValueFromAny(tool.lastInput["message"]) != "rewritten" {
+		t.Fatalf("expected hook rewrite to update plain tool input, got %#v", tool.lastInput)
+	}
+	postInput, ok := postPayload["tool_input"].(map[string]any)
+	if !ok || stringsValueFromAny(postInput["message"]) != "rewritten" {
+		t.Fatalf("expected post hook to receive rewritten input, got %#v", postPayload)
+	}
+	if got := stringsValueFromAny(postPayload["tool_response"]); got != "plain output" {
+		t.Fatalf("expected post hook response plain output, got %#v", postPayload)
+	}
+	if rewritten, _ := result.Meta["hook_rewritten"].(bool); !rewritten {
+		t.Fatalf("expected hook_rewritten metadata, got %#v", result.Meta)
+	}
+}
+
+func TestBuildRegistryFunctionToolsHaveDefaultHookCoverage(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{BaseRoot: root, Root: root}
+	registry := buildRegistry(ws, nil)
+	if !registry.hasDefaultHookWorkspace {
+		t.Fatalf("buildRegistry must install a default hook workspace")
+	}
+	var missing []string
+	for _, name := range registry.ToolNames() {
+		tool := registry.tools[name]
+		if managed, ok := tool.(selfManagedToolUseHooks); ok && managed.managesDefaultToolUseHooks() {
+			continue
+		}
+		if _, ok := defaultToolUseHookWorkspace(tool, registry.defaultHookWorkspace, registry.hasDefaultHookWorkspace); !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("registered function tools missing default hook coverage: %s", strings.Join(missing, ", "))
 	}
 }
 
