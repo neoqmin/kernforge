@@ -749,7 +749,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			Model:        a.Session.Model,
 			System:       systemPrompt,
 			Messages:     a.Session.Messages,
-			Tools:        adaptToolDefinitionsForImageDetailSupport(a.Tools.DefinitionsExcluding(turnDisabledTools), a.Session.Provider, a.Session.Model),
+			Tools:        toolExposurePlan.modelToolDefinitions(a.Tools, a.Session.Provider, a.Session.Model),
 			MaxTokens:    a.Config.MaxTokens,
 			Temperature:  a.Config.Temperature,
 			WorkingDir:   a.Session.WorkingDir,
@@ -7133,10 +7133,11 @@ func (a *Agent) shouldExecuteToolCallBatchInParallel(calls []ToolCall, readOnlyA
 	if len(calls) < 2 || a == nil || a.Tools == nil {
 		return false
 	}
+	exposurePlan := turnToolExposurePlan{DisabledTools: disabled}
 	hasParallelCapableCall := false
 	for _, call := range calls {
 		name := strings.TrimSpace(call.Name)
-		if name == "" || disabled[name] || isEditTool(name) {
+		if exposurePlan.toolDisabled(name) || isEditTool(name) {
 			return false
 		}
 		if !toolCallArgumentsAreJSONObject(call.Arguments) {
