@@ -135,6 +135,45 @@ func TestPromptActiveEditLoopKeepsStatusContextWithoutFinalGateScope(t *testing.
 	}
 }
 
+func TestCurrentTurnActiveEditLoopKeepsContinuationContext(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: "fix alpha"},
+		{Role: "assistant", Text: "alpha.go 수정 중입니다."},
+		{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"},
+	}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:           "edit-loop-alpha",
+		Goal:         "fix alpha",
+		Status:       editLoopStatusActive,
+		ChangedPaths: []string{"alpha.go"},
+	}
+
+	if currentTurnActiveEditLoop(session) == nil {
+		t.Fatalf("continuation steering should keep the active edit loop as current work")
+	}
+}
+
+func TestCurrentTurnActiveEditLoopRejectsBroaderDocumentSteering(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "Tavern/BugReport.md 문서를 생성했습니다."},
+		{Role: "user", Text: "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해"},
+	}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:           "edit-loop-doc",
+		Goal:         original,
+		Status:       editLoopStatusActive,
+		ChangedPaths: []string{"Tavern/BugReport.md"},
+	}
+
+	if currentTurnActiveEditLoop(session) != nil {
+		t.Fatalf("broader document steering must not keep a document-only edit loop as current-turn gate evidence")
+	}
+}
+
 func TestSessionExportIncludesEditLoopLedger(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.RecordEditLoopEvent("fix file", EditLoopEvent{

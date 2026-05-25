@@ -208,6 +208,14 @@ func actionContextPreservingControlRequest(text string) bool {
 	return classifyTurnIntent(text) == TurnIntentContinueLastTask
 }
 
+func controlRequestContinuesCurrentWorkContext(text string) bool {
+	text = strings.TrimSpace(baseUserQueryText(text))
+	if !actionContextPreservingControlRequest(text) {
+		return false
+	}
+	return !generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(text)
+}
+
 func preservableSessionAcceptancePrompt(sess *Session) string {
 	if sess == nil {
 		return ""
