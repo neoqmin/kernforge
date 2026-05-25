@@ -11511,6 +11511,115 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 	}
 }
 
+func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportContent := strings.Join([]string{
+		"# Tavern Client Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"총 2개 버그를 문서화했습니다.",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: documented issue.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: documented issue.",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: request,
+	}
+	session.TaskState = &TaskState{
+		Goal: request,
+	}
+	session.Messages = []Message{{
+		Role: "user",
+		Text: request,
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Size:         int64(len(reportContent)),
+				ContentChars: len([]rune(reportContent)),
+				Substantive:  true,
+				Checks:       []string{"text readable", "content is substantive"},
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		Status:        patchTransactionStatusCommitted,
+		WorkspaceRoot: root,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write",
+			}},
+		}},
+	}}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source that should not be used",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web_research__search_web", map[string]any{
+				"query": "C++ static code analysis best practices",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This fallback final answer should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.Reply(context.Background(), "Please provide the final answer now.")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized generated document final answer, got %q", reply)
+	}
+	if strings.Contains(reply, "fallback") {
+		t.Fatalf("expected post-completion web research churn to be finalized before fallback request, got %q", reply)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("post-completion web research tool should not execute, got %d calls", webTool.calls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected generated document finalization before web research retry, got %d provider request(s)", len(provider.requests))
+	}
+}
+
 func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.T) {
 	root := t.TempDir()
 	badReport := strings.Join([]string{
