@@ -79,6 +79,17 @@ func looksLikeCurrentTaskSteeringRequest(text string) bool {
 		containsAny(lower, "위주", "먼저", "집중", "focus", "prioritize", "first") {
 		return true
 	}
+	if looksLikeBroaderScopeThanDocumentArtifactSteering(lower) {
+		return true
+	}
+	return false
+}
+
+func looksLikeBroaderScopeThanDocumentArtifactSteering(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
 	if containsAny(lower, "문서 산출", "document artifact", "documentation artifact") &&
 		containsAny(lower, "만 검토하지 말고", "만 보지 말고", "not only", "not just") {
 		return true
