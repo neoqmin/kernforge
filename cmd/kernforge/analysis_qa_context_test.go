@@ -169,6 +169,31 @@ func TestProjectAnalysisFastPathNeedsToolsPrefixIsInternalControlToken(t *testin
 	}
 }
 
+func TestProjectAnalysisFastPathUsesLatestExternalUserInputOnly(t *testing.T) {
+	root := t.TempDir()
+	query := "Explain worker architecture."
+	internalContext := "Fast-path check.\n\nRelevant project analysis from past analyze-project runs:\nProject structure answer pack."
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: query})
+	session.AddMessage(internalUserMessage(internalContext))
+	agent := &Agent{Session: session}
+	if agent.shouldTryProjectAnalysisFastPath() {
+		t.Fatalf("internal guidance must not enable project analysis fast path")
+	}
+
+	session = NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{
+		Role: "user",
+		Text: query + "\n\nRelevant project analysis from past analyze-project runs:\nProject structure answer pack.",
+	})
+	session.AddMessage(internalUserMessage("Continue with the final answer."))
+	agent = &Agent{Session: session}
+	if !agent.shouldTryProjectAnalysisFastPath() {
+		t.Fatalf("external user input with cached analysis context should enable fast path")
+	}
+}
+
 func TestAnalysisDocsManifestIncludesQAMetadata(t *testing.T) {
 	run := sampleProjectStructureQARun()
 	manifest := buildAnalysisDocsManifestForTest(run)

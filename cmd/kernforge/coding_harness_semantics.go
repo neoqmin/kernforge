@@ -38,6 +38,24 @@ func latestExternalUserMessageText(messages []Message) string {
 	return ""
 }
 
+func latestExternalUserMessageRawText(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		if messageIsInternalUserGuidance(msg) {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		if text == "" {
+			continue
+		}
+		return text
+	}
+	return ""
+}
+
 func messageIsInternalUserGuidance(msg Message) bool {
 	if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
 		return false
