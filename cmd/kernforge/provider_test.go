@@ -607,6 +607,94 @@ func TestProviderHTTPErrorFallsBackForGenericCodexRateLimitReachedType(t *testin
 	}
 }
 
+func TestProviderHTTPErrorMatchesCodexNonRetryableBodyCodes(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		body        string
+		wantMessage string
+		wantCode    string
+		wantType    string
+	}{
+		{
+			name:        "usage not included 429",
+			status:      http.StatusTooManyRequests,
+			body:        `{"error":{"type":"usage_not_included"}}`,
+			wantMessage: "usage not included",
+			wantType:    "usage_not_included",
+		},
+		{
+			name:        "cyber policy fallback 400",
+			status:      http.StatusBadRequest,
+			body:        `{"error":{"code":"cyber_policy"}}`,
+			wantMessage: "This request has been flagged for possible cybersecurity risk.",
+			wantCode:    "cyber_policy",
+		},
+		{
+			name:        "context window",
+			status:      http.StatusBadRequest,
+			body:        `{"error":{"code":"context_length_exceeded"}}`,
+			wantMessage: "context window exceeded",
+			wantCode:    "context_length_exceeded",
+		},
+		{
+			name:        "quota",
+			status:      http.StatusTooManyRequests,
+			body:        `{"error":{"code":"insufficient_quota"}}`,
+			wantMessage: "quota exceeded",
+			wantCode:    "insufficient_quota",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			err := newProviderHTTPErrorWithHeaders(
+				"openai-codex",
+				tc.status,
+				http.StatusText(tc.status),
+				[]byte(tc.body),
+				"",
+				nil,
+			)
+			var providerErr *ProviderAPIError
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("expected ProviderAPIError, got %T", err)
+			}
+			if providerErr.Message != tc.wantMessage || providerErr.Code != tc.wantCode || providerErr.ErrorType != tc.wantType {
+				t.Fatalf("unexpected provider error: %#v", providerErr)
+			}
+			if providerErr.Retryable() {
+				t.Fatalf("expected non-retryable Codex body error, got %#v", providerErr)
+			}
+		})
+	}
+}
+
+func TestProviderHTTPErrorMatchesCodexServerOverloadedBodyCodes(t *testing.T) {
+	for _, code := range []string{"server_is_overloaded", "slow_down"} {
+		t.Run(code, func(t *testing.T) {
+			err := newProviderHTTPErrorWithHeaders(
+				"openai-codex",
+				http.StatusServiceUnavailable,
+				"503 Service Unavailable",
+				[]byte(`{"error":{"code":"`+code+`"}}`),
+				"",
+				nil,
+			)
+			var providerErr *ProviderAPIError
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("expected ProviderAPIError, got %T", err)
+			}
+			if providerErr.Message != "server overloaded" || providerErr.Code != code {
+				t.Fatalf("unexpected provider error: %#v", providerErr)
+			}
+			if !providerErr.Retryable() {
+				t.Fatalf("expected server overloaded error to remain retryable")
+			}
+		})
+	}
+}
+
 func TestDeepSeekClientUsesRootChatCompletionsEndpoint(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
