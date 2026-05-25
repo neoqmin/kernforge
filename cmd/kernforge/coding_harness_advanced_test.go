@@ -59,6 +59,41 @@ func TestArtifactQualityTargetsIgnoreArchivedPatchFromPreviousTurn(t *testing.T)
 	}
 }
 
+func TestArtifactQualityIgnoresTxtCodeEditWithoutDocumentIntent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.txt"), []byte("fixed\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	contract := buildAcceptanceContract("fix main.txt", TurnIntentEditCode, false, true, false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &contract
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-code-txt",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-txt-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.txt",
+				Operation: "update",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	report := agent.buildCodingHarnessReport("Final Answer\n\nThe implementation is complete and ready for review.", true, false)
+	if len(report.ArtifactQuality.Artifacts) != 0 {
+		t.Fatalf("expected txt code edit not to be treated as document artifact, got %#v", report.ArtifactQuality.Artifacts)
+	}
+	if codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
+		t.Fatalf("expected no artifact-quality blocker for txt code edit, got %#v", report.ArtifactQuality.Findings)
+	}
+}
+
 func TestArtifactQualityBlocksPlaceholderReport(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
@@ -233,6 +268,12 @@ func TestArtifactQualityAllowsPathOnlyArtifactRequest(t *testing.T) {
 	report := agent.buildCodingHarnessReport("Created docs/required.md. Verification not run.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected path-only artifact request to pass quality gate, got %s", report.BlockingFeedback())
+	}
+
+	seedReply := "`docs/required.md` is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact."
+	report = agent.buildCodingHarnessReport(seedReply, false, false)
+	if !report.Approved {
+		t.Fatalf("expected path-only artifact request to pass generated-document seed quality gate, got %s", report.BlockingFeedback())
 	}
 }
 

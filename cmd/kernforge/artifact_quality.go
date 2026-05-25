@@ -72,12 +72,13 @@ func collectArtifactQualityTargets(sess *Session, reply string) []string {
 		targets = append(targets, sess.AcceptanceContract.RequiredArtifacts...)
 	}
 	targets = append(targets, extractClaimedArtifactPaths(reply)...)
-	for _, path := range currentTurnPatchTransactionChangedPaths(sess) {
-		if pathLooksLikeDocumentArtifact(path) {
-			targets = append(targets, path)
+	hasGeneratedDocumentContext := sessionHasGeneratedDocumentArtifactContext(sess)
+	if hasGeneratedDocumentContext {
+		for _, path := range currentTurnPatchTransactionChangedPaths(sess) {
+			if pathLooksLikeDocumentArtifact(path) {
+				targets = append(targets, path)
+			}
 		}
-	}
-	if sessionHasGeneratedDocumentArtifactContext(sess) {
 		targets = append(targets, generatedDocumentArtifactPathsFromHarnessReport(sess.LastCodingHarnessReport)...)
 		for _, path := range documentArtifactHarnessChangedPaths(sess) {
 			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
@@ -601,9 +602,12 @@ func artifactQualityRequiresSubstantiveContent(prompt string, target string, rep
 		"보고서", "리포트", "분석", "설계", "가이드", "계획", "요약", "명세", "제안") {
 		return true
 	}
-	if containsAny(lowerReply, "report", "analysis", "guide", "document", "보고서", "리포트", "분석", "가이드", "문서") &&
+	if containsAny(lowerReply, "report", "analysis", "guide", "보고서", "리포트", "분석", "가이드") &&
 		containsAny(lowerReply, strings.ToLower(filepath.Base(target)), strings.ToLower(normalizeSessionRelativePath(target))) {
 		return true
+	}
+	if !looksLikeDocumentAuthoringIntent(lowerPrompt) && !looksLikeReviewArtifactAuthoringRequest(lowerPrompt) {
+		return false
 	}
 	return len(artifactQualityPromptKeywords(prompt, target)) >= 2
 }
