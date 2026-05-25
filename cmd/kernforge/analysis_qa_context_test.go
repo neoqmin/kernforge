@@ -178,8 +178,15 @@ func TestProjectAnalysisFastPathUsesLatestExternalUserInputOnly(t *testing.T) {
 	session.AddMessage(Message{Role: "user", Text: query})
 	session.AddMessage(internalUserMessage(internalContext))
 	agent := &Agent{Session: session}
+	if !agent.shouldTryProjectAnalysisFastPath() {
+		t.Fatalf("separated internal project analysis context should enable fast path for the preceding external query")
+	}
+
+	session = NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(internalUserMessage(internalContext))
+	agent = &Agent{Session: session}
 	if agent.shouldTryProjectAnalysisFastPath() {
-		t.Fatalf("internal guidance must not enable project analysis fast path")
+		t.Fatalf("internal-only project analysis context must not enable fast path without an external query")
 	}
 
 	session = NewSession(root, "scripted", "model", "", "default")

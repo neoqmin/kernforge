@@ -83,6 +83,23 @@ func latestUserMessageSatisfies(messages []Message, predicate func(string) bool)
 	return false
 }
 
+func latestInternalUserGuidanceText(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		if !messageIsInternalUserGuidance(msg) {
+			return ""
+		}
+		text := strings.TrimSpace(messageExternalSourceText(msg))
+		if text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
 func messageIsInternalUserGuidance(msg Message) bool {
 	if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
 		return false
@@ -97,7 +114,17 @@ func latestExternalOrUserMessageText(messages []Message) string {
 	if prompt := latestExternalUserMessageText(messages); prompt != "" {
 		return prompt
 	}
-	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(messages)))
+	return ""
+}
+
+func sessionEffectiveUserRequestText(sess *Session) string {
+	if sess == nil {
+		return ""
+	}
+	if prompt := latestExternalOrUserMessageText(sess.Messages); prompt != "" {
+		return prompt
+	}
+	return preservableSessionAcceptancePrompt(sess)
 }
 
 func messageExternalSourceText(msg Message) string {

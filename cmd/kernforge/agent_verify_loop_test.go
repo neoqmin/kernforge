@@ -988,6 +988,29 @@ func findToolMessageForTest(messages []Message, callID string) *Message {
 	return nil
 }
 
+func findAssistantMessageForTest(messages []Message, predicate func(Message) bool) *Message {
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		if predicate == nil || predicate(messages[i]) {
+			return &messages[i]
+		}
+	}
+	return nil
+}
+
+func nonInternalMessagesForTest(messages []Message) []Message {
+	out := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Internal || messageIsInternalUserGuidance(msg) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
 func TestAgentDefersEditToolWhenMixedWithReadOnlyTool(t *testing.T) {
 	root := t.TempDir()
 	readTool := &staticTool{name: "read_file", output: "fresh source"}
@@ -3648,11 +3671,14 @@ func TestAgentContinuesSameTurnWhenProviderEndTurnFalse(t *testing.T) {
 	if len(provider.requests) != 2 {
 		t.Fatalf("expected end_turn=false to request one follow-up model turn, got %d", len(provider.requests))
 	}
-	if len(session.Messages) < 3 {
+	if len(nonInternalMessagesForTest(session.Messages)) < 3 {
 		t.Fatalf("expected user plus two assistant messages, got %#v", session.Messages)
 	}
-	if session.Messages[1].Role != "assistant" || session.Messages[1].Phase != messagePhaseCommentary {
-		t.Fatalf("expected first end_turn=false assistant message to be stored as commentary, got %#v", session.Messages[1])
+	commentary := findAssistantMessageForTest(session.Messages, func(msg Message) bool {
+		return msg.Phase == messagePhaseCommentary
+	})
+	if commentary == nil {
+		t.Fatalf("expected first end_turn=false assistant message to be stored as commentary, got %#v", session.Messages)
 	}
 	if strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Text, "Your last assistant message was commentary") {
 		t.Fatalf("end_turn=false follow-up should continue without synthetic commentary warning")
@@ -4060,10 +4086,11 @@ func TestAgentRetriesAbruptlyTruncatedFinalReply(t *testing.T) {
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "cut off mid-sentence") {
 		t.Fatalf("expected continuation guidance, got %#v", lastMessage)
 	}
-	if len(session.Messages) < 2 || session.Messages[1].Text != expected {
+	visibleMessages := nonInternalMessagesForTest(session.Messages)
+	if len(visibleMessages) < 2 || visibleMessages[1].Text != expected {
 		t.Fatalf("expected merged answer to replace original assistant turn, got %#v", session.Messages)
 	}
-	if len(session.Messages) != 2 {
+	if len(visibleMessages) != 2 {
 		t.Fatalf("expected continuation helper turns to be trimmed from history, got %#v", session.Messages)
 	}
 }
@@ -4200,12 +4227,14 @@ func TestAgentStoresSanitizedToolPreambleInsteadOfNarration(t *testing.T) {
 	if reply != "Done." {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
-	if len(session.Messages) < 3 {
+	if len(nonInternalMessagesForTest(session.Messages)) < 3 {
 		t.Fatalf("expected stored session messages, got %#v", session.Messages)
 	}
-	assistantTurn := session.Messages[1]
-	if assistantTurn.Role != "assistant" {
-		t.Fatalf("expected assistant tool turn, got %#v", assistantTurn)
+	assistantTurn := findAssistantMessageForTest(session.Messages, func(msg Message) bool {
+		return len(msg.ToolCalls) > 0
+	})
+	if assistantTurn == nil {
+		t.Fatalf("expected assistant tool turn, got %#v", session.Messages)
 	}
 	if strings.TrimSpace(assistantTurn.Text) != "" {
 		t.Fatalf("expected tool-turn narration to be stripped from stored message, got %q", assistantTurn.Text)
@@ -16207,18 +16236,20 @@ func TestAgentStripsUnsupportedOwnerNodeIDFromReadOnlyToolCalls(t *testing.T) {
 	if !strings.Contains(reply, "inspection completed") {
 		t.Fatalf("expected final reply after read_file, got %q", reply)
 	}
-	if len(session.Messages) < 3 {
+	if len(nonInternalMessagesForTest(session.Messages)) < 3 {
 		t.Fatalf("expected user, assistant tool call, and tool result messages, got %#v", session.Messages)
 	}
-	assistantCall := session.Messages[1]
-	if len(assistantCall.ToolCalls) != 1 {
-		t.Fatalf("expected one assistant tool call, got %#v", assistantCall.ToolCalls)
+	assistantCall := findAssistantMessageForTest(session.Messages, func(msg Message) bool {
+		return len(msg.ToolCalls) > 0
+	})
+	if assistantCall == nil || len(assistantCall.ToolCalls) != 1 {
+		t.Fatalf("expected one assistant tool call, got %#v", session.Messages)
 	}
 	if got := stringValue(toolCallArgumentsMap(assistantCall.ToolCalls[0]), "owner_node_id"); got != "" {
 		t.Fatalf("expected assistant read_file call to be sanitized before execution, got %#v", assistantCall.ToolCalls[0])
 	}
-	toolResult := session.Messages[2]
-	if toolResult.IsError {
+	toolResult := findToolMessageForTest(session.Messages, "call-1")
+	if toolResult == nil || toolResult.IsError {
 		t.Fatalf("expected read_file to execute without ownership mismatch, got %#v", toolResult)
 	}
 	if !strings.Contains(toolResult.Text, "package main") {
@@ -16278,18 +16309,20 @@ func TestAgentStripsUnsupportedOwnerNodeIDFromListFilesToolCall(t *testing.T) {
 	if !strings.Contains(reply, "listing completed") {
 		t.Fatalf("expected final reply after list_files, got %q", reply)
 	}
-	if len(session.Messages) < 3 {
+	if len(nonInternalMessagesForTest(session.Messages)) < 3 {
 		t.Fatalf("expected user, assistant tool call, and tool result messages, got %#v", session.Messages)
 	}
-	assistantCall := session.Messages[1]
-	if len(assistantCall.ToolCalls) != 1 {
-		t.Fatalf("expected one assistant tool call, got %#v", assistantCall.ToolCalls)
+	assistantCall := findAssistantMessageForTest(session.Messages, func(msg Message) bool {
+		return len(msg.ToolCalls) > 0
+	})
+	if assistantCall == nil || len(assistantCall.ToolCalls) != 1 {
+		t.Fatalf("expected one assistant tool call, got %#v", session.Messages)
 	}
 	if got := stringValue(toolCallArgumentsMap(assistantCall.ToolCalls[0]), "owner_node_id"); got != "" {
 		t.Fatalf("expected assistant list_files call to be sanitized before execution, got %#v", assistantCall.ToolCalls[0])
 	}
-	toolResult := session.Messages[2]
-	if toolResult.IsError {
+	toolResult := findToolMessageForTest(session.Messages, "call-1")
+	if toolResult == nil || toolResult.IsError {
 		t.Fatalf("expected list_files to execute without ownership mismatch, got %#v", toolResult)
 	}
 	if !strings.Contains(toolResult.Text, "main.go") {

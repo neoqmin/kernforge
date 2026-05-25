@@ -617,6 +617,29 @@ func TestSystemPromptUsesExternalUserRequestAfterGoalSteering(t *testing.T) {
 	}
 }
 
+func TestSystemPromptFallsBackToAcceptanceContextWhenOnlyInternalMessagesRemain(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: "Fix the RuntimeManager.cpp bug."}
+	session.TaskState = &TaskState{Goal: "Fix the RuntimeManager.cpp bug."}
+	session.AddMessage(internalUserMessage("Additional turn context for the preceding user request:\nRequest mode: inspect-and-fix."))
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "explicitly asks for a fix") {
+		t.Fatalf("expected system prompt to recover preserved edit intent, got %q", prompt)
+	}
+	if strings.Contains(prompt, "The user prompt may include") {
+		t.Fatalf("system prompt should not describe internal context as part of the user prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Separate internal context messages may include") {
+		t.Fatalf("expected system prompt to explain separated internal context, got %q", prompt)
+	}
+}
+
 func TestSystemPromptIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	baseRoot := t.TempDir()
 	activeRoot := filepath.Join(baseRoot, "worktrees", "feature")
@@ -793,6 +816,18 @@ func TestSystemPromptIncludesWebResearchGuidanceAndRelevantMCPCapabilities(t *te
 	}
 	if strings.Contains(prompt, "Echo a message") {
 		t.Fatalf("expected non-web MCP tool to be filtered out, got %q", prompt)
+	}
+}
+
+func TestExplicitWebResearchIntentMatchesCurrentResearchPrompt(t *testing.T) {
+	for _, request := range []string{
+		"Hypervisor 기반 게임핵 탐지 최신 기술들을 리서치하고 설계 문서를 작성해줘",
+		"Research latest hypervisor anti-cheat detection techniques.",
+		"최신 안티치트 동향을 조사해줘",
+	} {
+		if !requestExplicitlyAsksForWebResearch(request) {
+			t.Fatalf("expected current research request to count as explicit web research: %q", request)
+		}
 	}
 }
 

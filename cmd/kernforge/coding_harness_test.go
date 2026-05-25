@@ -190,6 +190,29 @@ func TestLatestExternalOrUserMessageTextSkipsStructuredInternalGuidance(t *testi
 	}
 }
 
+func TestLatestExternalOrUserMessageTextDoesNotFallbackToInternalOnly(t *testing.T) {
+	messages := []Message{
+		internalUserMessage("Additional turn context for the preceding user request:\nRequest mode: inspect-and-fix."),
+		internalUserMessage("Reviewer feedback: revise the final answer before concluding."),
+	}
+
+	if got := latestExternalOrUserMessageText(messages); got != "" {
+		t.Fatalf("expected internal-only user messages to stay invisible as user requests, got %q", got)
+	}
+}
+
+func TestSessionEffectiveUserRequestTextFallsBackToAcceptanceContext(t *testing.T) {
+	original := "RuntimeManager.cpp 버그를 수정해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(internalUserMessage("Additional turn context for the preceding user request:\nRequest mode: inspect-and-fix."))
+
+	if got := sessionEffectiveUserRequestText(session); got != original {
+		t.Fatalf("expected acceptance context fallback for internal-only continuation, got %q", got)
+	}
+}
+
 func TestSessionAddMessageMarksKnownInternalGuidance(t *testing.T) {
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AddMessage(Message{Role: "user", Text: "Fix the runtime gate loop"})
