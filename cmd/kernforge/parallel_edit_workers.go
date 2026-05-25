@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -495,7 +497,7 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 		messages = append(messages, resp.Message)
 		executedTool := false
 		for _, rawCall := range resp.Message.ToolCalls {
-			call := withParallelEditableWorkerOwnerNodeID(rawCall, plan.Node.ID)
+			call := withParallelEditableWorkerToolRouting(rawCall, plan, a.Workspace)
 			if !parallelEditableWorkerAllowsTool(call.Name) {
 				msg := "ERROR: only read_file, list_files, grep, and apply_patch are allowed for this worker."
 				messages = append(messages, Message{
@@ -688,8 +690,8 @@ func buildSpecialistEditableWorkerPrompt(state *TaskState, plan parallelEditable
 		b.WriteString("- Lifecycle note: " + compactPromptSection(plan.Node.LifecycleNote, 180) + "\n")
 	}
 	b.WriteString("\nExecution rules:\n")
-	b.WriteString("1. owner_node_id routing is handled automatically for each tool call.\n")
-	b.WriteString("2. Stay inside the leased scope only.\n")
+	b.WriteString("1. owner_node_id routing is handled automatically for edit calls and leased-file reads.\n")
+	b.WriteString("2. You may inspect broader workspace context with read-only tools, but edits must stay inside the leased scope.\n")
 	b.WriteString("3. Use apply_patch for the final change.\n")
 	b.WriteString("4. After the patch, stop. If no safe patch is needed, return NO_CHANGE with one short reason.\n")
 	return b.String()
@@ -715,13 +717,16 @@ func parallelEditableWorkerAllowsTool(name string) bool {
 	return ok
 }
 
-func withParallelEditableWorkerOwnerNodeID(call ToolCall, ownerNodeID string) ToolCall {
-	ownerNodeID = strings.TrimSpace(ownerNodeID)
+func withParallelEditableWorkerToolRouting(call ToolCall, plan parallelEditableWorkerPlan, workspace Workspace) ToolCall {
+	ownerNodeID := strings.TrimSpace(plan.Node.ID)
 	if ownerNodeID == "" {
 		return call
 	}
 	if !parallelEditableWorkerAllowsTool(call.Name) {
 		return call
+	}
+	if parallelEditableWorkerReadOnlyTool(call.Name) && !parallelEditableWorkerReadOnlyCallWithinLease(call, plan.LeasePaths, workspace) {
+		return withoutParallelEditableWorkerOwnerNodeID(call)
 	}
 	args := map[string]any{}
 	if strings.TrimSpace(call.Arguments) != "" {
@@ -736,6 +741,115 @@ func withParallelEditableWorkerOwnerNodeID(call ToolCall, ownerNodeID string) To
 	}
 	call.Arguments = string(encoded)
 	return call
+}
+
+func withoutParallelEditableWorkerOwnerNodeID(call ToolCall) ToolCall {
+	if strings.TrimSpace(call.Arguments) == "" {
+		return call
+	}
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		return call
+	}
+	if _, ok := args["owner_node_id"]; !ok {
+		return call
+	}
+	delete(args, "owner_node_id")
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return call
+	}
+	call.Arguments = string(encoded)
+	return call
+}
+
+func parallelEditableWorkerReadOnlyTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file", "list_files", "grep":
+		return true
+	default:
+		return false
+	}
+}
+
+func parallelEditableWorkerReadOnlyCallWithinLease(call ToolCall, leasePaths []string, workspace Workspace) bool {
+	leasePaths = normalizeTaskStateList(leasePaths, 32)
+	if len(leasePaths) == 0 {
+		return false
+	}
+	args := toolCallArgumentsMap(call)
+	rawPath := strings.TrimSpace(stringValue(args, "path"))
+	if rawPath == "" {
+		rawPath = "."
+	}
+	for _, candidate := range parallelEditableWorkerLookupCandidates(rawPath, workspace) {
+		for _, lease := range leasePaths {
+			if parallelEditableWorkerLookupMatchesLease(candidate, lease) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func parallelEditableWorkerLookupCandidates(rawPath string, workspace Workspace) []string {
+	rawPath = strings.TrimSpace(rawPath)
+	if rawPath == "" {
+		rawPath = "."
+	}
+	candidates := make([]string, 0, 3)
+	add := func(value string) {
+		normalized := normalizeParallelEditableWorkerLookupPath(value)
+		if normalized == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if strings.EqualFold(existing, normalized) {
+				return
+			}
+		}
+		candidates = append(candidates, normalized)
+	}
+	add(rawPath)
+	for _, root := range []string{workspace.Root, workspace.BaseRoot} {
+		if rel, ok := relativePathWithinRoot(root, rawPath); ok {
+			add(rel)
+		}
+	}
+	return candidates
+}
+
+func normalizeParallelEditableWorkerLookupPath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "."
+	}
+	value = filepath.ToSlash(filepath.Clean(value))
+	value = strings.TrimPrefix(value, "./")
+	value = strings.TrimPrefix(value, "/")
+	if value == "" {
+		return "."
+	}
+	return strings.ToLower(value)
+}
+
+func parallelEditableWorkerLookupMatchesLease(candidate string, lease string) bool {
+	candidate = normalizeParallelEditableWorkerLookupPath(candidate)
+	lease = normalizeOwnershipPattern(lease)
+	if candidate == "" || lease == "" {
+		return false
+	}
+	if ownershipPatternMatches(candidate, lease) {
+		return true
+	}
+	if !strings.ContainsAny(lease, "*?") {
+		leaseDir := strings.TrimSpace(path.Dir(lease))
+		return leaseDir != "" && leaseDir != "." && strings.EqualFold(candidate, leaseDir)
+	}
+	if baseDir := editableLeasePatternBaseDir(lease); baseDir != "" {
+		return strings.EqualFold(candidate, baseDir)
+	}
+	return false
 }
 
 func buildParallelEditableWorkerPatchCall(ownerNodeID string, patch string) (ToolCall, error) {

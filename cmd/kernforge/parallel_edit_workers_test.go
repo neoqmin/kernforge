@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +134,156 @@ func TestReadFileToolRoutesOwnedLookupIntoSpecialistWorktree(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestParallelEditableWorkerRoutesReadOnlyOwnerOnlyInsideLease(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	plan := parallelEditableWorkerPlan{
+		Node: TaskNode{
+			ID: "plan-02",
+		},
+		LeasePaths: []string{"driver/monitor.inf"},
+	}
+
+	inside := withParallelEditableWorkerToolRouting(ToolCall{
+		Name:      "read_file",
+		Arguments: `{"path":"driver/monitor.inf"}`,
+	}, plan, ws)
+	if got := strings.TrimSpace(stringValue(toolCallArgumentsMap(inside), "owner_node_id")); got != "plan-02" {
+		t.Fatalf("expected leased read_file to keep owner_node_id, got %#v", inside)
+	}
+
+	absoluteInside := withParallelEditableWorkerToolRouting(ToolCall{
+		Name:      "read_file",
+		Arguments: fmt.Sprintf(`{"path":%q}`, filepath.Join(root, "driver", "monitor.inf")),
+	}, plan, ws)
+	if got := strings.TrimSpace(stringValue(toolCallArgumentsMap(absoluteInside), "owner_node_id")); got != "plan-02" {
+		t.Fatalf("expected absolute leased read_file to keep owner_node_id, got %#v", absoluteInside)
+	}
+
+	outside := withParallelEditableWorkerToolRouting(ToolCall{
+		Name:      "read_file",
+		Arguments: `{"path":"README.md","owner_node_id":"stale-owner"}`,
+	}, plan, ws)
+	if got := strings.TrimSpace(stringValue(toolCallArgumentsMap(outside), "owner_node_id")); got != "" {
+		t.Fatalf("expected out-of-lease read_file to drop owner_node_id, got %#v", outside)
+	}
+
+	patch := withParallelEditableWorkerToolRouting(ToolCall{
+		Name:      "apply_patch",
+		Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+	}, plan, ws)
+	if got := strings.TrimSpace(stringValue(toolCallArgumentsMap(patch), "owner_node_id")); got != "plan-02" {
+		t.Fatalf("expected apply_patch to keep owner_node_id, got %#v", patch)
+	}
+}
+
+func TestParallelEditableWorkerReadOnlyLookupOutsideLeaseDoesNotTripOwnership(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "driver"), 0o755); err != nil {
+		t.Fatalf("MkdirAll driver: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "driver", "monitor.inf"), []byte("Version=1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile monitor.inf: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# context\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile README.md: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			abs, err := ws.resolveAgainstRoot(root, req.Path)
+			if err != nil {
+				return EditRoutingResult{}, err
+			}
+			abs, err = ensurePathWithinRoot(req.Path, root, abs)
+			if err != nil {
+				return EditRoutingResult{}, err
+			}
+			allowed, _, _, err := editableOwnershipMatch(root, abs, []string{"driver/monitor.inf"})
+			if err != nil {
+				return EditRoutingResult{}, err
+			}
+			if !allowed {
+				return EditRoutingResult{}, fmt.Errorf("%w: path %s is outside editable ownership for specialist driver-build-fixer", ErrEditTargetMismatch, req.Path)
+			}
+		}
+		return ws.resolveEditFallback(req)
+	}
+
+	session := NewSession(root, "openai", "gpt-test", "", "default")
+	session.TaskState = &TaskState{
+		ExecutorFocusNode: "plan-01",
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "read_file",
+						Arguments: `{"path":"README.md"}`,
+					}},
+				},
+				StopReason: "tool_use",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "NO_CHANGE: broader context read completed.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:     "gpt-test",
+			MaxTokens: 1024,
+		},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Session:        session,
+		Workspace:      ws,
+		Tools: NewToolRegistry(
+			NewReadFileTool(ws),
+			NewApplyPatchTool(ws),
+		),
+	}
+
+	result := agent.runParallelEditableWorker(context.Background(), parallelEditableWorkerPlan{
+		Node: TaskNode{
+			ID:                 "plan-02",
+			Title:              "Patch driver monitor",
+			Kind:               "edit",
+			Status:             "ready",
+			EditableLeasePaths: []string{"driver/monitor.inf"},
+		},
+		Assignment: SpecialistAssignment{
+			Profile: SpecialistSubagentProfile{
+				Name: "driver-build-fixer",
+			},
+			Reason: "test routing",
+		},
+		LeasePaths: []string{"driver/monitor.inf"},
+		Reason:     "test routing",
+	})
+	if result.Err != nil {
+		t.Fatalf("runParallelEditableWorker: %v", result.Err)
+	}
+	if !strings.Contains(result.Detail, "NO_CHANGE") {
+		t.Fatalf("expected worker final answer after out-of-lease read-only lookup, got %#v", result)
+	}
 }
 
 func TestMaybeRunInteractiveParallelEditableWorkersDefersOverlappingSecondaryEditNode(t *testing.T) {
