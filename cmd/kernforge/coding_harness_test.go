@@ -79,6 +79,39 @@ func TestCodingHarnessSourcePromptSkipsInternalReviewerFeedback(t *testing.T) {
 	}
 }
 
+func TestCodingHarnessSourcePromptUsesFreshExternalTaskOverStaleContract(t *testing.T) {
+	stale := "Tavern/BugReport.md 보고서를 생성해"
+	fresh := "RuntimeManager.cpp 버그를 수정해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: stale}
+	session.TaskState = &TaskState{Goal: stale}
+	session.Messages = []Message{
+		{Role: "user", Text: stale},
+		{Role: "assistant", Text: "보고서를 생성했습니다."},
+		{Role: "user", Text: fresh},
+	}
+
+	if got := codingHarnessSourcePrompt(session); got != fresh {
+		t.Fatalf("expected fresh external request to override stale contract, got %q", got)
+	}
+}
+
+func TestCodingHarnessSourcePromptPreservesContractForControlFollowup(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "보고서를 생성했습니다."},
+		{Role: "user", Text: "최종 답변 줘"},
+	}
+
+	if got := codingHarnessSourcePrompt(session); got != original {
+		t.Fatalf("expected control follow-up to preserve contract prompt, got %q", got)
+	}
+}
+
 func TestLatestExternalOrUserMessageTextSkipsInternalSteering(t *testing.T) {
 	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
 	messages := []Message{
