@@ -2410,10 +2410,14 @@ func providerRetryDelay(baseDelay time.Duration, attempt int) time.Duration {
 		return delay
 	}
 	offset := time.Duration(time.Now().UnixNano()%span) - jitterWindow
-	if delay+offset <= 0 {
+	jittered := delay + offset
+	if jittered <= 0 {
 		return time.Millisecond
 	}
-	return delay + offset
+	if jittered > maxProviderRetryDelay {
+		return maxProviderRetryDelay
+	}
+	return jittered
 }
 
 func configRequestTimeout(cfg Config) time.Duration {

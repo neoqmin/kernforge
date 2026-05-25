@@ -3112,6 +3112,18 @@ func TestProviderRetryDelayUsesExponentialBackoffWithinJitterBounds(t *testing.T
 	}
 }
 
+func TestProviderRetryDelayDoesNotExceedMaxAfterJitter(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		delay := providerRetryDelay(maxProviderRetryDelay, 8)
+		if delay > maxProviderRetryDelay {
+			t.Fatalf("expected retry delay to stay capped at %s, got %s", maxProviderRetryDelay, delay)
+		}
+		if delay <= 0 {
+			t.Fatalf("expected positive retry delay, got %s", delay)
+		}
+	}
+}
+
 func TestPlatformUserConfigBaseDirUsesHomeDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
