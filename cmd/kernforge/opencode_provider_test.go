@@ -176,7 +176,7 @@ func TestBuildOpenCodeResponsesPayloadPreservesToolContentItems(t *testing.T) {
 	}
 }
 
-func TestBuildOpenCodeResponsesPayloadLabelsInternalGuidance(t *testing.T) {
+func TestBuildOpenCodeResponsesPayloadPromotesInternalGuidanceToDeveloper(t *testing.T) {
 	payload, err := buildOpenCodeResponsesPayload(ChatRequest{
 		Model: "opencode/gpt-5.3-codex",
 		Messages: []Message{
@@ -202,8 +202,11 @@ func TestBuildOpenCodeResponsesPayloadLabelsInternalGuidance(t *testing.T) {
 	second := input[1].(map[string]any)
 	content := second["content"].([]any)
 	text := content[0].(map[string]any)
-	if second["role"] != "user" || !strings.HasPrefix(text["text"].(string), internalModelGuidanceHeader) {
-		t.Fatalf("expected internal guidance prefix in compatibility input, got %#v", second)
+	if second["role"] != "developer" {
+		t.Fatalf("expected internal guidance to become developer input, got %#v", second)
+	}
+	if got := text["text"].(string); got != "Please provide the final answer now." || strings.Contains(got, internalModelGuidanceHeader) {
+		t.Fatalf("expected raw developer guidance without user-compatibility prefix, got %q", got)
 	}
 }
 

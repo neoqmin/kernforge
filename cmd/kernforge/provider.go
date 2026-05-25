@@ -235,12 +235,34 @@ func messageIsInternalUserGuidanceForModel(msg Message) bool {
 	return msg.Internal && strings.EqualFold(strings.TrimSpace(msg.Role), "user")
 }
 
+func providerSystemGuidanceMessage(msg Message) (string, bool) {
+	if messageIsInternalUserGuidanceForModel(msg) && len(msg.Images) == 0 {
+		return strings.TrimSpace(modelFacingMessageText(msg)), true
+	}
+	if strings.EqualFold(strings.TrimSpace(msg.Role), "developer") {
+		return strings.TrimSpace(msg.Text), true
+	}
+	return "", false
+}
+
 func openAICodexInputRoleForMessage(msg Message) string {
 	role := strings.TrimSpace(msg.Role)
 	if messageIsInternalUserGuidanceForModel(msg) && len(msg.Images) == 0 {
 		return "developer"
 	}
 	return role
+}
+
+func appendProviderSystemText(existing string, addition string) string {
+	existing = strings.TrimSpace(existing)
+	addition = strings.TrimSpace(addition)
+	if addition == "" {
+		return existing
+	}
+	if existing == "" {
+		return addition
+	}
+	return existing + "\n\n" + addition
 }
 
 func cliConversationRoleLabel(msg Message) string {
@@ -972,6 +994,10 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	}
 
 	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
+		if text, ok := providerSystemGuidanceMessage(msg); ok {
+			payload.System = appendProviderSystemText(payload.System, text)
+			continue
+		}
 		msg.Text = modelFacingMessageText(msg)
 		blocked := anthropicMessage{Role: msg.Role}
 		switch msg.Role {
@@ -1237,6 +1263,13 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 
 	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
+		if text, ok := providerSystemGuidanceMessage(msg); ok {
+			payload.Messages = append(payload.Messages, openAIMessage{
+				Role:    "system",
+				Content: text,
+			})
+			continue
+		}
 		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
 		case "system":
@@ -2083,6 +2116,13 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		})
 	}
 	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
+		if text, ok := providerSystemGuidanceMessage(msg); ok {
+			payload.Messages = append(payload.Messages, ollamaMessage{
+				Role:    "system",
+				Content: text,
+			})
+			continue
+		}
 		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
 		case "system":

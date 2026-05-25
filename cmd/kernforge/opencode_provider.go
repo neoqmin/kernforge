@@ -223,6 +223,17 @@ func buildOpenCodeResponsesPayload(req ChatRequest) (map[string]any, error) {
 
 	input := make([]any, 0, len(req.Messages))
 	for _, msg := range req.Messages {
+		if text, ok := openCodeResponsesDeveloperMessage(msg); ok {
+			input = append(input, map[string]any{
+				"type": "message",
+				"role": "developer",
+				"content": []map[string]any{{
+					"type": "input_text",
+					"text": text,
+				}},
+			})
+			continue
+		}
 		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
 		case "system":
@@ -291,6 +302,16 @@ func buildOpenCodeResponsesPayload(req ChatRequest) (map[string]any, error) {
 	}
 
 	return payload, nil
+}
+
+func openCodeResponsesDeveloperMessage(msg Message) (string, bool) {
+	if messageIsInternalUserGuidanceForModel(msg) && len(msg.Images) == 0 {
+		return strings.TrimSpace(msg.Text), true
+	}
+	if strings.EqualFold(strings.TrimSpace(msg.Role), "developer") {
+		return strings.TrimSpace(msg.Text), true
+	}
+	return "", false
 }
 
 func openCodeResponsesUserContent(baseDir string, msg Message) ([]map[string]any, error) {
