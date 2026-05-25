@@ -2732,6 +2732,96 @@ func TestOpenAICodexClientCompleteRefreshesAfterUnauthorized(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexClientCompleteRetriesWithoutUnsupportedReasoningSummary(t *testing.T) {
+	tokenSource := &refreshingCodexTokenSource{
+		token:          "old-token",
+		refreshedToken: "new-token",
+	}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		requestCount++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode request %d: %v", requestCount, err)
+		}
+		reasoning, ok := payload["reasoning"].(map[string]any)
+		if !ok {
+			t.Fatalf("request %d missing reasoning payload: %#v", requestCount, payload["reasoning"])
+		}
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get("authorization"); got != "Bearer old-token" {
+				t.Fatalf("unexpected first authorization header: %q", got)
+			}
+			if reasoning["summary"] != "auto" {
+				t.Fatalf("first request should include default summary, got %#v", reasoning)
+			}
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unsupported parameter: 'reasoning.summary'","type":"invalid_request_error","param":"reasoning.summary","code":"unsupported_parameter"}}`))
+		case 2:
+			if got := r.Header.Get("authorization"); got != "Bearer old-token" {
+				t.Fatalf("unexpected second authorization header: %q", got)
+			}
+			if _, ok := reasoning["summary"]; ok {
+				t.Fatalf("request %d should omit unsupported summary after retry, got %#v", requestCount, reasoning)
+			}
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+		case 3, 4:
+			if got := r.Header.Get("authorization"); got != "Bearer new-token" {
+				t.Fatalf("unexpected authorization header for request %d: %q", requestCount, got)
+			}
+			if _, ok := reasoning["summary"]; ok {
+				t.Fatalf("request %d should omit unsupported summary after retry/cache, got %#v", requestCount, reasoning)
+			}
+			if reasoning["effort"] != "medium" {
+				t.Fatalf("request %d should keep reasoning effort, got %#v", requestCount, reasoning)
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
+		default:
+			t.Fatalf("unexpected request count: %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = tokenSource
+	req := ChatRequest{
+		Model: "gpt-5.2",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	}
+	resp, err := client.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete first call: %v", err)
+	}
+	if resp.Message.Text != "ready" {
+		t.Fatalf("expected retry response text, got %q", resp.Message.Text)
+	}
+	resp, err = client.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete cached call: %v", err)
+	}
+	if resp.Message.Text != "ready" {
+		t.Fatalf("expected cached response text, got %q", resp.Message.Text)
+	}
+	if requestCount != 4 {
+		t.Fatalf("expected retry plus cached summary-free request, got %d requests", requestCount)
+	}
+	if tokenSource.accessCalls != 2 || tokenSource.refreshCalls != 1 {
+		t.Fatalf("expected two access calls and one refresh, got access=%d refresh=%d", tokenSource.accessCalls, tokenSource.refreshCalls)
+	}
+}
+
 func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {
