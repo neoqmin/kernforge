@@ -376,6 +376,13 @@ func TestNormalizeRuntimeErrorClassifiesCodexResponseFailures(t *testing.T) {
 			retryable: false,
 		},
 		{
+			name:      "usage-not-included",
+			code:      "usage_not_included",
+			message:   "usage not included",
+			category:  "usage_not_included",
+			retryable: false,
+		},
+		{
 			name:      "cyber-policy",
 			code:      "cyber_policy",
 			message:   "This request was flagged for cyber policy.",
@@ -393,6 +400,13 @@ func TestNormalizeRuntimeErrorClassifiesCodexResponseFailures(t *testing.T) {
 			name:      "server-overloaded",
 			code:      "server_overloaded",
 			message:   "The server is overloaded. Please try again later.",
+			category:  "server_overloaded",
+			retryable: true,
+		},
+		{
+			name:      "slow-down",
+			code:      "slow_down",
+			message:   "server overloaded",
 			category:  "server_overloaded",
 			retryable: true,
 		},

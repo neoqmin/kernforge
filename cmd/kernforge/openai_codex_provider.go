@@ -1710,6 +1710,13 @@ type openAICodexOutputItem struct {
 	} `json:"summary,omitempty"`
 }
 
+type openAICodexResponseErrorPayload struct {
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+	Param   string `json:"param,omitempty"`
+	Code    any    `json:"code,omitempty"`
+}
+
 func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	var decoded struct {
 		ID                string `json:"id,omitempty"`
@@ -1719,20 +1726,15 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 		IncompleteDetails *struct {
 			Reason string `json:"reason,omitempty"`
 		} `json:"incomplete_details,omitempty"`
-		Error *struct {
-			Message string `json:"message"`
-			Type    string `json:"type,omitempty"`
-			Param   string `json:"param,omitempty"`
-			Code    any    `json:"code,omitempty"`
-		} `json:"error,omitempty"`
-		Metadata json.RawMessage         `json:"metadata,omitempty"`
-		Output   []openAICodexOutputItem `json:"output,omitempty"`
+		Error    *openAICodexResponseErrorPayload `json:"error,omitempty"`
+		Metadata json.RawMessage                  `json:"metadata,omitempty"`
+		Output   []openAICodexOutputItem          `json:"output,omitempty"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return ChatResponse{}, err
 	}
 	if decoded.Error != nil {
-		return ChatResponse{}, newProviderMessageError("openai-codex", decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+		return ChatResponse{}, newOpenAICodexResponseError(data, decoded.Error)
 	}
 
 	out := Message{Role: "assistant"}
@@ -2210,7 +2212,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				}
 				return resp, true, nil
 			}
-			return ChatResponse{}, false, newProviderMessageError("openai-codex", "stream failed", "", "", nil, []byte(payload))
+			return ChatResponse{}, false, newProviderMessageError("openai-codex", "response.failed event received", "", "", nil, []byte(payload))
 		case "response.incomplete":
 			reason := openAICodexIncompleteReason(event.Response)
 			message := "Incomplete response returned"
@@ -2397,6 +2399,37 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		RateLimitSummary:   rateLimitSummary,
 		ModelVerifications: append([]string(nil), modelVerifications...),
 	}, nil
+}
+
+func newOpenAICodexResponseError(data []byte, responseError *openAICodexResponseErrorPayload) error {
+	if responseError == nil {
+		return newProviderMessageError("openai-codex", "response.failed event received", "", "", nil, data)
+	}
+	code := normalizeProviderErrorCode(responseError.Code)
+	message := strings.TrimSpace(responseError.Message)
+	switch code {
+	case "context_length_exceeded":
+		message = "context window exceeded"
+	case "insufficient_quota":
+		message = "quota exceeded"
+	case "usage_not_included":
+		message = "usage not included"
+	case "cyber_policy":
+		if message == "" {
+			message = "This request has been flagged for possible cybersecurity risk."
+		}
+	case "invalid_prompt":
+		if message == "" {
+			message = "Invalid request."
+		}
+	case "server_is_overloaded", "slow_down":
+		message = "server overloaded"
+	default:
+		if message == "" {
+			message = "response.failed event received"
+		}
+	}
+	return newProviderMessageError("openai-codex", message, responseError.Type, responseError.Param, code, data)
 }
 
 func openAICodexMessageHasOutput(msg Message) bool {
