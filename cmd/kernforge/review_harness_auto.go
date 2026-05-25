@@ -507,6 +507,9 @@ func generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(requestText stri
 		looksLikeFinalAnswerFollowupPrompt(trimmed) {
 		return false
 	}
+	if looksLikeBroaderScopeThanDocumentArtifactSteering(trimmed) {
+		return true
+	}
 	lower := strings.ToLower(trimmed)
 	if looksLikeExplicitGitIntent(lower) ||
 		requestLooksLikeLocalVerificationWork(lower) ||

@@ -12354,6 +12354,65 @@ func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) 
 	}
 }
 
+func TestAgentClearsGeneratedDocumentFinalOnlyForBroaderScopeSteering(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 256,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Tools: NewToolRegistry(
+			&staticTool{name: "read_file", output: "read"},
+			&staticTool{name: "run_shell", output: "shell"},
+			&staticTool{name: "apply_patch", output: "patch"},
+		),
+	}
+
+	steering := "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해"
+	if agent.changesAreGeneratedDocumentArtifactsForTurn(steering) {
+		t.Fatalf("broader-scope steering must not inherit generated document final-only context")
+	}
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(steering, []ToolCall{{Name: "read_file", Arguments: `{"path":"cmd/kernforge/agent.go"}`}}) {
+		t.Fatalf("broader-scope steering should keep inspection tools available")
+	}
+	plan := agent.buildTurnToolExposurePlan(nil, steering, false, false, false, false, false)
+	if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
+		t.Fatalf("broader-scope steering should not force document final-only exposure, got %#v", plan)
+	}
+	for _, name := range []string{"read_file", "run_shell", "apply_patch"} {
+		if plan.DisabledTools[name] {
+			t.Fatalf("broader-scope steering should not disable %s through document final-only mode, got %#v", name, plan.DisabledTools)
+		}
+	}
+}
+
 func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
