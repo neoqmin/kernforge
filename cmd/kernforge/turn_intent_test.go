@@ -14,3 +14,16 @@ func TestClassifyTurnIntentKeepsReviewReportAuthoringAsEdit(t *testing.T) {
 		t.Fatalf("expected review report authoring to remain edit intent, got %q", got)
 	}
 }
+
+func TestClassifyTurnIntentRecognizesGitOperationRequest(t *testing.T) {
+	for _, request := range []string{
+		"커밋하자",
+		"변경사항 commit 해줘",
+		"git status 확인해줘",
+		"push 하자",
+	} {
+		if got := classifyTurnIntent(request); got != TurnIntentRunCommand {
+			t.Fatalf("expected git operation request %q to be run-command intent, got %q", request, got)
+		}
+	}
+}
