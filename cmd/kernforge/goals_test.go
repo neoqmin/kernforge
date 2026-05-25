@@ -1180,6 +1180,103 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	}
 }
 
+func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	mustRunGit(t, root, "add", "go.mod", "main.go", "main_test.go")
+	mustRunGit(t, root, "commit", "-m", "Add goal test module")
+	if err := os.WriteFile(filepath.Join(root, "scratch.txt"), []byte("preexisting dirty file\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	session := NewSession(root, "provider", "model", "", "default")
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	checkpoints := &CheckpointManager{Root: filepath.Join(t.TempDir(), "checkpoints")}
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		checkpoints:   checkpoints,
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, ".kernforge", "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				t.Fatalf("accepted document artifact should skip complete-time semantic review:\n%s", prompt)
+			}
+			return "APPROVED: unused", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run " + request); err != nil {
+		t.Fatalf("start goal: %v", err)
+	}
+	checkpoint, err := checkpoints.Create(root, "before-document-artifact")
+	if err != nil {
+		t.Fatalf("checkpoint: %v", err)
+	}
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("mkdir report dir: %v", err)
+	}
+	content := "# Tavern Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"
+	if err := os.WriteFile(reportPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "file",
+				Size:         int64(len(content)),
+				ContentChars: len(content),
+				Substantive:  true,
+				Checks:       []string{"document artifact content accepted"},
+			}},
+		},
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	goal.Iteration = 1
+	goal.CheckpointRefs = append(goal.CheckpointRefs, GoalCheckpointRef{
+		Iteration: 1,
+		ID:        checkpoint.ID,
+		Name:      checkpoint.Name,
+		CreatedAt: checkpoint.CreatedAt,
+		Status:    "created",
+	})
+	session.UpsertGoal(goal)
+
+	if err := rt.handleVerifyCommand("--full"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := rt.handleGoalCommand("complete latest"); err != nil {
+		t.Fatalf("complete goal: %v", err)
+	}
+
+	goal, ok = session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusComplete {
+		t.Fatalf("expected complete document artifact goal, got %#v", goal)
+	}
+	if goal.LastSemanticReview == nil || !goal.LastSemanticReview.Approved ||
+		!strings.Contains(goal.LastSemanticReview.Feedback, "Generated document artifact quality gate") {
+		t.Fatalf("expected synthetic document artifact semantic review, got %#v", goal.LastSemanticReview)
+	}
+}
+
 func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
