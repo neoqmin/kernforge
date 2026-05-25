@@ -9,13 +9,17 @@ func codingHarnessSourcePrompt(sess *Session) string {
 	if sess == nil {
 		return ""
 	}
+	latestExternal := latestExternalUserMessageText(sess.Messages)
+	if latestExternal != "" && !acceptanceContextPreservingControlRequest(latestExternal) {
+		return latestExternal
+	}
 	if sess.AcceptanceContract != nil {
 		if prompt := strings.TrimSpace(sess.AcceptanceContract.SourcePrompt); prompt != "" {
 			return prompt
 		}
 	}
-	if prompt := latestExternalUserMessageText(sess.Messages); prompt != "" {
-		return prompt
+	if latestExternal != "" {
+		return latestExternal
 	}
 	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(sess.Messages)))
 }
