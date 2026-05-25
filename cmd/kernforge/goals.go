@@ -1059,12 +1059,23 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 				Blockers:     append([]string(nil), audit.Blockers...),
 				Warnings:     append([]string(nil), audit.Warnings...),
 			}
+			if len(goal.CheckpointRefs) > 0 {
+				checkpoint := goal.CheckpointRefs[len(goal.CheckpointRefs)-1]
+				iteration.CheckpointID = checkpoint.ID
+				iteration.CheckpointName = checkpoint.Name
+			}
 			if goal.LastProgress != nil {
 				iteration.Progress = goal.LastProgress
 				iteration.ChangedFiles = append([]string(nil), goal.LastProgress.ChangedFiles...)
 			}
 			semanticCommand := startGoalCommand(goal.Iteration, "semantic-review", "independent semantic goal review")
-			semanticReview, semanticErr := rt.runGoalSemanticReview(context.Background(), goal, audit, iteration)
+			var semanticReview GoalSemanticReview
+			var semanticErr error
+			if rt.goalIterationGeneratedDocumentArtifactGateAccepted(goal, iteration) {
+				semanticReview = generatedDocumentArtifactGoalSemanticReview()
+			} else {
+				semanticReview, semanticErr = rt.runGoalSemanticReview(context.Background(), goal, audit, iteration)
+			}
 			semanticCommand.finish(statusForErr(semanticErr), semanticReviewSummaryOrError(semanticReview, semanticErr))
 			commands = append(commands, semanticCommand)
 			if semanticErr != nil {
