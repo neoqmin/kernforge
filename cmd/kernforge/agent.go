@@ -877,6 +877,29 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
+			if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(latestUser, resp.Message.ToolCalls, resp.Message.Text, attemptedEditTool, unresolvedVerification); err != nil {
+				return "", err
+			} else if finalized {
+				return reply, nil
+			}
+			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
+				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation, planning, or additional inspection after the document is written."
+				if a.prepareGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, attemptedEditTool, unresolvedVerification) {
+					reply, err := a.finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(resp.Message.ToolCalls, attemptedEditTool, unresolvedVerification, reason)
+					if err != nil {
+						return "", err
+					}
+					return reply, nil
+				}
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					reason,
+					generatedDocumentArtifactValidationToolGuidance(),
+				); err != nil {
+					return "", err
+				}
+				continue
+			}
 			if !latestUserExplicitWebResearch &&
 				(shouldBlockWebResearchForLocalCodeWork(resp.Message.ToolCalls, a.Session, a.MCP) ||
 					(localCodeToolPolicyForTurn && toolCallsIncludeWebResearch(resp.Message.ToolCalls, a.MCP))) {
@@ -910,29 +933,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: local tools were deferred until required external research is gathered.",
 					guidance,
-				); err != nil {
-					return "", err
-				}
-				continue
-			}
-			if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(latestUser, resp.Message.ToolCalls, resp.Message.Text, attemptedEditTool, unresolvedVerification); err != nil {
-				return "", err
-			} else if finalized {
-				return reply, nil
-			}
-			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
-				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation, planning, or additional inspection after the document is written."
-				if a.prepareGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, attemptedEditTool, unresolvedVerification) {
-					reply, err := a.finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(resp.Message.ToolCalls, attemptedEditTool, unresolvedVerification, reason)
-					if err != nil {
-						return "", err
-					}
-					return reply, nil
-				}
-				if err := a.addToolCallRedirectGuidance(
-					resp.Message.ToolCalls,
-					reason,
-					generatedDocumentArtifactValidationToolGuidance(),
 				); err != nil {
 					return "", err
 				}
