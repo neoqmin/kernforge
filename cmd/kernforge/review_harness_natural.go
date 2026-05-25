@@ -298,9 +298,24 @@ func hasNaturalReviewIntent(input string) bool {
 		"review", "code review", "audit", "inspect")
 }
 
+func hasTurnReviewIntent(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"리뷰", "검토", "검수", "코드리뷰", "코드 리뷰",
+		"review", "code review", "audit") {
+		return true
+	}
+	return containsAny(lower, "inspect") && containsAny(lower,
+		"code", "source", "file", "diff", "patch", "change", "changes", "bug", "bugs", "regression", "pr",
+		"코드", "소스", "파일", "패치", "변경", "변경사항", "버그", "회귀")
+}
+
 func looksLikeReviewInspectionOnlyRequest(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(input)))
-	if lower == "" || hasNaturalReviewNegation(lower) || !hasNaturalReviewIntent(lower) {
+	if lower == "" || hasNaturalReviewNegation(lower) || !hasTurnReviewIntent(lower) {
 		return false
 	}
 	if looksLikeReviewArtifactAuthoringRequest(lower) {

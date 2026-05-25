@@ -48,7 +48,7 @@ func classifyTurnIntent(text string) TurnIntent {
 	if looksLikeExplicitEditIntent(base) {
 		return TurnIntentEditCode
 	}
-	if hasNaturalReviewIntent(base) && !looksLikeReviewArtifactAuthoringRequest(base) {
+	if hasTurnReviewIntent(base) && !looksLikeReviewArtifactAuthoringRequest(base) {
 		return TurnIntentReviewCode
 	}
 	if containsAny(base, "실행", "run ", "command", "명령", "테스트", "빌드", "build", "test") {
