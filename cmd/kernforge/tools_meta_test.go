@@ -15,6 +15,7 @@ type mutableRegistryTool struct {
 	def       ToolDefinition
 	output    string
 	hidden    bool
+	parallel  bool
 	lastInput map[string]any
 }
 
@@ -37,6 +38,10 @@ func (t *mutableRegistryTool) Execute(ctx context.Context, input any) (string, e
 
 func (t *mutableRegistryTool) HiddenFromModel() bool {
 	return t != nil && t.hidden
+}
+
+func (t *mutableRegistryTool) SupportsParallelToolCalls() bool {
+	return t != nil && t.parallel
 }
 
 func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
@@ -110,6 +115,72 @@ func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
 	}
 	if result.DisplayText != "ok" {
 		t.Fatalf("expected registered tool to execute, got %q", result.DisplayText)
+	}
+}
+
+func TestToolRegistryHiddenToolIsDispatchOnlyAndNotParallel(t *testing.T) {
+	hidden := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "hidden_parallel",
+			InputSchema: emptyObjectSchema(),
+		},
+		output:   "ok",
+		hidden:   true,
+		parallel: true,
+	}
+	registry := NewToolRegistry(hidden)
+
+	if defs := registry.Definitions(); len(defs) != 0 {
+		t.Fatalf("hidden tool must not be model-visible, got %#v", defs)
+	}
+	if registry.ToolCallSupportsParallel("hidden_parallel") {
+		t.Fatalf("hidden dispatch-only tools must not advertise parallel execution")
+	}
+	result, err := registry.ExecuteDetailed(context.Background(), "hidden_parallel", `{}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if result.DisplayText != "ok" {
+		t.Fatalf("hidden dispatch-only tool should remain executable, got %q", result.DisplayText)
+	}
+}
+
+func TestTurnToolExposurePlanModelDefinitionsCentralizesDisabledExposure(t *testing.T) {
+	visible := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "visible",
+			InputSchema: emptyObjectSchema(),
+		},
+	}
+	disabled := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "disabled",
+			InputSchema: emptyObjectSchema(),
+		},
+	}
+	hidden := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "hidden",
+			InputSchema: emptyObjectSchema(),
+		},
+		hidden: true,
+	}
+	registry := NewToolRegistry(visible, disabled, hidden)
+	plan := turnToolExposurePlan{
+		DisabledTools: map[string]bool{
+			"disabled": true,
+		},
+	}
+
+	defs := plan.modelToolDefinitions(registry, "", "")
+	if len(defs) != 1 || defs[0].Name != "visible" {
+		t.Fatalf("expected only the visible enabled tool to reach the model, got %#v", defs)
+	}
+	if !plan.toolDisabled("disabled") {
+		t.Fatalf("expected disabled tool to be disabled")
+	}
+	if !plan.toolDisabled(" ") {
+		t.Fatalf("empty tool names should be treated as disabled")
 	}
 }
 

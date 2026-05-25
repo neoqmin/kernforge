@@ -900,6 +900,9 @@ func (r *ToolRegistry) ToolCallSupportsParallel(name string) bool {
 	if !ok || isNilTool(tool) {
 		return false
 	}
+	if toolHiddenFromModel(tool) {
+		return false
+	}
 	parallel, ok := tool.(parallelToolCallSupport)
 	return ok && parallel.SupportsParallelToolCalls()
 }
