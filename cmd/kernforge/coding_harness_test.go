@@ -101,6 +101,7 @@ func TestLatestExternalOrUserMessageTextSkipsAgentLoopInternalGuidance(t *testin
 		"The last read-only inspection tool was blocked by editable ownership routing. This is not a stale patch problem.",
 		"You have already made multiple rounds of edits. Do not call more edit tools unless the previous changes are clearly insufficient.",
 		"Your last response was a raw internal REVIEW_RESULT block. Do not expose review harness result syntax to the user as the final answer.",
+		"Please provide the final answer now.",
 	}
 	for _, internal := range internalMessages {
 		messages := []Message{
