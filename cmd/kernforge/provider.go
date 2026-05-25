@@ -475,12 +475,14 @@ func newProviderHTTPErrorWithHeaders(provider string, statusCode int, status str
 }
 
 func newProviderMessageError(provider, message, errorType, param string, code any, raw []byte) error {
+	codeText := normalizeProviderErrorCode(code)
+	errorType = strings.TrimSpace(errorType)
 	return &ProviderAPIError{
 		Provider:  provider,
-		Message:   strings.TrimSpace(message),
-		ErrorType: strings.TrimSpace(errorType),
+		Message:   providerErrorMessageForCode(message, errorType, codeText),
+		ErrorType: errorType,
 		Param:     strings.TrimSpace(param),
-		Code:      normalizeProviderErrorCode(code),
+		Code:      codeText,
 		RawBody:   strings.TrimSpace(string(raw)),
 	}
 }
@@ -489,12 +491,36 @@ func decodeProviderErrorPayload(data []byte) (string, string, string, string, st
 	rawText := strings.TrimSpace(string(data))
 	decoded := providerErrorBody{}
 	if err := json.Unmarshal(data, &decoded); err == nil && decoded.Error != nil {
-		return strings.TrimSpace(decoded.Error.Message), strings.TrimSpace(decoded.Error.Type), strings.TrimSpace(decoded.Error.Param), normalizeProviderErrorCode(decoded.Error.Code), rawText
+		errorType := strings.TrimSpace(decoded.Error.Type)
+		code := normalizeProviderErrorCode(decoded.Error.Code)
+		return providerErrorMessageForCode(decoded.Error.Message, errorType, code), errorType, strings.TrimSpace(decoded.Error.Param), code, rawText
 	}
 	if rawText == "" {
 		return "empty error response body", "", "", "", rawText
 	}
 	return rawText, "", "", "", rawText
+}
+
+func providerErrorMessageForCode(message string, errorType string, code string) string {
+	message = strings.TrimSpace(message)
+	errorType = strings.TrimSpace(errorType)
+	code = strings.TrimSpace(code)
+	switch {
+	case code == "context_length_exceeded" && message == "":
+		return "context window exceeded"
+	case code == "insufficient_quota" && message == "":
+		return "quota exceeded"
+	case (code == "usage_not_included" || errorType == "usage_not_included") && message == "":
+		return "usage not included"
+	case code == "cyber_policy" && message == "":
+		return "This request has been flagged for possible cybersecurity risk."
+	case code == "invalid_prompt" && message == "":
+		return "Invalid request."
+	case (code == "server_is_overloaded" || code == "slow_down") && message == "":
+		return "server overloaded"
+	default:
+		return message
+	}
 }
 
 const providerRateLimitReachedTypeHeader = "X-Codex-Rate-Limit-Reached-Type"
@@ -591,13 +617,25 @@ func normalizeProviderErrorCode(code any) string {
 }
 
 func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw string) bool {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{errorType, message, code, raw}, " ")))
+	nonRetryableHints := []string{
+		"context_length_exceeded",
+		"insufficient_quota",
+		"usage_not_included",
+		"cyber_policy",
+		"invalid_prompt",
+	}
+	for _, hint := range nonRetryableHints {
+		if strings.Contains(text, hint) {
+			return false
+		}
+	}
 	if statusCode == http.StatusTooManyRequests {
 		return true
 	}
 	if statusCode >= 500 && statusCode <= 504 {
 		return true
 	}
-	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{errorType, message, code, raw}, " ")))
 	retryHints := []string{
 		"rate limit",
 		"timeout",
