@@ -9580,6 +9580,35 @@ func TestAgentRetriesEnglishToolNarrationForKoreanLocalCodeRepair(t *testing.T) 
 	}
 }
 
+func TestKoreanLocalCodeNarrationRetryPreservesContinuationContext(t *testing.T) {
+	original := "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "PathConverter.cpp 수정 중입니다."},
+		{Role: "user", Text: "continue with the broader flow first"},
+	}
+	message := Message{
+		Role: "assistant",
+		Text: "I see the next file to inspect. Let me read it now.",
+		ToolCalls: []ToolCall{{
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: `{"path":"SampleApp/SampleWorker/PathConverter.cpp"}`,
+		}},
+	}
+
+	if !shouldRetryKoreanLocalCodeToolNarration(message, session, Config{}) {
+		t.Fatalf("expected Korean local-code narration retry to use preserved source prompt during continuation")
+	}
+	guidance := localCodeWebResearchBlockGuidance(Config{}, session)
+	if !strings.Contains(guidance, "로컬 코드 리뷰/수정") {
+		t.Fatalf("expected local-code web block guidance to keep Korean continuation context, got %q", guidance)
+	}
+}
+
 func TestAgentAllowsLocalInspectionAfterWebResearchToolUsed(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello\n"), 0o644); err != nil {
