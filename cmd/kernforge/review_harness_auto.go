@@ -1158,16 +1158,6 @@ func (a *Agent) shouldSkipPostChangeReviewForKnownFinalBlocker(reply string, unr
 			return true
 		}
 	}
-	if unresolvedVerification && a.Session.LastVerification == nil {
-		return true
-	}
-	if a.Session.AcceptanceContract != nil {
-		contract := *a.Session.AcceptanceContract
-		contract.Normalize()
-		if contract.VerificationRequired && !sessionHasSuccessfulVerificationEvidence(a.Session) {
-			return true
-		}
-	}
 	return false
 }
 

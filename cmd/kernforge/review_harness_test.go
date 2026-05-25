@@ -9433,6 +9433,26 @@ func TestSkippedVerificationDoesNotSuppressPostChangeReview(t *testing.T) {
 	}
 }
 
+func TestMissingRequiredVerificationDoesNotSuppressPostChangeReview(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt:         "RuntimeManager.cpp 버그를 수정하고 테스트해",
+		VerificationRequired: true,
+	}
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	if agent.shouldSkipPostChangeReviewForKnownFinalBlocker("테스트는 실행하지 않았습니다.", true) {
+		t.Fatalf("missing required verification must not suppress post-change code review")
+	}
+	if agent.shouldSkipPostChangeReviewForKnownFinalBlocker("검증 결과가 아직 없습니다.", true) {
+		t.Fatalf("unresolved verification evidence gap must not skip post-change review")
+	}
+}
+
 func TestPostChangeEvidenceExcludesFinalCodingHarnessSummary(t *testing.T) {
 	root := t.TempDir()
 	sourcePath := filepath.Join(root, "src", "main.cpp")
