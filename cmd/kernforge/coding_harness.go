@@ -1745,11 +1745,17 @@ func patchTransactionMatchesCurrentTurn(sess *Session, tx PatchTransaction) bool
 		if normalizedPatchTransactionGoal(latestUser) == goal {
 			return true
 		}
+		if generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(latestUser) {
+			return false
+		}
 		if patchTransactionLatestUserStartsDifferentTask(latestUser) {
 			return false
 		}
 	}
 	candidates := make([]string, 0, 2)
+	if controlRequestContinuesCurrentWorkContext(latestUser) {
+		candidates = append(candidates, preservableSessionAcceptancePrompt(sess))
+	}
 	if sess.AcceptanceContract != nil {
 		candidates = append(candidates, sess.AcceptanceContract.SourcePrompt)
 	}

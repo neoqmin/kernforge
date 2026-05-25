@@ -924,7 +924,7 @@ func activeEditLoopMatchesCurrentTurn(sess *Session, loop *EditLoopState) bool {
 		if normalizedPatchTransactionGoal(latestUser) == goal {
 			return true
 		}
-		return classifyTurnIntent(latestUser) == TurnIntentContinueLastTask
+		return controlRequestContinuesCurrentWorkContext(latestUser)
 	}
 	if sess.AcceptanceContract != nil {
 		if normalizedPatchTransactionGoal(sess.AcceptanceContract.SourcePrompt) == goal {

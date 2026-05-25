@@ -509,6 +509,65 @@ func TestCurrentTurnPatchTransactionSurvivesStructuredInternalGuidance(t *testin
 	}
 }
 
+func TestCurrentTurnPatchTransactionSurvivesContinuationWithoutContract(t *testing.T) {
+	root := t.TempDir()
+	original := "Codex repo와 비교해서 turn orchestration의 큰 흐름을 수정해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "핵심 흐름을 확인하고 있습니다."},
+		{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-001",
+		Goal:   original,
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+
+	changed := currentTurnPatchTransactionChangedPaths(session)
+	if len(changed) != 1 || changed[0] != "cmd/kernforge/agent.go" {
+		t.Fatalf("expected continuation steering to preserve current patch transaction without contract, got %#v", changed)
+	}
+}
+
+func TestCurrentTurnPatchTransactionDoesNotTreatBroaderDocumentSteeringAsCurrent(t *testing.T) {
+	root := t.TempDir()
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "Tavern/BugReport.md 문서를 생성했습니다."},
+		{Role: "user", Text: "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해"},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-doc",
+		Goal:   original,
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}
+
+	if tx := currentTurnPatchTransaction(session); tx != nil {
+		t.Fatalf("broader document steering must not keep document artifact patch as current-turn evidence, got %#v", tx)
+	}
+}
+
 func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
 	root := t.TempDir()
 	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
