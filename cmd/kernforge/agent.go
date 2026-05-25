@@ -6580,7 +6580,7 @@ func toolCallNameLooksLikeWebResearch(name string) bool {
 func localCodeWebResearchBlockGuidance(cfg Config, session *Session) string {
 	latestUser := ""
 	if session != nil {
-		latestUser = latestExternalOrUserMessageText(session.Messages)
+		latestUser = sessionEffectiveLanguageRequestText(session)
 	}
 	language, _ := inferResponseLanguageForUserText(latestUser, cfg)
 	if language == "ko" {
@@ -6589,17 +6589,32 @@ func localCodeWebResearchBlockGuidance(cfg Config, session *Session) string {
 	return "This is a local code review or repair request. Do not use MCP web/search/browser tools unless the user explicitly asks for external web research. Continue in the user's requested language with local source evidence: read_file, grep, git diff/status, and the review findings already attached to this turn."
 }
 
+func sessionEffectiveLanguageRequestText(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	latestUser := latestExternalOrUserMessageText(session.Messages)
+	if latestUser != "" && !actionContextPreservingControlRequest(latestUser) {
+		return latestUser
+	}
+	if effective := sessionEffectiveUserRequestText(session); strings.TrimSpace(effective) != "" {
+		return effective
+	}
+	return latestUser
+}
+
 func shouldRetryKoreanLocalCodeToolNarration(message Message, session *Session, cfg Config) bool {
 	text := strings.TrimSpace(message.Text)
 	if text == "" || len(message.ToolCalls) == 0 || session == nil {
 		return false
 	}
-	latestUser := latestExternalOrUserMessageText(session.Messages)
-	language, _ := inferResponseLanguageForUserText(latestUser, cfg)
+	languageSource := sessionEffectiveLanguageRequestText(session)
+	language, _ := inferResponseLanguageForUserText(languageSource, cfg)
 	if language != "ko" {
 		return false
 	}
-	if !requestLooksLikeLocalCodeWork(strings.ToLower(strings.TrimSpace(latestUser))) {
+	effectiveUser := strings.ToLower(strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session))))
+	if !requestLooksLikeLocalCodeWork(effectiveUser) && !shouldUseLocalCodeToolPolicy(session) {
 		return false
 	}
 	if textContainsHangul(text) {
