@@ -24,6 +24,9 @@ func classifyTurnIntent(text string) TurnIntent {
 	if looksLikeRecentErrorQuestion(base) {
 		return TurnIntentDiagnoseRecentError
 	}
+	if looksLikeGitOperationRequest(base) {
+		return TurnIntentRunCommand
+	}
 	if containsAny(base, "계속", "이어", "continue", "resume", "go on", "next step", "다음 단계") {
 		return TurnIntentContinueLastTask
 	}
@@ -49,6 +52,18 @@ func classifyTurnIntent(text string) TurnIntent {
 		return TurnIntentAskProjectKnowledge
 	}
 	return TurnIntentGeneral
+}
+
+func looksLikeGitOperationRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"커밋", "commit", "푸시", "push",
+		"git ", "git-", "git_", "깃 ",
+		"스테이지", "stage ",
+	)
 }
 
 func looksLikeRecentErrorQuestion(text string) bool {
