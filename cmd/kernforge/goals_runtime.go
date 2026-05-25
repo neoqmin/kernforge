@@ -415,7 +415,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	rt.session.SetPlanNodeLifecycle("plan-01", "completed", "Implementation pass inspected current goal state.")
 	rt.session.SetPlanNodeLifecycle("plan-02", "completed", "Implementation pass completed or confirmed no code change was needed.")
 
-	documentArtifactGateAccepted := rt.goalIterationGeneratedDocumentArtifactGateAccepted(goal)
+	documentArtifactGateAccepted := rt.goalIterationGeneratedDocumentArtifactGateAccepted(goal, iteration)
 	if documentArtifactGateAccepted {
 		reviewReply := "APPROVED: generated document artifact quality gate accepted this documentation-only change; skipping goal review model."
 		iteration.ReviewReply = reviewReply
@@ -559,7 +559,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	return rt.finishGoalIteration(goal, iteration), goalStatusStopsAutonomousLoop(goal.Status), nil
 }
 
-func (rt *runtimeState) goalIterationGeneratedDocumentArtifactGateAccepted(goal GoalState) bool {
+func (rt *runtimeState) goalIterationGeneratedDocumentArtifactGateAccepted(goal GoalState, iteration GoalIteration) bool {
 	if rt == nil || rt.session == nil {
 		return false
 	}
@@ -567,11 +567,33 @@ func (rt *runtimeState) goalIterationGeneratedDocumentArtifactGateAccepted(goal 
 	if strings.TrimSpace(root) == "" {
 		root = rt.session.WorkingDir
 	}
-	changedPaths := delegationChangedFiles(root)
+	changedPaths := rt.goalIterationGeneratedDocumentArtifactChangedPaths(root, iteration)
 	if len(changedPaths) == 0 {
 		changedPaths = documentArtifactHarnessChangedPaths(rt.session)
 	}
 	return generatedDocumentArtifactGateAcceptedForRequest(rt.session, goal.Objective, changedPaths)
+}
+
+func (rt *runtimeState) goalIterationGeneratedDocumentArtifactChangedPaths(root string, iteration GoalIteration) []string {
+	root = strings.TrimSpace(root)
+	if rt == nil || root == "" {
+		return nil
+	}
+	if rt.checkpoints != nil && strings.TrimSpace(iteration.CheckpointID) != "" {
+		_, diffs, err := rt.checkpoints.Diff(root, iteration.CheckpointID, nil)
+		if err == nil {
+			reviewDiffs, _ := goalReviewCheckpointDiffs(diffs, 0)
+			if len(reviewDiffs) > 0 {
+				return checkpointDiffPaths(reviewDiffs, 256)
+			}
+		}
+	}
+	if rt.session != nil {
+		if paths := documentArtifactHarnessChangedPaths(rt.session); len(paths) > 0 {
+			return paths
+		}
+	}
+	return delegationChangedFiles(root)
 }
 
 func generatedDocumentArtifactGoalSemanticReview() GoalSemanticReview {

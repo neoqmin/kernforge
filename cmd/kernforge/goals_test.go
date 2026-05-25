@@ -364,6 +364,80 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 	}
 }
 
+func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "scratch.txt"), []byte("preexisting dirty file\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	prompts := []string{}
+	rt := &runtimeState{
+		writer:        &bytes.Buffer{},
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		checkpoints:   &CheckpointManager{Root: filepath.Join(t.TempDir(), "checkpoints")},
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			prompts = append(prompts, prompt)
+			switch {
+			case strings.Contains(prompt, "Autonomous goal iteration"):
+				reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+				if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+					t.Fatalf("mkdir report dir: %v", err)
+				}
+				content := "# Tavern Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"
+				if err := os.WriteFile(reportPath, []byte(content), 0o644); err != nil {
+					t.Fatalf("write report: %v", err)
+				}
+				session.LastCodingHarnessReport = &CodingHarnessReport{
+					Approved: true,
+					ArtifactQuality: ArtifactQualityReport{
+						Artifacts: []ArtifactQualityCheck{{
+							Path:         "Tavern/BugReport.md",
+							Kind:         "file",
+							Size:         int64(len(content)),
+							ContentChars: len(content),
+							Substantive:  true,
+							Checks:       []string{"document artifact content accepted"},
+						}},
+					},
+				}
+				return "Tavern/BugReport.md 문서 산출물이 완료되었습니다.", nil
+			case strings.Contains(prompt, "Autonomous goal independent review pass"):
+				t.Fatalf("preexisting dirty file should not force goal review for document artifact:\n%s", prompt)
+			case strings.Contains(prompt, "Final semantic goal review"):
+				t.Fatalf("preexisting dirty file should not force semantic review for document artifact:\n%s", prompt)
+			default:
+				t.Fatalf("unexpected prompt:\n%s", prompt)
+			}
+			return "", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --run --max-iterations 1 " + request); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusComplete {
+		t.Fatalf("expected document artifact goal to complete, got %#v", goal)
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("expected only implementation prompt, got %d prompts", len(prompts))
+	}
+}
+
 func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
