@@ -143,6 +143,27 @@ func TestSessionAddMessageMarksKnownInternalGuidance(t *testing.T) {
 	}
 }
 
+func TestGenericFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+
+	agent := &Agent{Session: session}
+	if agent.shouldStartNewExternalAcceptanceContext("Please provide the final answer now.") {
+		t.Fatalf("generic finalization prompt should preserve existing acceptance context")
+	}
+
+	session.AddMessage(Message{Role: "user", Text: "Please provide the final answer now."})
+	if !session.Messages[len(session.Messages)-1].Internal {
+		t.Fatalf("expected generic finalization prompt to be stored as internal guidance")
+	}
+	if got := latestExternalOrUserMessageText(session.Messages); got != original {
+		t.Fatalf("expected latest external request to remain original, got %q", got)
+	}
+}
+
 func TestPreWriteReviewUserRequestSkipsStructuredInternalGuidance(t *testing.T) {
 	original := "Fix the runtime gate loop"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
