@@ -1269,7 +1269,7 @@ func TestOpenAIClientSetsToolChoiceWhenToolsExist(t *testing.T) {
 	}
 }
 
-func TestOpenAIClientLabelsInternalUserGuidanceAsNotUserRequest(t *testing.T) {
+func TestOpenAIClientPromotesInternalUserGuidanceToSystemMessage(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -1301,13 +1301,53 @@ func TestOpenAIClientLabelsInternalUserGuidanceAsNotUserRequest(t *testing.T) {
 		t.Fatalf("expected external user request to stay unmodified, got %#v", messages[0])
 	}
 	second, ok := messages[1].(map[string]any)
-	if !ok || second["role"] != "user" {
-		t.Fatalf("expected compatibility provider to keep user role, got %#v", messages[1])
+	if !ok || second["role"] != "system" {
+		t.Fatalf("expected internal guidance to move out of user role, got %#v", messages[1])
 	}
 	content, _ := second["content"].(string)
 	if !strings.HasPrefix(content, internalModelGuidanceHeader) ||
 		!strings.Contains(content, "Reviewer feedback") {
-		t.Fatalf("expected internal guidance compatibility prefix, got %#v", second["content"])
+		t.Fatalf("expected internal guidance system prefix, got %#v", second["content"])
+	}
+}
+
+func TestAnthropicClientPromotesInternalUserGuidanceToSystem(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "anthropic-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model:  "claude-test",
+		System: "base system",
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Please provide the final answer now."),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	system, _ := body["system"].(string)
+	if !strings.Contains(system, "base system") ||
+		!strings.Contains(system, internalModelGuidanceHeader) ||
+		!strings.Contains(system, "Please provide the final answer now.") {
+		t.Fatalf("expected internal guidance in system text, got %#v", body["system"])
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("expected only external user message in Anthropic messages, got %#v", body["messages"])
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok || message["role"] != "user" {
+		t.Fatalf("expected external request to remain user message, got %#v", messages[0])
 	}
 }
 
