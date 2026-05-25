@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -154,12 +155,14 @@ type codexOAuthUnauthorizedRecovery interface {
 var codexOAuthRefreshMu sync.Mutex
 
 type OpenAICodexClient struct {
-	baseURL             string
-	reasoningEffort     string
-	serviceTier         string
-	httpClient          *http.Client
-	tokenSource         codexOAuthAccessTokenSource
-	allowedWorkspaceIDs []string
+	baseURL                           string
+	reasoningEffort                   string
+	serviceTier                       string
+	httpClient                        *http.Client
+	tokenSource                       codexOAuthAccessTokenSource
+	allowedWorkspaceIDs               []string
+	reasoningSummaryUnsupportedMu     sync.RWMutex
+	reasoningSummaryUnsupportedModels map[string]bool
 }
 
 func NewOpenAICodexClient(baseURL string) *OpenAICodexClient {
@@ -178,12 +181,13 @@ func NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs(baseURL s
 	httpClient := &http.Client{}
 	normalizedWorkspaces := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
 	return &OpenAICodexClient{
-		baseURL:             normalizeOpenAICodexBaseURL(baseURL),
-		reasoningEffort:     normalizeReasoningEffort(reasoningEffort),
-		serviceTier:         normalizeServiceTier(serviceTier),
-		httpClient:          httpClient,
-		tokenSource:         NewCodexOAuthTokenSourceWithWorkspaceIDs("", httpClient, normalizedWorkspaces),
-		allowedWorkspaceIDs: append([]string(nil), normalizedWorkspaces...),
+		baseURL:                           normalizeOpenAICodexBaseURL(baseURL),
+		reasoningEffort:                   normalizeReasoningEffort(reasoningEffort),
+		serviceTier:                       normalizeServiceTier(serviceTier),
+		httpClient:                        httpClient,
+		tokenSource:                       NewCodexOAuthTokenSourceWithWorkspaceIDs("", httpClient, normalizedWorkspaces),
+		allowedWorkspaceIDs:               append([]string(nil), normalizedWorkspaces...),
+		reasoningSummaryUnsupportedModels: map[string]bool{},
 	}
 }
 
@@ -244,9 +248,15 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		clientMetadata[openAICodexParentThreadIDHeader] = parentThreadID
 	}
 
-	body, err := buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req, clientMetadata, openAICodexRequestBodyOptions{
-		Store: openAICodexIsAzureResponsesEndpoint(c.baseURL),
-	})
+	model := openAICodexRequestModel(req.Model)
+	disableReasoningSummary := c.reasoningSummaryUnsupported(model)
+	buildRequestBody := func() ([]byte, error) {
+		return buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req, clientMetadata, openAICodexRequestBodyOptions{
+			Store:                   openAICodexIsAzureResponsesEndpoint(c.baseURL),
+			DisableReasoningSummary: disableReasoningSummary,
+		})
+	}
+	body, err := buildRequestBody()
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -282,7 +292,8 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		return httpReq, nil
 	}
 
-	for attempt := 0; ; attempt++ {
+	authRecovered := false
+	for {
 		httpReq, err := newHTTPRequest(accessToken)
 		if err != nil {
 			return ChatResponse{}, err
@@ -293,7 +304,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		}
 		captureProviderTurnStateHeader(resp, req.TurnState)
 
-		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+		if resp.StatusCode == http.StatusUnauthorized && !authRecovered {
 			if recovery, ok := openAICodexUnauthorizedRecovery(tokenSource); ok {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
@@ -302,6 +313,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 					return ChatResponse{}, err
 				}
 				accessToken = refreshedToken
+				authRecovered = true
 				continue
 			}
 		}
@@ -312,6 +324,15 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 			if err != nil {
 				return ChatResponse{}, err
 			}
+			if !disableReasoningSummary && resp.StatusCode == http.StatusBadRequest && openAICodexReasoningSummaryUnsupportedError(data) {
+				c.markReasoningSummaryUnsupported(model)
+				disableReasoningSummary = true
+				body, err = buildRequestBody()
+				if err != nil {
+					return ChatResponse{}, err
+				}
+				continue
+			}
 			return ChatResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
 		}
 		out, err := readOpenAICodexStreamWithOptions(ctx, resp.Body, openAICodexStreamOptions{
@@ -320,6 +341,15 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 			ImageOutputRoot: userConfigDir(),
 		})
 		if err != nil {
+			if !disableReasoningSummary && openAICodexReasoningSummaryUnsupportedProviderError(err) {
+				c.markReasoningSummaryUnsupported(model)
+				disableReasoningSummary = true
+				body, err = buildRequestBody()
+				if err != nil {
+					return ChatResponse{}, err
+				}
+				continue
+			}
 			return ChatResponse{}, err
 		}
 		if serverModel := strings.TrimSpace(resp.Header.Get(openAICodexServerModelHeader)); serverModel != "" {
@@ -332,6 +362,30 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		}
 		return out, nil
 	}
+}
+
+func (c *OpenAICodexClient) reasoningSummaryUnsupported(model string) bool {
+	if c == nil {
+		return false
+	}
+	model = strings.ToLower(openAICodexRequestModel(model))
+	c.reasoningSummaryUnsupportedMu.RLock()
+	unsupported := c.reasoningSummaryUnsupportedModels[model]
+	c.reasoningSummaryUnsupportedMu.RUnlock()
+	return unsupported
+}
+
+func (c *OpenAICodexClient) markReasoningSummaryUnsupported(model string) {
+	if c == nil {
+		return
+	}
+	model = strings.ToLower(openAICodexRequestModel(model))
+	c.reasoningSummaryUnsupportedMu.Lock()
+	if c.reasoningSummaryUnsupportedModels == nil {
+		c.reasoningSummaryUnsupportedModels = map[string]bool{}
+	}
+	c.reasoningSummaryUnsupportedModels[model] = true
+	c.reasoningSummaryUnsupportedMu.Unlock()
 }
 
 func openAICodexUnauthorizedRecovery(tokenSource codexOAuthAccessTokenSource) (codexOAuthUnauthorizedRecovery, bool) {
@@ -352,6 +406,27 @@ func refreshOpenAICodexTokenAfterUnauthorized(ctx context.Context, recovery code
 		return "", fmt.Errorf("OpenAI Codex OAuth recovery after 401 returned no access token")
 	}
 	return refreshedToken, nil
+}
+
+func openAICodexReasoningSummaryUnsupportedError(data []byte) bool {
+	decoded := providerErrorBody{}
+	if err := json.Unmarshal(data, &decoded); err != nil || decoded.Error == nil {
+		return false
+	}
+	return normalizeProviderErrorCode(decoded.Error.Code) == "unsupported_parameter" &&
+		strings.TrimSpace(decoded.Error.Param) == "reasoning.summary"
+}
+
+func openAICodexReasoningSummaryUnsupportedProviderError(err error) bool {
+	apiErr := &ProviderAPIError{}
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode != 0 && apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	return strings.TrimSpace(apiErr.Code) == "unsupported_parameter" &&
+		strings.TrimSpace(apiErr.Param) == "reasoning.summary"
 }
 
 func codexOAuthCanRecoverAfterUnauthorized(tokenSource codexOAuthAccessTokenSource) bool {
@@ -455,14 +530,12 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 }
 
 type openAICodexRequestBodyOptions struct {
-	Store bool
+	Store                   bool
+	DisableReasoningSummary bool
 }
 
 func buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req ChatRequest, clientMetadata map[string]string, options openAICodexRequestBodyOptions) ([]byte, error) {
-	model := strings.TrimSpace(req.Model)
-	if model == "" || strings.EqualFold(model, codexCLIDefaultModel) {
-		model = openAICodexDefaultModel
-	}
+	model := openAICodexRequestModel(req.Model)
 	input, err := buildOpenAICodexInput(req)
 	if err != nil {
 		return nil, err
@@ -503,7 +576,7 @@ func buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req ChatRequest, cl
 	if strings.TrimSpace(req.ReasoningEffort) != "" && !validReasoningEffort(req.ReasoningEffort) {
 		return nil, fmt.Errorf("invalid reasoning effort %q; use undefined, minimal, low, medium, high, or xhigh", strings.TrimSpace(req.ReasoningEffort))
 	}
-	if reasoning, ok := openAICodexReasoningPayload(model, req.ReasoningEffort); ok {
+	if reasoning, ok := openAICodexReasoningPayload(model, req.ReasoningEffort, !options.DisableReasoningSummary); ok {
 		payload["reasoning"] = reasoning
 		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
@@ -521,6 +594,14 @@ func buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req ChatRequest, cl
 	tools = mergeOpenAICodexNamespaceTools(tools)
 	payload["tools"] = tools
 	return json.Marshal(payload)
+}
+
+func openAICodexRequestModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || strings.EqualFold(model, codexCLIDefaultModel) {
+		return openAICodexDefaultModel
+	}
+	return model
 }
 
 func openAICodexIsAzureResponsesEndpoint(baseURL string) bool {
@@ -607,7 +688,7 @@ func registerOpenAICodexDefaultVerbosity(model string, verbosity string) {
 	openAICodexVerbosityDefaults.Unlock()
 }
 
-func openAICodexReasoningPayload(model string, requestedEffort string) (map[string]any, bool) {
+func openAICodexReasoningPayload(model string, requestedEffort string, includeSummary bool) (map[string]any, bool) {
 	defaults, ok := openAICodexReasoningDefaultsForModel(model)
 	if !ok || !defaults.SupportsSummaries {
 		return nil, false
@@ -620,7 +701,7 @@ func openAICodexReasoningPayload(model string, requestedEffort string) (map[stri
 	if effort != "" {
 		reasoning["effort"] = effort
 	}
-	if summary := normalizeOpenAICodexReasoningSummary(defaults.DefaultSummary); summary != "" && summary != "none" {
+	if summary := normalizeOpenAICodexReasoningSummary(defaults.DefaultSummary); includeSummary && summary != "" && summary != "none" {
 		reasoning["summary"] = summary
 	}
 	return reasoning, true
