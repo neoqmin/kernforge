@@ -10267,8 +10267,8 @@ func TestPrintReviewRunExplainsNextCommands(t *testing.T) {
 		"  확인 필요: false",
 		"  실행 방법: `/verify --full`로 검증을 실행한 뒤 `/review`를 다시 실행해 최신 근거를 붙이세요.",
 		"  예상 결과: 변경된 파일에 대한 최신 verification report가 기록됩니다.",
-		"- /continuity continue from review\n  이유: 차단 finding이 있어서 위 RF 항목을 기준으로 수정 작업을 이어가야 합니다.",
-		"  실행 방법: 이 명령을 실행하거나 자연어로 `수정해줘`라고 이어가면 최신 리뷰 finding을 기준으로 repair 흐름을 시작합니다.",
+		"- /continuity continue from review\n  이유: 차단 finding이 발견됐지만 현재 요청은 분석/검토이므로, 수정은 사용자가 원할 때만 이어갑니다.",
+		"  실행 방법: 자연어로 `수정해줘`라고 이어가거나 이 명령을 실행하면 최신 리뷰 finding을 기준으로 repair 흐름을 시작합니다.",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected next-command output to contain %q, got %q", needle, rendered)

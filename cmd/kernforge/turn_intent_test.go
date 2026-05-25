@@ -33,12 +33,27 @@ func TestClassifyTurnIntentKeepsReviewOnlySubjectsOutOfEditMode(t *testing.T) {
 		"Review the fix for RuntimeManager.cpp",
 		"Review the patch for regressions",
 		"Patch review please",
+		"Inspect this code for regressions",
 	} {
 		if got := classifyTurnIntent(request); got != TurnIntentReviewCode {
 			t.Fatalf("expected review-only subject request %q to be review intent, got %q", request, got)
 		}
 		if !prefersReadOnlyAnalysisIntent(request) {
 			t.Fatalf("review-only subject request %q should prefer read-only analysis", request)
+		}
+	}
+}
+
+func TestClassifyTurnIntentLeavesGenericInspectToolWorkEnabled(t *testing.T) {
+	for _, request := range []string{
+		"inspect image",
+		"inspect session persistence",
+	} {
+		if got := classifyTurnIntent(request); got == TurnIntentReviewCode {
+			t.Fatalf("generic inspect request %q should not become review-only intent", request)
+		}
+		if prefersReadOnlyAnalysisIntent(request) {
+			t.Fatalf("generic inspect request %q should not force read-only analysis", request)
 		}
 	}
 }
