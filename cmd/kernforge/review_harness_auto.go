@@ -736,6 +736,8 @@ func looksLikePreWriteInternalContextMessage(text string) bool {
 		strings.HasPrefix(lower, "your last answer appears to have been cut off") ||
 		strings.HasPrefix(lower, "your last response was a raw internal review_result block") ||
 		strings.HasPrefix(lower, "verification is still unresolved") ||
+		lower == "please provide the final answer now." ||
+		lower == "please provide the final answer now" ||
 		strings.HasPrefix(lower, "please provide the final answer to the user now. do not return an empty message") ||
 		strings.HasPrefix(lower, "your last edit targeted stale or mismatched file contents") ||
 		strings.HasPrefix(lower, "the last read-only inspection tool was blocked by editable ownership routing") ||
