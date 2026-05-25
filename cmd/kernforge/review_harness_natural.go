@@ -312,8 +312,12 @@ func looksLikeReviewInspectionOnlyRequest(input string) bool {
 	if containsAny(lower,
 		"검토하고 수정", "검토 후 수정", "검토해서 수정", "리뷰하고 수정", "리뷰 후 수정", "리뷰해서 수정",
 		"review and fix", "review then fix", "review, then fix", "fix after review",
+		" and fix", " and repair", " and patch", " and address", " and correct",
 	) {
 		return false
+	}
+	if looksLikeReviewSubjectOnlyRepairNoun(lower) {
+		return true
 	}
 	if containsAny(lower,
 		"수정해", "수정 해", "수정하", "고쳐", "고치", "패치해", "패치 해", "패치하", "반영해", "반영 해", "반영하", "해결해", "해결 해", "해결하",
@@ -322,6 +326,17 @@ func looksLikeReviewInspectionOnlyRequest(input string) bool {
 		return false
 	}
 	return true
+}
+
+func looksLikeReviewSubjectOnlyRepairNoun(lower string) bool {
+	return containsAny(lower,
+		"수정사항 리뷰", "수정 사항 리뷰", "수정본 리뷰", "패치 리뷰", "변경사항 리뷰", "변경 사항 리뷰", "diff 리뷰",
+		"review the fix", "review this fix", "review my fix", "review our fix",
+		"review the patch", "review this patch", "review my patch", "review our patch",
+		"review the diff", "review this diff",
+		"review the change", "review this change", "review changes", "review the changes",
+		"patch review", "diff review",
+	)
 }
 
 func hasNaturalReviewNegation(input string) bool {

@@ -30,6 +30,9 @@ func TestClassifyTurnIntentKeepsReviewOnlySubjectsOutOfEditMode(t *testing.T) {
 		"수정된 부분 코드 리뷰해줘",
 		"변경사항 리뷰해줘",
 		"Review the modified RuntimeManager.cpp for regressions",
+		"Review the fix for RuntimeManager.cpp",
+		"Review the patch for regressions",
+		"Patch review please",
 	} {
 		if got := classifyTurnIntent(request); got != TurnIntentReviewCode {
 			t.Fatalf("expected review-only subject request %q to be review intent, got %q", request, got)
@@ -45,6 +48,7 @@ func TestClassifyTurnIntentKeepsReviewThenFixAsEdit(t *testing.T) {
 		"검토하고 버그 있으면 수정해",
 		"리뷰 후 문제를 수정해줘",
 		"Review and fix RuntimeManager.cpp",
+		"Review the patch and fix any regression",
 		"find bugs and fix RuntimeManager.cpp",
 	} {
 		if got := classifyTurnIntent(request); got != TurnIntentEditCode {
