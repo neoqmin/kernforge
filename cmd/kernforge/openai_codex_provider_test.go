@@ -4216,6 +4216,128 @@ func TestReadOpenAICodexStreamReturnsIncompleteReason(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamMapsFailedErrorCodesLikeCodex(t *testing.T) {
+	cases := []struct {
+		name             string
+		code             string
+		message          string
+		expectedMessage  string
+		expectedCode     string
+		expectedCategory string
+		expectedRetry    bool
+	}{
+		{
+			name:             "context-window",
+			code:             "context_length_exceeded",
+			message:          "Your input exceeds the context window of this model. Please adjust your input and try again.",
+			expectedMessage:  "context window exceeded",
+			expectedCode:     "context_length_exceeded",
+			expectedCategory: "context_window",
+			expectedRetry:    false,
+		},
+		{
+			name:             "quota",
+			code:             "insufficient_quota",
+			message:          "You exceeded your current quota, please check your plan and billing details.",
+			expectedMessage:  "quota exceeded",
+			expectedCode:     "insufficient_quota",
+			expectedCategory: "quota",
+			expectedRetry:    false,
+		},
+		{
+			name:             "usage-not-included",
+			code:             "usage_not_included",
+			message:          "Usage is not included.",
+			expectedMessage:  "usage not included",
+			expectedCode:     "usage_not_included",
+			expectedCategory: "usage_not_included",
+			expectedRetry:    false,
+		},
+		{
+			name:             "cyber-policy-fallback",
+			code:             "cyber_policy",
+			message:          "   ",
+			expectedMessage:  "This request has been flagged for possible cybersecurity risk.",
+			expectedCode:     "cyber_policy",
+			expectedCategory: "cyber_policy",
+			expectedRetry:    false,
+		},
+		{
+			name:             "invalid-prompt-fallback",
+			code:             "invalid_prompt",
+			message:          "",
+			expectedMessage:  "Invalid request.",
+			expectedCode:     "invalid_prompt",
+			expectedCategory: "invalid_request",
+			expectedRetry:    false,
+		},
+		{
+			name:             "server-overloaded",
+			code:             "server_is_overloaded",
+			message:          "The service is saturated.",
+			expectedMessage:  "server overloaded",
+			expectedCode:     "server_is_overloaded",
+			expectedCategory: "server_overloaded",
+			expectedRetry:    true,
+		},
+		{
+			name:             "slow-down",
+			code:             "slow_down",
+			message:          "Slow down.",
+			expectedMessage:  "server overloaded",
+			expectedCode:     "slow_down",
+			expectedCategory: "server_overloaded",
+			expectedRetry:    true,
+		},
+		{
+			name:             "rate-limit-retryable",
+			code:             "rate_limit_exceeded",
+			message:          "Rate limit reached. Please try again in 11.054s.",
+			expectedMessage:  "Rate limit reached. Please try again in 11.054s.",
+			expectedCode:     "rate_limit_exceeded",
+			expectedCategory: "rate_limit",
+			expectedRetry:    true,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{
+				"type": "response.failed",
+				"response": map[string]any{
+					"id":     "resp_failed",
+					"status": "failed",
+					"error": map[string]any{
+						"code":    tc.code,
+						"message": tc.message,
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+			_, err = readOpenAICodexStream(context.Background(), strings.NewReader("data: "+string(payload)+"\n\n"))
+			if err == nil {
+				t.Fatalf("expected failed response error")
+			}
+			var providerErr *ProviderAPIError
+			if !errors.As(err, &providerErr) {
+				t.Fatalf("expected ProviderAPIError, got %T: %v", err, err)
+			}
+			if providerErr.Message != tc.expectedMessage || providerErr.Code != tc.expectedCode {
+				t.Fatalf("unexpected provider error: %#v", providerErr)
+			}
+			if providerErr.Retryable() != tc.expectedRetry {
+				t.Fatalf("unexpected retryable=%v for %#v", providerErr.Retryable(), providerErr)
+			}
+			normalized := normalizeRuntimeError(err)
+			if normalized.Category != tc.expectedCategory || normalized.Retryable != tc.expectedRetry {
+				t.Fatalf("unexpected normalized error: %#v", normalized)
+			}
+		})
+	}
+}
+
 func TestReadOpenAICodexStreamPreservesMessagePhaseWithCompletedResponseID(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,

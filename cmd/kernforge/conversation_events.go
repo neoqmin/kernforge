@@ -818,7 +818,7 @@ func normalizeRuntimeError(err error) NormalizedRuntimeError {
 	out.mergeFromText(err.Error())
 	out.mergeFromText(out.Raw)
 	combinedText := strings.ToLower(strings.TrimSpace(out.Raw + " " + out.Message + " " + out.Code))
-	if out.StatusCode == http.StatusTooManyRequests || out.Code == "429" || strings.Contains(combinedText, "rate-limit") || strings.Contains(combinedText, "rate limited") || strings.Contains(combinedText, "too many requests") {
+	if out.StatusCode == http.StatusTooManyRequests || out.Code == "429" || out.Code == "rate_limit_exceeded" || strings.Contains(combinedText, "rate-limit") || strings.Contains(combinedText, "rate limit") || strings.Contains(combinedText, "rate limited") || strings.Contains(combinedText, "too many requests") {
 		out.Category = "rate_limit"
 		out.Retryable = true
 	}
@@ -834,6 +834,10 @@ func normalizeRuntimeError(err error) NormalizedRuntimeError {
 		out.Category = "quota"
 		out.Retryable = false
 	}
+	if containsAny(combinedText, "usage_not_included", "usage not included") {
+		out.Category = "usage_not_included"
+		out.Retryable = false
+	}
 	if containsAny(combinedText, "cyber_policy", "cyber policy") {
 		out.Category = "cyber_policy"
 		out.Retryable = false
@@ -842,7 +846,7 @@ func normalizeRuntimeError(err error) NormalizedRuntimeError {
 		out.Category = "invalid_request"
 		out.Retryable = false
 	}
-	if containsAny(combinedText, "server_overloaded", "server overloaded", "overloaded", "service unavailable") {
+	if containsAny(combinedText, "server_is_overloaded", "server_overloaded", "server overloaded", "slow_down", "overloaded", "service unavailable") {
 		out.Category = "server_overloaded"
 		out.Retryable = true
 	}
