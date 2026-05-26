@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,6 +71,25 @@ func (f *failingReviewProviderClient) Complete(ctx context.Context, req ChatRequ
 		return ChatResponse{}, f.err
 	}
 	return ChatResponse{}, fmt.Errorf("synthetic reviewer route failure")
+}
+
+type cancelAwareReviewProviderClient struct {
+	started  chan struct{}
+	requests []ChatRequest
+}
+
+func (c *cancelAwareReviewProviderClient) Name() string {
+	return "cancel-aware-reviewer"
+}
+
+func (c *cancelAwareReviewProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.requests = append(c.requests, cloneChatRequestForTest(req))
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ChatResponse{}, ctx.Err()
 }
 
 type namedScriptedProviderClient struct {
@@ -10106,6 +10126,61 @@ func TestModelCommandInteractiveCanConfigureCrossReviewRoute(t *testing.T) {
 	rendered := out.String()
 	if !strings.Contains(rendered, "Change Model") || !strings.Contains(rendered, "4. cross review model") {
 		t.Fatalf("expected numbered model target choices, got %q", rendered)
+	}
+}
+
+func TestReviewCommandWithContextCancelsActiveModelRun(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main(){return 0;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main(){return 1;}\n"), 0o644); err != nil {
+		t.Fatalf("modify file: %v", err)
+	}
+
+	provider := &cancelAwareReviewProviderClient{started: make(chan struct{}, 1)}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, cfg.Provider, cfg.Model, "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+	rt := agent.reviewHarnessRuntime(root)
+	rt.writer = &bytes.Buffer{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- rt.handleReviewCommandWithContext(ctx, "change")
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatalf("review model call did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("review command did not return promptly after cancellation")
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected one review model request, got %d", len(provider.requests))
 	}
 }
 

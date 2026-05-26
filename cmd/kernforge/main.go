@@ -958,6 +958,10 @@ func (rt *runtimeState) printCommandExecutionError(line string, err error) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Canceled."))
 		return
 	}
+	if isUserRequestCancelError(err) {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("Request canceled."))
+		return
+	}
 	rt.noteCommandError(line, err)
 	fmt.Fprintln(rt.writer, rt.ui.errorLine("command error: "+err.Error()))
 }
@@ -1096,6 +1100,36 @@ func parseToolLoopDiagnostics(text string) (string, string, string) {
 
 func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input string, images []MessageImage) (string, error) {
 	return rt.runAgentReplyWithImagesManagedCancel(ctx, input, images, true)
+}
+
+func (rt *runtimeState) runWithRequestCancelWatcher(ctx context.Context, fn func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if fn == nil {
+		return nil
+	}
+	installCancelWatcher := rt.shouldInstallRequestCancelWatcher()
+	requestCtx := ctx
+	cancel := func() {}
+	if installCancelWatcher {
+		requestCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		rt.clearRequestCancelState()
+		defer rt.clearRequestCancelState()
+		cancelRequest := func() {
+			rt.beginRequestCancel()
+			cancel()
+		}
+		stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
+		defer stopEscapeWatcher()
+	}
+	err := fn(requestCtx)
+	if err != nil && installCancelWatcher && requestCtx.Err() == context.Canceled && ctx.Err() == nil {
+		rt.noteRecentRequestCancel()
+		return ErrRequestCanceled
+	}
+	return err
 }
 
 func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context, input string, images []MessageImage, installCancelWatcher bool) (string, error) {
@@ -6474,7 +6508,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "review":
-		if err := rt.handleReviewCommand(cmd.Args); err != nil {
+		err := rt.runWithRequestCancelWatcher(context.Background(), func(ctx context.Context) error {
+			return rt.handleReviewCommandWithContext(ctx, cmd.Args)
+		})
+		if err != nil {
 			return false, err
 		}
 	case "recover":

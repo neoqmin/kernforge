@@ -11,6 +11,13 @@ import (
 )
 
 func (rt *runtimeState) handleReviewCommand(args string) error {
+	return rt.handleReviewCommandWithContext(context.Background(), args)
+}
+
+func (rt *runtimeState) handleReviewCommandWithContext(ctx context.Context, args string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	args = strings.TrimSpace(args)
 	fields := splitCommandFields(args)
 	if len(fields) > 0 {
@@ -23,7 +30,10 @@ func (rt *runtimeState) handleReviewCommand(args string) error {
 	}
 	opts := parseReviewCommandOptions(args)
 	if strings.EqualFold(opts.Target, reviewTargetPR) && reviewCommandHasPRWriteOptions(args) {
-		if _, err := rt.runReviewCommand(opts); err != nil {
+		if _, err := rt.runReviewCommandWithContext(ctx, opts); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if blocked, feedback := rt.runtimeGateFeedbackForAction(runtimeGateActionMCPWrite); blocked {
@@ -31,8 +41,11 @@ func (rt *runtimeState) handleReviewCommand(args string) error {
 		}
 		return rt.handlePRReviewAutomationCommand(reviewPRArgsFromReviewArgs(args))
 	}
-	run, err := rt.runReviewCommand(opts)
+	run, err := rt.runReviewCommandWithContext(ctx, opts)
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if strings.EqualFold(run.Target, reviewTargetPR) && !reviewCommandHasPRWriteOptions(args) {

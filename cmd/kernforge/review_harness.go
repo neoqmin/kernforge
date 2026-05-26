@@ -712,6 +712,12 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	if rt == nil || rt.session == nil {
 		return ReviewRun{}, fmt.Errorf("no active runtime")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return ReviewRun{}, err
+	}
 	root := workspaceSnapshotRoot(rt.workspace)
 	if strings.TrimSpace(root) == "" {
 		root = rt.workspace.Root
@@ -739,6 +745,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.PolicyPackVersions = reviewPolicyPackVersions(run.PolicyPacks)
 	emitReviewScopeDiscoveryProgress(rt, run)
 	changeSet, evidence := collectReviewEvidence(ctx, rt, root, run, opts)
+	if err := ctx.Err(); err != nil {
+		return run, err
+	}
 	run.ChangeSet = changeSet
 	run.Evidence = evidence
 	emitReviewEvidenceProgress(rt, run, opts)
@@ -748,6 +757,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, deterministicReviewFindings(rt, run)...)
 	if !opts.NoModel && len(run.Evidence.Sources) > 0 {
 		modelFindings, reviewerRuns := executeReviewModelRuns(ctx, rt, root, &run)
+		if err := ctx.Err(); err != nil {
+			return run, err
+		}
 		run.ReviewerRuns = append(run.ReviewerRuns, reviewerRuns...)
 		run.Findings = append(run.Findings, modelFindings...)
 		run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
