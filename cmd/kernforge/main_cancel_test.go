@@ -1061,6 +1061,33 @@ func TestRuntimeStatePromptCanceledCommandPrintsInfoNotError(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateRequestCanceledCommandPrintsInfoNotError(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openai", "gpt-test", "", "default")
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      UI{},
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	rt.printCommandExecutionError("/review", ErrRequestCanceled)
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "INFO  Request canceled.") {
+		t.Fatalf("expected request cancellation to render as info, got %q", rendered)
+	}
+	for _, banned := range []string{"ERROR", "command error", "request canceled by user"} {
+		if strings.Contains(rendered, banned) {
+			t.Fatalf("request cancellation output should not contain %q, got %q", banned, rendered)
+		}
+	}
+	if len(session.ConversationEvents) != 0 {
+		t.Fatalf("request cancellation should not be recorded as a command event, got %#v", session.ConversationEvents)
+	}
+}
+
 func TestFormatAssistantErrorTreatsRequestCancelAsInfoNotError(t *testing.T) {
 	rt := &runtimeState{
 		ui: UI{},
