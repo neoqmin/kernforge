@@ -1492,14 +1492,14 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 		t.Fatalf("expected cross reviewer prompt to include primary draft, got %q", crossPrompt)
 	}
 	for _, needle := range []string{
-		"Review phase 1/2: main first-pass review",
-		"Main model is preparing the first-pass review from the collected local evidence.",
-		"Main model first-pass review request: scripted / main-model.",
-		"Model-call budget: main first-pass review",
-		"Main model first-pass review result: completed",
-		"Main model first-pass review completed. Sending its draft and the same evidence to the review model.",
+		"Review phase 1/2: main model code review",
+		"Main model is reading the code and checking the repair direction from the collected local evidence.",
+		"Main model code review request: scripted / main-model.",
+		"Model-call budget: main model code review",
+		"Main model code review result: completed",
+		"Main model code review completed. Sending its draft and the same evidence to the review model.",
 		"Review phase 2/2: review model cross-check",
-		"Review model is cross-checking the main model draft before the final gate is decided.",
+		"Review model is cross-checking the main model draft and the same evidence before the final gate is decided.",
 		"Review model cross-check request: cross -> scripted / reviewer-model (main: scripted / main-model).",
 		"Model-call budget: review model cross-check",
 		"Review model cross-check result: cross completed",
@@ -2011,6 +2011,59 @@ func TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLocalModel(t *testing.T) {
 	}
 }
 
+func TestReviewProgressHighlightsCurrentStageInFullFlow(t *testing.T) {
+	cfg := Config{AutoLocale: boolPtr(false)}
+	var progress []string
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config: cfg,
+			EmitProgress: func(message string) {
+				progress = append(progress, message)
+			},
+		},
+	}
+
+	emitReviewPipelineProgress(rt, ReviewRun{}, 1, "scope discovery", "범위 확인", "Find the files.", "파일을 찾습니다.")
+	emitReviewPipelineProgress(rt, ReviewRun{}, 2, "evidence pack", "증거 준비", "Collect evidence.", "증거를 모읍니다.")
+
+	if len(progress) != 2 {
+		t.Fatalf("expected two progress lines, got %#v", progress)
+	}
+	if !strings.Contains(progress[0], "Full flow (current stage in brackets): [1 scope discovery] -> 2 evidence pack") {
+		t.Fatalf("first progress line should highlight stage 1 in full flow, got %q", progress[0])
+	}
+	if !strings.Contains(progress[1], "Full flow (current stage in brackets): 1 scope discovery -> [2 evidence pack] -> 3 model review") {
+		t.Fatalf("second progress line should highlight stage 2 in full flow, got %q", progress[1])
+	}
+	if strings.Contains(progress[0], "..") || strings.Contains(progress[1], "..") {
+		t.Fatalf("progress lines should not contain doubled sentence punctuation: %#v", progress)
+	}
+}
+
+func TestRepairWorkflowProgressHighlightsCurrentStageInFullFlow(t *testing.T) {
+	cfg := Config{AutoLocale: boolPtr(false)}
+	var progress []string
+	agent := &Agent{
+		Config: cfg,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	agent.emitRepairWorkflowProgress("review and fix the bug", 2, "revise edit proposal", "수정안 재작성", "Pre-write review blocked the diff.", "쓰기 전 리뷰가 diff를 차단했습니다.")
+
+	if len(progress) != 1 {
+		t.Fatalf("expected one progress line, got %#v", progress)
+	}
+	if !strings.Contains(progress[0], "Full flow (current stage in brackets): 1 review before fix -> [2 write/revise patch] -> 3 pre-write review") {
+		t.Fatalf("repair workflow should highlight the current full-flow stage, got %q", progress[0])
+	}
+	if strings.Contains(progress[0], "..") {
+		t.Fatalf("progress line should not contain doubled sentence punctuation: %q", progress[0])
+	}
+}
+
 func TestReviewModelLongWaitProgressExplainsCrossHandoff(t *testing.T) {
 	cfg := Config{AutoLocale: boolPtr(false)}
 	message := formatReviewModelLongWaitProgress(cfg, ReviewReviewerRun{
@@ -2019,7 +2072,7 @@ func TestReviewModelLongWaitProgressExplainsCrossHandoff(t *testing.T) {
 	}, 2*time.Minute+5*time.Second)
 
 	for _, want := range []string{
-		"Review model cross-check is still running",
+		"Review model is still cross-checking the main draft",
 		"merge it with the main model review",
 		"final gate",
 	} {
@@ -3494,8 +3547,8 @@ func TestSameModelReviewProgressShowsScopeEvidenceAndRequest(t *testing.T) {
 		"Review scope discovery:",
 		"Review evidence prepared:",
 		"max_context=180000",
-		"Main model first-pass review request: scripted / main-model.",
-		"Main model first-pass review result: completed",
+		"Main model code review request: scripted / main-model.",
+		"Main model code review result: completed",
 	} {
 		if indexStringContaining(progress, needle) < 0 {
 			t.Fatalf("expected progress to contain %q, got %#v", needle, progress)
@@ -4196,16 +4249,17 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 		"- Verdict: approved_with_warnings",
 		"- Next: proceed to diff preview.",
 		"Repair targets checked:",
-		"- RF-101 [high/correctness]: OpenResourceInfo failure stops volume enumeration",
-		"Code location: SampleApp/SampleWorker/SampleReview.cpp",
-		"Symbol: _InitiateVolumePath",
+		"- RF-101 | high/correctness",
+		"Title: OpenResourceInfo failure stops volume enumeration",
+		"Location: SampleApp/SampleWorker/SampleReview.cpp :: _InitiateVolumePath",
 		"Problem: The old code used break inside the per-volume processing block.",
 		"Required fix: Skip only the failed volume and continue enumerating.",
-		"Verification: Exercise a failing volume followed by a valid volume.",
+		"Check: Exercise a failing volume followed by a valid volume.",
 		"Remaining review items:",
-		"- RF-001 [low/test_gap]: Build verification was not run",
+		"- RF-001 | low/test_gap",
+		"Title: Build verification was not run",
 		"Evidence: No focused build output was supplied",
-		"Fix: Run a focused build before merging.",
+		"Action: Run a focused build before merging.",
 		"Test: Run the touched package tests.",
 		"Review report: C:/tmp/review.md",
 	} {
@@ -4663,7 +4717,7 @@ func TestPreWriteKoreanWarningFeedbackIsLocalized(t *testing.T) {
 		"자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.",
 		"검토 게이트:",
 		"수정 필요한 경고 finding:",
-		"경로: SampleApp/SampleWorker/SampleReview.cpp",
+		"위치: SampleApp/SampleWorker/SampleReview.cpp",
 		"근거: diff에 일부 hunk만 포함되어 있습니다.",
 		"구현 규칙:",
 		"이전의 불완전한 patch를 쓰지 마세요.",
@@ -5315,10 +5369,10 @@ func TestPreWriteVisibleSummaryOverridesRepairStatusForUnresolvedBlocker(t *test
 		}},
 	}
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, false)
-	if !strings.Contains(visible, "Resolution status: unresolved") {
+	if !strings.Contains(visible, "Status: unresolved") {
 		t.Fatalf("unresolved blocker should override stale model resolved status, got:\n%s", visible)
 	}
-	if strings.Contains(visible, "Resolution status: resolved") {
+	if strings.Contains(visible, "Status: resolved") {
 		t.Fatalf("visible summary must not show a contradictory resolved status, got:\n%s", visible)
 	}
 }
@@ -5546,6 +5600,30 @@ func TestPreWriteReviewBlocksLowActionableCorrectnessWarning(t *testing.T) {
 	}
 }
 
+func TestPreWriteReviewBlocksLowActionableCorrectnessWarningWithSoftWording(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "correctness",
+			Title:       "SafeArrayGetElement HRESULT remains unchecked",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Symbol:      "WMIQuery::Query",
+			Evidence:    "The proposed diff still appends the element after SafeArrayGetElement without checking the HRESULT.",
+			Impact:      "A failed element read can append a stale zero value.",
+			RequiredFix: "Consider checking SafeArrayGetElement HRESULT before appending the value.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
+		t.Fatalf("low actionable correctness warning with soft wording should block pre-write, got %#v", got)
+	}
+}
+
 func TestPreWriteReviewBlocksLowActionableStabilityWarningWithKoreanValidationText(t *testing.T) {
 	run := ReviewRun{
 		Gate: GateDecision{
@@ -5568,6 +5646,84 @@ func TestPreWriteReviewBlocksLowActionableStabilityWarningWithKoreanValidationTe
 	}
 	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
 		t.Fatalf("low actionable stability warning should block pre-write, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewDoesNotBlockLowOptionalHardeningWarning(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "stability",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Symbol:      "WMIQuery::Query",
+			Title:       "VARIANT resources could leak on std::bad_alloc",
+			Evidence:    "This is a rare exception-safety hardening path and is not directly introduced by the proposed diff.",
+			Impact:      "Out of memory can leak a BSTR or SAFEARRAY.",
+			RequiredFix: "Consider a broader RAII refactor in a separate hardening change.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 0 {
+		t.Fatalf("optional hardening warning should not block focused pre-write repair, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewDoesNotBlockLowPreExistingWarningEvenIfModelMarksBlocking(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "stability",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Symbol:      "WMIQuery::Query",
+			Title:       "VT_BSTR branch has a pre-existing null bstrVal guard gap",
+			Evidence:    "This issue is pre-existing and not directly introduced by the proposed diff.",
+			Impact:      "A rare provider edge case could crash.",
+			RequiredFix: "Consider guarding bstrVal in a separate hardening change.",
+			BlocksGate:  true,
+		}},
+	}
+
+	gate := evaluateReviewGate(run)
+	if gate.Verdict == reviewVerdictNeedsRevision || len(gate.BlockingFindings) != 0 {
+		t.Fatalf("low pre-existing warning must not block pre-write, got %#v", gate)
+	}
+	run.Gate = gate
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 0 {
+		t.Fatalf("low pre-existing warning should not be promoted from warning, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewDoesNotBlockLowTypeIntentMaintainabilityWarning(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "maintainability",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Symbol:      "WMIQuery::Query",
+			Title:       "VT_I4 SafeArray element buffer type intent is unclear",
+			Evidence:    "Windows int and LONG are both 4 bytes here; this is a future porting and static analysis clarity issue.",
+			Impact:      "Future reviewers can be confused.",
+			RequiredFix: "Prefer LONG for clarity.",
+			BlocksGate:  true,
+		}},
+	}
+
+	gate := evaluateReviewGate(run)
+	if gate.Verdict == reviewVerdictNeedsRevision || len(gate.BlockingFindings) != 0 {
+		t.Fatalf("low type-intent maintainability warning must not block pre-write, got %#v", gate)
 	}
 }
 
@@ -5720,6 +5876,228 @@ func TestPreWriteGatePromotesActionableWarningsToNeedsRevision(t *testing.T) {
 	}
 	if gate.Action != reviewGateActionRepairRequired {
 		t.Fatalf("expected repair-required action, got %#v", gate)
+	}
+}
+
+func TestPreWriteReviewMetaFindingDoesNotBlockGateOrRepairPlan(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "false_positive",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Title:       "1차 초안 RF-001 finding의 severity:high는 이미 해결된 항목이므로 info로 하향 권장",
+			Evidence:    "The review finding is already resolved by VARIANT variant{}; this is review metadata rather than a production code defect.",
+			RequiredFix: "Downgrade the review finding severity to info; no production code change is required.",
+			BlocksGate:  true,
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+
+	normalizeNonBlockingReviewMetaFindings(&run)
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictApproved {
+		t.Fatalf("review-meta-only finding should not block pre-write, got %#v", gate)
+	}
+	if len(gate.BlockingFindings) != 0 || len(gate.WarningFindings) != 0 {
+		t.Fatalf("review-meta-only finding should not appear in gate findings, got %#v", gate)
+	}
+	run.Gate = gate
+	run.RepairPlan = buildReviewRepairPlan(run)
+	if run.RepairPlan.Required {
+		t.Fatalf("review-meta-only finding should not create a repair plan: %#v", run.RepairPlan)
+	}
+}
+
+func TestPreWriteRepairPlanExcludesReviewerRouteFailureWhenCodeFindingExists(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Source:      "deterministic",
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-002",
+				Source:      "model",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Path:        "Tavern/Common/WMIQuery.cpp",
+				Title:       "SafeArrayGetElement return value remains unchecked",
+				Evidence:    "The proposed diff still appends element without checking SafeArrayGetElement.",
+				RequiredFix: "Check SafeArrayGetElement HRESULT before appending the value.",
+				BlocksGate:  true,
+				Quality:     reviewFindingQualityComplete,
+			},
+		},
+	}
+
+	run.RepairPlan = buildReviewRepairPlan(run)
+	if !run.RepairPlan.Required {
+		t.Fatalf("expected code finding to create a repair plan")
+	}
+	if containsString(run.RepairPlan.Findings, requiredReviewerFailureFindingID) {
+		t.Fatalf("reviewer route failure must not be a code repair obligation: %#v", run.RepairPlan.Findings)
+	}
+	if !containsString(run.RepairPlan.Findings, "RF-002") {
+		t.Fatalf("expected code finding in repair plan, got %#v", run.RepairPlan.Findings)
+	}
+	if strings.Contains(run.RepairPlan.Prompt, "Fix the reviewer route") {
+		t.Fatalf("repair prompt should not tell the coding model to fix reviewer route health:\n%s", run.RepairPlan.Prompt)
+	}
+}
+
+func TestPreWritePrimaryReviewerFailureIsCoveredByUsableCrossReviewer(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer", "cross_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{
+			{
+				Role:         "primary_reviewer",
+				Kind:         "main",
+				Status:       "failed",
+				ModelQuality: reviewModelQualityFailed,
+				Error:        "review route health skipped repeated reviewer call after recent unhealthy reviewer output",
+			},
+			{
+				Role:         "cross_reviewer",
+				Kind:         "cross",
+				Status:       "completed",
+				ModelQuality: reviewModelQualityUsable,
+			},
+		},
+	}
+
+	if failed := reviewFailedRequiredReviewerRuns(run); len(failed) != 0 {
+		t.Fatalf("usable cross reviewer should cover pre-write primary review health failure, got %#v", failed)
+	}
+	if findings := requiredReviewerFailureFindings(run); len(findings) != 0 {
+		t.Fatalf("usable cross reviewer should not create RF-REVIEWER blocker, got %#v", findings)
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("usable cross reviewer should clear required reviewer failure state")
+	}
+}
+
+func TestPreWriteCrossReviewerFailureStillRequiresReviewerFailure(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer", "cross_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{
+			{
+				Role:         "primary_reviewer",
+				Kind:         "main",
+				Status:       "completed",
+				ModelQuality: reviewModelQualityUsable,
+			},
+			{
+				Role:         "cross_reviewer",
+				Kind:         "cross",
+				Status:       "failed",
+				ModelQuality: reviewModelQualityFailed,
+				Error:        "review model soft timeout after 8m0s",
+			},
+		},
+	}
+
+	if failed := reviewFailedRequiredReviewerRuns(run); len(failed) != 1 || normalizeReviewRole(failed[0].Role) != "cross_reviewer" {
+		t.Fatalf("cross reviewer failure must remain required, got %#v", failed)
+	}
+	if findings := requiredReviewerFailureFindings(run); len(findings) != 1 || findings[0].ID != requiredReviewerFailureFindingID {
+		t.Fatalf("expected RF-REVIEWER blocker for failed cross reviewer, got %#v", findings)
+	}
+}
+
+func TestPreWriteProgressFindingsPreferCodeBlockersOverRouteAndMetaNoise(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-001", "RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-001",
+				Source:      "model",
+				Severity:    reviewSeverityHigh,
+				Category:    "false_positive",
+				Title:       "1차 초안 RF-001 finding의 severity:high는 이미 해결된 항목이므로 info로 하향 권장",
+				Evidence:    "The review finding is already resolved.",
+				RequiredFix: "Downgrade the review finding to info.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-002",
+				Source:      "model",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Path:        "Tavern/Common/WMIQuery.cpp",
+				Title:       "SafeArrayGetElement HRESULT remains unchecked",
+				RequiredFix: "Check the HRESULT before appending.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	normalizeNonBlockingReviewMetaFindings(&run)
+
+	findings := preWriteReviewProgressFindings(run)
+	if len(findings) != 1 || findings[0].ID != "RF-002" {
+		t.Fatalf("expected progress to show only actionable code blocker, got %#v", findings)
+	}
+}
+
+func TestPreWriteRepairFingerprintIgnoresReviewerRenumbering(t *testing.T) {
+	left := ReviewFinding{
+		ID:           "RF-001",
+		Source:       "model",
+		ReviewerRole: "main_model",
+		Severity:     reviewSeverityHigh,
+		Category:     "correctness",
+		Path:         "Tavern/Common/WMIQuery.cpp",
+		Symbol:       "WMIQuery::Query",
+		Title:        "SafeArrayGetElement return value is not checked",
+		RequiredFix:  "Check SafeArrayGetElement HRESULT before appending the integer.",
+	}
+	right := ReviewFinding{
+		ID:           "RF-003",
+		Source:       "cross",
+		ReviewerRole: "reviewer_model",
+		Severity:     reviewSeverityMedium,
+		Category:     "correctness",
+		Path:         "Tavern/Common/WMIQuery.cpp",
+		Symbol:       "WMIQuery::Query",
+		Title:        "SafeArrayGetElement return value is not checked",
+		RequiredFix:  "Check SafeArrayGetElement HRESULT before appending the integer.",
+	}
+	if gotLeft, gotRight := preWriteReviewRepairFindingFingerprintPart(left), preWriteReviewRepairFindingFingerprintPart(right); gotLeft != gotRight {
+		t.Fatalf("same root repair should keep a stable fingerprint\nleft=%q\nright=%q", gotLeft, gotRight)
 	}
 }
 
@@ -9463,7 +9841,7 @@ func TestPostChangeReviewDoesNotBlockOnFinalCodingHarnessState(t *testing.T) {
 	}
 }
 
-func TestSkippedVerificationDoesNotSuppressPostChangeReview(t *testing.T) {
+func TestSkippedVerificationSuppressesPostChangeReviewAfterDisclosure(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.LastVerification = &VerificationReport{
@@ -9477,8 +9855,8 @@ func TestSkippedVerificationDoesNotSuppressPostChangeReview(t *testing.T) {
 		Session: session,
 	}
 
-	if agent.shouldSkipPostChangeReviewForKnownFinalBlocker("검증은 실행하지 않았습니다.", true) {
-		t.Fatalf("skipped or declined verification must not suppress post-change review")
+	if !agent.shouldSkipPostChangeReviewForKnownFinalBlocker("검증은 실행하지 않았습니다.", true) {
+		t.Fatalf("skipped or declined verification should suppress post-change review after disclosure")
 	}
 
 	session.LastVerification = &VerificationReport{

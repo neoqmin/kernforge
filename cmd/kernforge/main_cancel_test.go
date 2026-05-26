@@ -1105,6 +1105,40 @@ func TestFormatAssistantErrorTreatsRequestCancelAsInfoNotError(t *testing.T) {
 	}
 }
 
+func TestCodexRefreshTokenReuseIsAuthError(t *testing.T) {
+	err := fmt.Errorf("openai-codex API error (400 Bad Request): Your refresh token has already been used to generate a new access token. Please try signing in again. | type=invalid_request_error | code=refresh_token_reused")
+	if !isAuthError(err) {
+		t.Fatalf("expected refresh token reuse to be classified as auth error")
+	}
+
+	rt := &runtimeState{ui: UI{}}
+	rendered := strings.Join(rt.formatAssistantError(err), "\n")
+	if !strings.Contains(rendered, "/codex-auth login") {
+		t.Fatalf("expected codex auth recovery hint, got %q", rendered)
+	}
+}
+
+func TestCodexAuthErrorWarnsLoginRecovery(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openai-codex", "gpt-5.5", "", "default")
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      UI{},
+		session: session,
+	}
+
+	if err := rt.handleAuthError(); err != nil {
+		t.Fatalf("handleAuthError: %v", err)
+	}
+	rendered := out.String()
+	for _, want := range []string{"/codex-auth login", "/codex-auth logout", "refresh token"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected auth warning to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
 func TestEnsureOpenAICodexAuthInteractiveImportsCodexCLIAuth(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()

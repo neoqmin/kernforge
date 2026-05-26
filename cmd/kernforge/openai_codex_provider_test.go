@@ -5190,6 +5190,42 @@ func TestPollCodexOAuthDeviceCodeRetriesRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestPollCodexOAuthDeviceCodeWaitsOnForbiddenAuthorizationPending(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("content-type", "application/json")
+		if attempts == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"message":"Device authorization is pending. Please try again.","type":"invalid_request_error","code":"deviceauth_authorization_pending"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"authorization_code":"auth-code-1","code_verifier":"verifier-1"}`))
+	}))
+	defer server.Close()
+
+	oldEndpoint := openAICodexDeviceTokenEndpoint
+	openAICodexDeviceTokenEndpoint = server.URL
+	defer func() {
+		openAICodexDeviceTokenEndpoint = oldEndpoint
+	}()
+
+	token, err := pollCodexOAuthDeviceCode(context.Background(), server.Client(), codexOAuthDeviceCode{
+		DeviceAuthID: "device-1",
+		UserCode:     "ABCD",
+		Interval:     time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("pollCodexOAuthDeviceCode: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected retry after authorization pending, got %d attempts", attempts)
+	}
+	if token.AuthorizationCode != "auth-code-1" || token.CodeVerifier != "verifier-1" {
+		t.Fatalf("unexpected device token: %#v", token)
+	}
+}
+
 func TestPollCodexOAuthDeviceCodeRetriesDeviceAuthorizationUnknown(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

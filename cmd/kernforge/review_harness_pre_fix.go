@@ -74,6 +74,7 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		rt.rememberNaturalReviewSelection(*selection)
 	}
 	if a.EmitProgress != nil {
+		a.emitRepairWorkflowProgress(userText, 1, "review before fix", "수정 전 리뷰", "Inspect the requested code before editing and produce RF repair targets.", "편집 전에 요청 코드를 검토하고 RF 수리 대상을 만듭니다.")
 		a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Running review before fix...", "수정 전 리뷰를 실행합니다..."))
 	}
 	run, err := runReviewHarness(ctx, rt, opts)
@@ -128,6 +129,7 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 				"Pre-fix local review route was unreliable, so the main model will continue with independent source inspection instead of treating the review as approval.",
 				"수정 전 로컬 리뷰 route가 신뢰 가능한 finding을 만들지 못해, 리뷰 승인으로 보지 않고 메인 모델이 소스 코드를 독립 확인한 뒤 계속 수리합니다."))
 		}
+		a.emitRepairWorkflowProgress(userText, 2, "write patch", "수정안 작성", "The review findings are now handed to the main model for a focused patch.", "리뷰 finding을 메인 모델에 전달해 focused patch를 작성합니다.")
 		a.EmitProgress(formatReviewBeforeFixHandoffProgress(a.Config, run))
 	}
 	return true, nil
@@ -350,6 +352,9 @@ func collectActionableNonReviewerFindings(run ReviewRun, idSet map[string]bool, 
 
 func reviewFindingIsActionableNonReviewerFinding(run ReviewRun, finding ReviewFinding, idSet map[string]bool) bool {
 	if strings.EqualFold(strings.TrimSpace(finding.ID), requiredReviewerFailureFindingID) {
+		return false
+	}
+	if reviewFindingLooksReviewMetaOnly(finding) {
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(finding.Category), "evidence_gap") ||
@@ -1201,50 +1206,11 @@ func renderReviewInlineFindingsLocalized(run ReviewRun, includeVerificationGaps 
 		if !includeVerificationGaps && (strings.EqualFold(finding.Category, "test_gap") || strings.EqualFold(finding.Category, "evidence_gap")) {
 			continue
 		}
-		title := valueOrDefault(finding.Title, "Review finding")
-		fmt.Fprintf(&b, "- %s [%s/%s] %s\n", valueOrDefault(finding.ID, "finding"), finding.Severity, finding.Category, title)
-		if strings.TrimSpace(finding.Path) != "" {
-			if korean {
-				fmt.Fprintf(&b, "  경로: %s\n", finding.Path)
-			} else {
-				fmt.Fprintf(&b, "  Path: %s\n", finding.Path)
-			}
+		if korean {
+			finding.RequiredFix = localizedReviewRequiredFixText(finding.RequiredFix, true)
 		}
-		if strings.TrimSpace(finding.Symbol) != "" {
-			if korean {
-				fmt.Fprintf(&b, "  심볼: %s\n", finding.Symbol)
-			} else {
-				fmt.Fprintf(&b, "  Symbol: %s\n", finding.Symbol)
-			}
-		}
-		if strings.TrimSpace(finding.Evidence) != "" {
-			if korean {
-				fmt.Fprintf(&b, "  근거: %s\n", finding.Evidence)
-			} else {
-				fmt.Fprintf(&b, "  Evidence: %s\n", finding.Evidence)
-			}
-		}
-		if strings.TrimSpace(finding.Impact) != "" {
-			if korean {
-				fmt.Fprintf(&b, "  영향: %s\n", finding.Impact)
-			} else {
-				fmt.Fprintf(&b, "  Impact: %s\n", finding.Impact)
-			}
-		}
-		if strings.TrimSpace(finding.RequiredFix) != "" {
-			if korean {
-				fmt.Fprintf(&b, "  필요한 수정: %s\n", localizedReviewRequiredFixText(finding.RequiredFix, true))
-			} else {
-				fmt.Fprintf(&b, "  Required fix: %s\n", finding.RequiredFix)
-			}
-		}
-		if strings.TrimSpace(finding.TestRecommendation) != "" {
-			if korean {
-				fmt.Fprintf(&b, "  테스트: %s\n", finding.TestRecommendation)
-			} else {
-				fmt.Fprintf(&b, "  Test: %s\n", finding.TestRecommendation)
-			}
-		}
+		writeReviewFindingCard(&b, finding, korean, false)
+		b.WriteString("\n")
 	}
 	if strings.TrimSpace(b.String()) == "" {
 		if korean {

@@ -192,6 +192,64 @@ func TestActivityLineUsesPaddedBadge(t *testing.T) {
 	}
 }
 
+func TestActivityBadgeDistinguishesMainAndReviewModels(t *testing.T) {
+	ui := UI{color: true}
+
+	mainBadge := ui.activityBadge("main")
+	reviewBadge := ui.activityBadge("review")
+	if !strings.Contains(mainBadge, "[main") {
+		t.Fatalf("expected main badge, got %q", mainBadge)
+	}
+	if !strings.Contains(reviewBadge, "[review") {
+		t.Fatalf("expected review badge, got %q", reviewBadge)
+	}
+	if !strings.Contains(mainBadge, "38;5;214") {
+		t.Fatalf("expected main badge to use accent2 color, got %q", mainBadge)
+	}
+	if !strings.Contains(reviewBadge, "38;5;218") {
+		t.Fatalf("expected review badge to use review color, got %q", reviewBadge)
+	}
+}
+
+func TestClassifyProgressKindDistinguishesReviewStages(t *testing.T) {
+	cases := []struct {
+		text string
+		want string
+	}{
+		{text: "Main model is reading the code and checking the repair direction from the collected local evidence.", want: "main"},
+		{text: "Main model code review result: completed (quality=usable, findings=3).", want: "main"},
+		{text: "Review model is cross-checking the main model draft and the same evidence before the final gate is decided.", want: "review"},
+		{text: "Review model cross-check result: cross completed (quality=usable, findings=1).", want: "review"},
+		{text: "메인 모델이 코드를 읽고 수정 방향을 검토합니다.", want: "main"},
+		{text: "리뷰 모델 검토 결과가 나왔습니다. Kernforge가 두 리뷰 결과를 병합해 최종 게이트를 계산합니다.", want: "review"},
+	}
+
+	for _, tc := range cases {
+		if got := classifyProgressKind(tc.text); got != tc.want {
+			t.Fatalf("classifyProgressKind(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+	}
+}
+
+func TestCompactThinkingStatusUsesReviewStageLanguage(t *testing.T) {
+	cfg := Config{AutoLocale: boolPtr(false)}
+	if got := compactThinkingStatus(cfg, "Main model is reading the code and checking the repair direction from the collected local evidence."); got != "Main model is reading code..." {
+		t.Fatalf("unexpected main review status: %q", got)
+	}
+	if got := compactThinkingStatus(cfg, "Review model cross-check result: cross completed (quality=usable, findings=1)."); got != "Review model result received." {
+		t.Fatalf("unexpected review result status: %q", got)
+	}
+
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	ko := Config{AutoLocale: boolPtr(true)}
+	if got := compactThinkingStatus(ko, "메인 모델이 코드를 읽고 수정 방향을 검토합니다."); got != "메인 모델이 코드 검토 중 ..." {
+		t.Fatalf("unexpected Korean main review status: %q", got)
+	}
+	if got := compactThinkingStatus(ko, "리뷰 모델 검토 결과가 나왔습니다. Kernforge가 두 리뷰 결과를 병합해 최종 게이트를 계산합니다."); got != "리뷰 모델 검토 결과 수신." {
+		t.Fatalf("unexpected Korean review result status: %q", got)
+	}
+}
+
 func TestTurnElapsedLineUsesTimeBadge(t *testing.T) {
 	ui := UI{color: false}
 

@@ -1275,6 +1275,229 @@ func TestAgentClosesRemainingToolPlaceholdersAfterInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestAgentBlocksBroadListFilesAfterPreFixReviewFindings(t *testing.T) {
+	root := t.TempDir()
+	listTool := &staticTool{name: "list_files", output: "list should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-list",
+						Name:      "list_files",
+						Arguments: `{"path":"Tavern/Common"}`,
+					}},
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "stopped after focused pre-fix repair guard"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.LastReviewRun = focusedPreFixRepairRun()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(true)},
+		Client:    provider,
+		Tools:     NewToolRegistry(listTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if reply != "stopped after focused pre-fix repair guard" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if listTool.calls != 0 {
+		t.Fatalf("list_files should be blocked before execution, got %d calls", listTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-list", "NOT_EXECUTED") {
+		t.Fatalf("expected synthetic not-executed list_files result, messages=%#v", session.Messages)
+	}
+	if !scriptedRequestsContainText(provider.requests, "focused pre-fix review") &&
+		!scriptedRequestsContainText(provider.requests, "수정 전 focused 리뷰") {
+		t.Fatalf("expected pre-fix repair convergence guidance in retry request")
+	}
+}
+
+func TestAgentBlocksBroadGrepAfterPreFixReviewFindings(t *testing.T) {
+	root := t.TempDir()
+	grepTool := &staticTool{name: "grep", output: "grep should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-grep",
+						Name:      "grep",
+						Arguments: `{"path":".","pattern":"."}`,
+					}},
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "stopped after broad grep guard"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.LastReviewRun = focusedPreFixRepairRun()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(true)},
+		Client:    provider,
+		Tools:     NewToolRegistry(grepTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if reply != "stopped after broad grep guard" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if grepTool.calls != 0 {
+		t.Fatalf("broad grep should be blocked before execution, got %d calls", grepTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-grep", "broad grep") {
+		t.Fatalf("expected broad grep block result, messages=%#v", session.Messages)
+	}
+}
+
+func TestAgentBlocksRepeatedReadFileAfterPreFixReviewFindings(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "file contents"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{
+					ID:        "call-read-1",
+					Name:      "read_file",
+					Arguments: `{"path":"Tavern/Common/WMIQuery.cpp"}`,
+				},
+				ToolCall{
+					ID:        "call-read-2",
+					Name:      "read_file",
+					Arguments: `{"path":"Tavern/Common/WMIQuery.cpp"}`,
+				},
+			),
+			{Message: Message{Role: "assistant", Text: "stopped after repeated read guard"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.LastReviewRun = focusedPreFixRepairRun()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(true)},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if reply != "stopped after repeated read guard" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if readTool.calls != 1 {
+		t.Fatalf("expected only the first read_file to execute, got %d calls", readTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-read-2", "already re-read this path once") {
+		t.Fatalf("expected repeated read_file block result, messages=%#v", session.Messages)
+	}
+}
+
+func TestAgentForcesPatchAfterPreFixReviewInspectionBudget(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "file contents"}
+	calls := make([]ToolCall, 0, maxPreFixReviewRepairInspectTools+1)
+	for i := 0; i < maxPreFixReviewRepairInspectTools+1; i++ {
+		calls = append(calls, ToolCall{
+			ID:        fmt.Sprintf("call-read-%d", i+1),
+			Name:      "read_file",
+			Arguments: fmt.Sprintf(`{"path":"Tavern/Common/Context%d.cpp"}`, i+1),
+		})
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(calls...),
+			{Message: Message{Role: "assistant", Text: "stopped after inspection budget guard"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.LastReviewRun = focusedPreFixRepairRun()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(true)},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if reply != "stopped after inspection budget guard" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if readTool.calls != maxPreFixReviewRepairInspectTools {
+		t.Fatalf("expected inspect budget to allow %d reads, got %d", maxPreFixReviewRepairInspectTools, readTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-read-7", "inspection budget") {
+		t.Fatalf("expected inspection budget block result, messages=%#v", session.Messages)
+	}
+	if !scriptedRequestsContainText(provider.requests, "one edit tool call") &&
+		!scriptedRequestsContainText(provider.requests, "하나의 edit tool call") {
+		t.Fatalf("expected force-edit guidance in retry request")
+	}
+}
+
+func focusedPreFixRepairRun() *ReviewRun {
+	return &ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해",
+		RequestAnalysis: ReviewRequestAnalysis{
+			ScopeDiscovery: ReviewScopeDiscovery{
+				CandidateFiles: []string{"Tavern/Common/WMIQuery.cpp"},
+				ScopeWidth:     "focused",
+				Confidence:     0.86,
+			},
+		},
+		Evidence: ReviewEvidencePack{
+			ChangedPaths: []string{"Tavern/Common/WMIQuery.cpp"},
+		},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Title:       "SAFEARRAY type guard is too broad",
+			RequiredFix: "Use an exact VARTYPE comparison and keep the patch focused on WMIQuery.cpp.",
+			BlocksGate:  true,
+		}},
+	}
+}
+
 func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -1856,6 +2079,94 @@ func TestAgentAsksBeforeAutomaticVerificationAndSkipsOnNo(t *testing.T) {
 	}
 	if !ok || latest.Report.Steps[0].Status != VerificationSkipped {
 		t.Fatalf("verification history should record skipped report, got ok=%v latest=%#v", ok, latest)
+	}
+}
+
+func TestAutomaticPostChangeReviewGateSkipsAfterDeclinedVerificationDisclosure(t *testing.T) {
+	root := t.TempDir()
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{
+				Role: "assistant",
+				Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: needs_revision",
+					"summary: this post-change review should not run after declined verification",
+					"findings:",
+					"- id: RF-001",
+					"  severity: high",
+					"  category: correctness",
+					"  title: unexpected post-change review",
+					"  evidence: declined automatic verification should be a final-answer boundary",
+				}, "\n"),
+			},
+		}},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "msbuild",
+			Status: VerificationSkipped,
+		}},
+	}
+	var progress []string
+	agent := &Agent{
+		Config:         Config{},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		EmitProgress: func(line string) {
+			progress = append(progress, line)
+		},
+	}
+
+	lastFingerprint := ""
+	revisionCount := 0
+	exhaustedNudge := false
+	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(
+		context.Background(),
+		"fix the file",
+		"Updated main.go. Verification was not run because the user declined automatic verification.",
+		&lastFingerprint,
+		&revisionCount,
+		&exhaustedNudge,
+	)
+	if err != nil {
+		t.Fatalf("post-change review gate: %v", err)
+	}
+	if needsModelTurn {
+		t.Fatalf("declined verification disclosure should not request a repair turn")
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("declined automatic verification should not run post-change or final-answer review, got %d reviewer request(s)", len(reviewer.requests))
+	}
+	for _, line := range progress {
+		if strings.Contains(line, "Running automatic post-change review") || strings.Contains(line, "자동 변경 후 리뷰") {
+			t.Fatalf("declined automatic verification should not enter post-change review, progress=%q", line)
+		}
+	}
+}
+
+func TestInteractiveFinalReviewSkipsAfterDeclinedVerificationDisclosure(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.EnsureTaskState()
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "msbuild",
+			Status: VerificationSkipped,
+		}},
+	}
+	agent := &Agent{
+		Session: session,
+	}
+
+	if agent.shouldReviewInteractiveFinalAnswer("Verification was not run because the user declined it.", true, true) {
+		t.Fatalf("declined verification disclosure should not trigger final-answer review")
+	}
+	if !agent.shouldReviewInteractiveFinalAnswer("Updated the file.", true, true) {
+		t.Fatalf("missing skipped-verification disclosure should still trigger final-answer review")
 	}
 }
 
@@ -8098,6 +8409,53 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 	}
 	if !reviewRunHasRequiredReviewerFailure(*session.LastReviewRun) {
 		t.Fatalf("expected required reviewer failure marker, got %#v", session.LastReviewRun.Findings)
+	}
+}
+
+func TestPreWriteReviewerFailureWithActionableFindingUsesRepairPath(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-001"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Path:        "main.cpp",
+				Title:       "return value is still wrong",
+				Evidence:    "the proposal does not address the required return path",
+				RequiredFix: "repair the return path before writing",
+				BlocksGate:  true,
+			},
+		},
+	}
+
+	if !reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("expected synthetic run to include required reviewer failure")
+	}
+	if !reviewRunHasActionableNonReviewerFindings(run) {
+		t.Fatalf("expected synthetic run to include actionable code finding")
+	}
+	if preWriteReviewerFailureShouldHardStop(run) {
+		t.Fatalf("actionable code finding should use normal pre-write repair path instead of reviewer-gate-unavailable hard stop")
+	}
+
+	routeOnly := run
+	routeOnly.Gate.BlockingFindings = []string{requiredReviewerFailureFindingID}
+	routeOnly.Findings = []ReviewFinding{routeOnly.Findings[0]}
+	if !preWriteReviewerFailureShouldHardStop(routeOnly) {
+		t.Fatalf("route-only reviewer failure should remain a hard stop")
 	}
 }
 

@@ -974,6 +974,179 @@ func normalizePreWriteVerificationOnlyFindings(run *ReviewRun) {
 	normalizeNonBlockingVerificationOnlyFindings(run)
 }
 
+func normalizeNonBlockingReviewMetaFindings(run *ReviewRun) {
+	if run == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") &&
+		!strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		return
+	}
+	for i := range run.Findings {
+		if !reviewFindingLooksReviewMetaOnly(run.Findings[i]) {
+			continue
+		}
+		run.Findings[i].Severity = reviewSeverityInfo
+		run.Findings[i].BlocksGate = false
+		run.Findings[i].ResolutionStatus = "non_blocking_review_meta"
+		if strings.TrimSpace(run.Findings[i].Category) == "" {
+			run.Findings[i].Category = "false_positive"
+		}
+		if strings.TrimSpace(run.Findings[i].Confidence) == "" {
+			run.Findings[i].Confidence = "medium"
+		}
+	}
+}
+
+func reviewFindingLooksReviewMetaOnly(f ReviewFinding) bool {
+	f.Normalize()
+	text := strings.ToLower(strings.Join([]string{
+		f.Title,
+		f.Evidence,
+		f.Impact,
+		f.RequiredFix,
+		f.TestRecommendation,
+	}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	metaSubject := containsAny(text,
+		"review finding",
+		"reviewer finding",
+		"finding severity",
+		"finding's severity",
+		"severity high",
+		"severity:high",
+		"severity: high",
+		"severity를",
+		"severity:",
+		"1차 초안",
+		"메인 초안",
+		"리뷰 finding",
+		"검토 finding",
+		"finding의",
+	)
+	resolutionText := containsAny(text,
+		"already resolved",
+		"already fixed",
+		"already addressed",
+		"required_fix: none",
+		"required fix: none",
+		"no code change",
+		"no production code",
+		"downgrade",
+		"lower to info",
+		"mark as info",
+		"info로",
+		"하향",
+		"이미 해결",
+		"해결된 항목",
+		"코드 수정은 필요",
+		"수정 불필요",
+	)
+	if metaSubject && resolutionText {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(f.Category), "false_positive") &&
+		metaSubject &&
+		containsAny(text, "review", "리뷰", "finding", "초안") {
+		return true
+	}
+	return false
+}
+
+func reviewFindingLooksLowNonBlockingPreWriteConcern(f ReviewFinding) bool {
+	f.Normalize()
+	if !strings.EqualFold(strings.TrimSpace(f.Severity), reviewSeverityLow) {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		f.Title,
+		f.Evidence,
+		f.Impact,
+		f.RequiredFix,
+		f.TestRecommendation,
+	}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	if containsAny(text,
+		"not directly introduced",
+		"not introduced by",
+		"not a regression introduced",
+		"pre-existing",
+		"preexisting",
+		"existing code",
+		"legacy code",
+		"from before",
+		"not newly introduced",
+		"사전 코드",
+		"기존 코드",
+		"잔존",
+		"본 변경에서 도입한 결함은 아니",
+		"도입한 결함은 아니",
+		"직접 도입되지",
+	) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(f.Category), "maintainability") &&
+		containsAny(text,
+			"type intent",
+			"intent is unclear",
+			"clarity",
+			"readability",
+			"future",
+			"porting",
+			"static analysis",
+			"code reviewer",
+			"의도가 흐",
+			"혼동",
+			"향후",
+			"포팅",
+			"정적 분석",
+			"가독성",
+		) &&
+		!containsAny(text,
+			"compile",
+			"build",
+			"#include",
+			"missing include",
+			"missing declaration",
+			"fail to compile",
+			"can break this translation unit",
+			"빌드",
+			"컴파일",
+			"include",
+			"선언 누락",
+		) {
+		return true
+	}
+	if containsAny(text,
+		"optional",
+		"optional hardening",
+		"nice-to-have",
+		"separate hardening",
+		"separate change",
+		"broader hardening",
+		"추가 수정 불요",
+		"별도",
+		"권장",
+	) &&
+		!containsAny(text,
+			"introduced by the proposed diff",
+			"introduced by this diff",
+			"new regression",
+			"regression introduced",
+			"patch can fail",
+			"패치가 도입",
+			"새 회귀",
+			"회귀를 도입",
+		) {
+		return true
+	}
+	return false
+}
+
 func normalizeNonBlockingVerificationOnlyFindings(run *ReviewRun) {
 	if run == nil || !reviewVerificationOnlyFindingsAreNonBlocking(*run) {
 		return
@@ -1096,6 +1269,9 @@ func reviewPreWriteActionableWarningIDSet(run ReviewRun, warningIDs []string) ma
 }
 
 func reviewFindingCountsAsWarning(finding ReviewFinding) bool {
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
 	if strings.EqualFold(finding.Severity, reviewSeverityHigh) ||
 		strings.EqualFold(finding.Severity, reviewSeverityMedium) ||
 		strings.EqualFold(finding.Severity, reviewSeverityLow) {
@@ -1108,6 +1284,13 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	if reviewFindingSourceIsModelish(finding) &&
 		(strings.EqualFold(finding.Quality, reviewFindingQualityWeak) ||
 			strings.EqualFold(finding.Quality, reviewFindingQualityInvalid)) {
+		return false
+	}
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") &&
+		reviewFindingLooksLowNonBlockingPreWriteConcern(finding) {
 		return false
 	}
 	if finding.BlocksGate || strings.EqualFold(finding.Severity, reviewSeverityBlocker) {
@@ -1306,6 +1489,9 @@ func reviewRunLooksExplicitRepairIntent(run ReviewRun) bool {
 
 func reviewFindingLooksActionableForRepairGate(finding ReviewFinding) bool {
 	finding.Normalize()
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
 	if reviewFindingLooksAdvisoryStyleCategory(finding) {
 		return false
 	}
@@ -1332,6 +1518,9 @@ func reviewHasActionableWarningFindings(run ReviewRun, warningIDs []string) bool
 	warnings := reviewFindingIDSet(warningIDs)
 	for _, finding := range run.Findings {
 		if !warnings[finding.ID] {
+			continue
+		}
+		if reviewFindingLooksReviewMetaOnly(finding) {
 			continue
 		}
 		if strings.EqualFold(finding.Category, "test_gap") ||
@@ -1384,6 +1573,9 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		finding.Normalize()
 		if hasGateClassification {
 			if blockingIDs[finding.ID] {
+				if !reviewFindingShouldBeRepairPlanBlocker(run, finding) {
+					continue
+				}
 				blocking = append(blocking, finding)
 				continue
 			}
@@ -1393,6 +1585,9 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 			continue
 		}
 		if reviewFindingBlocksGate(run, finding) {
+			if !reviewFindingShouldBeRepairPlanBlocker(run, finding) {
+				continue
+			}
 			blocking = append(blocking, finding)
 			continue
 		}
@@ -1466,6 +1661,30 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		Findings:        ids,
 		RequiredActions: normalizeTaskStateList(actions, 12),
 	}
+}
+
+func reviewFindingShouldBeRepairPlanBlocker(run ReviewRun, finding ReviewFinding) bool {
+	finding.Normalize()
+	if strings.EqualFold(strings.TrimSpace(finding.ID), requiredReviewerFailureFindingID) {
+		return false
+	}
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") &&
+		!reviewFindingLooksImplementationRepairDespiteGapCategory(finding) {
+		return false
+	}
+	if reviewFindingLooksAdvisoryStyleCategory(finding) {
+		return false
+	}
+	return strings.TrimSpace(finding.RequiredFix) != "" ||
+		strings.TrimSpace(finding.Path) != "" ||
+		strings.TrimSpace(finding.Symbol) != "" ||
+		strings.TrimSpace(finding.Title) != ""
 }
 
 func writeReviewRepairPlanFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
@@ -1589,6 +1808,9 @@ func reviewRepairPatchConstructionGuidance(blocking []ReviewFinding, warnings []
 
 func reviewFindingShouldBeRepairPlanWarning(finding ReviewFinding) bool {
 	finding.Normalize()
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
 	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
 		return false
 	}

@@ -450,6 +450,10 @@ func (ui UI) activityBadge(kind string) string {
 		return ui.bold(ui.warn(label))
 	case "model":
 		return ui.bold(ui.accent(label))
+	case "main":
+		return ui.bold(ui.accent2(label))
+	case "review":
+		return ui.bold(ui.blush(label))
 	case "next":
 		return ui.bold(ui.info(label))
 	case "analysis":

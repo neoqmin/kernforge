@@ -778,6 +778,11 @@ func (a *Agent) shouldReviewInteractiveFinalAnswer(reply string, attemptedEditTo
 	// measurable gain.
 	_ = attemptedEditTool
 	if unresolvedVerification {
+		if a.Session.LastVerification != nil &&
+			a.Session.LastVerification.WasSkipped() &&
+			replyMentionsVerificationNotRun(reply) {
+			return false
+		}
 		return true
 	}
 	if a.Session.LastCodingHarnessReport != nil && !a.Session.LastCodingHarnessReport.Approved {

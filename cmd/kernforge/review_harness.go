@@ -743,7 +743,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.ReviewerGatePolicy = normalizeReviewReviewerGatePolicy(opts.ReviewerGatePolicy)
 	run.PolicyPacks = analysis.PolicyPacks
 	run.PolicyPackVersions = reviewPolicyPackVersions(run.PolicyPacks)
+	emitReviewPipelineProgress(rt, run, 1, "scope discovery", "범위 확인", "Find the files, symbols, and review width for this request.", "요청에 맞는 파일, 심볼, 리뷰 범위를 확정합니다.")
 	emitReviewScopeDiscoveryProgress(rt, run)
+	emitReviewPipelineProgress(rt, run, 2, "evidence pack", "증거 준비", "Collect git state, file excerpts, diffs, repair findings, and verification context.", "git 상태, 파일 발췌, diff, 수리 RF, 검증 맥락을 모읍니다.")
 	changeSet, evidence := collectReviewEvidence(ctx, rt, root, run, opts)
 	if err := ctx.Err(); err != nil {
 		return run, err
@@ -755,6 +757,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.ModelPlan = planReviewModels(rt.cfg, run)
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(run, reviewRuntimeHasDistinctCrossReviewer(rt))
 	run.Findings = append(run.Findings, deterministicReviewFindings(rt, run)...)
+	emitReviewPipelineProgress(rt, run, 3, "model review", "모델 검토", "Run the main code review and the configured cross-review when available.", "메인 코드 검토와 설정된 교차 리뷰를 실행합니다.")
 	if !opts.NoModel && len(run.Evidence.Sources) > 0 {
 		modelFindings, reviewerRuns := executeReviewModelRuns(ctx, rt, root, &run)
 		if err := ctx.Err(); err != nil {
@@ -768,12 +771,16 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		run.Result.DegradedReason = "model review disabled by --no-model"
 		run.Result.ModelQuality = reviewModelQualityUsable
 	}
+	emitReviewPipelineProgress(rt, run, 4, "merge/check", "병합/검산", "Normalize findings, separate route/meta noise, and preserve actionable code blockers.", "finding을 정규화하고 route/meta 노이즈와 실행 가능한 코드 blocker를 분리합니다.")
+	normalizeNonBlockingReviewMetaFindings(&run)
 	normalizeNonBlockingVerificationOnlyFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
 	run.Findings = append(run.Findings, preFixNonConclusiveBugHuntFindings(run)...)
 	annotateSingleModelPreWriteRepairStatuses(&run)
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
+	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	emitReviewPipelineProgress(rt, run, 5, "gate decision", "게이트 판정", "Decide approved, approved_with_warnings, needs_revision, or insufficient_evidence.", "approved, approved_with_warnings, needs_revision, insufficient_evidence 중 하나로 판정합니다.")
 	run.Gate = evaluateReviewGate(run)
 	run.RepairPlan = buildReviewRepairPlan(run)
 	run.Result.ScopeReviewed = run.ChangeSet.ChangedPaths
@@ -796,6 +803,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
 	finalizeReviewRunProtocol(root, rt, &run)
 	emitDistinctReviewGateResultProgress(rt, run)
+	emitReviewPipelineProgress(rt, run, 6, "next action", "다음 조치", reviewPipelineNextActionDetail(run, false), reviewPipelineNextActionDetail(run, true))
 	if err := writeReviewRunArtifacts(root, &run); err != nil {
 		return run, err
 	}
