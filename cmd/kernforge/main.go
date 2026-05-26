@@ -1033,6 +1033,8 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 		lines = rt.appendIrrecoverableModelAlternatives(lines)
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded"):
 		lines = append(lines, rt.ui.hintLine("The model request timed out before a usable response arrived. Retry the request, reduce prompt/tool churn, or increase the request timeout if your provider is slow."))
+	case isCodexOAuthRefreshAuthErrorText(text):
+		lines = append(lines, rt.ui.hintLine("OpenAI Codex OAuth refresh failed. Run /codex-auth login before retrying this request. If it keeps failing, run /codex-auth logout and then /codex-auth login."))
 	}
 	return lines
 }
@@ -1797,6 +1799,27 @@ func compactThinkingStatus(cfg Config, text string) string {
 		return localizedText(cfg, "Checking follow-up steps...", "후속 단계 확인 중 ...")
 	case strings.Contains(lower, "running automatic pre-write review"):
 		return localizedText(cfg, "Reviewing proposed edit...", "제안된 수정 리뷰 중 ...")
+	case strings.Contains(lower, "main model is reading the code") ||
+		strings.Contains(lower, "main model is still reading code") ||
+		strings.Contains(lower, "main model code review request") ||
+		strings.Contains(lower, "메인 모델이 코드를 읽고") ||
+		strings.Contains(lower, "메인 모델이 아직 코드를 읽고") ||
+		strings.Contains(lower, "메인 모델 코드 검토 요청"):
+		return localizedText(cfg, "Main model is reading code...", "메인 모델이 코드 검토 중 ...")
+	case strings.Contains(lower, "main model code review result") ||
+		strings.Contains(lower, "메인 모델 검토 결과"):
+		return localizedText(cfg, "Main model review result received.", "메인 모델 검토 결과 수신.")
+	case strings.Contains(lower, "review model is cross-checking") ||
+		strings.Contains(lower, "review model is still cross-checking") ||
+		strings.Contains(lower, "review model cross-check request") ||
+		strings.Contains(lower, "리뷰 모델이 메인") ||
+		strings.Contains(lower, "리뷰 모델이 아직") ||
+		strings.Contains(lower, "리뷰 모델 교차 검토 요청"):
+		return localizedText(cfg, "Review model is cross-checking...", "리뷰 모델이 교차 검토 중 ...")
+	case strings.Contains(lower, "review model cross-check result") ||
+		strings.Contains(lower, "리뷰 모델 교차 검토 결과") ||
+		strings.Contains(lower, "리뷰 모델 검토 결과"):
+		return localizedText(cfg, "Review model result received.", "리뷰 모델 검토 결과 수신.")
 	case strings.Contains(lower, "automatic pre-write review found blockers"):
 		return localizedText(cfg, "Review blocked proposed edit.", "리뷰가 제안 수정을 차단했습니다.")
 	case strings.Contains(lower, "automatic pre-write review completed"):
@@ -1857,6 +1880,24 @@ func classifyProgressKind(text string) string {
 	case strings.Contains(lower, "memory"),
 		strings.Contains(lower, "메모리"):
 		return "memory"
+	case strings.Contains(lower, "main model code review"),
+		strings.Contains(lower, "main model is reading the code"),
+		strings.Contains(lower, "main model is still reading code"),
+		strings.Contains(lower, "main model review result"),
+		strings.Contains(lower, "메인 모델 코드 검토"),
+		strings.Contains(lower, "메인 모델이 코드를 읽고"),
+		strings.Contains(lower, "메인 모델이 아직 코드를 읽고"),
+		strings.Contains(lower, "메인 모델 검토 결과"):
+		return "main"
+	case strings.Contains(lower, "review model cross-check"),
+		strings.Contains(lower, "review model is cross-checking"),
+		strings.Contains(lower, "review model is still cross-checking"),
+		strings.Contains(lower, "review model result"),
+		strings.Contains(lower, "리뷰 모델 교차 검토"),
+		strings.Contains(lower, "리뷰 모델이 메인"),
+		strings.Contains(lower, "리뷰 모델이 아직"),
+		strings.Contains(lower, "리뷰 모델 검토 결과"):
+		return "review"
 	case strings.Contains(lower, "model"),
 		strings.Contains(lower, "retrying"),
 		strings.Contains(lower, "timeout"):
@@ -3089,13 +3130,35 @@ func isAuthError(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return (strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized") || strings.Contains(msg, "authentication_error") || strings.Contains(msg, "invalid x-api-key") || strings.Contains(msg, "invalid api key"))
+	if strings.Contains(msg, "401") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "authentication_error") ||
+		strings.Contains(msg, "invalid x-api-key") ||
+		strings.Contains(msg, "invalid api key") {
+		return true
+	}
+	return isCodexOAuthRefreshAuthErrorText(msg)
+}
+
+func isCodexOAuthRefreshAuthErrorText(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if msg == "" {
+		return false
+	}
+	if strings.Contains(msg, "refresh_token_reused") ||
+		strings.Contains(msg, "refresh token has already been used") ||
+		strings.Contains(msg, "refresh token has been used") {
+		return true
+	}
+	return strings.Contains(msg, "invalid_request_error") &&
+		strings.Contains(msg, "refresh token") &&
+		(strings.Contains(msg, "openai-codex") || strings.Contains(msg, "oauth") || strings.Contains(msg, "codex"))
 }
 
 func (rt *runtimeState) handleAuthError() error {
 	provider := strings.ToLower(strings.TrimSpace(rt.session.Provider))
 	if normalizeProviderName(provider) == "openai-codex" {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("OpenAI Codex OAuth appears to be invalid. Run /codex-auth login or set "+openAICodexAccessTokenEnv+"."))
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("OpenAI Codex OAuth appears to be invalid. Run /codex-auth login, or run /codex-auth logout and then /codex-auth login if the refresh token was reused. You can also set "+openAICodexAccessTokenEnv+"."))
 		return nil
 	}
 	fmt.Fprintln(rt.writer, rt.ui.warnLine("API key appears to be invalid. Please enter a new key."))

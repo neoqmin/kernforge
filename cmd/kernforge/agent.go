@@ -75,6 +75,8 @@ const (
 	maxPreWriteReviewRepairBlocksPerTurn  = 4
 	maxPreWriteReviewRepairInspectTools   = 6
 	maxPreWriteReviewRepairInspectNudges  = 1
+	maxPreFixReviewRepairInspectTools     = 6
+	maxPreFixReviewRepairInspectNudges    = 1
 	maxEditTargetMismatchFailuresPerTurn  = 1
 	maxEditTargetMismatchReanchorBlocks   = 1
 	maxToolBudgetExtensions               = 2
@@ -598,6 +600,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	preWriteReviewRepairBlockFingerprints := map[string]int{}
 	preWriteReviewRepairInspectTools := 0
 	preWriteReviewRepairInspectNudges := 0
+	preFixReviewRepairInspectTools := 0
+	preFixReviewRepairInspectNudges := 0
+	preFixReviewRepairReadPaths := map[string]int{}
 	preWriteReviewRequiresReanchor := false
 	preWriteReviewReanchorBlocks := 0
 	lastToolError := ""
@@ -1404,6 +1409,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			!preWriteReviewRequiresReanchor &&
 			!editTargetMismatchRequiresReanchor &&
 			preWriteReviewRepairBlocks == 0 &&
+			!a.preFixReviewRepairActive(explicitEditRequest, successfulEditTool) &&
 			a.shouldExecuteToolCallBatchInParallel(resp.Message.ToolCalls, readOnlyAnalysis, turnDisabledTools) {
 			outcome, err := a.executeParallelToolCallBatch(ctx, resp.Message.ToolCalls, toolMsgIndexes, mcpTurnMetadata)
 			if err != nil {
@@ -1612,6 +1618,78 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return "", saveErr
 					}
 					return reply, nil
+				}
+			}
+			if run, ok := a.currentPreFixReviewRepairRun(explicitEditRequest, successfulEditTool); ok && !isEditTool(call.Name) {
+				if result, guidance, blocked := preFixReviewRepairBlockedToolResult(a.Config, call, *run, preFixReviewRepairReadPaths); blocked {
+					toolMsg := Message{
+						Role:       "tool",
+						ToolCallID: call.ID,
+						ToolName:   call.Name,
+						Text:       result.DisplayText,
+						ToolMeta:   result.Meta,
+						IsError:    true,
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					a.noteToolConversationBlockedResult(call, result, nil)
+					a.noteToolExecutionResultDetailed(call, result, nil)
+					sawToolResultThisTurn = true
+					if strings.TrimSpace(guidance) != "" {
+						a.Session.AddMessage(internalUserMessage(guidance))
+					}
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: focused pre-fix review repair already has actionable findings; retry from the next model turn with a focused edit tool or final answer.")
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					lastToolError = ""
+					lastToolErrorCount = 0
+					lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+					toolRetryQueued = true
+					break
+				}
+				if preFixReviewRepairInspectionTool(call.Name) {
+					preFixReviewRepairInspectTools++
+					if preFixReviewRepairInspectTools > maxPreFixReviewRepairInspectTools {
+						result := notExecutedToolResult(call, "NOT_EXECUTED: focused pre-fix review repair inspection budget was exhausted; retry from the next model turn with an edit tool or final answer.")
+						toolMsg := Message{
+							Role:       "tool",
+							ToolCallID: call.ID,
+							ToolName:   call.Name,
+							Text:       result.DisplayText,
+							ToolMeta:   result.Meta,
+							IsError:    true,
+						}
+						a.setToolExecutionResult(toolMsgIndex, toolMsg)
+						a.noteToolConversationBlockedResult(call, result, nil)
+						a.noteToolExecutionResultDetailed(call, result, nil)
+						sawToolResultThisTurn = true
+						if preFixReviewRepairInspectNudges < maxPreFixReviewRepairInspectNudges {
+							preFixReviewRepairInspectNudges++
+							preFixReviewRepairInspectTools = 0
+							a.Session.AddMessage(internalUserMessage(formatPreFixReviewRepairForceEditGuidance(a.Config, *run, summarizeRecentToolTurns(a.Session.Messages, 4))))
+							a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: focused pre-fix review repair inspection budget was exhausted; retry from the next model turn with an edit tool or final answer.")
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							lastToolError = ""
+							lastToolErrorCount = 0
+							lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+							toolRetryQueued = true
+							break
+						}
+						a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: focused pre-fix review repair inspection budget was exhausted; the repair loop is stopping for user decision.")
+						reply := formatPreFixReviewRepairInspectionLoopLimitReply(a.Config, *run)
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						return reply, nil
+					}
+				}
+				if strings.TrimSpace(call.Name) == "read_file" {
+					if pathKey := preFixReviewRepairReadPathKey(toolCallPathArgument(call)); pathKey != "" {
+						preFixReviewRepairReadPaths[pathKey]++
+					}
 				}
 			}
 			if summary := summarizeToolInvocation(a.Config, call); summary != "" {
@@ -1996,6 +2074,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					preWriteReviewRepairBlockFingerprints = map[string]int{}
 					preWriteReviewRepairInspectTools = 0
 					preWriteReviewRepairInspectNudges = 0
+					preFixReviewRepairInspectTools = 0
+					preFixReviewRepairInspectNudges = 0
+					preFixReviewRepairReadPaths = map[string]int{}
 					preWriteReviewRequiresReanchor = false
 					preWriteReviewReanchorBlocks = 0
 					lastPostChangeReviewFingerprint = ""
@@ -2095,6 +2176,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			autoVerifyDisabledAfterPrompt := false
 			if a.EmitProgress != nil {
 				a.EmitProgress(localizedText(a.Config, "Edit applied. Checking follow-up steps...", "편집이 적용되었습니다. 후속 단계를 확인합니다..."))
+				a.emitRepairWorkflowProgress(latestUser, 5, "verification", "검증", "Run or record the configured automatic verification for the applied edit.", "적용된 편집에 대해 설정된 자동 검증을 실행하거나 기록합니다.")
 			}
 			if report, ok := a.autoVerifyChanges(ctx); ok {
 				a.noteVerificationResult(report)
@@ -2104,8 +2186,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.EmitProgress(localizedText(a.Config, "Automatic verification failed. Classifying whether the failure belongs to the current patch...", "자동 검증이 실패했습니다. 실패가 현재 patch에 속하는지 판정합니다..."))
 					} else if report.WasSkipped() {
 						a.EmitProgress(localizedText(a.Config, "Automatic verification was skipped. Waiting for the model to summarize the unverified change...", "자동 검증이 생략되었습니다. 모델의 미검증 변경 요약을 기다립니다..."))
+						a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification was skipped. The model should summarize the change and disclose the unverified risk.", "검증이 생략되었습니다. 모델이 변경 내용을 요약하고 미검증 위험을 밝혀야 합니다.")
 					} else {
 						a.EmitProgress(localizedText(a.Config, "Automatic verification finished. Waiting for the model to summarize the change...", "자동 검증이 완료되었습니다. 모델의 변경 요약을 기다립니다..."))
+						a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification completed. The model should summarize the verified change.", "검증이 완료되었습니다. 모델이 검증된 변경 내용을 요약해야 합니다.")
 					}
 				}
 				verification := strings.TrimSpace(report.RenderDetailed())
@@ -2173,6 +2257,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							a.Session.AddMessage(internalUserMessage(automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision)))
 							if a.EmitProgress != nil {
 								a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; stopping edit expansion and requiring disclosure.", "검증 실패가 현재 patch scope 밖입니다. 수정 범위 확장을 중단하고 보고하도록 전환합니다."))
+								a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification failed outside the patch scope. The model should summarize the edit and disclose the external blocker.", "검증 실패가 patch scope 밖입니다. 모델이 수정 내용을 요약하고 외부 blocker를 밝혀야 합니다.")
 							}
 						} else {
 							failureSummary := strings.TrimSpace(report.FailureSummary())
@@ -2191,6 +2276,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								}
 							}
 							a.Session.AddMessage(internalUserMessage(text))
+							if a.EmitProgress != nil {
+								a.emitRepairWorkflowProgress(latestUser, 2, "revise edit proposal", "수정안 재작성", "Verification failed inside the patch scope. The model must repair the current edit and repeat the gated flow.", "검증이 현재 patch scope 안에서 실패했습니다. 모델이 현재 수정안을 고치고 게이트 흐름을 다시 반복해야 합니다.")
+							}
 						}
 					}
 				}
@@ -2198,6 +2286,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				autoVerifyInfraFailureCount = 0
 				if a.EmitProgress != nil {
 					a.EmitProgress(localizedText(a.Config, "Edit applied. Waiting for the model to summarize the change...", "편집이 적용되었습니다. 모델의 변경 요약을 기다립니다..."))
+					a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "No automatic verification ran. The model should summarize the change and disclose that verification was not run.", "자동 검증이 실행되지 않았습니다. 모델이 변경 내용을 요약하고 검증 미실행을 밝혀야 합니다.")
 				}
 				unresolvedVerification = false
 			}
@@ -4554,6 +4643,9 @@ func preWriteReviewRepairFindingIsActionable(run ReviewRun, finding ReviewFindin
 	if strings.EqualFold(strings.TrimSpace(finding.ID), requiredReviewerFailureFindingID) {
 		return false
 	}
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
 	if preWritePreFixFindingIsConcreteRepairObligation(finding) {
 		return true
 	}
@@ -4561,15 +4653,15 @@ func preWriteReviewRepairFindingIsActionable(run ReviewRun, finding ReviewFindin
 }
 
 func preWriteReviewRepairFindingFingerprintPart(finding ReviewFinding) string {
+	subject := reviewFindingCanonicalDuplicateSubject(finding)
+	if strings.TrimSpace(subject) == "" {
+		subject = compactPromptSection(firstNonBlankString(finding.Symbol, finding.Title, finding.RequiredFix, finding.Evidence), 220)
+	}
 	return strings.Join([]string{
-		strings.TrimSpace(finding.ID),
-		strings.TrimSpace(finding.Source),
-		strings.TrimSpace(finding.ReviewerRole),
-		strings.TrimSpace(finding.Severity),
+		strings.ToLower(strings.TrimSpace(normalizeSessionRelativePath(finding.Path))),
+		strings.ToLower(strings.TrimSpace(finding.Symbol)),
 		strings.TrimSpace(finding.Category),
-		compactPromptSection(finding.Title, 180),
-		compactPromptSection(finding.RequiredFix, 260),
-		compactPromptSection(finding.Evidence, 260),
+		strings.ToLower(strings.TrimSpace(subject)),
 	}, "|")
 }
 
@@ -6934,6 +7026,251 @@ func preFixVisibleReviewSummaryGuidance(run ReviewRun) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func (a *Agent) preFixReviewRepairActive(explicitEditRequest bool, successfulEditTool bool) bool {
+	_, ok := a.currentPreFixReviewRepairRun(explicitEditRequest, successfulEditTool)
+	return ok
+}
+
+func (a *Agent) currentPreFixReviewRepairRun(explicitEditRequest bool, successfulEditTool bool) (*ReviewRun, bool) {
+	if a == nil || a.Session == nil || a.Session.LastReviewRun == nil {
+		return nil, false
+	}
+	if !explicitEditRequest || successfulEditTool {
+		return nil, false
+	}
+	run := a.Session.LastReviewRun
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		return nil, false
+	}
+	if !reviewRunNeedsRepair(*run) {
+		return nil, false
+	}
+	if len(preFixRepairObligationFindings(*run)) == 0 && len(actionableNonReviewerFindings(*run, 1)) == 0 {
+		return nil, false
+	}
+	return run, true
+}
+
+func preFixReviewRepairBlockedToolResult(cfg Config, call ToolCall, run ReviewRun, readCounts map[string]int) (ToolExecutionResult, string, bool) {
+	name := strings.TrimSpace(call.Name)
+	focusedPaths := preFixReviewRepairFocusedPaths(run)
+	reason := ""
+	switch name {
+	case "list_files":
+		if len(focusedPaths) > 0 {
+			reason = "NOT_EXECUTED: focused pre-fix review already identified the target file scope; list_files would broaden repair instead of applying the actionable RF findings."
+		}
+	case "grep":
+		args := toolCallArgumentsMap(call)
+		pattern := strings.TrimSpace(stringValue(args, "pattern"))
+		path := normalizeSessionRelativePath(toolCallPathArgument(call))
+		if preFixReviewRepairBroadGrepPattern(pattern) {
+			reason = "NOT_EXECUTED: focused pre-fix review repair blocked broad grep; the RF findings already provide the repair target, so use a focused edit or final answer."
+		} else if len(focusedPaths) > 0 && !preFixReviewRepairGrepPathAllowed(path, focusedPaths) {
+			reason = "NOT_EXECUTED: focused pre-fix review repair blocked grep outside the reviewed target path; use the existing RF evidence or inspect only the focused file directory."
+		}
+	case "read_file":
+		pathKey := preFixReviewRepairReadPathKey(toolCallPathArgument(call))
+		if pathKey != "" && readCounts[pathKey] > 0 {
+			reason = "NOT_EXECUTED: focused pre-fix review repair already re-read this path once; do not loop on the same file, apply the RF findings with a focused patch or provide the final answer."
+		}
+	}
+	if reason == "" {
+		return ToolExecutionResult{}, "", false
+	}
+	guidance := formatPreFixReviewRepairBlockedGuidance(cfg, run, reason)
+	return notExecutedToolResult(call, reason), guidance, true
+}
+
+func preFixReviewRepairInspectionTool(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file", "grep", "list_files", "git_status", "git_diff":
+		return true
+	default:
+		return false
+	}
+}
+
+func preFixReviewRepairReadPathKey(path string) string {
+	normalized := normalizeSessionRelativePath(path)
+	if normalized == "" || normalized == "." {
+		return ""
+	}
+	return strings.ToLower(normalized)
+}
+
+func preFixReviewRepairBroadGrepPattern(pattern string) bool {
+	trimmed := strings.TrimSpace(pattern)
+	if trimmed == "" {
+		return true
+	}
+	switch trimmed {
+	case ".", ".*", ".+", "(?s).*", "(?s).+", "[\\s\\S]*", "[\\s\\S]+":
+		return true
+	default:
+		return false
+	}
+}
+
+func preFixReviewRepairGrepPathAllowed(path string, focusedPaths []string) bool {
+	normalizedPath := strings.ToLower(normalizeSessionRelativePath(path))
+	if normalizedPath == "" || normalizedPath == "." {
+		return false
+	}
+	for _, focusedPath := range focusedPaths {
+		focusedPath = strings.ToLower(normalizeSessionRelativePath(focusedPath))
+		if focusedPath == "" || focusedPath == "." {
+			continue
+		}
+		if normalizedPath == focusedPath {
+			return true
+		}
+		parent := strings.ToLower(normalizeSessionRelativePath(filepath.Dir(focusedPath)))
+		if parent != "" && parent != "." && normalizedPath == parent {
+			return true
+		}
+		if strings.HasPrefix(normalizedPath, focusedPath+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func preFixReviewRepairFocusedPaths(run ReviewRun) []string {
+	seen := map[string]bool{}
+	paths := make([]string, 0)
+	addPath := func(path string) {
+		normalized := normalizeSessionRelativePath(path)
+		if normalized == "" || normalized == "." {
+			return
+		}
+		key := strings.ToLower(normalized)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		paths = append(paths, normalized)
+	}
+	for _, path := range run.RequestAnalysis.ScopeDiscovery.CandidateFiles {
+		addPath(path)
+	}
+	for _, path := range run.Evidence.ChangedPaths {
+		addPath(path)
+	}
+	for _, path := range run.ChangeSet.ChangedPaths {
+		addPath(path)
+	}
+	for _, path := range run.ChangeSet.ModifiedPaths {
+		addPath(path)
+	}
+	for _, path := range run.ChangeSet.AddedPaths {
+		addPath(path)
+	}
+	for _, path := range run.Result.ScopeReviewed {
+		addPath(path)
+	}
+	for _, finding := range run.Findings {
+		addPath(finding.Path)
+	}
+	for _, finding := range run.RepairFindings {
+		addPath(finding.Path)
+	}
+	sort.Strings(paths)
+	if len(paths) > 32 {
+		return paths[:32]
+	}
+	return paths
+}
+
+func formatPreFixReviewRepairBlockedGuidance(cfg Config, run ReviewRun, reason string) string {
+	base := formatPreFixReviewRepairForceEditGuidance(cfg, run, "")
+	if strings.TrimSpace(base) == "" {
+		return strings.TrimSpace(reason)
+	}
+	if reviewRunPrefersKorean(cfg, run) {
+		return strings.TrimSpace(reason) + "\n\n" + base
+	}
+	return strings.TrimSpace(reason) + "\n\n" + base
+}
+
+func formatPreFixReviewRepairForceEditGuidance(cfg Config, run ReviewRun, recent string) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	focusedPaths := preFixReviewRepairFocusedPaths(run)
+	findings := preFixVisibleReviewSummaryObligations(run, 5)
+	if len(findings) == 0 {
+		findings = preFixVisibleReviewSummaryFindings(run, 5)
+	}
+	var b strings.Builder
+	if korean {
+		b.WriteString("수정 전 focused 리뷰가 이미 실행 가능한 RF와 대상 scope를 제공했습니다.\n")
+		b.WriteString("- 추가 list_files, 루트/광범위 grep, 동일 파일 반복 read_file은 repair 수렴을 방해하므로 차단됩니다.\n")
+		b.WriteString("- 다음 응답은 짧은 검토 결과 요약 뒤 하나의 edit tool call로 현재 RF를 반영하세요.\n")
+		b.WriteString("- 패치할 수 없으면 더 탐색하지 말고, 막힌 이유와 필요한 사용자 입력을 최종 답변으로 말하세요.")
+		if len(focusedPaths) > 0 {
+			b.WriteString("\n- focused paths: ")
+			b.WriteString(strings.Join(preFixReviewRepairLimitStrings(focusedPaths, 6), ", "))
+		}
+		if len(findings) > 0 {
+			b.WriteString("\n\n필수 RF:")
+			for _, finding := range findings {
+				finding.Normalize()
+				title := compactPromptSection(firstNonBlankString(finding.Title, finding.RequiredFix, finding.Evidence, "Review finding"), 180)
+				fmt.Fprintf(&b, "\n- %s [%s/%s] %s", valueOrDefault(finding.ID, "RF"), valueOrDefault(finding.Severity, "unknown"), valueOrDefault(finding.Category, "general"), title)
+			}
+		}
+	} else {
+		b.WriteString("The focused pre-fix review already produced actionable RF findings and target scope.\n")
+		b.WriteString("- Additional list_files, root/broad grep, and repeated read_file calls are blocked because they keep the repair from converging.\n")
+		b.WriteString("- In the next response, briefly summarize the review findings and issue one edit tool call that addresses the RF items.\n")
+		b.WriteString("- If you cannot patch, stop exploring and provide a final answer with the blocker and required user input.")
+		if len(focusedPaths) > 0 {
+			b.WriteString("\n- focused paths: ")
+			b.WriteString(strings.Join(preFixReviewRepairLimitStrings(focusedPaths, 6), ", "))
+		}
+		if len(findings) > 0 {
+			b.WriteString("\n\nRequired RFs:")
+			for _, finding := range findings {
+				finding.Normalize()
+				title := compactPromptSection(firstNonBlankString(finding.Title, finding.RequiredFix, finding.Evidence, "Review finding"), 180)
+				fmt.Fprintf(&b, "\n- %s [%s/%s] %s", valueOrDefault(finding.ID, "RF"), valueOrDefault(finding.Severity, "unknown"), valueOrDefault(finding.Category, "general"), title)
+			}
+		}
+	}
+	if strings.TrimSpace(recent) != "" {
+		if korean {
+			b.WriteString("\n\n최근 도구 흐름:\n")
+		} else {
+			b.WriteString("\n\nRecent tool flow:\n")
+		}
+		b.WriteString(compactPromptSection(recent, 800))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatPreFixReviewRepairInspectionLoopLimitReply(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	focusedPaths := preFixReviewRepairFocusedPaths(run)
+	if korean {
+		reply := "focused 리뷰 후 repair 단계가 추가 탐색 루프에 빠져 중단했습니다. 수정 전 리뷰 RF는 이미 실행 가능한 상태였고, 모델이 패치 대신 반복 탐색을 계속했습니다."
+		if len(focusedPaths) > 0 {
+			reply += "\n\n대상 scope: " + strings.Join(preFixReviewRepairLimitStrings(focusedPaths, 6), ", ")
+		}
+		return reply
+	}
+	reply := "Stopped the focused pre-fix repair loop because it kept spending tool calls on additional inspection instead of producing the patch. The pre-fix RF findings were already actionable."
+	if len(focusedPaths) > 0 {
+		reply += "\n\nTarget scope: " + strings.Join(preFixReviewRepairLimitStrings(focusedPaths, 6), ", ")
+	}
+	return reply
+}
+
+func preFixReviewRepairLimitStrings(items []string, limit int) []string {
+	if limit <= 0 || len(items) <= limit {
+		return append([]string(nil), items...)
+	}
+	return append([]string(nil), items[:limit]...)
 }
 
 func toolCallAllowedBeforeWebResearch(call ToolCall, mcp *MCPManager) bool {

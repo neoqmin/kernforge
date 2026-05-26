@@ -317,7 +317,7 @@ func buildReviewStateTransitions(run ReviewRun) []ReviewStateTransition {
 		modelTransition = reviewStateMergeReviews
 		add(reviewStateCollectEvidence, modelTransition, "model review disabled or unavailable; deterministic findings are used", "harness", false, true)
 	} else {
-		add(reviewStateCollectEvidence, reviewStateMainReview, "main model first-pass review uses the frozen evidence pack", "main_model", false, true)
+		add(reviewStateCollectEvidence, reviewStateMainReview, "main model reviews the code and repair direction from the frozen evidence pack", "main_model", false, true)
 		hasCross := false
 		for _, reviewerRun := range run.ReviewerRuns {
 			if strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "cross") {

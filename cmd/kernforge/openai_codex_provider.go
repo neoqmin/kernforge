@@ -3652,7 +3652,7 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 			errCode := codexOAuthDeviceErrorCode(raw, data, "error", "error_code")
 			switch errCode {
 			case "":
-			case "authorization_pending", "pending":
+			case "authorization_pending", "pending", "deviceauth_authorization_pending", "device_authorization_pending":
 				if err := sleepCodexOAuthPoll(ctx, interval); err != nil {
 					return codexOAuthDeviceToken{}, err
 				}
@@ -3692,7 +3692,7 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 		}
 		errCode := codexOAuthDeviceErrorCode(raw, data, "error", "error_code", "code", "status", "state", "detail", "message")
 		switch errCode {
-		case "authorization_pending", "pending":
+		case "authorization_pending", "pending", "deviceauth_authorization_pending", "device_authorization_pending":
 			if err := sleepCodexOAuthPoll(ctx, interval); err != nil {
 				return codexOAuthDeviceToken{}, err
 			}
@@ -4035,6 +4035,11 @@ func codexOAuthDeviceErrorCode(raw map[string]any, data []byte, keys ...string) 
 		strings.Contains(text, "device authorization is unknown") ||
 		strings.Contains(text, "authorization is unknown") {
 		return "deviceauth_authorization_unknown"
+	}
+	if strings.Contains(text, "deviceauth_authorization_pending") ||
+		strings.Contains(text, "device authorization is pending") ||
+		strings.Contains(text, "authorization is pending") {
+		return "authorization_pending"
 	}
 	return code
 }

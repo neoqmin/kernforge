@@ -203,6 +203,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		return nil
 	}
 	if a.EmitProgress != nil {
+		a.emitRepairWorkflowProgress(request, 3, "pre-write review", "쓰기 전 리뷰", "Review the proposed diff before any file write.", "파일에 쓰기 전에 제안 diff를 검토합니다.")
 		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다..."))
 		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
 	}
@@ -242,7 +243,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	needsRevision := run.Gate.Verdict == reviewVerdictNeedsRevision ||
 		run.Gate.Verdict == reviewVerdictBlocked ||
 		run.Gate.Verdict == reviewVerdictInsufficientEvidence
-	if needsRevision && reviewRunHasRequiredReviewerFailure(run) {
+	if needsRevision && preWriteReviewerFailureShouldHardStop(run) {
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
@@ -254,7 +255,12 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
-			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Review model returned required changes. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정 필수 항목을 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
+			a.emitRepairWorkflowProgress(request, 2, "revise edit proposal", "수정안 재작성", "Pre-write review blocked the diff. The next model turn must produce a corrected standalone patch.", "쓰기 전 리뷰가 diff를 차단했습니다. 다음 모델 턴은 수정된 standalone patch를 다시 작성해야 합니다.")
+			if reviewRunHasRequiredReviewerFailure(run) {
+				a.EmitProgress(reviewRunLocalizedText(a.Config, run, "A required review route failed, but actionable code findings were returned. Sending those findings back to the main model for a revised patch; diff preview remains blocked until pre-write review passes.", "필수 리뷰 route 실패가 있었지만 실행 가능한 코드 finding이 반환되었습니다. 해당 finding을 메인 모델에 전달해 패치를 다시 작성하게 합니다. diff preview는 쓰기 전 리뷰가 통과할 때까지 차단됩니다."))
+			} else {
+				a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Review model returned required changes. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정 필수 항목을 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
+			}
 		}
 		return fmt.Errorf("%s\n\n%s",
 			reviewRunLocalizedText(a.Config, run, "automatic pre-write review blocked this edit before writing:", "자동 쓰기 전 리뷰가 파일 쓰기를 차단했습니다:"),
@@ -264,6 +270,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
+			a.emitRepairWorkflowProgress(request, 2, "revise edit proposal", "수정안 재작성", "Pre-write review found actionable warnings. The next model turn must revise the patch.", "쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다. 다음 모델 턴에서 patch를 다시 작성해야 합니다.")
 			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Review model returned actionable warnings. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정이 필요한 경고를 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
 		}
 		return fmt.Errorf("%s\n\n%s",
@@ -273,8 +280,45 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	if a.EmitProgress != nil {
 		a.emitPreWriteFinalVisibleReviewSummary(run, true)
 		a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, true))
+		a.emitRepairWorkflowProgress(request, 4, "diff preview and write", "diff preview와 쓰기", "Pre-write review passed. Opening diff preview or write confirmation next.", "쓰기 전 리뷰가 통과했습니다. 다음 단계는 diff preview 또는 쓰기 승인입니다.")
 	}
 	return nil
+}
+
+func (a *Agent) emitRepairWorkflowProgress(request string, step int, englishStage string, koreanStage string, englishDetail string, koreanDetail string) {
+	if a == nil || a.EmitProgress == nil {
+		return
+	}
+	const total = 6
+	if step < 1 {
+		step = 1
+	}
+	if step > total {
+		step = total
+	}
+	if strings.TrimSpace(englishDetail) == "" {
+		englishDetail = englishStage
+	}
+	if strings.TrimSpace(koreanDetail) == "" {
+		koreanDetail = koreanStage
+	}
+	flowEnglish := reviewProgressFlow([]string{"review before fix", "write/revise patch", "pre-write review", "diff preview/write", "verification", "final summary"}, step)
+	flowKorean := reviewProgressFlow([]string{"수정 전 리뷰", "수정안 작성/재작성", "쓰기 전 리뷰", "diff preview/쓰기", "검증", "최종 요약"}, step)
+	message := fmt.Sprintf(
+		localizedTextForReviewRequest(a.Config, request,
+			"Repair workflow %d/%d [%s]: %s. Full flow (current stage in brackets): %s.",
+			"수정 흐름 %d/%d [%s]: %s. 전체 흐름(현재 단계는 대괄호): %s."),
+		step,
+		total,
+		localizedTextForReviewRequest(a.Config, request, englishStage, koreanStage),
+		reviewProgressSentence(localizedTextForReviewRequest(a.Config, request, englishDetail, koreanDetail)),
+		localizedTextForReviewRequest(a.Config, request, flowEnglish, flowKorean),
+	)
+	a.EmitProgress(message)
+}
+
+func preWriteReviewerFailureShouldHardStop(run ReviewRun) bool {
+	return reviewRunHasRequiredReviewerFailure(run) && !reviewRunHasActionableNonReviewerFindings(run)
 }
 
 func preWritePreviewLooksLikeGeneratedDocumentArtifact(preview EditPreview, request string) bool {
@@ -974,6 +1018,7 @@ func preWritePreFixFindingIsConcreteRepairObligation(finding ReviewFinding) bool
 	finding.Normalize()
 	if strings.EqualFold(finding.Category, "test_gap") ||
 		strings.EqualFold(finding.Category, "evidence_gap") ||
+		reviewFindingLooksReviewMetaOnly(finding) ||
 		reviewFindingLooksNonActionablePlaceholder(finding) {
 		return false
 	}
@@ -999,6 +1044,9 @@ func preWritePreFixWarningIsConcreteRepairObligation(finding ReviewFinding) bool
 
 func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request string, finalReply string, lastFingerprint *string, revisionCount *int, exhaustedNudge *bool) (bool, error) {
 	if a == nil || a.Session == nil || lastFingerprint == nil || revisionCount == nil || exhaustedNudge == nil {
+		return false, nil
+	}
+	if a.shouldSkipPostChangeReviewForKnownFinalBlocker(finalReply, true) {
 		return false, nil
 	}
 	reviewed, needsRevision, reviewFeedback, fingerprint, err := a.maybeRunPostChangeReview(ctx, request, *lastFingerprint)
@@ -1301,7 +1349,7 @@ func (a *Agent) shouldSkipPostChangeReviewForKnownFinalBlocker(reply string, unr
 	if a.Session.LastVerification != nil {
 		report := *a.Session.LastVerification
 		if report.WasSkipped() {
-			return false
+			return true
 		}
 		if report.HasFailures() {
 			return true
@@ -1651,6 +1699,9 @@ func preWriteReviewBlockingWarningFindings(run ReviewRun) []ReviewFinding {
 
 func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
 	finding.Normalize()
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
 	if !strings.EqualFold(strings.TrimSpace(finding.Source), "model") {
 		return false
 	}
@@ -1658,6 +1709,12 @@ func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
 		return true
 	}
 	if reviewPreWriteWarningLooksLikePureVerificationGap(finding) {
+		return false
+	}
+	if reviewFindingLooksLowNonBlockingPreWriteConcern(finding) {
+		return false
+	}
+	if reviewPreWriteWarningLooksLikeOptionalHardening(finding) {
 		return false
 	}
 	if strings.EqualFold(finding.Category, "test_gap") {
@@ -1673,6 +1730,58 @@ func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
 		return reviewPreWriteWarningLooksLikeActionableCodeGap(finding)
 	}
 	return true
+}
+
+func reviewPreWriteWarningLooksLikeOptionalHardening(finding ReviewFinding) bool {
+	finding.Normalize()
+	if reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium) {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	negativeIntroduced := containsAny(text,
+		"not directly introduced",
+		"not introduced by",
+		"직접 도입되지",
+		"직접 도입한 것은 아니",
+	)
+	if !negativeIntroduced && containsAny(text,
+		"introduced by the proposed diff",
+		"introduced by this diff",
+		"new regression",
+		"regression introduced",
+		"패치가 도입",
+		"새 회귀",
+		"회귀를 도입",
+	) {
+		return false
+	}
+	return containsAny(text,
+		"bad_alloc",
+		"exception safety",
+		"exception-safe",
+		"raii",
+		"optional hardening",
+		"rare path",
+		"out of memory",
+		"memory exhaustion",
+		"broader hardening",
+		"not directly introduced",
+		"same block was touched",
+		"예외",
+		"메모리 부족",
+		"드문 경로",
+		"하드닝",
+		"직접 도입",
+	)
 }
 
 func reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding ReviewFinding) bool {
@@ -1751,6 +1860,9 @@ func reviewPreWriteWarningLooksLikeHarnessEvidenceGap(finding ReviewFinding) boo
 }
 
 func reviewPreWriteWarningLooksLikeActionableCodeGap(finding ReviewFinding) bool {
+	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
 	if strings.TrimSpace(finding.RequiredFix) == "" {
 		return false
 	}
@@ -1963,12 +2075,34 @@ func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {
 func preWriteReviewProgressFindings(run ReviewRun) []ReviewFinding {
 	ids := append(append([]string(nil), run.Gate.BlockingFindings...), run.Gate.WarningFindings...)
 	if len(ids) > 0 {
-		return reviewProgressFindingsByID(run, ids, 3)
+		findings := reviewProgressFindingsByID(run, ids, len(ids))
+		if filtered := preWritePrimaryProgressFindings(run, findings); len(filtered) > 0 {
+			return limitReviewFindings(filtered, 3)
+		}
+		return limitReviewFindings(findings, 3)
 	}
 	if info := reviewCLIInfoFindings(run); len(info) > 0 {
 		return limitReviewFindings(info, 3)
 	}
 	return limitReviewFindings(run.Findings, 3)
+}
+
+func preWritePrimaryProgressFindings(run ReviewRun, findings []ReviewFinding) []ReviewFinding {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return findings
+	}
+	var out []ReviewFinding
+	for _, finding := range findings {
+		finding.Normalize()
+		if strings.EqualFold(strings.TrimSpace(finding.ID), requiredReviewerFailureFindingID) {
+			continue
+		}
+		if reviewFindingLooksReviewMetaOnly(finding) {
+			continue
+		}
+		out = append(out, finding)
+	}
+	return out
 }
 
 func preWriteReviewReportProgressSuffix(cfg Config, run ReviewRun) string {
@@ -2107,61 +2241,7 @@ func preWriteWarningsAreHarnessEvidenceOnly(run ReviewRun) bool {
 }
 
 func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding, korean bool) {
-	finding.Normalize()
-	id := valueOrDefault(finding.ID, "RF")
-	severity := valueOrDefault(finding.Severity, "unknown")
-	category := valueOrDefault(finding.Category, "general")
-	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
-	fmt.Fprintf(b, "\n- %s [%s/%s]: %s", id, severity, category, title)
-	if strings.TrimSpace(finding.Path) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 코드 위치: %s", reviewVisibleInlineText(finding.Path))
-		} else {
-			fmt.Fprintf(b, "\n  - Code location: %s", reviewVisibleInlineText(finding.Path))
-		}
-	}
-	if strings.TrimSpace(finding.Symbol) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 심볼: %s", reviewVisibleInlineText(finding.Symbol))
-		} else {
-			fmt.Fprintf(b, "\n  - Symbol: %s", reviewVisibleInlineText(finding.Symbol))
-		}
-	}
-	if strings.TrimSpace(finding.Evidence) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 문제: %s", reviewVisibleInlineText(finding.Evidence))
-		} else {
-			fmt.Fprintf(b, "\n  - Problem: %s", reviewVisibleInlineText(finding.Evidence))
-		}
-	}
-	if strings.TrimSpace(finding.Impact) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 영향: %s", reviewVisibleInlineText(finding.Impact))
-		} else {
-			fmt.Fprintf(b, "\n  - Impact: %s", reviewVisibleInlineText(finding.Impact))
-		}
-	}
-	if strings.TrimSpace(finding.RequiredFix) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 수정 기준: %s", reviewVisibleInlineText(finding.RequiredFix))
-		} else {
-			fmt.Fprintf(b, "\n  - Required fix: %s", reviewVisibleInlineText(finding.RequiredFix))
-		}
-	}
-	if strings.TrimSpace(finding.ResolutionStatus) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 해결 상태: %s", reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, true))
-		} else {
-			fmt.Fprintf(b, "\n  - Resolution status: %s", reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, false))
-		}
-	}
-	if strings.TrimSpace(finding.TestRecommendation) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 확인 방법: %s", reviewVisibleInlineText(finding.TestRecommendation))
-		} else {
-			fmt.Fprintf(b, "\n  - Verification: %s", reviewVisibleInlineText(finding.TestRecommendation))
-		}
-	}
+	writeReviewFindingCard(b, finding, korean, true)
 }
 
 func reviewRepairResolutionStatusVisibleText(status string, korean bool) string {
@@ -2178,47 +2258,72 @@ func reviewRepairResolutionStatusVisibleText(status string, korean bool) string 
 }
 
 func writePreWriteVisibleFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
+	writeReviewFindingCard(b, finding, korean, false)
+}
+
+func writeReviewFindingCard(b *strings.Builder, finding ReviewFinding, korean bool, repairTarget bool) {
 	finding.Normalize()
 	id := valueOrDefault(finding.ID, "RF")
 	severity := valueOrDefault(finding.Severity, "unknown")
 	category := valueOrDefault(finding.Category, "general")
 	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
-	fmt.Fprintf(b, "\n- %s [%s/%s]: %s", id, severity, category, title)
-	if strings.TrimSpace(finding.Path) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 경로: %s", reviewVisibleInlineText(finding.Path))
-		} else {
-			fmt.Fprintf(b, "\n  - Path: %s", reviewVisibleInlineText(finding.Path))
-		}
+	fmt.Fprintf(b, "\n- %s | %s/%s", id, severity, category)
+	if title != "" {
+		writeReviewFindingCardField(b, korean, "Title", "제목", title)
 	}
-	if strings.TrimSpace(finding.Evidence) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 근거: %s", reviewVisibleInlineText(finding.Evidence))
-		} else {
-			fmt.Fprintf(b, "\n  - Evidence: %s", reviewVisibleInlineText(finding.Evidence))
-		}
+	location := reviewFindingLocationText(finding)
+	if location != "" {
+		writeReviewFindingCardField(b, korean, "Location", "위치", location)
 	}
-	if strings.TrimSpace(finding.Impact) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 영향: %s", reviewVisibleInlineText(finding.Impact))
-		} else {
-			fmt.Fprintf(b, "\n  - Impact: %s", reviewVisibleInlineText(finding.Impact))
-		}
+	evidenceLabelEnglish := "Evidence"
+	evidenceLabelKorean := "근거"
+	if repairTarget {
+		evidenceLabelEnglish = "Problem"
+		evidenceLabelKorean = "문제"
 	}
-	if strings.TrimSpace(finding.RequiredFix) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 조치: %s", reviewVisibleInlineText(finding.RequiredFix))
-		} else {
-			fmt.Fprintf(b, "\n  - Fix: %s", reviewVisibleInlineText(finding.RequiredFix))
-		}
+	writeReviewFindingCardField(b, korean, evidenceLabelEnglish, evidenceLabelKorean, reviewVisibleInlineText(finding.Evidence))
+	writeReviewFindingCardField(b, korean, "Impact", "영향", reviewVisibleInlineText(finding.Impact))
+	actionLabelEnglish := "Action"
+	actionLabelKorean := "조치"
+	if repairTarget {
+		actionLabelEnglish = "Required fix"
+		actionLabelKorean = "수정 기준"
 	}
-	if strings.TrimSpace(finding.TestRecommendation) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 테스트: %s", reviewVisibleInlineText(finding.TestRecommendation))
-		} else {
-			fmt.Fprintf(b, "\n  - Test: %s", reviewVisibleInlineText(finding.TestRecommendation))
-		}
+	writeReviewFindingCardField(b, korean, actionLabelEnglish, actionLabelKorean, reviewVisibleInlineText(finding.RequiredFix))
+	if strings.TrimSpace(finding.ResolutionStatus) != "" {
+		writeReviewFindingCardField(b, korean, "Status", "상태", reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, korean))
 	}
+	checkLabelEnglish := "Check"
+	checkLabelKorean := "확인"
+	if !repairTarget {
+		checkLabelEnglish = "Test"
+		checkLabelKorean = "테스트"
+	}
+	writeReviewFindingCardField(b, korean, checkLabelEnglish, checkLabelKorean, reviewVisibleInlineText(finding.TestRecommendation))
+}
+
+func reviewFindingLocationText(finding ReviewFinding) string {
+	path := reviewVisibleInlineText(finding.Path)
+	symbol := reviewVisibleInlineText(finding.Symbol)
+	if path == "" {
+		return symbol
+	}
+	if symbol == "" {
+		return path
+	}
+	return path + " :: " + symbol
+}
+
+func writeReviewFindingCardField(b *strings.Builder, korean bool, englishLabel string, koreanLabel string, value string) {
+	value = reviewVisibleInlineText(value)
+	if value == "" {
+		return
+	}
+	label := englishLabel
+	if korean {
+		label = koreanLabel
+	}
+	fmt.Fprintf(b, "\n  %s: %s", label, value)
 }
 
 func reviewVisibleInlineText(text string) string {
