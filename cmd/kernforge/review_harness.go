@@ -134,6 +134,7 @@ type ReviewRun struct {
 	Redaction             ReviewRedactionReport        `json:"redaction,omitempty"`
 	EditProposals         []EditProposal               `json:"edit_proposals,omitempty"`
 	RepairFindings        []ReviewFinding              `json:"repair_findings,omitempty"`
+	ObligationLedger      ReviewObligationLedger       `json:"obligation_ledger,omitempty"`
 	StateTransitions      []ReviewStateTransition      `json:"state_transitions,omitempty"`
 	ActionEnvelopes       []ReviewActionEnvelope       `json:"action_envelopes,omitempty"`
 	ApprovalLedger        ReviewApprovalLedger         `json:"approval_ledger,omitempty"`
@@ -306,6 +307,32 @@ type ReviewFinding struct {
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	FixRefs            []string `json:"fix_refs,omitempty"`
 	RawExcerpt         string   `json:"raw_excerpt,omitempty"`
+}
+
+type ReviewObligationLedger struct {
+	Items                 []ReviewObligation `json:"items,omitempty"`
+	TotalCount            int                `json:"total_count,omitempty"`
+	OpenCount             int                `json:"open_count,omitempty"`
+	OpenRepairCount       int                `json:"open_repair_count,omitempty"`
+	OpenVerificationCount int                `json:"open_verification_count,omitempty"`
+	OpenEvidenceCount     int                `json:"open_evidence_count,omitempty"`
+	OpenRouteCount        int                `json:"open_route_count,omitempty"`
+	Summary               []string           `json:"summary,omitempty"`
+}
+
+type ReviewObligation struct {
+	ID              string   `json:"id,omitempty"`
+	Type            string   `json:"type,omitempty"`
+	Status          string   `json:"status,omitempty"`
+	SourceFindingID string   `json:"source_finding_id,omitempty"`
+	Severity        string   `json:"severity,omitempty"`
+	Category        string   `json:"category,omitempty"`
+	ReviewerRole    string   `json:"reviewer_role,omitempty"`
+	Title           string   `json:"title,omitempty"`
+	RequiredAction  string   `json:"required_action,omitempty"`
+	Blocking        bool     `json:"blocking"`
+	EvidenceRefs    []string `json:"evidence_refs,omitempty"`
+	FixRefs         []string `json:"fix_refs,omitempty"`
 }
 
 type GateDecision struct {
@@ -780,6 +807,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	run.ObligationLedger = buildReviewObligationLedger(run)
 	emitReviewPipelineProgress(rt, run, 5, "gate decision", "게이트 판정", "Decide approved, approved_with_warnings, needs_revision, or insufficient_evidence.", "approved, approved_with_warnings, needs_revision, insufficient_evidence 중 하나로 판정합니다.")
 	run.Gate = evaluateReviewGate(run)
 	run.RepairPlan = buildReviewRepairPlan(run)

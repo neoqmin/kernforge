@@ -38,6 +38,20 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	b.WriteString("\n## Summary\n\n")
 	b.WriteString(valueOrDefault(run.Result.Summary, run.Gate.Reason))
 	b.WriteString("\n\n")
+	if len(run.ObligationLedger.Items) > 0 {
+		b.WriteString("## Obligation Ledger\n\n")
+		fmt.Fprintf(&b, "- total: `%d` open: `%d`\n", run.ObligationLedger.TotalCount, run.ObligationLedger.OpenCount)
+		if len(run.ObligationLedger.Summary) > 0 {
+			fmt.Fprintf(&b, "- open_by_type: `%s`\n", strings.Join(run.ObligationLedger.Summary, ", "))
+		}
+		for _, obligation := range run.ObligationLedger.Items {
+			fmt.Fprintf(&b, "- `%s` type=`%s` status=`%s` blocking=`%t`: %s\n", obligation.ID, obligation.Type, obligation.Status, obligation.Blocking, obligation.Title)
+			if strings.TrimSpace(obligation.RequiredAction) != "" {
+				fmt.Fprintf(&b, "  - Action: %s\n", obligation.RequiredAction)
+			}
+		}
+		b.WriteString("\n")
+	}
 	if len(run.Gate.BlockingFindings) > 0 {
 		b.WriteString("## Blocking Findings\n\n")
 		for _, finding := range run.Findings {

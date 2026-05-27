@@ -952,6 +952,7 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"redaction":               run.Redaction,
 		"edit_proposals":          run.EditProposals,
 		"runtime_gate_ledger":     run.RuntimeGateLedger,
+		"obligation_ledger":       run.ObligationLedger,
 		"state_transitions":       run.StateTransitions,
 		"action_envelopes":        run.ActionEnvelopes,
 		"approval_ledger":         run.ApprovalLedger,

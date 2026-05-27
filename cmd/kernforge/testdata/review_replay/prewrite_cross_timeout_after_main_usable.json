@@ -21,6 +21,21 @@
   ],
   "expected_gate": "insufficient_evidence",
   "expected_action": "user_decision_required",
+  "expected_obligation_counts": {
+    "total": 1,
+    "open": 1,
+    "repair": 0,
+    "verification": 0,
+    "evidence": 0,
+    "route": 1
+  },
+  "expected_obligations": [
+    {
+      "id": "RF-REVIEWER-001",
+      "type": "reviewer_route",
+      "status": "route_unavailable"
+    }
+  ],
   "expected_progress_contains": [
     "Gate action: user_decision_required",
     "a required review route failed or returned weak output"

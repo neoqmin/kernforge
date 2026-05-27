@@ -111,7 +111,9 @@ func finalizeReviewRunProtocol(root string, rt *runtimeState, run *ReviewRun) {
 	if run == nil {
 		return
 	}
+	run.ObligationLedger = buildReviewObligationLedger(*run)
 	run.Gate.Action = reviewGateActionForRun(*run)
+	run.Gate.NextCommands = reviewNextCommands(*run, run.Gate)
 	run.ModelPlan.RouteHealth = reviewRouteHealthForRun(rt, run)
 	run.ApprovalLedger = buildReviewApprovalLedger(rt, *run)
 	run.StateTransitions = buildReviewStateTransitions(*run)
@@ -228,14 +230,24 @@ func buildSingleModelReviewPolicy(run ReviewRun, hasCrossReviewer bool) SingleMo
 }
 
 func reviewGateActionForRun(run ReviewRun) string {
-	if reviewRunHasRequiredReviewerFailure(run) {
+	hasLedger := len(run.ObligationLedger.Items) > 0
+	if reviewObligationLedgerHasOpenType(run.ObligationLedger, reviewObligationTypeReviewerRoute) ||
+		reviewRunHasRequiredReviewerFailure(run) {
 		if reviewRunHasUsableMainReviewer(run) {
 			return reviewGateActionUserDecisionRequired
 		}
 		return reviewGateActionReviewerUnavailable
 	}
-	if strings.EqualFold(run.Gate.Verdict, reviewVerdictNeedsRevision) ||
-		strings.EqualFold(run.Gate.Verdict, reviewVerdictBlocked) {
+	if reviewObligationLedgerHasOpenBlockingRepair(run.ObligationLedger) ||
+		(reviewRunLooksExplicitRepairIntent(run) && reviewObligationLedgerHasOpenRepairRequired(run.ObligationLedger)) {
+		return reviewGateActionRepairRequired
+	}
+	if reviewObligationLedgerHasOpenEvidenceRequired(run.ObligationLedger) {
+		return reviewGateActionUserDecisionRequired
+	}
+	if !hasLedger &&
+		(strings.EqualFold(run.Gate.Verdict, reviewVerdictNeedsRevision) ||
+			strings.EqualFold(run.Gate.Verdict, reviewVerdictBlocked)) {
 		return reviewGateActionRepairRequired
 	}
 	if strings.EqualFold(run.Gate.Verdict, reviewVerdictInsufficientEvidence) {
@@ -246,7 +258,9 @@ func reviewGateActionForRun(run ReviewRun) string {
 			strings.EqualFold(run.Gate.Verdict, reviewVerdictApprovedWithWarnings)) {
 		return reviewGateActionDiffPreviewAllowed
 	}
-	if strings.TrimSpace(run.Evidence.VerificationSummary) == "" && reviewRunHasChangeEvidence(run) && run.Target != reviewTargetPlan {
+	if (reviewObligationLedgerHasOpenVerificationRequired(run.ObligationLedger) ||
+		strings.TrimSpace(run.Evidence.VerificationSummary) == "" && reviewRunHasChangeEvidence(run)) &&
+		run.Target != reviewTargetPlan {
 		return reviewGateActionVerificationRequired
 	}
 	return reviewGateActionFinalSummary

@@ -7353,6 +7353,351 @@ func TestPreWriteRepairObligationsIncludeApprovedActionableWarnings(t *testing.T
 	}
 }
 
+func TestReviewObligationLedgerClassifiesRouteRepairVerificationAndEvidence(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "검토하고 버그를 수정해",
+		Gate: GateDecision{
+			BlockingFindings: []string{"RF-REVIEWER-001", "RF-001"},
+			WarningFindings:  []string{"RF-002", "RF-003"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the failed review route.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Enumeration stops on recoverable failure",
+				RequiredFix: "Continue after recoverable failures.",
+			},
+			{
+				ID:                 "RF-002",
+				Severity:           reviewSeverityMedium,
+				Category:           "test_gap",
+				Title:              "Verification missing",
+				TestRecommendation: "/verify --full",
+			},
+			{
+				ID:          "RF-003",
+				Severity:    reviewSeverityMedium,
+				Category:    "evidence_gap",
+				Title:       "Evidence truncated",
+				RequiredFix: "Rerun with narrower evidence.",
+			},
+		},
+	}
+
+	ledger := buildReviewObligationLedger(run)
+	if ledger.OpenRepairCount != 1 || ledger.OpenVerificationCount != 1 || ledger.OpenEvidenceCount != 1 || ledger.OpenRouteCount != 1 {
+		t.Fatalf("unexpected obligation counts: %#v", ledger)
+	}
+	assertReviewObligationType(t, ledger, requiredReviewerFailureFindingID, reviewObligationTypeReviewerRoute)
+	assertReviewObligationType(t, ledger, "RF-001", reviewObligationTypeRepair)
+	assertReviewObligationType(t, ledger, "RF-002", reviewObligationTypeVerification)
+	assertReviewObligationType(t, ledger, "RF-003", reviewObligationTypeEvidence)
+}
+
+func TestReviewObligationLedgerClassifiesImplementationTestGapAsRepair(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "검토하고 버그를 수정해",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "test_gap",
+			Path:        "cmd/kernforge/review_harness.go",
+			Title:       "Parser still accepts stale offsets",
+			RequiredFix: "Change the parser to validate the offset before using it.",
+		}},
+	}
+
+	ledger := buildReviewObligationLedger(run)
+	if ledger.OpenRepairCount != 1 || ledger.OpenVerificationCount != 0 {
+		t.Fatalf("implementation repair in test_gap must be repair-only, got %#v", ledger)
+	}
+	assertReviewObligationType(t, ledger, "RF-001", reviewObligationTypeRepair)
+}
+
+func TestReviewObligationLedgerKeepsVerificationRecommendationAsVerification(t *testing.T) {
+	run := ReviewRun{
+		Findings: []ReviewFinding{{
+			ID:                 "RF-VERIFY-001",
+			Severity:           reviewSeverityMedium,
+			Title:              "Recommended verification not recorded",
+			TestRecommendation: "Use go test ./cmd/kernforge -run Review",
+		}},
+	}
+
+	ledger := buildReviewObligationLedger(run)
+	if ledger.OpenVerificationCount != 1 || ledger.OpenRepairCount != 0 {
+		t.Fatalf("verification recommendation must not become repair because it says use, got %#v", ledger)
+	}
+	assertReviewObligationType(t, ledger, "RF-VERIFY-001", reviewObligationTypeVerification)
+}
+
+func TestReviewObligationLedgerSkipsReviewMetaOnlyFinding(t *testing.T) {
+	run := ReviewRun{
+		Findings: []ReviewFinding{{
+			ID:               "RF-META-001",
+			Severity:         reviewSeverityMedium,
+			Category:         "evidence_gap",
+			Title:            "Review finding is already resolved",
+			Evidence:         "The review finding is already resolved; this is review metadata rather than a production code defect.",
+			ResolutionStatus: "non_blocking_review_meta",
+		}},
+	}
+
+	ledger := buildReviewObligationLedger(run)
+	if ledger.TotalCount != 0 {
+		t.Fatalf("review meta-only finding must not create an obligation, got %#v", ledger)
+	}
+}
+
+func TestReviewObligationLedgerOpenTypeNormalizesStoredItems(t *testing.T) {
+	ledger := ReviewObligationLedger{
+		Items: []ReviewObligation{{
+			ID:     "RF-001",
+			Type:   " repair ",
+			Status: " unresolved ",
+		}},
+	}
+
+	if !reviewObligationLedgerHasOpenType(ledger, reviewObligationTypeRepair) {
+		t.Fatalf("expected open type lookup to normalize stored obligation fields")
+	}
+}
+
+func TestReviewGateActionUsesObligationLedgerBeforeGenericRevision(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+		},
+		ObligationLedger: ReviewObligationLedger{
+			Items: []ReviewObligation{{
+				ID:     requiredReviewerFailureFindingID,
+				Type:   reviewObligationTypeReviewerRoute,
+				Status: reviewObligationStatusRouteUnavailable,
+			}},
+		},
+	}
+
+	if got := reviewGateActionForRun(run); got != reviewGateActionReviewerUnavailable {
+		t.Fatalf("expected reviewer route obligation to produce reviewer_unavailable, got %q", got)
+	}
+}
+
+func TestReviewGateActionUsesOpenRepairObligationForRepairIntentWarnings(t *testing.T) {
+	run := ReviewRun{
+		Trigger: reviewBeforeFixTrigger,
+		Gate: GateDecision{
+			Verdict: reviewVerdictApprovedWithWarnings,
+		},
+		ObligationLedger: ReviewObligationLedger{
+			Items: []ReviewObligation{{
+				ID:     "RF-001",
+				Type:   reviewObligationTypeRepair,
+				Status: reviewObligationStatusOpen,
+			}},
+		},
+	}
+
+	if got := reviewGateActionForRun(run); got != reviewGateActionRepairRequired {
+		t.Fatalf("expected explicit repair intent warning obligation to produce repair_required, got %q", got)
+	}
+}
+
+func TestReviewGateNextCommandsIncludeRepairForLedgerOnlyRepairAction(t *testing.T) {
+	run := ReviewRun{
+		Trigger: reviewBeforeFixTrigger,
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Original repair obligation remains",
+			RequiredFix: "Change the failing path.",
+		}},
+	}
+	run.ObligationLedger = buildReviewObligationLedger(run)
+
+	gate := evaluateReviewGate(run)
+	if gate.Action != reviewGateActionRepairRequired {
+		t.Fatalf("expected ledger-only repair obligation to require repair, got %#v", gate)
+	}
+	if !reviewNextCommandsHasAnyID(gate.NextCommands, "repair") {
+		t.Fatalf("expected repair next command for ledger-only repair action, got %#v", gate.NextCommands)
+	}
+	run.Gate = gate
+	plan := buildReviewRepairPlan(run)
+	if !plan.Required || !containsString(plan.Findings, "RF-001") {
+		t.Fatalf("expected ledger-only repair obligation to produce a repair plan, got %#v", plan)
+	}
+}
+
+func TestFinalizeReviewRunProtocolRefreshesNextCommandsFromObligations(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-1",
+		Trigger: reviewBeforeFixTrigger,
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Original repair obligation remains",
+			RequiredFix: "Change the failing path.",
+		}},
+	}
+
+	finalizeReviewRunProtocol(t.TempDir(), nil, &run)
+	if run.Gate.Action != reviewGateActionRepairRequired {
+		t.Fatalf("expected finalized run to require repair, got %#v", run.Gate)
+	}
+	if !reviewNextCommandsHasAnyID(run.Gate.NextCommands, "repair") {
+		t.Fatalf("expected finalized run to refresh repair next command, got %#v", run.Gate.NextCommands)
+	}
+}
+
+func TestReviewGateActionTreatsVerificationNeededRepairAsVerification(t *testing.T) {
+	run := ReviewRun{
+		Target: reviewTargetChange,
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+		ObligationLedger: ReviewObligationLedger{
+			Items: []ReviewObligation{{
+				ID:     "RF-001",
+				Type:   reviewObligationTypeRepair,
+				Status: reviewObligationStatusVerificationRequired,
+			}},
+		},
+	}
+
+	if got := reviewGateActionForRun(run); got != reviewGateActionVerificationRequired {
+		t.Fatalf("expected verification-needed repair obligation to require verification, got %q", got)
+	}
+	ledger := buildReviewObligationLedger(ReviewRun{
+		RepairFindings: []ReviewFinding{{
+			ID:               "RF-001",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Title:            "Repair needs verification",
+			RequiredFix:      "Verify the repair.",
+			ResolutionStatus: "verification_needed",
+		}},
+	})
+	if ledger.OpenRepairCount != 0 || ledger.OpenVerificationCount != 1 {
+		t.Fatalf("verification-needed repair should count as verification, got %#v", ledger)
+	}
+}
+
+func TestPreWriteGateActionAllowsDiffPreviewForVerificationNeededRepair(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+		ObligationLedger: ReviewObligationLedger{
+			Items: []ReviewObligation{{
+				ID:     "RF-001",
+				Type:   reviewObligationTypeRepair,
+				Status: reviewObligationStatusVerificationRequired,
+			}},
+		},
+	}
+
+	if got := reviewGateActionForRun(run); got != reviewGateActionDiffPreviewAllowed {
+		t.Fatalf("expected pre-write verification-needed repair obligation to allow diff preview, got %q", got)
+	}
+}
+
+func TestReviewObligationIDFallbackHandlesKoreanText(t *testing.T) {
+	id := reviewObligationIDForFinding(ReviewFinding{
+		Title: "버퍼 크기 검증 누락",
+	}, reviewObligationTypeRepair)
+	if strings.TrimSpace(id) == "" || strings.HasSuffix(id, "-") {
+		t.Fatalf("expected stable non-empty fallback obligation id for Korean text, got %q", id)
+	}
+}
+
+func TestReviewObligationMergeResolvedStatusClosesOpenStatus(t *testing.T) {
+	existing := ReviewObligation{
+		ID:     "RF-001",
+		Type:   reviewObligationTypeRepair,
+		Status: reviewObligationStatusEvidenceUnconfirmed,
+	}
+	incoming := ReviewObligation{
+		ID:     "RF-001",
+		Type:   reviewObligationTypeRepair,
+		Status: reviewObligationStatusResolved,
+	}
+
+	merged := mergeReviewObligations(existing, incoming)
+	if merged.Status != reviewObligationStatusResolved {
+		t.Fatalf("expected resolved status to close evidence_unconfirmed obligation, got %#v", merged)
+	}
+	if reviewObligationStatusIsOpen(merged.Status) {
+		t.Fatalf("resolved merged obligation must not remain open: %#v", merged)
+	}
+}
+
+func TestReviewMarkdownIncludesObligationLedger(t *testing.T) {
+	run := ReviewRun{
+		ID:            "review-1",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeLiveFix,
+		Workspace:     "C:\\workspace",
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+			Action:  reviewGateActionRepairRequired,
+			Reason:  "blocking review findings require revision",
+		},
+		Result: ReviewResult{
+			Summary: "review summary",
+		},
+		ObligationLedger: ReviewObligationLedger{
+			Items: []ReviewObligation{{
+				ID:             "RF-001",
+				Type:           reviewObligationTypeRepair,
+				Status:         reviewObligationStatusOpen,
+				Title:          "Fix bounds check",
+				RequiredAction: "Validate size before pointer arithmetic.",
+				Blocking:       true,
+			}},
+			TotalCount:      1,
+			OpenCount:       1,
+			OpenRepairCount: 1,
+			Summary:         []string{"repair=1"},
+		},
+	}
+
+	rendered := renderReviewRunMarkdown(run)
+	for _, needle := range []string{"## Obligation Ledger", "open_by_type: `repair=1`", "`RF-001` type=`repair` status=`open`"} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected markdown to include %q, got %q", needle, rendered)
+		}
+	}
+}
+
+func assertReviewObligationType(t *testing.T, ledger ReviewObligationLedger, id string, obligationType string) {
+	t.Helper()
+	for _, obligation := range ledger.Items {
+		if obligation.ID == id && obligation.Type == obligationType {
+			return
+		}
+	}
+	t.Fatalf("expected obligation %s type %s in %#v", id, obligationType, ledger.Items)
+}
+
 func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testing.T) {
 	root := t.TempDir()
 	rel := filepath.ToSlash("Project/Worker/SampleReview.cpp")
@@ -10942,6 +11287,17 @@ func TestReviewMCPResponseIncludesActionContractBooleans(t *testing.T) {
 				ExpectedResult: "The latest review blockers are converted into a focused repair turn.",
 			}},
 		},
+		ObligationLedger: ReviewObligationLedger{
+			Items: []ReviewObligation{{
+				ID:     "RF-001",
+				Type:   reviewObligationTypeRepair,
+				Status: reviewObligationStatusOpen,
+			}},
+			TotalCount:      1,
+			OpenCount:       1,
+			OpenRepairCount: 1,
+			Summary:         []string{"repair=1"},
+		},
 	}
 
 	rendered := renderReviewMCPResponse(run, 20000)
@@ -10949,6 +11305,8 @@ func TestReviewMCPResponseIncludesActionContractBooleans(t *testing.T) {
 		`"auto_run": false`,
 		`"requires_confirmation": false`,
 		`"expected_result": "The latest review blockers are converted into a focused repair turn."`,
+		`"obligation_ledger"`,
+		`"open_repair_count": 1`,
 		`"next_commands"`,
 		`"recommended_command"`,
 	} {
