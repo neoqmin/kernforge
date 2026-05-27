@@ -649,6 +649,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	successfulEditTool := false
 	sawToolResultThisTurn := false
 	verificationDeclinedThisTurn := false
+	automaticVerificationSkippedFinalOnly := false
 	verificationOutOfScopeThisTurn := false
 	verificationOutOfScopeFinalOnly := false
 	repeatedToolFailureRecoveryTurns := 0
@@ -742,7 +743,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err
 		}
-		toolExposurePlan := a.buildTurnToolExposurePlan(disabledTools, latestUser, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+		toolExposurePlan := a.buildTurnToolExposurePlan(disabledTools, latestUser, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 		if !toolExposurePlan.SuppressInteractiveWorkers {
 			_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
 			_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
@@ -757,6 +758,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		systemPrompt := a.systemPrompt()
 		if finalAnswerOnlyCorrection {
 			systemPrompt += "\n\n" + finalAnswerOnlyHarnessPromptGuidance()
+		}
+		if automaticVerificationSkippedFinalOnly {
+			systemPrompt += "\n\n" + verificationSkippedFinalOnlyPromptGuidance()
 		}
 		if generatedDocumentFinalOnly {
 			systemPrompt += "\n\n" + generatedDocumentArtifactFinalOnlyPromptGuidance()
@@ -1480,6 +1484,32 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				lastToolErrorCount = 0
 				break
 			}
+			if automaticVerificationSkippedFinalOnly {
+				result := skippedVerificationFinalOnlyBlockedResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolConversationBlockedResult(call, result, errVerificationFollowupBlocked)
+				a.noteToolExecutionResultDetailed(call, result, errVerificationFollowupBlocked)
+				if a.EmitProgress != nil {
+					a.EmitProgress(localizedText(a.Config, "Tool call blocked: verification was skipped or declined; final answer only.", "도구 호출을 차단했습니다: 검증이 생략 또는 거부되었으므로 최종 답변만 허용합니다."))
+				}
+				sawToolResultThisTurn = true
+				a.Session.AddMessage(internalUserMessage(verificationSkippedFinalOnlyPromptGuidance()))
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: verification was skipped or declined earlier in this turn; no further tools are available, provide the final answer and state verification was not run.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				break
+			}
 			if verificationDeclinedThisTurn && toolCallIsVerificationRetryOrPoll(call, a.Session) {
 				result := declinedVerificationFollowupBlockedResult(call)
 				toolMsg := Message{
@@ -1754,7 +1784,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if blockedToolResult {
 				toolMsg.IsError = true
 			}
-			if toolMetaVerificationWasSkipped(result.Meta, result.DisplayText) {
+			if toolMetaVerificationWasSkipped(result.Meta, result.DisplayText) &&
+				toolResultLooksLikeVerificationAttempt(call.Name, result.Meta, result.DisplayText) {
 				verificationDeclinedThisTurn = true
 			}
 			a.setToolExecutionResult(toolMsgIndex, toolMsg)
@@ -2101,7 +2132,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
 					})
 				}
-				toolExposurePlan := a.buildTurnToolExposurePlan(disabledTools, latestUser, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+				toolExposurePlan := a.buildTurnToolExposurePlan(disabledTools, latestUser, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 				if !toolExposurePlan.SuppressInteractiveWorkers {
 					_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 					_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
@@ -2201,6 +2232,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				unresolvedVerification = report.HasFailures() || report.WasSkipped()
 				if report.WasSkipped() {
 					verificationDeclinedThisTurn = true
+					automaticVerificationSkippedFinalOnly = true
 				}
 				if report.HasFailures() {
 					if report.HasCommandMissingFailure() {
@@ -2230,6 +2262,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								unresolvedVerification = report.HasFailures() || report.WasSkipped()
 								if report.WasSkipped() {
 									verificationDeclinedThisTurn = true
+									automaticVerificationSkippedFinalOnly = true
 								}
 							}
 						}
@@ -3042,13 +3075,17 @@ func generatedDocumentArtifactFinalOnlyPromptGuidance() string {
 	return "Generated document artifact finalization is answer-only now. The artifact content has already passed deterministic content checks or has an approved artifact harness report. Do not request or mention additional tool use, shell validation, review passes, or source inspection. Provide the final answer only, including an explicit statement when build/test verification was not run."
 }
 
+func verificationSkippedFinalOnlyPromptGuidance() string {
+	return "Verification was skipped or declined in this turn. This turn is final-answer-only. Do not call tools, do not retry verification, do not inspect more files, and do not update plans. Provide the final answer now and explicitly state that verification was not run."
+}
+
 type turnToolExposurePlan struct {
 	DisabledTools              map[string]bool
 	GeneratedDocumentFinalOnly bool
 	SuppressInteractiveWorkers bool
 }
 
-func (a *Agent) buildTurnToolExposurePlan(baseDisabled map[string]bool, request string, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
+func (a *Agent) buildTurnToolExposurePlan(baseDisabled map[string]bool, request string, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
 	disabled := cloneDisabledTools(baseDisabled)
 	var registry *ToolRegistry
 	if a != nil {
@@ -3056,7 +3093,7 @@ func (a *Agent) buildTurnToolExposurePlan(baseDisabled map[string]bool, request 
 	}
 	generatedDocumentFinalOnly := a.shouldUseGeneratedDocumentArtifactFinalOnlyTools(request, unresolvedVerification)
 	suppressInteractiveWorkers := a.shouldSuppressInteractiveWorkersForTurn(request)
-	if finalAnswerOnlyCorrection || verificationOutOfScopeFinalOnly || generatedDocumentFinalOnly {
+	if finalAnswerOnlyCorrection || verificationOutOfScopeFinalOnly || verificationSkippedFinalOnly || generatedDocumentFinalOnly {
 		disableAllTools(disabled, registry)
 		suppressInteractiveWorkers = true
 	}
@@ -7483,6 +7520,28 @@ func declinedVerificationFollowupBlockedResult(call ToolCall) ToolExecutionResul
 			"verification_approved":    false,
 			"verification_declined":    true,
 			"command_execution_status": "declined",
+			"success":                  false,
+		},
+	}
+}
+
+func skippedVerificationFinalOnlyBlockedResult(call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: "NOT_EXECUTED: verification was skipped or declined earlier in this turn, so this turn is final-answer-only. No further tools are available; provide the final answer and explicitly state that verification was not run.",
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "final_answer_only",
+			"verification_like":        toolCallIsVerificationRetryOrPoll(call, nil),
+			"verification_status":      string(VerificationSkipped),
+			"verification_evidence":    false,
+			"verification_approved":    false,
+			"verification_declined":    true,
+			"command_execution_status": "blocked_final_answer_only",
 			"success":                  false,
 		},
 	}

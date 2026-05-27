@@ -2219,8 +2219,65 @@ func TestAgentBlocksVerificationRetryAfterSkippedAutomaticVerification(t *testin
 	if shellTool.calls != 0 {
 		t.Fatalf("verification retry must be blocked before tool execution, got %d calls", shellTool.calls)
 	}
-	if !sessionContainsText(session, "NOT_EXECUTED: a build, test, or verification command was already skipped") {
+	if !sessionContainsText(session, "NOT_EXECUTED: verification was skipped or declined earlier in this turn") {
 		t.Fatalf("expected skipped-verification retry to be returned as NOT_EXECUTED")
+	}
+}
+
+func TestAgentBlocksAllToolsAfterSkippedAutomaticVerification(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	updatePlanTool := &staticTool{name: "update_plan", output: "plan should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			multiToolCallResponse(
+				ToolCall{
+					ID:        "call-read-after-skip",
+					Name:      "read_file",
+					Arguments: `{"path":"main.go"}`,
+				},
+				ToolCall{
+					ID:        "call-plan-after-skip",
+					Name:      "update_plan",
+					Arguments: `{"items":[{"step":"Keep working","status":"in_progress"}]}`,
+				},
+			),
+			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification was not run because the user declined automatic verification."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), readTool, updatePlanTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			return false, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			t.Fatalf("verification callback must not run after user decline")
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Verification was not run") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if readTool.calls != 0 || updatePlanTool.calls != 0 {
+		t.Fatalf("all tools must be blocked after skipped verification, read=%d plan=%d", readTool.calls, updatePlanTool.calls)
+	}
+	if !sessionContainsText(session, "No further tools are available") {
+		t.Fatalf("expected skipped-verification final-only block guidance in session")
 	}
 }
 
@@ -7801,7 +7858,7 @@ func TestToolExposureHidesWebResearchForPreservedContinuationSteering(t *testing
 	}
 
 	latestUser := sessionEffectiveUserRequestText(session)
-	plan := agent.buildTurnToolExposurePlan(nil, latestUser, false, false, false, false, shouldUseLocalCodeToolPolicy(session))
+	plan := agent.buildTurnToolExposurePlan(nil, latestUser, false, false, false, false, false, shouldUseLocalCodeToolPolicy(session))
 	if !plan.DisabledTools["mcp__web_research__search_web"] {
 		t.Fatalf("preserved local-code continuation should hide web research tools, got %#v", plan.DisabledTools)
 	}
@@ -12870,7 +12927,7 @@ func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) 
 	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(genericFollowup, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
 		t.Fatalf("accepted document-artifact harness should block post-completion inspection churn")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, genericFollowup, false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, genericFollowup, false, false, false, false, false, false)
 	if !plan.GeneratedDocumentFinalOnly || !plan.SuppressInteractiveWorkers {
 		t.Fatalf("accepted document-artifact harness should force final-only exposure, got %#v", plan)
 	}
@@ -12929,7 +12986,7 @@ func TestAgentClearsGeneratedDocumentFinalOnlyForBroaderScopeSteering(t *testing
 	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(steering, []ToolCall{{Name: "read_file", Arguments: `{"path":"cmd/kernforge/agent.go"}`}}) {
 		t.Fatalf("broader-scope steering should keep inspection tools available")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, steering, false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, steering, false, false, false, false, false, false)
 	if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
 		t.Fatalf("broader-scope steering should not force document final-only exposure, got %#v", plan)
 	}
@@ -13243,7 +13300,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 		),
 	}
 
-	plan := agent.buildTurnToolExposurePlan(nil, "fix code", false, true, false, false, true)
+	plan := agent.buildTurnToolExposurePlan(nil, "fix code", false, true, false, false, false, true)
 	if !plan.SuppressInteractiveWorkers {
 		t.Fatalf("final-answer-only correction must suppress interactive workers")
 	}
@@ -13256,7 +13313,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 		t.Fatalf("ordinary answer-only correction should not be classified as generated-document finalization")
 	}
 
-	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, false, false, true)
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, false, false, false, true)
 	if plan.SuppressInteractiveWorkers {
 		t.Fatalf("ordinary local-code web policy should not suppress interactive workers")
 	}
@@ -13269,13 +13326,23 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 		}
 	}
 
-	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, true, false, false)
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, true, false, false, false)
 	if !plan.SuppressInteractiveWorkers {
 		t.Fatalf("out-of-scope verification final-only state must suppress interactive workers")
 	}
 	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web", "dispatch_only"} {
 		if !plan.DisabledTools[name] {
 			t.Fatalf("out-of-scope verification final-only state must disable %s, got %#v", name, plan.DisabledTools)
+		}
+	}
+
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", true, false, false, true, false, false)
+	if !plan.SuppressInteractiveWorkers {
+		t.Fatalf("skipped verification final-only state must suppress interactive workers")
+	}
+	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web", "dispatch_only"} {
+		if !plan.DisabledTools[name] {
+			t.Fatalf("skipped verification final-only state must disable %s, got %#v", name, plan.DisabledTools)
 		}
 	}
 }
@@ -14158,7 +14225,7 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	}}) {
 		t.Fatalf("expected accepted document artifact quality to block post-completion validation without patch paths")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false, false)
 	if !plan.GeneratedDocumentFinalOnly {
 		t.Fatalf("expected accepted document artifact quality to force final-only tools without patch paths")
 	}
@@ -14212,7 +14279,7 @@ func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRe
 	if !agent.changesAreGeneratedDocumentArtifactsForTurn("Please provide the final answer now.") {
 		t.Fatalf("expected accepted artifact harness to recover document-artifact state for final-answer follow-up")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false, false)
 	if !plan.GeneratedDocumentFinalOnly {
 		t.Fatalf("expected accepted document artifact state to force final-only tools")
 	}
@@ -14485,7 +14552,7 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(
 		if agent.changesAreGeneratedDocumentArtifactsForTurn(request) {
 			t.Fatalf("fresh follow-up %q should not revive stale generated document final-only state", request)
 		}
-		plan := agent.buildTurnToolExposurePlan(nil, request, false, false, false, false, false)
+		plan := agent.buildTurnToolExposurePlan(nil, request, false, false, false, false, false, false)
 		if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
 			t.Fatalf("fresh follow-up %q should keep normal orchestration, got %#v", request, plan)
 		}

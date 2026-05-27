@@ -268,6 +268,38 @@ func TestClosedEditLoopDoesNotDriveOutcomeHarness(t *testing.T) {
 	}
 }
 
+func TestOutcomeInvariantReportsSkippedVerificationDisclosureWithoutFailureWording(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "automatic verification",
+			Status: VerificationSkipped,
+		}},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	report := agent.buildOutcomeInvariantReport("Change completed.", true)
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected one skipped-verification disclosure finding, got %#v", report.Findings)
+	}
+	if report.Findings[0].Title != "Verification was not run disclosure missing" {
+		t.Fatalf("skipped verification must not be reported as a failure, got %#v", report.Findings[0])
+	}
+	if strings.Contains(report.Findings[0].Detail, "still has failures") {
+		t.Fatalf("skipped verification detail should not use failure wording: %#v", report.Findings[0])
+	}
+
+	report = agent.buildOutcomeInvariantReport("Change completed. Verification was not run.", true)
+	if len(report.Findings) != 0 {
+		t.Fatalf("explicit skipped-verification disclosure should satisfy outcome invariant, got %#v", report.Findings)
+	}
+}
+
 func TestFinalizeEditLoopKeepsFailedApplyRisk(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

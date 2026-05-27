@@ -951,7 +951,7 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 			gate.Verdict = reviewVerdictNeedsRevision
 			gate.Reason = "blocking review findings require revision"
 		}
-	case len(gate.WarningFindings) > 0 || run.Result.Degraded:
+	case len(gate.WarningFindings) > 0 || reviewRunDegradedShouldWarn(run):
 		gate.Verdict = reviewVerdictApprovedWithWarnings
 		gate.Reason = "no blockers, but warnings or degraded reviewer evidence remain"
 	default:
@@ -968,6 +968,18 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 		gate.QualityNotes = append(gate.QualityNotes, guidance)
 	}
 	return gate
+}
+
+func reviewRunDegradedShouldWarn(run ReviewRun) bool {
+	if !run.Result.Degraded {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") &&
+		reviewRunHasUsableCrossReviewer(run) &&
+		len(reviewFailedRequiredReviewerRuns(run)) == 0 {
+		return false
+	}
+	return true
 }
 
 func normalizePreWriteVerificationOnlyFindings(run *ReviewRun) {
@@ -1115,7 +1127,11 @@ func reviewFindingLooksLowNonBlockingPreWriteConcern(f ReviewFinding) bool {
 			"fail to compile",
 			"can break this translation unit",
 			"빌드",
-			"컴파일",
+			"컴파일 실패",
+			"컴파일 오류",
+			"컴파일 에러",
+			"컴파일 가능성을 확인",
+			"컴파일되지",
 			"include",
 			"선언 누락",
 		) {

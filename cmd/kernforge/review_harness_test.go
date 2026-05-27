@@ -5727,6 +5727,34 @@ func TestPreWriteReviewDoesNotBlockLowTypeIntentMaintainabilityWarning(t *testin
 	}
 }
 
+func TestPreWriteReviewDoesNotBlockKoreanTypeIntentMaintainabilityWarningFromLog(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Findings: []ReviewFinding{{
+			ID:          "RF-004",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "maintainability",
+			Path:        "Tavern/Common/WMIQuery.cpp",
+			Symbol:      "WMIQuery::Query",
+			Title:       "VT_I4 SafeArray 요소 수신 버퍼가 LONG이 아닌 int 로 선언되어 타입 의도가 흐려짐",
+			Evidence:    "Windows에서 sizeof(int) == sizeof(LONG) == 4 이므로 동작은 정상이지만 향후 32비트 외 플랫폼 포팅이나 정적 분석기 경고에서 혼동될 수 있다.",
+			Impact:      "향후 ABI 변경이나 다른 컴파일러 환경에서 혼동될 수 있다.",
+			RequiredFix: "int element 를 LONG element 로 변경한다.",
+			BlocksGate:  true,
+		}},
+	}
+
+	gate := evaluateReviewGate(run)
+	if gate.Verdict == reviewVerdictNeedsRevision || len(gate.BlockingFindings) != 0 {
+		t.Fatalf("low Korean type-intent maintainability warning must not block pre-write, got %#v", gate)
+	}
+	if len(gate.WarningFindings) != 1 || gate.WarningFindings[0] != "RF-004" {
+		t.Fatalf("low maintainability issue should remain visible as a warning, got %#v", gate)
+	}
+}
+
 func TestPreWriteReviewBlocksLowActionableMaintainabilityIncludeWarning(t *testing.T) {
 	run := ReviewRun{
 		Gate: GateDecision{
@@ -5992,6 +6020,46 @@ func TestPreWritePrimaryReviewerFailureIsCoveredByUsableCrossReviewer(t *testing
 	}
 	if reviewRunHasRequiredReviewerFailure(run) {
 		t.Fatalf("usable cross reviewer should clear required reviewer failure state")
+	}
+}
+
+func TestPreWriteUsableCrossReviewerWithDegradedPrimaryApprovesWithoutZeroWarningVerdict(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Mode:    reviewModeLiveFix,
+		Result: ReviewResult{
+			Degraded:       true,
+			DegradedReason: "primary status=failed quality=failed: route returned empty output",
+		},
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer", "cross_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{
+			{
+				Role:         "primary_reviewer",
+				Kind:         "main",
+				Status:       "failed",
+				ModelQuality: reviewModelQualityFailed,
+				Error:        "review model returned empty response",
+			},
+			{
+				Role:         "cross_reviewer",
+				Kind:         "cross",
+				Status:       "completed",
+				ModelQuality: reviewModelQualityUsable,
+			},
+		},
+	}
+
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictApproved {
+		t.Fatalf("covered pre-write primary degradation with no findings should approve without warning-zero verdict, got %#v", gate)
+	}
+	if len(gate.WarningFindings) != 0 || len(gate.BlockingFindings) != 0 {
+		t.Fatalf("covered degradation should not synthesize invisible warnings or blockers, got %#v", gate)
+	}
+	if len(gate.QualityNotes) == 0 {
+		t.Fatalf("degraded route detail should remain in quality notes")
 	}
 }
 
