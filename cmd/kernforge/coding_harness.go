@@ -769,6 +769,7 @@ func codingHarnessFindingRequiresFinalAnswerOnlyRevision(finding CodingHarnessFi
 	switch strings.TrimSpace(finding.Title) {
 	case "Required verification has no outcome",
 		"Unresolved verification failure",
+		"Verification was not run disclosure missing",
 		"Generated document artifact verification disclosure is missing",
 		"Final answer has inconsistent bug counts",
 		"Final answer contradicts the patch transaction",
@@ -1254,7 +1255,15 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification
 			Detail:   detail,
 		})
 	}
-	if (unresolvedVerification || (a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures())) && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+	verificationWasSkipped := a.Session.LastVerification != nil && a.Session.LastVerification.WasSkipped()
+	verificationHasFailures := a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() && !verificationWasSkipped
+	if unresolvedVerification && verificationWasSkipped && !replyMentionsVerificationNotRun(reply) {
+		report.Findings = append(report.Findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Verification was not run disclosure missing",
+			Detail:   "The latest verification was skipped or declined, but the final answer does not clearly state that verification was not run.",
+		})
+	} else if (unresolvedVerification || verificationHasFailures) && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Unresolved verification failure",
