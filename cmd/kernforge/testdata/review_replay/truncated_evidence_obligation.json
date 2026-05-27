@@ -1,0 +1,55 @@
+{
+  "name": "truncated_evidence_obligation",
+  "category": "truncated_evidence",
+  "trigger": "explicit_command",
+  "user_request": "Review the patch with truncated evidence.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "findings": [
+    {
+      "id": "RF-EVID-001",
+      "source": "model",
+      "reviewer_role": "primary_reviewer",
+      "severity": "medium",
+      "category": "evidence_gap",
+      "confidence": "medium",
+      "quality": "complete",
+      "title": "Evidence was truncated before the modified branch",
+      "evidence": "The provided excerpt ends before the branch that is supposed to prove the RF is fixed.",
+      "impact": "The review cannot distinguish a correct fix from a partial patch.",
+      "required_fix": "Rerun the review with the full modified function or a narrower target."
+    }
+  ],
+  "expected_gate": "approved_with_warnings",
+  "expected_action": "user_decision_required",
+  "expected_obligation_counts": {
+    "total": 1,
+    "open": 1,
+    "repair": 0,
+    "verification": 0,
+    "evidence": 1,
+    "route": 0
+  },
+  "expected_obligations": [
+    {
+      "id": "RF-EVID-001",
+      "type": "evidence",
+      "status": "evidence_unconfirmed"
+    }
+  ],
+  "expected_progress_contains": [
+    "Gate action: user_decision_required"
+  ],
+  "expected_markdown_contains": [
+    "Obligation Ledger",
+    "open_by_type: `evidence=1`",
+    "`RF-EVID-001` type=`evidence` status=`evidence_unconfirmed`"
+  ]
+}

@@ -10,21 +10,39 @@ import (
 )
 
 type reviewReplayFixture struct {
-	Name                     string                       `json:"name"`
-	Category                 string                       `json:"category"`
-	Trigger                  string                       `json:"trigger"`
-	UserRequest              string                       `json:"user_request"`
-	ReviewerRuns             []ReviewReviewerRun          `json:"reviewer_runs"`
-	Findings                 []ReviewFinding              `json:"findings"`
-	EditProposals            []EditProposal               `json:"edit_proposals"`
-	ExternalLookupIntents    []ReviewExternalLookupIntent `json:"external_lookup_intents"`
-	ExpectedGate             string                       `json:"expected_gate"`
-	ExpectedAction           string                       `json:"expected_action"`
-	ExpectedLedgerStatus     string                       `json:"expected_ledger_status"`
-	ExpectedProgressContains []string                     `json:"expected_progress_contains"`
-	ExpectedReplyContains    []string                     `json:"expected_reply_contains"`
-	ExpectedMCPContains      []string                     `json:"expected_mcp_contains"`
-	ExpectedMarkdownContains []string                     `json:"expected_markdown_contains"`
+	Name                     string                        `json:"name"`
+	Category                 string                        `json:"category"`
+	Trigger                  string                        `json:"trigger"`
+	UserRequest              string                        `json:"user_request"`
+	ReviewerRuns             []ReviewReviewerRun           `json:"reviewer_runs"`
+	Findings                 []ReviewFinding               `json:"findings"`
+	RepairFindings           []ReviewFinding               `json:"repair_findings"`
+	EditProposals            []EditProposal                `json:"edit_proposals"`
+	ExternalLookupIntents    []ReviewExternalLookupIntent  `json:"external_lookup_intents"`
+	ExpectedGate             string                        `json:"expected_gate"`
+	ExpectedAction           string                        `json:"expected_action"`
+	ExpectedLedgerStatus     string                        `json:"expected_ledger_status"`
+	ExpectedObligationCounts *reviewReplayObligationCounts `json:"expected_obligation_counts"`
+	ExpectedObligations      []reviewReplayObligation      `json:"expected_obligations"`
+	ExpectedProgressContains []string                      `json:"expected_progress_contains"`
+	ExpectedReplyContains    []string                      `json:"expected_reply_contains"`
+	ExpectedMCPContains      []string                      `json:"expected_mcp_contains"`
+	ExpectedMarkdownContains []string                      `json:"expected_markdown_contains"`
+}
+
+type reviewReplayObligationCounts struct {
+	Total        int `json:"total"`
+	Open         int `json:"open"`
+	Repair       int `json:"repair"`
+	Verification int `json:"verification"`
+	Evidence     int `json:"evidence"`
+	Route        int `json:"route"`
+}
+
+type reviewReplayObligation struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Status string `json:"status"`
 }
 
 func TestReviewReplayFixtures(t *testing.T) {
@@ -63,6 +81,7 @@ func TestReviewReplayFixtures(t *testing.T) {
 			if strings.TrimSpace(fixture.ExpectedLedgerStatus) != "" && run.LedgerConsistency.Status != fixture.ExpectedLedgerStatus {
 				t.Fatalf("expected ledger status %q, got %#v", fixture.ExpectedLedgerStatus, run.LedgerConsistency)
 			}
+			assertReviewReplayObligationLedger(t, fixture, run)
 			mcp := renderReviewMCPResponse(run, 20000)
 			for _, want := range fixture.ExpectedMCPContains {
 				if !strings.Contains(mcp, want) {
@@ -166,15 +185,49 @@ func runReviewReplayFixture(fixture reviewReplayFixture) (ReviewRun, string) {
 		ExternalLookupIntents: append([]ReviewExternalLookupIntent(nil), fixture.ExternalLookupIntents...),
 	}
 	run.Findings = append(run.Findings, fixture.Findings...)
+	run.RepairFindings = normalizeReviewFindingCopies(fixture.RepairFindings)
 	assignReviewFindingIDs(run.Findings)
 	run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	run.ObligationLedger = buildReviewObligationLedger(run)
 	run.Gate = evaluateReviewGate(run)
 	run.RepairPlan = buildReviewRepairPlan(run)
 	run.Result.Summary = reviewResultSummary(run)
 	run.finalizeStatus(false)
 	finalizeReviewRunProtocol("", nil, &run)
 	return run, formatReviewerGateUnavailableReply(Config{AutoLocale: boolPtr(false)}, run)
+}
+
+func assertReviewReplayObligationLedger(t *testing.T, fixture reviewReplayFixture, run ReviewRun) {
+	t.Helper()
+	if fixture.ExpectedObligationCounts != nil {
+		got := run.ObligationLedger
+		want := *fixture.ExpectedObligationCounts
+		if got.TotalCount != want.Total ||
+			got.OpenCount != want.Open ||
+			got.OpenRepairCount != want.Repair ||
+			got.OpenVerificationCount != want.Verification ||
+			got.OpenEvidenceCount != want.Evidence ||
+			got.OpenRouteCount != want.Route {
+			t.Fatalf("unexpected obligation counts: got=%#v want=%#v ledger=%#v", got, want, got.Items)
+		}
+	}
+	for _, expected := range fixture.ExpectedObligations {
+		if !reviewReplayHasExpectedObligation(run.ObligationLedger, expected) {
+			t.Fatalf("expected obligation %#v in %#v", expected, run.ObligationLedger.Items)
+		}
+	}
+}
+
+func reviewReplayHasExpectedObligation(ledger ReviewObligationLedger, expected reviewReplayObligation) bool {
+	for _, obligation := range ledger.Items {
+		if strings.EqualFold(strings.TrimSpace(obligation.ID), strings.TrimSpace(expected.ID)) &&
+			strings.EqualFold(strings.TrimSpace(obligation.Type), strings.TrimSpace(expected.Type)) &&
+			strings.EqualFold(strings.TrimSpace(obligation.Status), strings.TrimSpace(expected.Status)) {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewActionEnvelopeHasFailure(envelopes []ReviewActionEnvelope, actionType string, failureClass string) bool {

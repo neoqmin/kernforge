@@ -14,12 +14,21 @@
   ],
   "expected_gate": "approved",
   "expected_action": "final_summary",
+  "expected_obligation_counts": {
+    "total": 0,
+    "open": 0,
+    "repair": 0,
+    "verification": 0,
+    "evidence": 0,
+    "route": 0
+  },
   "expected_mcp_contains": [
     "state_transitions",
     "action_envelopes",
     "approval_ledger",
     "capability_manifest",
     "ledger_consistency",
-    "artifact_integrity"
+    "artifact_integrity",
+    "obligation_ledger"
   ]
 }

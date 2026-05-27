@@ -958,9 +958,9 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 		gate.Verdict = reviewVerdictApproved
 		gate.Reason = "no blocking findings found"
 	}
-	gate.NextCommands = reviewNextCommands(run, gate)
 	run.Gate = gate
 	gate.Action = reviewGateActionForRun(run)
+	gate.NextCommands = reviewNextCommands(run, gate)
 	if run.Result.Degraded && strings.TrimSpace(run.Result.DegradedReason) != "" {
 		gate.QualityNotes = append(gate.QualityNotes, run.Result.DegradedReason)
 	}
@@ -1461,6 +1461,28 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 			ExpectedResult: expected,
 		})
 	}
+	if gate.Action == reviewGateActionRepairRequired && !reviewNextCommandsHasAnyID(out, "repair", "repair-warnings") {
+		reason := "open repair obligations remain in the obligation ledger"
+		when := "after reading review obligations"
+		hint := "Use the obligation ledger and repair prompt in the review artifact."
+		expected := "Open repair obligations are converted into a focused repair turn."
+		if reviewRunLooksReadOnlyAnalysis(run) {
+			reason = "open repair obligations were found; repair is optional unless the user asks to fix them"
+			when = "if you decide to turn the analysis into a repair pass"
+			hint = "Say `수정해줘` or run this command only if you want Kernforge to fix the obligations."
+			expected = "Open repair obligations are converted into repair guidance only after an explicit repair request."
+		}
+		out = append(out, ReviewNextCommand{
+			ID:             "repair",
+			Command:        "/continuity continue from review",
+			Reason:         reason,
+			Safety:         "safe_local",
+			When:           when,
+			AutoRun:        false,
+			ClientHint:     hint,
+			ExpectedResult: expected,
+		})
+	}
 	if gate.Verdict == reviewVerdictApprovedWithWarnings {
 		out = append(out, ReviewNextCommand{
 			ID:             "completion-audit",
@@ -1486,6 +1508,22 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 		})
 	}
 	return out
+}
+
+func reviewNextCommandsHasAnyID(commands []ReviewNextCommand, ids ...string) bool {
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			wanted[id] = true
+		}
+	}
+	for _, command := range commands {
+		if wanted[strings.TrimSpace(command.ID)] {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewRunLooksReadOnlyAnalysis(run ReviewRun) bool {
@@ -1585,30 +1623,60 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 	blockingIDs := reviewFindingIDSet(run.Gate.BlockingFindings)
 	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
 	hasGateClassification := len(blockingIDs) > 0 || len(warningIDs) > 0
-	for _, finding := range run.Findings {
+	repairObligations := reviewOpenRepairRequiredObligationMap(run.ObligationLedger)
+	seenPlanFindings := map[string]bool{}
+	addFinding := func(finding ReviewFinding, forceBlocking bool) {
 		finding.Normalize()
+		key := strings.ToLower(firstNonBlankString(finding.ID, finding.Path+"|"+finding.Symbol+"|"+finding.Title))
+		if key == "" || seenPlanFindings[key] {
+			return
+		}
+		if forceBlocking {
+			if !reviewFindingShouldBeRepairPlanBlocker(run, finding) {
+				return
+			}
+			seenPlanFindings[key] = true
+			blocking = append(blocking, finding)
+			return
+		}
 		if hasGateClassification {
 			if blockingIDs[finding.ID] {
 				if !reviewFindingShouldBeRepairPlanBlocker(run, finding) {
-					continue
+					return
 				}
+				seenPlanFindings[key] = true
 				blocking = append(blocking, finding)
-				continue
+				return
 			}
 			if warningIDs[finding.ID] && reviewFindingShouldBeRepairPlanWarning(finding) {
+				seenPlanFindings[key] = true
 				warnings = append(warnings, finding)
 			}
-			continue
+			return
 		}
 		if reviewFindingBlocksGate(run, finding) {
 			if !reviewFindingShouldBeRepairPlanBlocker(run, finding) {
-				continue
+				return
 			}
+			seenPlanFindings[key] = true
 			blocking = append(blocking, finding)
-			continue
+			return
 		}
 		if reviewFindingShouldBeRepairPlanWarning(finding) {
+			seenPlanFindings[key] = true
 			warnings = append(warnings, finding)
+		}
+	}
+	for _, finding := range append(append([]ReviewFinding{}, run.Findings...), run.RepairFindings...) {
+		if _, ok := reviewObligationMapLookupByFinding(repairObligations, finding); ok {
+			addFinding(finding, true)
+			continue
+		}
+		addFinding(finding, false)
+	}
+	if len(blocking) == 0 && reviewGateActionForRun(run) == reviewGateActionRepairRequired {
+		for _, obligation := range repairObligations {
+			addFinding(reviewFindingFromRepairObligation(obligation), true)
 		}
 	}
 	if len(blocking) == 0 {

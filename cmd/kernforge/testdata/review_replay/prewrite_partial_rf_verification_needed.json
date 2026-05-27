@@ -1,0 +1,56 @@
+{
+  "name": "prewrite_partial_rf_verification_needed",
+  "category": "partial_rf_fix",
+  "trigger": "pre_write",
+  "user_request": "Review the partial RF fix before writing files.",
+  "reviewer_runs": [
+    {
+      "role": "primary_reviewer",
+      "kind": "main",
+      "model": "scripted / main-model",
+      "status": "completed",
+      "model_quality": "usable"
+    }
+  ],
+  "repair_findings": [
+    {
+      "id": "RF-PARTIAL-001",
+      "source": "model",
+      "reviewer_role": "primary_reviewer",
+      "severity": "medium",
+      "category": "correctness",
+      "confidence": "high",
+      "quality": "complete",
+      "path": "PathConverter.cpp",
+      "symbol": "Convert",
+      "title": "Prefix boundary fix needs verification",
+      "required_fix": "Validate the boundary condition before accepting the prefix.",
+      "resolution_status": "verification_needed"
+    }
+  ],
+  "expected_gate": "approved",
+  "expected_action": "diff_preview_allowed",
+  "expected_obligation_counts": {
+    "total": 1,
+    "open": 1,
+    "repair": 0,
+    "verification": 1,
+    "evidence": 0,
+    "route": 0
+  },
+  "expected_obligations": [
+    {
+      "id": "RF-PARTIAL-001",
+      "type": "repair",
+      "status": "verification_required"
+    }
+  ],
+  "expected_progress_contains": [
+    "Gate action: diff_preview_allowed"
+  ],
+  "expected_markdown_contains": [
+    "Obligation Ledger",
+    "open_by_type: `verification=1`",
+    "`RF-PARTIAL-001` type=`repair` status=`verification_required`"
+  ]
+}

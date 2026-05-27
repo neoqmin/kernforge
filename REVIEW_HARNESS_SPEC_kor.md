@@ -3458,6 +3458,35 @@ P2:
    - 수정: `planReviewModels`가 항상 primary route를 기본으로 삼고, 보안/설계/오탐/회귀/테스트/final 관점은 lens로 계산한다. `/review models` 설정 surface는 `cross`만 새로 설정하게 하고, 기존 role별 설정은 deprecated compatibility fallback으로만 읽는다. security-sensitive single-model review는 missing role을 만들지 않고, 더 강한 독립 검토가 필요할 때 `/review models cross`를 추천한다.
    - 회귀 테스트: `TestReviewModelsCommandShortFormConfiguresCrossRoute`, `TestExecuteReviewModelRunsUsesPrimaryRouteWithDesignLens`, `TestMainFirstCrossReviewerSatisfiesDedicatedSecurityRole`, `TestSecuritySensitiveFallbackModelsProduceGuidance`, 전체 `go test ./cmd/kernforge -count=1 -timeout 10m`.
 
+91. cross-review instability root fix: obligation ledger 중심 구조
+   - 발견: 수십 차례의 cross-review 보강에도 route timeout, weak output, evidence truncation, malformed patch, actionable warning, verification gap이 모두 `approved_with_warnings` 또는 `needs_revision` 주변에서 섞였다. 그 결과 작은 분류 오류가 repair loop, re-anchor loop, reviewer route 복구, diff preview gate로 전파됐다.
+   - 근본 원인: evidence packaging, reviewer judgment, orchestration decision이 같은 모델 출력과 gate normalizer에 묶여 있었다. 모델이 코드 판단과 다음 행동 결정을 동시에 암묵적으로 지배하면서, reviewer output 품질 문제가 state machine 문제로 확대됐다.
+   - 원칙:
+     1. 리뷰 모델은 의사결정자가 아니라 evidence producer다.
+     2. RF, verification, evidence, reviewer route 문제는 `obligation_ledger`의 독립 항목으로 기록한다.
+     3. `GateDecision.Action`은 모델 문구가 아니라 obligation type/status와 deterministic rule로만 결정한다.
+     4. `approved_with_warnings`는 verification/test/evidence/operational warning 중심으로 좁히고, repair intent가 있는 actionable correctness/stability/performance finding은 `repair_required` 경로로 보낸다.
+     5. cross reviewer 실패는 code finding이 아니라 `reviewer_route` obligation으로 기록하고, implementation model에게 반복 patch를 시키지 않는다.
+   - 구현 단계:
+     1. `ReviewObligationLedger`와 `ReviewObligation` schema를 추가한다.
+     2. 기존 `RepairFindings`와 `Findings`를 ledger로 정규화해 `repair`, `verification`, `evidence`, `reviewer_route` 타입과 `open`, `resolved`, `evidence_unconfirmed`, `verification_required`, `route_unavailable` 상태를 기록한다.
+     3. `reviewGateActionForRun`은 reviewer route obligation, repair obligation, verification obligation 순서로 action을 결정한다.
+     4. Markdown/JSON artifact에 obligation summary를 노출해 사용자가 "코드 문제인지, reviewer route 문제인지, evidence 부족인지" 즉시 구분하게 한다.
+     5. replay fixture는 malformed patch, weak reviewer, timeout, truncated evidence, partial RF fix를 golden case로 확장한다.
+   - acceptance criteria:
+     1. pre-fix `approved_with_warnings`의 medium actionable finding이 `repair` obligation으로 기록된다.
+     2. `RF-REVIEWER-001`은 `reviewer_route` obligation으로 기록되고 code repair plan에는 들어가지 않는다.
+     3. verification gap은 `verification` obligation으로 기록되며 pre-write diff preview를 막지 않고 post-edit verification action으로 남는다.
+     4. review markdown과 MCP/JSON response에는 gate verdict와 별도로 obligation ledger가 포함된다.
+     5. obligation ledger 기반 action 계산은 기존 single-model/cross-review gate 테스트를 깨지 않는다.
+     6. `repair` obligation이라도 `status=verification_required`이면 repair loop가 아니라 verification action으로 라우팅한다. pre-write에서는 diff preview를 막지 않는다.
+     7. ledger 기반 `repair_required` action이 verdict만으로 설명되지 않는 경우에도 `next_commands`에 repair continuation을 포함한다.
+   - 구현 메모 (2026-05-27):
+     1. `GateDecision.Action`은 reviewer_route, repair_required, evidence_required, verification_required obligation을 우선 사용하고, ledger가 비어 있는 legacy run에 한해 verdict fallback을 사용한다.
+     2. `buildReviewRepairPlan`은 `Findings`뿐 아니라 `RepairFindings`에서 온 open repair obligation도 repair prompt에 포함한다.
+     3. `review_replay` fixture schema에 `expected_obligation_counts`, `expected_obligations`, `repair_findings`를 추가했다.
+     4. replay golden은 patch mismatch, weak/truncated reviewer output, cross timeout, truncated evidence, partial RF verification-needed 상태를 obligation ledger 기준으로 검증한다.
+
 남은 항목:
 
 1. 수동 smoke 검증

@@ -33,6 +33,21 @@
   ],
   "expected_gate": "needs_revision",
   "expected_action": "repair_required",
+  "expected_obligation_counts": {
+    "total": 1,
+    "open": 1,
+    "repair": 1,
+    "verification": 0,
+    "evidence": 0,
+    "route": 0
+  },
+  "expected_obligations": [
+    {
+      "id": "RF-FIX-001",
+      "type": "repair",
+      "status": "open"
+    }
+  ],
   "expected_progress_contains": [
     "Prefix match can select the wrong volume",
     "Gate action: repair_required"

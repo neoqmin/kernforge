@@ -38,6 +38,21 @@
   "expected_gate": "needs_revision",
   "expected_action": "repair_required",
   "expected_ledger_status": "blocked",
+  "expected_obligation_counts": {
+    "total": 1,
+    "open": 1,
+    "repair": 1,
+    "verification": 0,
+    "evidence": 0,
+    "route": 0
+  },
+  "expected_obligations": [
+    {
+      "id": "RF-PATCH-001",
+      "type": "repair",
+      "status": "open"
+    }
+  ],
   "expected_progress_contains": [
     "Repeated patch mismatch requires fresh file digest",
     "Gate action: repair_required"
