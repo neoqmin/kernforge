@@ -212,6 +212,9 @@ func TestBuildGoalImplementationPromptUsesCodexContinuationDiscipline(t *testing
 		"<objective>\nShip &lt;done&gt; &amp; verify all artifacts\n</objective>",
 		"The goal persists across turns and iterations",
 		"Do not redefine success around a smaller, safer, easier, or merely passing subset",
+		"Codex-grade staged loop:",
+		"Classify whether the objective needs review, bug finding, targeted modification",
+		"ABI or data contracts",
 		"Treat the current worktree, command output, generated artifacts, runtime state, and external state as authoritative.",
 		"Treat completion as unproven until current evidence covers every explicit requirement",
 		"The audit must prove completion, not merely fail to find obvious remaining work.",
@@ -220,6 +223,27 @@ func TestBuildGoalImplementationPromptUsesCodexContinuationDiscipline(t *testing
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected goal implementation prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestBuildGoalReviewPromptUsesBugFindingSecondPassChecklist(t *testing.T) {
+	prompt := buildGoalReviewPrompt(GoalState{
+		Objective: "Review and fix request routing",
+		CompletionCriteria: []string{
+			"Review and modification requests are handled correctly.",
+		},
+	}, GoalIteration{Index: 2, ImplementReply: "Changed agent prompt."}, "", nil)
+
+	for _, want := range []string{
+		"Autonomous goal independent review pass for iteration 2.",
+		"bug-finding code review",
+		"Re-check touched functions, call sites, contracts, initialization defaults",
+		"Return concrete findings only.",
+		"residual verification or evidence gap",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected goal review prompt to contain %q, got:\n%s", want, prompt)
 		}
 	}
 }

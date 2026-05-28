@@ -8734,6 +8734,10 @@ func (a *Agent) systemPrompt() string {
 	} else if looksLikeExplicitEditIntent(latestUser) {
 		b.WriteString("The latest user request explicitly asks for a fix. Inspect the relevant code and apply the necessary edit directly with the available tools. Do not hand the patch back to the user unless an edit tool actually fails.\n")
 	}
+	if requestContract := strings.TrimSpace(a.codexGradeRequestHandlingPrompt(latestUser)); requestContract != "" {
+		b.WriteString(requestContract)
+		b.WriteString("\n")
+	}
 	if webResearchIntent {
 		if a.MCP != nil && a.MCP.HasWebResearchCapability() {
 			b.WriteString("The latest user request likely needs current external research. Prefer relevant MCP web/search/browser tools before relying on memory or local-only context.\n")
@@ -8991,6 +8995,95 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Use mcp__resource__server to read a listed MCP resource.\n")
 	b.WriteString("- Use mcp__prompt__server to resolve a listed MCP prompt.\n")
 	return b.String()
+}
+
+func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
+	if !shouldIncludeCodexGradeRequestHandlingPrompt(latestUser, a.Session) {
+		return ""
+	}
+	routeMode := "single_model"
+	if a.hasDistinctCrossReviewRouteConfig() {
+		routeMode = "cross_review"
+	}
+	var b strings.Builder
+	b.WriteString("Codex-grade request handling:\n")
+	fmt.Fprintf(&b, "- Review route mode: %s.\n", routeMode)
+	b.WriteString("- Classify the latest external request before acting: code review, bug finding, targeted modification, implementation plus verification, review-after-modification, documentation/status update, or explicit git cleanup.\n")
+	b.WriteString("- Inspect current repository state before making assumptions, and preserve unrelated user changes in a dirty worktree.\n")
+	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")
+	b.WriteString("- For modification requests, implement directly with focused edits, then perform a second-pass regression review of touched functions, call sites, ABI or data contracts, initialization defaults, buffer sizes, error paths, cancellation or timeout behavior, logging/output compatibility, and stale docs.\n")
+	b.WriteString("- After edits, run the most relevant available validation, starting focused and broadening only when justified; if validation cannot run, explain the blocker and the next best check.\n")
+	if routeMode == "cross_review" {
+		b.WriteString("- When cross-review findings are present, treat them as independent review feedback and triage each actionable item as accepted and fixed, accepted but deferred, rejected with technical reason, or needing user decision.\n")
+	} else {
+		b.WriteString("- In single-model mode, do not trust the first answer: use an internal staged loop of intent classification, context discovery, implementation or review, self-review, validation, and final response.\n")
+	}
+	return b.String()
+}
+
+func shouldIncludeCodexGradeRequestHandlingPrompt(latestUser string, session *Session) bool {
+	lower := strings.ToLower(strings.TrimSpace(latestUser))
+	if lower == "" {
+		return false
+	}
+	if requestLooksLikeFreshExecutionTask(lower) {
+		return true
+	}
+	intent := classifyTurnIntent(lower)
+	switch intent {
+	case TurnIntentReviewCode, TurnIntentEditCode, TurnIntentContinueLastTask, TurnIntentRunCommand:
+		return true
+	default:
+	}
+	if session != nil {
+		if session.AcceptanceContract != nil || session.TaskState != nil || len(session.Plan) > 0 {
+			return true
+		}
+		if _, ok := session.ActiveGoal(); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) hasDistinctCrossReviewRouteConfig() bool {
+	if a == nil {
+		return false
+	}
+	if a.reviewerClientDiffersFromMain(a.AuxReviewerClient, a.AuxReviewerModel) {
+		return true
+	}
+	if a.reviewerClientDiffersFromMain(a.ReviewerClient, a.ReviewerModel) {
+		return true
+	}
+	reviewCfg := configReviewHarness(a.Config)
+	run := ReviewRun{Objective: sessionEffectiveUserRequestText(a.Session)}
+	label, _ := reviewConfiguredCrossRouteLabelAndRole(a.Config, reviewCfg, run)
+	return strings.TrimSpace(label) != ""
+}
+
+func (a *Agent) reviewerClientDiffersFromMain(client ProviderClient, model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	if !strings.EqualFold(model, strings.TrimSpace(a.Config.Model)) {
+		return true
+	}
+	if client == nil || a.Client == nil {
+		return false
+	}
+	if sameProviderClient(client, a.Client) {
+		return false
+	}
+	clientRoute := providerClientReviewRoute(client, "")
+	mainRoute := providerClientReviewRoute(a.Client, a.Config.Provider)
+	if clientRoute.Provider != "" && mainRoute.Provider != "" && clientRoute.Provider != mainRoute.Provider {
+		return true
+	}
+	clientBaseURL := normalizeProviderBaseURL(clientRoute.Provider, clientRoute.BaseURL)
+	mainBaseURL := normalizeProviderBaseURL(mainRoute.Provider, mainRoute.BaseURL)
+	return clientBaseURL != "" && mainBaseURL != "" && !strings.EqualFold(clientBaseURL, mainBaseURL)
 }
 
 func compactPromptSection(text string, limit int) string {

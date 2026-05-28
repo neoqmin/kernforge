@@ -6758,6 +6758,44 @@ func TestReviewRepairPlanIncludesActionableWarningsWithBlockers(t *testing.T) {
 	}
 }
 
+func TestReviewRepairPlanCallsOutCrossReviewerTriage(t *testing.T) {
+	run := ReviewRun{
+		ID:        "review-cross",
+		Trigger:   "post_change",
+		Objective: "Review and fix request routing",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:           "RF-001",
+			ReviewerRole: "cross_reviewer",
+			Severity:     reviewSeverityHigh,
+			Category:     "correctness",
+			Title:        "Cross reviewer found missed routing bug",
+			RequiredFix:  "Preserve edit intent when review and fix are both present.",
+			BlocksGate:   true,
+			Quality:      reviewFindingQualityComplete,
+		}},
+	}
+
+	plan := buildReviewRepairPlan(run)
+	if !plan.Required {
+		t.Fatalf("expected cross reviewer finding to require repair")
+	}
+	for _, want := range []string{
+		"Cross-review findings are independent review feedback.",
+		"accepted/fixed",
+		"accepted/deferred",
+		"rejected_with_reason",
+		"needs_user_decision",
+	} {
+		if !strings.Contains(plan.Prompt, want) {
+			t.Fatalf("expected cross-review triage guidance %q, got:\n%s", want, plan.Prompt)
+		}
+	}
+}
+
 func TestReviewRepairPlanIncludesMislabeledTestGapImplementationWarning(t *testing.T) {
 	run := ReviewRun{
 		ID:        "review-prefix",
@@ -11018,6 +11056,38 @@ func TestReviewModelPromptFollowsKoreanObjectiveLanguage(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Every finding must include a title field") {
 		t.Fatalf("expected title-field guidance in review prompt, got %q", prompt)
+	}
+}
+
+func TestReviewModelPromptsIncludeCodexGradeCoverageAndCrossTriage(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	run := ReviewRun{
+		ID:        "review-1",
+		Trigger:   "post_change",
+		Target:    reviewTargetChange,
+		Objective: "Review and fix request routing",
+		Evidence: ReviewEvidencePack{
+			Text: "main.go:10 changed request handling",
+		},
+	}
+
+	prompt := buildReviewModelPrompt(cfg, run, "primary_reviewer")
+	if !strings.Contains(prompt, "ABI or data contracts") ||
+		!strings.Contains(prompt, "cancellation or timeout behavior") ||
+		!strings.Contains(prompt, "stale docs") {
+		t.Fatalf("expected primary review prompt to include second-pass coverage checklist, got:\n%s", prompt)
+	}
+
+	crossPrompt := buildReviewModelCrossCheckPrompt(cfg, run, "cross_reviewer", "primary approved", nil)
+	for _, want := range []string{
+		"Make each finding useful for primary-model triage",
+		"missed issue",
+		"incorrect primary issue",
+		"verification gap",
+	} {
+		if !strings.Contains(crossPrompt, want) {
+			t.Fatalf("expected cross-review triage guidance %q, got:\n%s", want, crossPrompt)
+		}
 	}
 }
 
