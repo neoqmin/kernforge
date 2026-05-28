@@ -3487,6 +3487,17 @@ P2:
      3. `review_replay` fixture schema에 `expected_obligation_counts`, `expected_obligations`, `repair_findings`를 추가했다.
      4. replay golden은 patch mismatch, weak/truncated reviewer output, cross timeout, truncated evidence, partial RF verification-needed 상태를 obligation ledger 기준으로 검증한다.
 
+92. Codex-grade 자연어 검토/수정 요청 처리 계약
+   - 발견: Kernforge가 review harness와 goal loop를 갖고 있어도, 일반 자연어 턴에서는 사용자가 "검토", "버그 찾기", "수정", "수정 후 리뷰", "문서/status", "커밋 준비" 중 무엇을 원하는지 명확히 분류하지 않으면 단순 chat wrapper처럼 첫 답변을 신뢰하거나, 단일 모델 구성에서 독립 리뷰가 없는 상태를 약한 fallback처럼 다룰 수 있었다.
+   - 원칙: 단일 모델 구성은 degraded mode가 아니라 explicit staged mode다. cross reviewer가 있을 때는 독립 reviewer feedback을 단순 요약으로 취급하지 않고, primary implementation flow가 수용/보류/기각/사용자 결정 필요로 판단해야 한다. 다만 이번 단계는 prompt와 harness contract를 강화한 것이며, 모든 cross-review 항목을 persistent triage ledger로 강제하는 runtime enforcement는 별도 후속 과제다.
+   - 수정: Agent prompt에 `codexGradeRequestHandlingPrompt`를 추가해 fresh execution, review, edit, command, active goal/task state에서 Codex-grade request handling block을 주입한다. 이 block은 최신 외부 요청을 code review, bug finding, targeted modification, implementation plus verification, review-after-modification, documentation/status update, explicit git cleanup 중 하나로 분류하게 하고, repository inspection, unrelated user change preservation, review-only findings-first 출력, 수정 후 touched function/call-site/ABI/default/buffer/error/cancel/logging/docs self-review, focused validation disclosure를 요구한다.
+   - 단일 모델 모드: distinct cross-review route가 없으면 `single_model` route mode를 명시하고 intent classification, context discovery, implementation/review, self-review, validation, final response 순서의 staged loop를 요구한다. 같은 모델의 첫 응답을 그대로 신뢰하지 말고, touched code와 stale docs를 다시 확인하도록 prompt contract를 둔다.
+   - cross-review 모드: distinct reviewer route가 감지되면 `cross_review` route mode를 명시하고, cross-review finding을 independent feedback으로 취급해 accepted and fixed, accepted but deferred, rejected with technical reason, needs user decision 중 하나로 triage하도록 요구한다. repair plan에도 cross-review finding이 포함된 경우 같은 triage 의무를 implementation handoff에 넣는다.
+   - goal/coding harness 반영: `/goal`, `-goal`, `-goal-file` iteration prompt에는 같은 staged loop를 추가하고, coding harness acceptance contract는 edit request에서 repository context inspection, second-pass regression review, validation/reporting을 expected behavior로 기록한다.
+   - 리뷰 모델 prompt 반영: natural review trigger는 read-only code review stance를 명시하고, patch text나 tool request 없이 concrete finding을 먼저 반환하게 한다. issue가 없으면 finding 없이 approve하되 residual test/evidence risk만 summary에 남기게 한다.
+   - 회귀 테스트: `TestAgentPromptIncludesCodexGradeRequestHandlingForEditRequests`, `TestAgentPromptUsesSingleModelCodexGradeContractWithoutCrossReviewer`, `TestAgentPromptUsesCrossReviewCodexGradeContractWhenReviewerConfigured`, `TestAgentPromptOmitsCodexGradeContractForTrivialChat`, goal staged-loop prompt tests, review repair handoff cross-review triage tests, natural review-mode read-only prompt tests.
+   - 남은 런타임 과제: cross-review triage ledger persistence, 단일 모델 second-pass를 별도 runtime phase/model call로 강제하는 구조, 최종 답변 completeness gate는 아직 prompt-contract 수준을 넘어 runtime-enforced invariant로 올려야 한다.
+
 남은 항목:
 
 1. 수동 smoke 검증
