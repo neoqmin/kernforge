@@ -129,6 +129,60 @@ func TestSystemPromptIncludesActivePermissionProfileSnapshot(t *testing.T) {
 	}
 }
 
+func TestSystemPromptIncludesCodexGradeSingleModelRequestHandling(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openai", "gpt-5.5", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Review main.go for regressions"})
+	agent := &Agent{
+		Config:  Config{Provider: "openai", Model: "gpt-5.5"},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	for _, want := range []string{
+		"Codex-grade request handling:",
+		"Review route mode: single_model.",
+		"Classify the latest external request before acting",
+		"For review-only requests, use a code-review stance",
+		"In single-model mode, do not trust the first answer",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected Codex-grade single-model guidance %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestSystemPromptIncludesCodexGradeCrossReviewTriage(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openai", "gpt-5.5", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Review and fix main.go"})
+	cfg := Config{
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		Review: ReviewHarnessConfig{
+			RoleModels: map[string]ReviewModelConfig{
+				"cross_reviewer": {Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
+			},
+		},
+	}
+	agent := &Agent{
+		Config:  cfg,
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	for _, want := range []string{
+		"Review route mode: cross_review.",
+		"When cross-review findings are present",
+		"accepted and fixed",
+		"rejected with technical reason",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected Codex-grade cross-review guidance %q, got %q", want, prompt)
+		}
+	}
+}
+
 func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
 	setTempUserConfigHome(t)
 	root := t.TempDir()

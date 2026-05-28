@@ -270,9 +270,21 @@ func buildAcceptanceContract(userText string, intent TurnIntent, readOnlyAnalysi
 	contract.VerificationNotes = acceptanceVerificationNotes(base, contract.VerificationRequired, explicitEditRequest, intent)
 	if readOnlyAnalysis {
 		contract.NonGoals = append(contract.NonGoals, "Do not modify workspace files unless the user changes the request.")
+		if intent == TurnIntentReviewCode || hasTurnReviewIntent(base) {
+			contract.ExpectedBehaviors = append(contract.ExpectedBehaviors,
+				"Use a code-review stance: findings first, concrete evidence, severity ordering, and residual test or evidence risk if no findings are discovered.",
+			)
+		}
 	}
 	if !explicitGitRequest {
 		contract.NonGoals = append(contract.NonGoals, "Do not stage, commit, push, or open a PR.")
+	}
+	if explicitEditRequest || intent == TurnIntentEditCode {
+		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors,
+			"Inspect current repository context before editing and preserve unrelated user changes.",
+			"After edits, perform a second-pass regression review of touched code, call sites, contracts, error paths, and stale docs.",
+			"Run the most relevant available validation or report why validation could not run.",
+		)
 	}
 	if len(contract.RequiredArtifacts) > 0 {
 		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Create or update the requested artifact path(s): "+strings.Join(contract.RequiredArtifacts, ", "))

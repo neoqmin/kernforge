@@ -83,6 +83,27 @@ func TestClassifyTurnIntentKeepsReviewReportAuthoringAsEdit(t *testing.T) {
 	}
 }
 
+func TestBuildAcceptanceContractAddsReviewAndEditQualityExpectations(t *testing.T) {
+	reviewContract := buildAcceptanceContract("수정한 코드에 버그는 없는지 검토해", TurnIntentReviewCode, true, false, false)
+	if !containsString(reviewContract.ExpectedBehaviors, "Use a code-review stance: findings first, concrete evidence, severity ordering, and residual test or evidence risk if no findings are discovered.") {
+		t.Fatalf("expected review quality behavior, got %#v", reviewContract.ExpectedBehaviors)
+	}
+	if !containsString(reviewContract.NonGoals, "Do not modify workspace files unless the user changes the request.") {
+		t.Fatalf("expected read-only non-goal, got %#v", reviewContract.NonGoals)
+	}
+
+	editContract := buildAcceptanceContract("Review and fix main.go", TurnIntentEditCode, false, true, false)
+	for _, want := range []string{
+		"Inspect current repository context before editing and preserve unrelated user changes.",
+		"After edits, perform a second-pass regression review of touched code, call sites, contracts, error paths, and stale docs.",
+		"Run the most relevant available validation or report why validation could not run.",
+	} {
+		if !containsString(editContract.ExpectedBehaviors, want) {
+			t.Fatalf("expected edit quality behavior %q, got %#v", want, editContract.ExpectedBehaviors)
+		}
+	}
+}
+
 func TestClassifyTurnIntentRecognizesGitOperationRequest(t *testing.T) {
 	for _, request := range []string{
 		"커밋하자",

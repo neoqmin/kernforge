@@ -1707,6 +1707,13 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		b.WriteString("\n")
 		b.WriteString(reviewLocalRepairHandoffGuidance(korean))
 	}
+	if reviewRepairPlanHasCrossReviewerFindings(blocking, warnings) {
+		if korean {
+			b.WriteString("\nCross-review finding은 독립 리뷰 피드백입니다. 각 항목을 accepted/fixed, accepted/deferred, rejected_with_reason, 또는 needs_user_decision으로 판단하고, 무시하지 말고 최종 응답이나 수리 근거에 남기세요.\n")
+		} else {
+			b.WriteString("\nCross-review findings are independent review feedback. Triage each item as accepted/fixed, accepted/deferred, rejected_with_reason, or needs_user_decision; do not silently ignore them.\n")
+		}
+	}
 	b.WriteString("\n\n")
 	if korean {
 		b.WriteString("차단 finding:\n")
@@ -1745,6 +1752,16 @@ func buildReviewRepairPlan(run ReviewRun) ReviewRepairPlan {
 		Findings:        ids,
 		RequiredActions: normalizeTaskStateList(actions, 12),
 	}
+}
+
+func reviewRepairPlanHasCrossReviewerFindings(blocking []ReviewFinding, warnings []ReviewFinding) bool {
+	for _, finding := range append(append([]ReviewFinding{}, blocking...), warnings...) {
+		role := normalizeReviewRole(finding.ReviewerRole)
+		if role != "" && role != "primary_reviewer" && !strings.EqualFold(role, "single_model_policy") {
+			return true
+		}
+	}
+	return false
 }
 
 func reviewFindingShouldBeRepairPlanBlocker(run ReviewRun, finding ReviewFinding) bool {
