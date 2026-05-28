@@ -113,6 +113,8 @@ type AcceptanceContract struct {
 	ID                   string    `json:"id,omitempty"`
 	SourcePrompt         string    `json:"source_prompt,omitempty"`
 	Mode                 string    `json:"mode,omitempty"`
+	RequestClass         string    `json:"request_class,omitempty"`
+	RequestClassReason   string    `json:"request_class_reason,omitempty"`
 	ExpectedBehaviors    []string  `json:"expected_behaviors,omitempty"`
 	NonGoals             []string  `json:"non_goals,omitempty"`
 	ChangedSurfaces      []string  `json:"changed_surfaces,omitempty"`
@@ -262,6 +264,7 @@ func buildAcceptanceContract(userText string, intent TurnIntent, readOnlyAnalysi
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
+	contract.RequestClass, contract.RequestClassReason = classifyAcceptanceContractRequestClass(base, intent, readOnlyAnalysis, explicitEditRequest)
 	if contract.SourcePrompt != "" {
 		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Satisfy the latest user request: "+compactPromptSection(contract.SourcePrompt, 220))
 	}
@@ -286,6 +289,16 @@ func buildAcceptanceContract(userText string, intent TurnIntent, readOnlyAnalysi
 			"After edits, perform a second-pass regression review of touched code, call sites, contracts, error paths, and stale docs.",
 			"Run the most relevant available validation or report why validation could not run.",
 		)
+	}
+	switch contract.RequestClass {
+	case reviewRequestClassReviewThenModify:
+		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Review findings must be produced before any repair plan or patch is treated as complete.")
+	case reviewRequestClassModifyThenReview:
+		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Code-affecting changes require a post-change review or explicit single-model second-pass state before completion.")
+	case reviewRequestClassDocumentArtifact:
+		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Use artifact-quality checks as the primary completion gate for generated document/report artifacts.")
+	case reviewRequestClassReviewOnly:
+		contract.NonGoals = append(contract.NonGoals, "Do not edit files for this review-only request.")
 	}
 	if len(contract.RequiredArtifacts) > 0 {
 		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Create or update the requested artifact path(s): "+strings.Join(contract.RequiredArtifacts, ", "))
@@ -415,6 +428,13 @@ func (c AcceptanceContract) RenderPromptSection() string {
 	if c.Mode != "" {
 		lines = append(lines, "- Mode: "+c.Mode)
 	}
+	if c.RequestClass != "" {
+		line := "- Request class: " + c.RequestClass
+		if c.RequestClassReason != "" {
+			line += " (" + c.RequestClassReason + ")"
+		}
+		lines = append(lines, line)
+	}
 	if len(c.ExpectedBehaviors) > 0 {
 		lines = append(lines, "- Expected: "+strings.Join(c.ExpectedBehaviors, " | "))
 	}
@@ -540,6 +560,11 @@ func (c *AcceptanceContract) Normalize() {
 	c.ID = strings.TrimSpace(c.ID)
 	c.SourcePrompt = strings.Join(strings.Fields(strings.TrimSpace(c.SourcePrompt)), " ")
 	c.Mode = strings.TrimSpace(strings.ToLower(c.Mode))
+	c.RequestClass = normalizeReviewRequestClass(c.RequestClass)
+	if c.RequestClass == reviewRequestClassGeneral {
+		c.RequestClass = ""
+	}
+	c.RequestClassReason = strings.TrimSpace(c.RequestClassReason)
 	c.ExpectedBehaviors = normalizeTaskStateList(c.ExpectedBehaviors, 8)
 	c.NonGoals = normalizeTaskStateList(c.NonGoals, 8)
 	c.ChangedSurfaces = normalizeTaskStateList(c.ChangedSurfaces, 16)
@@ -1113,6 +1138,9 @@ func (a *Agent) finalizePatchTransactionOnReturn() {
 func (a *Agent) runPreFinalCodingHarnesses(ctx context.Context, reply string, attemptedEditTool bool, unresolvedVerification bool) (bool, string) {
 	_ = ctx
 	if a == nil || a.Session == nil {
+		return true, ""
+	}
+	if a.ReviewerClient != nil {
 		return true, ""
 	}
 	report := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
@@ -2055,6 +2083,10 @@ func replyMentionsVerificationNotRun(reply string) bool {
 
 func replyMentionsVerificationBlocker(reply string) bool {
 	lower := strings.ToLower(strings.TrimSpace(reply))
+	if containsAny(lower, "no known remaining blocker", "no remaining blocker", "no remaining blockers", "no known blockers") &&
+		!containsAny(lower, "verification failed", "tests failed", "build failed", "검증 실패", "테스트 실패", "빌드 실패") {
+		return false
+	}
 	return containsAny(lower,
 		"verification failed",
 		"verification is still failing",

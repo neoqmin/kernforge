@@ -46,6 +46,7 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 	if flow == "" {
 		flow = reviewFlowForTargetMode(target, mode)
 	}
+	requestClass, requestClassReason := classifyReviewRequestClass(rt, root, opts, target, mode, discovery)
 	packs := reviewPolicyPacksFor(target, mode, append([]string(nil), opts.Paths...), request)
 	packs = analysisUniqueStrings(append(packs, reviewPolicyPacksForScopeDiscovery(discovery, domainSignals)...))
 	confidence := 0.78
@@ -63,19 +64,21 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		warnings = append(warnings, "no strong target signal found; defaulted to change review")
 	}
 	return ReviewRequestAnalysis{
-		OriginalRequest:   request,
-		InferredTarget:    target,
-		InferredMode:      mode,
-		SelectedFlow:      flow,
-		Confidence:        confidence,
-		EvidenceNeeds:     reviewEvidenceNeeds(target, mode),
-		PolicyPacks:       packs,
-		CandidateFlows:    reviewCandidateFlows(target, mode),
-		DomainSignals:     domainSignals,
-		RiskSignals:       riskSignals,
-		ScopeDiscovery:    discovery,
-		Reason:            reason,
-		AmbiguityWarnings: warnings,
+		OriginalRequest:    request,
+		InferredTarget:     target,
+		InferredMode:       mode,
+		SelectedFlow:       flow,
+		RequestClass:       requestClass,
+		RequestClassReason: requestClassReason,
+		Confidence:         confidence,
+		EvidenceNeeds:      reviewEvidenceNeeds(target, mode),
+		PolicyPacks:        packs,
+		CandidateFlows:     reviewCandidateFlows(target, mode),
+		DomainSignals:      domainSignals,
+		RiskSignals:        riskSignals,
+		ScopeDiscovery:     discovery,
+		Reason:             reason,
+		AmbiguityWarnings:  warnings,
 	}
 }
 

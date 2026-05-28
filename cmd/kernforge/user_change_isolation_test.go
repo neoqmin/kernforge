@@ -125,7 +125,7 @@ func TestAgentUserChangeIsolationPreservesExternalEdit(t *testing.T) {
 				"path":    "main.go",
 				"content": "package main\n\n// agent edit\n",
 			}),
-			{Message: Message{Role: "assistant", Text: "I stopped because main.go changed outside the agent."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: stopped because main.go changed outside the agent. Validation: verification was not run. Remaining risk: user edit was preserved and the agent change is incomplete."}},
 		},
 		beforeReturn: []func(){
 			func() {

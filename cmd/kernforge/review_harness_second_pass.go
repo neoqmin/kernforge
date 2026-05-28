@@ -31,7 +31,7 @@ type SecondPassReviewCacheEntry struct {
 	ReviewedPaths []string  `json:"reviewed_paths,omitempty"`
 }
 
-func shouldRunSingleModelSecondPass(run *ReviewRun, mainRun ReviewReviewerRun, mainRaw string) bool {
+func shouldRunSingleModelSecondPass(rt *runtimeState, run *ReviewRun, mainRun ReviewReviewerRun, mainRaw string) bool {
 	if run == nil {
 		return false
 	}
@@ -47,20 +47,38 @@ func shouldRunSingleModelSecondPass(run *ReviewRun, mainRun ReviewReviewerRun, m
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return false
+	}
+	if reviewRunShouldUseConfiguredReviewerAsPrimary(rt, *run, false) {
+		return false
+	}
+	if reviewRuntimeUsesReviewerOnlyPrimary(rt) {
+		return false
+	}
+	class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass))
+	switch class {
+	case reviewRequestClassReviewOnly,
+		reviewRequestClassDocumentArtifact,
+		reviewRequestClassVerificationOnly,
+		reviewRequestClassValidationOnly:
+		return false
+	case reviewRequestClassReviewThenModify:
+		return strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change")
+	case reviewRequestClassModifyThenReview:
 		return true
 	}
-	if reviewRunHasChangeEvidence(*run) {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change") {
 		return true
 	}
-	if strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetChange) ||
-		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetFinal) ||
-		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetGoal) {
+	if reviewRunHasChangeEvidence(*run) &&
+		(strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetFinal) ||
+			strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetGoal)) {
 		return true
 	}
 	return false
 }
 
-func singleModelSecondPassSkipReason(run ReviewRun, mainRun ReviewReviewerRun, mainRaw string) string {
+func singleModelSecondPassSkipReason(rt *runtimeState, run ReviewRun, mainRun ReviewReviewerRun, mainRaw string) string {
 	if !run.SingleModelPolicy.Enabled {
 		return "single-model review policy is not active"
 	}
@@ -73,17 +91,48 @@ func singleModelSecondPassSkipReason(run ReviewRun, mainRun ReviewReviewerRun, m
 		return "first-pass review did not complete with usable quality"
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return "pre-write first-pass review is the write gate; second pass is deferred until code is applied"
+	}
+	if reviewRunShouldUseConfiguredReviewerAsPrimary(rt, run, false) {
+		return "configured reviewer primary route already produced the dedicated post-change review pass"
+	}
+	if reviewRuntimeUsesReviewerOnlyPrimary(rt) {
+		return "reviewer-only primary route already produced the dedicated review pass"
+	}
+	class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass))
+	switch class {
+	case reviewRequestClassReviewOnly:
+		return "review-only request is read-only and does not require a code-behavior second pass"
+	case reviewRequestClassDocumentArtifact:
+		return "document-artifact request uses artifact-quality gates instead of code-behavior second pass"
+	case reviewRequestClassVerificationOnly, reviewRequestClassValidationOnly:
+		return "verification-only lifecycle does not require a code-behavior second pass"
+	case reviewRequestClassReviewThenModify:
+		if !strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change") {
+			return "review-before-repair phase has no applied code change for second pass"
+		}
+	case reviewRequestClassModifyThenReview:
 		return ""
 	}
-	if reviewRunHasChangeEvidence(run) {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change") {
 		return ""
 	}
-	if strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetChange) ||
-		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetFinal) ||
-		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetGoal) {
+	if reviewRunHasChangeEvidence(run) &&
+		(strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetFinal) ||
+			strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetGoal)) {
 		return ""
 	}
 	return "review target did not require enforced single-model second pass"
+}
+
+func reviewRuntimeUsesReviewerOnlyPrimary(rt *runtimeState) bool {
+	if rt == nil || rt.agent == nil {
+		return false
+	}
+	if rt.agent.Client != nil {
+		return false
+	}
+	return rt.agent.ReviewerClient != nil && strings.TrimSpace(rt.agent.ReviewerModel) != ""
 }
 
 func prepareSingleModelSecondPassPlan(run *ReviewRun, label string) {

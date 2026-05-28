@@ -14,6 +14,18 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	fmt.Fprintf(&b, "- Target: `%s`\n", run.Target)
 	fmt.Fprintf(&b, "- Mode: `%s`\n", run.Mode)
 	fmt.Fprintf(&b, "- Flow: `%s`\n", run.Flow)
+	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
+		fmt.Fprintf(&b, "- Request class: `%s`\n", class)
+	}
+	if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
+		fmt.Fprintf(&b, "- Request class reason: %s\n", run.RequestAnalysis.RequestClassReason)
+	}
+	if run.Lifecycle != nil {
+		fmt.Fprintf(&b, "- Lifecycle phase: `%s`\n", run.Lifecycle.Phase)
+		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
+			fmt.Fprintf(&b, "- Route mode: `%s`\n", run.Lifecycle.RouteMode)
+		}
+	}
 	fmt.Fprintf(&b, "- Verdict: `%s`\n", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
 	if strings.TrimSpace(run.Gate.Action) != "" {
 		fmt.Fprintf(&b, "- Gate action: `%s`\n", run.Gate.Action)
@@ -71,6 +83,42 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		if strings.TrimSpace(second.SkippedReason) != "" {
 			fmt.Fprintf(&b, "- skipped_reason: %s\n", second.SkippedReason)
+		}
+		b.WriteString("\n")
+	}
+	if run.Lifecycle != nil {
+		b.WriteString("## Request Lifecycle\n\n")
+		fmt.Fprintf(&b, "- request_class: `%s`\n", run.Lifecycle.RequestClass)
+		fmt.Fprintf(&b, "- phase: `%s`\n", run.Lifecycle.Phase)
+		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
+			fmt.Fprintf(&b, "- route_mode: `%s`\n", run.Lifecycle.RouteMode)
+		}
+		if strings.TrimSpace(run.Lifecycle.Reason) != "" {
+			fmt.Fprintf(&b, "- reason: %s\n", run.Lifecycle.Reason)
+		}
+		if strings.TrimSpace(run.Lifecycle.ReviewGateStatus) != "" {
+			fmt.Fprintf(&b, "- review_gate: `%s`\n", run.Lifecycle.ReviewGateStatus)
+		}
+		if strings.TrimSpace(run.Lifecycle.RepairGateStatus) != "" {
+			fmt.Fprintf(&b, "- repair_gate: `%s`\n", run.Lifecycle.RepairGateStatus)
+		}
+		if strings.TrimSpace(run.Lifecycle.DocumentGateStatus) != "" {
+			fmt.Fprintf(&b, "- document_gate: `%s`\n", run.Lifecycle.DocumentGateStatus)
+		}
+		if strings.TrimSpace(run.Lifecycle.VerificationGateStatus) != "" {
+			fmt.Fprintf(&b, "- verification_gate: `%s`\n", run.Lifecycle.VerificationGateStatus)
+		}
+		if strings.TrimSpace(run.Lifecycle.SecondPassStatus) != "" {
+			fmt.Fprintf(&b, "- second_pass: %s\n", run.Lifecycle.SecondPassStatus)
+		}
+		if strings.TrimSpace(run.Lifecycle.CrossReviewTriage) != "" {
+			fmt.Fprintf(&b, "- cross_review_triage: %s\n", run.Lifecycle.CrossReviewTriage)
+		}
+		if len(run.Lifecycle.RemainingObligations) > 0 {
+			fmt.Fprintf(&b, "- remaining_obligations: `%s`\n", strings.Join(run.Lifecycle.RemainingObligations, "`, `"))
+		}
+		if strings.TrimSpace(run.Lifecycle.NextRecommendedCommand) != "" {
+			fmt.Fprintf(&b, "- next_recommended_command: `%s`\n", run.Lifecycle.NextRecommendedCommand)
 		}
 		b.WriteString("\n")
 	}
@@ -431,6 +479,22 @@ func renderReviewCLIResult(cfg Config, run ReviewRun) string {
 	fmt.Fprintf(&b, "%s %s: %s\n", reviewRunLocalizedText(cfg, run, "Review", "리뷰"), run.ID, run.Gate.Verdict)
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), run.Target)
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Mode", "모드"), run.Mode)
+	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
+		fmt.Fprintf(&b, "- %s: %s", reviewRunLocalizedText(cfg, run, "Request class", "요청 class"), class)
+		if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
+			fmt.Fprintf(&b, " (%s)", compactPromptSection(run.RequestAnalysis.RequestClassReason, 120))
+		}
+		b.WriteString("\n")
+	}
+	if run.Lifecycle != nil {
+		fmt.Fprintf(&b, "- %s: phase=%s route=%s review_gate=%s repair_gate=%s document_gate=%s\n",
+			reviewRunLocalizedText(cfg, run, "Lifecycle", "라이프사이클"),
+			valueOrDefault(run.Lifecycle.Phase, "unknown"),
+			valueOrDefault(run.Lifecycle.RouteMode, "unknown"),
+			valueOrDefault(run.Lifecycle.ReviewGateStatus, "unknown"),
+			valueOrDefault(run.Lifecycle.RepairGateStatus, "unknown"),
+			valueOrDefault(run.Lifecycle.DocumentGateStatus, "unknown"))
+	}
 	if strings.TrimSpace(run.Gate.Action) != "" {
 		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "게이트 액션"), run.Gate.Action)
 	}

@@ -117,6 +117,7 @@ type ReviewRun struct {
 	Target                string                       `json:"target,omitempty"`
 	Mode                  string                       `json:"mode,omitempty"`
 	Flow                  string                       `json:"flow,omitempty"`
+	RequestClass          string                       `json:"request_class,omitempty"`
 	RequestAnalysis       ReviewRequestAnalysis        `json:"request_analysis,omitempty"`
 	AutoTriggered         bool                         `json:"auto_triggered,omitempty"`
 	Status                string                       `json:"status,omitempty"`
@@ -157,6 +158,7 @@ type ReviewRun struct {
 	Waivers               []ReviewWaiver               `json:"waivers,omitempty"`
 	RepairPlan            ReviewRepairPlan             `json:"repair_plan,omitempty"`
 	RuntimeGateLedger     RuntimeGateLedger            `json:"runtime_gate_ledger,omitempty"`
+	Lifecycle             *ReviewRequestLifecycle      `json:"lifecycle,omitempty"`
 	DecisionObservability *ReviewDecisionObservability `json:"decision_observability,omitempty"`
 	NextCommandResults    []ReviewNextCommandRun       `json:"next_command_results,omitempty"`
 	ArtifactRefs          []string                     `json:"artifact_refs,omitempty"`
@@ -164,19 +166,21 @@ type ReviewRun struct {
 }
 
 type ReviewRequestAnalysis struct {
-	OriginalRequest   string               `json:"original_request,omitempty"`
-	InferredTarget    string               `json:"inferred_target,omitempty"`
-	InferredMode      string               `json:"inferred_mode,omitempty"`
-	SelectedFlow      string               `json:"selected_flow,omitempty"`
-	Confidence        float64              `json:"confidence,omitempty"`
-	EvidenceNeeds     []string             `json:"evidence_needs,omitempty"`
-	PolicyPacks       []string             `json:"policy_packs,omitempty"`
-	CandidateFlows    []string             `json:"candidate_flows,omitempty"`
-	DomainSignals     []ReviewDomainSignal `json:"domain_signals,omitempty"`
-	RiskSignals       []ReviewRiskSignal   `json:"risk_signals,omitempty"`
-	ScopeDiscovery    ReviewScopeDiscovery `json:"scope_discovery,omitempty"`
-	Reason            string               `json:"reason,omitempty"`
-	AmbiguityWarnings []string             `json:"ambiguity_warnings,omitempty"`
+	OriginalRequest    string               `json:"original_request,omitempty"`
+	InferredTarget     string               `json:"inferred_target,omitempty"`
+	InferredMode       string               `json:"inferred_mode,omitempty"`
+	SelectedFlow       string               `json:"selected_flow,omitempty"`
+	RequestClass       string               `json:"request_class,omitempty"`
+	RequestClassReason string               `json:"request_class_reason,omitempty"`
+	Confidence         float64              `json:"confidence,omitempty"`
+	EvidenceNeeds      []string             `json:"evidence_needs,omitempty"`
+	PolicyPacks        []string             `json:"policy_packs,omitempty"`
+	CandidateFlows     []string             `json:"candidate_flows,omitempty"`
+	DomainSignals      []ReviewDomainSignal `json:"domain_signals,omitempty"`
+	RiskSignals        []ReviewRiskSignal   `json:"risk_signals,omitempty"`
+	ScopeDiscovery     ReviewScopeDiscovery `json:"scope_discovery,omitempty"`
+	Reason             string               `json:"reason,omitempty"`
+	AmbiguityWarnings  []string             `json:"ambiguity_warnings,omitempty"`
 }
 
 type ReviewScopeDiscovery struct {
@@ -662,6 +666,7 @@ func (s *Session) recordReviewRun(run ReviewRun) {
 			"target":         run.Target,
 			"mode":           run.Mode,
 			"flow":           run.Flow,
+			"request_class":  run.RequestClass,
 			"verdict":        run.Gate.Verdict,
 			"machine_status": run.MachineStatus,
 			"blockers":       fmt.Sprintf("%d", len(run.Gate.BlockingFindings)),
@@ -770,6 +775,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Target = analysis.InferredTarget
 	run.Mode = analysis.InferredMode
 	run.Flow = analysis.SelectedFlow
+	run.RequestClass = analysis.RequestClass
 	run.RequestAnalysis = analysis
 	run.ImplementationReply = strings.TrimSpace(opts.ImplementationReply)
 	run.EditProposals = normalizeEditProposals(opts.EditProposals)
@@ -838,6 +844,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	}
 	run.finalizeStatus(false)
 	finalizeReviewRunProtocol(root, rt, &run)
+	run.Lifecycle = buildReviewRequestLifecycle(&run, rt.session)
 	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
 	run.DecisionObservability = buildReviewDecisionObservability(&run, &run.RuntimeGateLedger, nil)
 	if run.SingleModelSecondPass != nil {

@@ -12,11 +12,18 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 	request := strings.TrimSpace(stringValue(args, "request"))
 	autoReview := strings.ToLower(strings.TrimSpace(stringValue(args, "auto_review")))
 	if autoReview == "off" {
+		requestClass, requestClassReason := classifyAcceptanceContractRequestClass(request, classifyTurnIntent(request), prefersReadOnlyAnalysisIntent(request) || looksLikeReviewInspectionOnlyRequest(request), looksLikeExplicitEditIntent(request))
 		payload := map[string]any{
 			"summary":        "MCP review skipped because auto_review=off.",
 			"machine_status": reviewMachineStatusWarning,
 			"status_code":    0,
 			"retryable":      false,
+			"request_class":  requestClass,
+			"lifecycle": ReviewRequestLifecycle{
+				RequestClass: requestClass,
+				Phase:        "skipped",
+				Reason:       requestClassReason,
+			},
 		}
 		data, _ := json.MarshalIndent(payload, "", "  ")
 		return "KernForge review\n\n```json\n" + string(data) + "\n```", nil
