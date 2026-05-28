@@ -944,6 +944,8 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"status_code":              run.ExitCode,
 		"retryable":                run.ExitCode >= 2 && run.ExitCode <= 5,
 		"request_analysis":         run.RequestAnalysis,
+		"request_class":            firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass),
+		"lifecycle":                run.Lifecycle,
 		"artifact_refs":            run.ArtifactRefs,
 		"result":                   run.Result,
 		"model_plan":               run.ModelPlan,

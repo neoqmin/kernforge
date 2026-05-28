@@ -48,6 +48,7 @@ func TestFailureRepairAttemptRecordsFailingStep(t *testing.T) {
 
 func TestFailureRepairPromptIsAddedAfterVerificationFailure(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "go test ./... is still failing because the test fixture is broken.", "verification failure remains.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -55,7 +56,7 @@ func TestFailureRepairPromptIsAddedAfterVerificationFailure(t *testing.T) {
 				"content": "package main\n",
 			}),
 			{Message: Message{Role: "assistant", Text: "I inspected the failure and cannot fix it yet."}},
-			{Message: Message{Role: "assistant", Text: "Verification is still failing because the test fixture is broken."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")

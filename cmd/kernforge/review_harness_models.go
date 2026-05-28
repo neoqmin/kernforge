@@ -321,6 +321,20 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	mainClient, mainModel, mainLabel, mainErr := reviewMainRoleClient(rt)
 	mainLabel = reviewModelDisplayLabel(rt.cfg, mainClient, mainModel, mainLabel, reviewRoleReasoningEffortForRun(rt.cfg, mainRole, *run))
 	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles, mainClient, mainModel)
+	if reviewRunShouldUseConfiguredReviewerAsPrimary(rt, *run, hasCrossReviewer) {
+		if hasCrossReviewer {
+			mainClient = crossClient
+			mainModel = crossModel
+			mainLabel = crossLabel
+		} else if rt != nil && rt.agent != nil {
+			mainClient = rt.agent.ReviewerClient
+			mainModel = rt.agent.ReviewerModel
+			mainLabel = formatProviderModelEffortLabel(rt.cfg.Provider, rt.agent.ReviewerModel, rt.cfg.ReasoningEffort)
+		}
+		mainErr = nil
+		mainRole = "primary_reviewer"
+		hasCrossReviewer = false
+	}
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(*run, hasCrossReviewer)
 	phaseTotal := 1
 	if hasCrossReviewer || run.SingleModelPolicy.Enabled {
@@ -353,7 +367,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 			run.ModelPlan.UserGuidance = []string{}
 		}
 		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "Single-model review mode is active; no independent cross reviewer is configured for this run.")
-		if shouldRunSingleModelSecondPass(run, mainRun, mainRaw) {
+		if shouldRunSingleModelSecondPass(rt, run, mainRun, mainRaw) {
 			secondPassFingerprint := singleModelSecondPassFingerprint(*run, mainRaw, findings)
 			run.SingleModelSecondPass = &SingleModelSecondPassReview{
 				Enabled:       true,
@@ -393,12 +407,25 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 				Status:        "skipped",
 				Model:         mainLabel,
 				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
-				SkippedReason: singleModelSecondPassSkipReason(*run, mainRun, mainRaw),
+				SkippedReason: singleModelSecondPassSkipReason(rt, *run, mainRun, mainRaw),
 			}
 		}
 	}
 	assignReviewFindingIDs(findings)
 	return findings, reviewerRuns
+}
+
+func reviewRunShouldUseConfiguredReviewerAsPrimary(rt *runtimeState, run ReviewRun, hasCrossReviewer bool) bool {
+	if !run.AutoTriggered || !strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change") {
+		return false
+	}
+	if hasCrossReviewer {
+		return true
+	}
+	return rt != nil &&
+		rt.agent != nil &&
+		rt.agent.ReviewerClient != nil &&
+		strings.TrimSpace(rt.agent.ReviewerModel) != ""
 }
 
 type reviewModelRunPeerContext struct {
@@ -2677,6 +2704,9 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	fmt.Fprintf(&b, "Target: %s\n", run.Target)
 	fmt.Fprintf(&b, "Mode: %s\n", run.Mode)
 	fmt.Fprintf(&b, "Flow: %s\n", run.Flow)
+	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
+		fmt.Fprintf(&b, "Request class: %s\n", class)
+	}
 	appendReviewLensPromptSection(&b, run.ModelPlan)
 	if strings.TrimSpace(run.Objective) != "" {
 		fmt.Fprintf(&b, "\nObjective:\n%s\n", run.Objective)
@@ -2706,6 +2736,16 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	b.WriteString("- If evidence is insufficient, emit insufficient_evidence or evidence_gap findings.\n")
 	b.WriteString("- Do not invent files, tests, or code not present in the evidence.\n")
 	b.WriteString("- Do not use ellipses or omission markers in summary, title, evidence, impact, required_fix, or test_recommendation. This includes three consecutive periods, Unicode ellipsis, truncation labels, and omitted-content labels. Every field must be a complete sentence or phrase.\n")
+	switch normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)) {
+	case reviewRequestClassReviewOnly:
+		b.WriteString("- This is review_only: report findings first and do not ask the harness to edit files unless the user explicitly asks for repair later.\n")
+	case reviewRequestClassReviewThenModify:
+		b.WriteString("- This is review_then_modify: produce review findings that can become repair targets; do not treat a patch as reviewed before findings are recorded.\n")
+	case reviewRequestClassModifyThenReview:
+		b.WriteString("- This is modify_then_review: verify the implemented/proposed change and call out missing post-change validation or residual risk.\n")
+	case reviewRequestClassDocumentArtifact:
+		b.WriteString("- This is document_artifact: judge artifact quality and unsupported claims; do not require irrelevant code-review or shell-verification loops for document-only output.\n")
+	}
 	if run.Target == reviewTargetSourceAnalysis {
 		b.WriteString("- This is a source analysis review, not a proposed code-change review. Findings should describe risks in the supplied source evidence, not missing implementation work unless the user explicitly asked for a fix.\n")
 	}

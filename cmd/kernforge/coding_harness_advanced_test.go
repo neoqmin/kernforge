@@ -851,7 +851,7 @@ func TestScenarioReplayBlocksFixedClaimWithoutScenarioStatus(t *testing.T) {
 		t.Fatalf("expected scenario replay blocker, got %q", report.BlockingFeedback())
 	}
 
-	report = agent.buildCodingHarnessReport("Fixed the party invite/kick limit issue. Scenario replay not run.", false, false)
+	report = agent.buildCodingHarnessReport("Changed files: party.go. Self-review: fixed the party invite/kick limit issue. Validation: scenario replay not run. Remaining risk: no scenario replay evidence was recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected explicit scenario replay not-run status to pass, got %q", report.BlockingFeedback())
 	}

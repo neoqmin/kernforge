@@ -3640,6 +3640,26 @@ P2:
      4. 운영 전략은 review/runtime-gate, agent/edit-loop, shell/verification, project-analysis cluster를 `-run`으로 나눠 보고, full `go test ./cmd/kernforge -count=1 -timeout 15m`는 마지막 확인으로 사용한다.
    - 회귀 테스트: `TestRuntimeGateStatusShowsReviewDecisionObservability`, `TestCrossReviewFindingCreatesTriageLedgerEntry`, `TestCrossReviewTriageMarkdownKeepsCodeBlockersPrimary`, `TestSkippedSingleModelSecondPassExplainsReason`, `TestSingleModelSecondPassArtifactsExposeCacheAndRefs`, `TestReviewMCPResponseExposesObservabilityFields`, `TestPreFinalHarnessAnswerOnlyRevisionDisablesTools`, `TestFinalAnswerCorrectionVisibilityClassifiesReviewOnlyFormatting`, generated document artifact skip tests, pre-write/post-change review behavior tests.
 
+95. Request-class-aware Codex App-grade lifecycle
+   - 발견: 92-94번에서 Codex-grade prompt, runtime enforcement, UX/Ops 관측성은 강화됐지만, 실제 사용자는 "단순 리뷰", "문서 작성", "수정된 코드 리뷰 후 고치기", "수정 후 다시 리뷰", "검증만"처럼 다른 request class를 섞어 요청한다. class가 runtime 구조에 남지 않으면 single-model second-pass, cross-review triage, document artifact skip rule, final-answer completeness gate가 왜 선택됐는지 사용자가 status/MCP/artifact에서 바로 확인하기 어렵다.
+   - 원칙:
+     1. 요청 class는 prompt 예절이 아니라 runtime state다.
+     2. single-model mode는 degraded fallback이 아니라 classify -> inspect context -> review/implementation -> second-pass/self-review -> verification/disclosure -> final answer의 명시 lifecycle이다.
+     3. cross-model mode는 primary 구현 책임과 independent reviewer feedback을 분리하고, reviewer finding은 `cross_review_triage`에서 `accepted_fixed`, `accepted_deferred`, `rejected_with_reason`, `needs_user_decision` 중 하나로 닫아야 한다.
+     4. document artifact 요청은 code review나 shell verification loop로 과차단하지 않고 artifact-quality gate를 우선한다.
+   - 구현:
+     1. `ReviewRequestClass`와 `ReviewRequestLifecycle`을 추가해 `review_only`, `document_artifact`, `review_then_modify`, `modify_then_review`, `verification_only`, `validation_only`, `general`을 분류하고 request class reason, phase, route mode, review/repair/document/verification gate, second-pass state, cross-review triage count, remaining obligation, next command를 한 구조로 묶었다.
+     2. `ReviewRun`, `ReviewRequestAnalysis`, `AcceptanceContract`, `RuntimeGateLedger`, `ReviewDecisionObservability`, review markdown/CLI render, natural review reply, MCP `kernforge_review` response에 additive/omitempty-compatible field로 request class와 lifecycle을 노출했다. MCP 응답에는 raw model output을 dump하지 않는다.
+     3. simple review 요청은 read-only 기본값과 findings-first final answer를 유지하고, final-answer completeness gate가 no-edit disclosure를 계속 요구한다.
+     4. review-then-modify 요청은 review evidence before repair, finding-linked repair plan, scoped patch, post-change review 또는 single-model second-pass, optional cross-review triage, focused validation, residual-risk disclosure 순서를 lifecycle obligation으로 남긴다.
+     5. document artifact 요청은 artifact exists, requested topic coverage, placeholder/TODO-only absence, unsupported verification claim absence를 primary gate로 사용한다. 결정적 artifact quality가 통과한 generated document-only flow는 기존 skip behavior를 유지해 stale code-review/pending shell verification으로 막지 않는다.
+     6. `/status`, `/hooks`, latest review artifact, runtime gate summary, MCP response는 compact하게 request class, lifecycle phase, route mode, gate statuses, second-pass state, triage count, remaining obligations, next recommended command를 보여준다.
+   - 알려진 한계:
+     1. classifier는 휴리스틱과 acceptance contract를 함께 쓰므로 모호한 자연어는 `general` 또는 conservative lifecycle로 남을 수 있다. 이 경우 status의 reason과 next command가 사용자의 명시 수정/검증 지시로 복구되는 경로를 제공해야 한다.
+     2. second-pass skipped state는 approval이 아니라 evidence gap disclosure다. 독립 cross-review route가 없는 환경에서 완전한 독립 승인을 제공하지 않는다.
+     3. document artifact skip rule은 generated-document-only flow에 한정된다. 코드 변경과 문서 생성이 섞이면 code review/validation obligation이 다시 열린다.
+   - 회귀 테스트: request class classifier, MCP response parity, review-only read-only/finding-first reply, document artifact accepted/failing gate, review-then-modify review-before-repair evidence, single-model second-pass state, cross-model triage obligation, `needs_user_decision` continuation guidance, final-answer completeness disclosure, 기존 pre-write/post-change review gate 테스트.
+
 남은 항목:
 
 1. 수동 smoke 검증

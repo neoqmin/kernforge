@@ -39,6 +39,10 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	return resp, nil
 }
 
+func testModificationFinalAnswer(path string, validation string, risk string) string {
+	return fmt.Sprintf("Changed files: %s. Self-review: no code blocker found. Validation: %s. Remaining risk: %s", path, validation, risk)
+}
+
 func TestAgentStopHookBlockContinuesSameTurn(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
@@ -1500,11 +1504,12 @@ func focusedPreFixRepairRun() *ReviewRun {
 
 func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "go test ./... failed because tests are already broken upstream.", "verification failure remains.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
 			{Message: Message{Role: "assistant", Text: "I made the change."}},
-			{Message: Message{Role: "assistant", Text: "Verification is still failing because the tests are already broken upstream."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -1535,7 +1540,7 @@ func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Verification is still failing because the tests are already broken upstream." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if len(provider.requests) != 3 {
@@ -2004,10 +2009,11 @@ func TestAgentOutOfScopeFinalDisclosureHandlesEmptyReply(t *testing.T) {
 
 func TestAgentAsksBeforeAutomaticVerificationAndSkipsOnNo(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "verification was not run because automatic verification was declined.", "verification remains pending.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented without running verification."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -2046,7 +2052,7 @@ func TestAgentAsksBeforeAutomaticVerificationAndSkipsOnNo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Implemented without running verification." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if promptCount != 1 {
@@ -2283,10 +2289,11 @@ func TestAgentBlocksAllToolsAfterSkippedAutomaticVerification(t *testing.T) {
 
 func TestAgentRecordsAutomaticVerificationPromptErrorAsSkipped(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "verification was not run because the verification prompt closed.", "verification remains pending.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented without verification."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -2317,7 +2324,7 @@ func TestAgentRecordsAutomaticVerificationPromptErrorAsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Implemented without verification." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if verifyCount != 0 {
@@ -2333,10 +2340,11 @@ func TestAgentRecordsAutomaticVerificationPromptErrorAsSkipped(t *testing.T) {
 
 func TestAgentRunsAutomaticVerificationAfterConfirmation(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "go test ./... passed.", "no known remaining blocker.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented and verified."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -2375,7 +2383,7 @@ func TestAgentRunsAutomaticVerificationAfterConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Implemented and verified." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if promptCount != 1 || verifyCount != 1 {
@@ -2388,11 +2396,12 @@ func TestAgentRunsAutomaticVerificationAfterConfirmation(t *testing.T) {
 
 func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "go test ./... passed after the repair retry.", "no known remaining blocker.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented the fix and verification now passes."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	verifyCount := 0
@@ -2435,7 +2444,7 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Implemented the fix and verification now passes." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if verifyCount != 2 {
@@ -3305,10 +3314,11 @@ func TestAgentSkipsAutomaticVerificationWhenDisabled(t *testing.T) {
 
 func TestAgentPromptsToDisableAutoVerifyOnFirstMissingToolFailure(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "verification was disabled because the local build toolchain is unavailable.", "verification remains pending.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented the change, but verification was disabled because the local build toolchain is unavailable."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	verifyCount := 0
@@ -3368,11 +3378,12 @@ func TestAgentPromptsToDisableAutoVerifyOnFirstMissingToolFailure(t *testing.T) 
 
 func TestAgentNudgesForFinalAnswerAfterMultipleSuccessfulEditTurns(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "verification was not run.", "no known remaining blocker.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented the requested change."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -3391,7 +3402,7 @@ func TestAgentNudgesForFinalAnswerAfterMultipleSuccessfulEditTurns(t *testing.T)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Implemented the requested change." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if len(provider.requests) != 3 {
@@ -3409,12 +3420,13 @@ func TestAgentNudgesForFinalAnswerAfterMultipleSuccessfulEditTurns(t *testing.T)
 
 func TestAgentBlocksFurtherEditToolLoopAfterPostEditNudge(t *testing.T) {
 	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "verification was not run.", "no known remaining blocker.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}\n"}),
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}\n// extra\n"}),
-			{Message: Message{Role: "assistant", Text: "Implemented the requested change."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -3433,7 +3445,7 @@ func TestAgentBlocksFurtherEditToolLoopAfterPostEditNudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Implemented the requested change." {
+	if reply != finalReply {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if len(provider.requests) != 4 {
@@ -3573,6 +3585,7 @@ func TestAgentPromotesFinalLookingToolPreambleAfterCodeEdit(t *testing.T) {
 	root := t.TempDir()
 	readTool := &staticTool{name: "read_file", output: "read should not run"}
 	readArgs, _ := json.Marshal(map[string]any{"path": "main.txt"})
+	finalReply := "Final Answer\n\nThe implementation is complete and ready for review. " + testModificationFinalAnswer("main.txt", "verification was not run.", "no successful verification evidence was recorded.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -3582,7 +3595,7 @@ func TestAgentPromotesFinalLookingToolPreambleAfterCodeEdit(t *testing.T) {
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Final Answer\n\nThe implementation is complete and ready for review.",
+					Text: finalReply,
 					ToolCalls: []ToolCall{{
 						ID:        "call-read-after-final-looking-code-edit",
 						Name:      "read_file",
@@ -3630,7 +3643,7 @@ func TestAgentPromotesFinalLookingToolPreambleAfterCodeEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Final Answer\n\nThe implementation is complete and ready for review." {
+	if reply != finalReply {
 		t.Fatalf("expected final-looking preamble to become final answer, got %q", reply)
 	}
 	if readTool.calls != 0 {
@@ -3706,6 +3719,7 @@ func TestAgentPromotesFinalLookingToolPreambleForReadOnlyAnalysis(t *testing.T) 
 func TestAgentDoesNotPromoteFinalLookingVerificationToolBeforeVerification(t *testing.T) {
 	root := t.TempDir()
 	shellTool := &staticTool{name: "run_shell", output: "tests passed"}
+	finalReply := testModificationFinalAnswer("main.txt", "go test ./cmd/kernforge passed.", "no known remaining blocker.")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -3727,7 +3741,7 @@ func TestAgentDoesNotPromoteFinalLookingVerificationToolBeforeVerification(t *te
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Verification ran and the change is complete.",
+					Text: finalReply,
 				},
 				StopReason: "stop",
 			},
@@ -3752,7 +3766,7 @@ func TestAgentDoesNotPromoteFinalLookingVerificationToolBeforeVerification(t *te
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Verification ran and the change is complete." {
+	if reply != finalReply {
 		t.Fatalf("expected verification follow-up final answer, got %q", reply)
 	}
 	if shellTool.calls != 1 {
@@ -6533,7 +6547,7 @@ func TestAgentRetriesWhenEditRequestHandsPatchBackWithoutUsingTools(t *testing.T
 			{Message: Message{Role: "assistant", Text: "도구 사용에 문제가 있어 직접 패치를 적용해드리지 못합니다. 위 설명에 따라 코드를 직접 수정해주시면 됩니다."}},
 			toolCallResponse("read_file", map[string]any{"path": "VAllocAnalyzer.cpp"}),
 			toolCallResponse("write_file", map[string]any{"path": "VAllocAnalyzer.cpp", "content": after}),
-			{Message: Message{Role: "assistant", Text: "VAllocAnalyzer.cpp를 수정했고 반환값이 1이 되도록 반영했습니다."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: VAllocAnalyzer.cpp. Self-review: no code blocker found after 수정. Validation: verification was not run. Remaining risk: no successful verification evidence was recorded."}},
 		},
 	}
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
@@ -14951,13 +14965,14 @@ func TestAgentRoutesCurrentPatchCommentaryThroughFinalGates(t *testing.T) {
 
 func TestAgentBuffersFinalAnswerDeltaAfterMetadataOnlyEdit(t *testing.T) {
 	root := t.TempDir()
+	finalReply := "Changed files: main.go. Self-review: no code blocker found after 변경을 적용. Validation: verification was not run. Remaining risk: no successful verification evidence was recorded."
 	provider := &streamingScriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("external_edit", map[string]any{}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "변경을 적용했고 추가 검증은 실행하지 않았습니다.",
+					Text: finalReply,
 				},
 				StopReason: "stop",
 			},
@@ -15917,7 +15932,7 @@ func TestAgentRewritesRunShellApplyPatchHeredocToApplyPatchTool(t *testing.T) {
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "main.go patched.",
+					Text: testModificationFinalAnswer("main.go", "verification was not run.", "no known remaining blocker."),
 				},
 			},
 		},
@@ -15938,7 +15953,7 @@ func TestAgentRewritesRunShellApplyPatchHeredocToApplyPatchTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "main.go patched." {
+	if !strings.Contains(reply, "main.go") {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
 	content, err := os.ReadFile(target)
@@ -16044,7 +16059,7 @@ func TestAgentRejectsImplicitRunShellPatchBodyLikeCodex(t *testing.T) {
 		replies: []ChatResponse{
 			toolCallResponse("run_shell", map[string]any{"command": patch}),
 			toolCallResponse("apply_patch", map[string]any{"patch": patch}),
-			{Message: Message{Role: "assistant", Text: "main.go patched after implicit invocation retry."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: patched after implicit invocation retry with no code blocker found. Validation: verification was not run. Remaining risk: no successful verification evidence was recorded."}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")

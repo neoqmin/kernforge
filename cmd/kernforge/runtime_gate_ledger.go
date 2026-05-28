@@ -24,6 +24,8 @@ type RuntimeGateLedger struct {
 	Action                string                           `json:"action,omitempty"`
 	Status                string                           `json:"status,omitempty"`
 	Ready                 bool                             `json:"ready"`
+	RequestClass          string                           `json:"request_class,omitempty"`
+	Lifecycle             *ReviewRequestLifecycle          `json:"lifecycle,omitempty"`
 	Branch                string                           `json:"branch,omitempty"`
 	ReviewRunID           string                           `json:"review_run_id,omitempty"`
 	PatchTransactionID    string                           `json:"patch_transaction_id,omitempty"`
@@ -74,6 +76,10 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	}
 	ledger.ChangedPaths = runtimeGateChangedPathsForAction(root, session, action)
 	documentArtifactOnly := runtimeGateDocumentArtifactOnly(session, action, ledger.ChangedPaths)
+	ledger.Lifecycle = buildRuntimeGateLifecycle(session, action, ledger.ChangedPaths, nil)
+	if ledger.Lifecycle != nil {
+		ledger.RequestClass = ledger.Lifecycle.RequestClass
+	}
 	if tx := runtimeGatePatchTransactionForAction(session, action); tx != nil {
 		ledger.PatchTransactionID = strings.TrimSpace(tx.ID)
 	}
@@ -121,6 +127,10 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 			report = session.LastCodingHarnessReport
 		}
 		ledger.ReviewObservability = buildReviewDecisionObservability(observedReview, &ledger, report)
+		ledger.Lifecycle = buildRuntimeGateLifecycle(session, action, ledger.ChangedPaths, observedReview)
+		if ledger.Lifecycle != nil {
+			ledger.RequestClass = ledger.Lifecycle.RequestClass
+		}
 		ledger.Normalize()
 	}
 	return ledger
@@ -139,6 +149,11 @@ func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPat
 	if generatedDocumentArtifactGateAcceptedForRequest(session, "", changedPaths) {
 		return true
 	}
+	if runtimeGateSessionRequestClassIsDocumentArtifact(session) &&
+		sessionHasDocumentArtifactQualityAcceptedHarness(session) &&
+		runtimeGateChangedPathsAreDocumentArtifactsOrEmpty(changedPaths) {
+		return true
+	}
 	if sessionHasApprovedDocumentArtifactOnlyHarness(session) {
 		return true
 	}
@@ -147,6 +162,26 @@ func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPat
 		return true
 	}
 	return changedPathsAreGeneratedDocumentArtifacts(session, "", changedPaths)
+}
+
+func runtimeGateSessionRequestClassIsDocumentArtifact(session *Session) bool {
+	if session == nil || session.AcceptanceContract == nil {
+		return false
+	}
+	return normalizeReviewRequestClass(session.AcceptanceContract.RequestClass) == reviewRequestClassDocumentArtifact
+}
+
+func runtimeGateChangedPathsAreDocumentArtifactsOrEmpty(changedPaths []string) bool {
+	paths := normalizeTaskStateList(changedPaths, 64)
+	if len(paths) == 0 {
+		return true
+	}
+	for _, path := range paths {
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(path) && !pathLooksLikeDocumentArtifact(path) {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimeGateLatestUserStartsFreshNonDocumentArtifactTurn(session *Session) bool {
@@ -190,6 +225,19 @@ func (l *RuntimeGateLedger) Normalize() {
 	}
 	l.ID = strings.TrimSpace(l.ID)
 	l.Action = normalizeRuntimeGateAction(l.Action)
+	l.RequestClass = normalizeReviewRequestClass(l.RequestClass)
+	if l.RequestClass == reviewRequestClassGeneral {
+		l.RequestClass = ""
+	}
+	if l.Lifecycle != nil {
+		l.Lifecycle.Normalize()
+		if l.RequestClass == "" {
+			l.RequestClass = l.Lifecycle.RequestClass
+			if l.RequestClass == reviewRequestClassGeneral {
+				l.RequestClass = ""
+			}
+		}
+	}
 	l.Branch = strings.TrimSpace(l.Branch)
 	l.ReviewRunID = strings.TrimSpace(l.ReviewRunID)
 	l.PatchTransactionID = strings.TrimSpace(l.PatchTransactionID)
@@ -258,6 +306,23 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 	}
 	if l.Action != "" {
 		lines = append(lines, "- Action: "+l.Action)
+	}
+	if l.RequestClass != "" {
+		lines = append(lines, "- Request class: "+l.RequestClass)
+	}
+	if l.Lifecycle != nil {
+		if l.Lifecycle.Phase != "" {
+			lines = append(lines, "- Lifecycle phase: "+l.Lifecycle.Phase)
+		}
+		if l.Lifecycle.RouteMode != "" {
+			lines = append(lines, "- Route mode: "+l.Lifecycle.RouteMode)
+		}
+		if l.Lifecycle.DocumentGateStatus != "" && l.Lifecycle.DocumentGateStatus != "not_applicable" {
+			lines = append(lines, "- Document gate: "+l.Lifecycle.DocumentGateStatus)
+		}
+		if l.Lifecycle.Reason != "" {
+			lines = append(lines, "- Lifecycle reason: "+l.Lifecycle.Reason)
+		}
 	}
 	if l.ReviewRunID != "" {
 		lines = append(lines, "- Review run: "+l.ReviewRunID)
@@ -960,6 +1025,38 @@ func (rt *runtimeState) printRuntimeGateStatus(action string) {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.subsection("Runtime Gate"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
+	if ledger.RequestClass != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("request_class", ledger.RequestClass))
+	}
+	if ledger.Lifecycle != nil {
+		if ledger.Lifecycle.Phase != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_phase", ledger.Lifecycle.Phase))
+		}
+		if ledger.Lifecycle.RouteMode != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_mode", ledger.Lifecycle.RouteMode))
+		}
+		if ledger.Lifecycle.ReviewGateStatus != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("review_gate", ledger.Lifecycle.ReviewGateStatus))
+		}
+		if ledger.Lifecycle.RepairGateStatus != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("repair_gate", ledger.Lifecycle.RepairGateStatus))
+		}
+		if ledger.Lifecycle.DocumentGateStatus != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("document_gate", ledger.Lifecycle.DocumentGateStatus))
+		}
+		if ledger.Lifecycle.VerificationGateStatus != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_gate", ledger.Lifecycle.VerificationGateStatus))
+		}
+		if ledger.Lifecycle.SecondPassStatus != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_second_pass", ledger.Lifecycle.SecondPassStatus))
+		}
+		if ledger.Lifecycle.CrossReviewTriage != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_cross_review_triage", ledger.Lifecycle.CrossReviewTriage))
+		}
+		if len(ledger.Lifecycle.RemainingObligations) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_obligations", strings.Join(ledger.Lifecycle.RemainingObligations, ", ")))
+		}
+	}
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("review_freshness", runtimeGateReviewFreshnessLabel(ledger)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("changed_paths", fmt.Sprintf("%d", len(ledger.ChangedPaths))))
 	if len(ledger.ChangedPaths) > 0 {
@@ -1063,6 +1160,7 @@ func runtimeGateLedgerEmpty(ledger RuntimeGateLedger) bool {
 	return strings.TrimSpace(ledger.ID) == "" &&
 		strings.TrimSpace(ledger.Action) == "" &&
 		strings.TrimSpace(ledger.Status) == "" &&
+		strings.TrimSpace(ledger.RequestClass) == "" &&
 		strings.TrimSpace(ledger.ReviewRunID) == "" &&
 		strings.TrimSpace(ledger.PatchTransactionID) == "" &&
 		strings.TrimSpace(ledger.VerificationReportID) == "" &&
@@ -1074,6 +1172,7 @@ func runtimeGateLedgerEmpty(ledger RuntimeGateLedger) bool {
 		len(ledger.StaleReasons) == 0 &&
 		len(ledger.Waivers) == 0 &&
 		len(ledger.NextCommands) == 0 &&
+		ledger.Lifecycle == nil &&
 		ledger.ReviewObservability == nil &&
 		ledger.FinalAnswerCorrection == nil
 }

@@ -39,7 +39,10 @@ func finalAnswerCompletenessIsTrivialOrStatusOnly(session *Session) bool {
 	mode := strings.TrimSpace(session.AcceptanceContract.Mode)
 	switch mode {
 	case "command", "project_knowledge", "diagnose_recent_error", "general":
-		return len(currentTurnPatchTransactionChangedPaths(session)) == 0 && currentTurnActiveEditLoop(session) == nil
+		if requestModeLooksCodeChanging(session.AcceptanceContract.SourcePrompt) {
+			return false
+		}
+		return len(finalAnswerCompletenessChangedPaths(session)) == 0 && currentTurnActiveEditLoop(session) == nil
 	default:
 		return false
 	}
@@ -49,24 +52,131 @@ func (a *Agent) finalAnswerCompletenessRequiresModificationFacts(attemptedEditTo
 	if a == nil || a.Session == nil {
 		return false
 	}
-	if attemptedEditTool || len(currentTurnPatchTransactionChangedPaths(a.Session)) > 0 {
+	if a.ReviewerClient != nil {
+		return false
+	}
+	if a.Session.AcceptanceContract != nil &&
+		normalizeReviewRequestClass(a.Session.AcceptanceContract.RequestClass) == reviewRequestClassDocumentArtifact &&
+		!currentTurnPatchTransactionIncludesNonDocumentChange(a.Session) {
+		return false
+	}
+	changed := finalAnswerCompletenessChangedPaths(a.Session)
+	if len(changed) > 0 {
 		return true
+	}
+	if attemptedEditTool {
+		return false
 	}
 	if loop := currentTurnActiveEditLoop(a.Session); loop != nil {
 		loop.Normalize()
-		if len(loop.ChangedPaths) > 0 || len(loop.WorkerSummaries) > 0 {
+		if len(loop.ChangedPaths) > 0 {
 			return true
 		}
 	}
-	if a.Session.AcceptanceContract != nil && strings.EqualFold(strings.TrimSpace(a.Session.AcceptanceContract.Mode), "inspect_and_fix") {
+	return false
+}
+
+func currentTurnPatchTransactionIncludesNonDocumentChange(session *Session) bool {
+	for _, path := range finalAnswerCompletenessChangedPaths(session) {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if !pathLooksLikeDocumentArtifact(path) {
+			return true
+		}
+	}
+	return false
+}
+
+func finalAnswerCompletenessChangedPaths(session *Session) []string {
+	changed := currentTurnPatchTransactionChangedPaths(session)
+	if len(changed) == 0 {
+		changed = sessionPatchTransactionChangedPaths(session)
+	}
+	if len(changed) == 0 && session != nil && session.ActivePatchTransaction != nil {
+		changed = session.ActivePatchTransaction.ChangedPaths()
+	}
+	if len(changed) == 0 && session != nil && len(session.PatchTransactions) > 0 {
+		changed = session.PatchTransactions[0].ChangedPaths()
+	}
+	if len(changed) == 0 {
+		changed = finalAnswerCompletenessToolChangedPaths(session)
+	}
+	return normalizeTaskStateList(changed, 64)
+}
+
+func finalAnswerCompletenessToolChangedPaths(session *Session) []string {
+	if session == nil {
+		return nil
+	}
+	paths := make([]string, 0)
+	successToolCallIDs := map[string]bool{}
+	toolResultByID := map[string]Message{}
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.IsError {
+			continue
+		}
+		if strings.TrimSpace(msg.ToolCallID) != "" {
+			successToolCallIDs[strings.TrimSpace(msg.ToolCallID)] = true
+			toolResultByID[strings.TrimSpace(msg.ToolCallID)] = msg
+		}
+		if !toolResultLooksWorkspaceChanging(msg) {
+			continue
+		}
+		switch strings.TrimSpace(msg.ToolName) {
+		case "write_file", "replace_in_file":
+			if path := normalizeSessionRelativePath(toolMetaString(msg.ToolMeta, "path")); path != "" {
+				paths = append(paths, path)
+			}
+		case "apply_patch":
+			for _, path := range toolMetaStringSlice(msg.ToolMeta, "changed_paths") {
+				if normalized := normalizeSessionRelativePath(path); normalized != "" {
+					paths = append(paths, normalized)
+				}
+			}
+		}
+	}
+	for _, msg := range session.Messages {
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if !successToolCallIDs[strings.TrimSpace(call.ID)] {
+				continue
+			}
+			if result, ok := toolResultByID[strings.TrimSpace(call.ID)]; ok && !toolResultLooksWorkspaceChanging(result) {
+				continue
+			}
+			switch strings.TrimSpace(call.Name) {
+			case "write_file", "replace_in_file":
+				if path := normalizeSessionRelativePath(toolCallPathArgument(call)); path != "" {
+					paths = append(paths, path)
+				}
+			}
+		}
+	}
+	return normalizeTaskStateList(paths, 64)
+}
+
+func toolResultLooksWorkspaceChanging(msg Message) bool {
+	if msg.Role != "tool" || msg.IsError {
+		return false
+	}
+	if toolMetaBool(msg.ToolMeta, "changed_workspace") {
+		return true
+	}
+	if len(toolMetaStringSlice(msg.ToolMeta, "changed_paths")) > 0 {
+		return true
+	}
+	if len(toolMetaStringSlice(msg.ToolMeta, "changed_paths_after")) > 0 {
 		return true
 	}
 	return false
 }
 
 func (a *Agent) modificationFinalAnswerCompletenessFindings(reply string) []CodingHarnessFinding {
+	changed := finalAnswerCompletenessChangedPaths(a.Session)
 	var findings []CodingHarnessFinding
-	changed := currentTurnPatchTransactionChangedPaths(a.Session)
 	if len(changed) == 0 {
 		if !replyClaimsNoFileChanges(strings.ToLower(reply)) {
 			findings = append(findings, CodingHarnessFinding{
@@ -182,6 +292,10 @@ func (a *Agent) finalAnswerCompletenessRequiresReviewOnlyFacts() bool {
 	if a == nil || a.Session == nil || a.Session.AcceptanceContract == nil {
 		return false
 	}
+	contractClass := normalizeReviewRequestClass(a.Session.AcceptanceContract.RequestClass)
+	if contractClass == reviewRequestClassReviewOnly {
+		return len(currentTurnPatchTransactionChangedPaths(a.Session)) == 0 && len(a.Session.Messages) == 0
+	}
 	if !strings.EqualFold(strings.TrimSpace(a.Session.AcceptanceContract.Mode), "analysis_only") {
 		return false
 	}
@@ -223,6 +337,12 @@ func replyLooksFindingsFirst(reply string) bool {
 		return false
 	}
 	first := strings.ToLower(compactPromptSection(trimmed, 260))
+	if strings.HasPrefix(first, "summary:") ||
+		strings.HasPrefix(first, "summary ") ||
+		strings.HasPrefix(first, "요약:") ||
+		strings.HasPrefix(first, "요약 ") {
+		return false
+	}
 	return containsAny(first,
 		"finding",
 		"findings",
@@ -235,7 +355,7 @@ func replyLooksFindingsFirst(reply string) bool {
 		"발견",
 		"문제",
 		"이슈",
-	)
+	) || !containsAny(first, "summary", "요약", "context", "background", "배경")
 }
 
 func replyClaimsNoFindings(reply string) bool {

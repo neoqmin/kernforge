@@ -12,6 +12,8 @@ type ReviewDecisionObservability struct {
 	Target                   string                            `json:"target,omitempty"`
 	Mode                     string                            `json:"mode,omitempty"`
 	Flow                     string                            `json:"flow,omitempty"`
+	RequestClass             string                            `json:"request_class,omitempty"`
+	Lifecycle                *ReviewRequestLifecycle           `json:"lifecycle,omitempty"`
 	Gate                     ReviewGateObservability           `json:"gate,omitempty"`
 	SingleModelSecondPass    *ReviewSecondPassObservability    `json:"single_model_second_pass,omitempty"`
 	CrossReviewTriage        *ReviewCrossReviewTriageSummary   `json:"cross_review_triage,omitempty"`
@@ -76,11 +78,13 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		copyRun.ObligationLedger = buildReviewObligationLedger(copyRun)
 	}
 	summary := &ReviewDecisionObservability{
-		ReviewID: copyRun.ID,
-		Trigger:  strings.TrimSpace(copyRun.Trigger),
-		Target:   strings.TrimSpace(copyRun.Target),
-		Mode:     strings.TrimSpace(copyRun.Mode),
-		Flow:     strings.TrimSpace(copyRun.Flow),
+		ReviewID:     copyRun.ID,
+		Trigger:      strings.TrimSpace(copyRun.Trigger),
+		Target:       strings.TrimSpace(copyRun.Target),
+		Mode:         strings.TrimSpace(copyRun.Mode),
+		Flow:         strings.TrimSpace(copyRun.Flow),
+		RequestClass: normalizeReviewRequestClass(firstNonBlankString(copyRun.RequestClass, copyRun.RequestAnalysis.RequestClass)),
+		Lifecycle:    copyRun.Lifecycle,
 		Gate: ReviewGateObservability{
 			Verdict: firstNonBlankString(copyRun.Gate.Verdict, copyRun.Result.Verdict),
 			Action:  strings.TrimSpace(copyRun.Gate.Action),
@@ -92,6 +96,15 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		RemainingObligations:     buildReviewRemainingObligationSummary(copyRun.ObligationLedger),
 		IncompleteTriageBlockers: reviewIncompleteTriageBlockers(copyRun.CrossReviewTriage),
 		ResidualRiskSummary:      reviewResidualRiskSummary(copyRun),
+	}
+	if summary.RequestClass == reviewRequestClassGeneral {
+		summary.RequestClass = ""
+	}
+	if summary.Lifecycle == nil {
+		summary.Lifecycle = buildReviewRequestLifecycle(&copyRun, nil)
+	}
+	if summary.Lifecycle != nil {
+		summary.Lifecycle.Normalize()
 	}
 	if ledger != nil {
 		if len(ledger.NextCommands) > 0 {
@@ -374,6 +387,17 @@ func reviewDecisionObservabilityStatusLine(obs *ReviewDecisionObservability) str
 	}
 	if obs.Mode != "" {
 		parts = append(parts, "mode="+obs.Mode)
+	}
+	if obs.RequestClass != "" {
+		parts = append(parts, "class="+obs.RequestClass)
+	}
+	if obs.Lifecycle != nil {
+		if obs.Lifecycle.Phase != "" {
+			parts = append(parts, "phase="+obs.Lifecycle.Phase)
+		}
+		if obs.Lifecycle.RouteMode != "" {
+			parts = append(parts, "route="+obs.Lifecycle.RouteMode)
+		}
 	}
 	if len(parts) == 0 {
 		return "unknown"

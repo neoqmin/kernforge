@@ -1546,10 +1546,17 @@ func reviewNextCommandsHasAnyID(commands []ReviewNextCommand, ids ...string) boo
 }
 
 func reviewRunLooksReadOnlyAnalysis(run ReviewRun) bool {
+	if normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)) == reviewRequestClassReviewOnly {
+		return true
+	}
 	return prefersReadOnlyAnalysisIntent(run.Objective) && !looksLikeExplicitEditIntent(run.Objective)
 }
 
 func reviewRunLooksExplicitRepairIntent(run ReviewRun) bool {
+	class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass))
+	if class == reviewRequestClassReviewThenModify || class == reviewRequestClassModifyThenReview {
+		return true
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) ||
 		strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		return true

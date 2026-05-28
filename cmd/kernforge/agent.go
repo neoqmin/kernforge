@@ -1329,7 +1329,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return reply, err
 					}
 				}
-				if runtimeGateFinalAnswerRevisions < 2 {
+				if runtimeGateFinalAnswerRevisions < 2 && a.ReviewerClient == nil {
 					ledger := a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if runtimeGateBlocksFinalAnswer(ledger, reply) {
 						runtimeGateFinalAnswerRevisions++
@@ -2858,7 +2858,10 @@ func (a *Agent) shouldPromoteFinalLookingToolPreambleToFinalCandidate(request st
 	if !assistantTextLooksLikeCompletionSummary(reply) {
 		return false
 	}
-	if !attemptedEditTool && !successfulEditTool && assistantTextClaimsWorkspaceMutationCompletion(reply) {
+	if !attemptedEditTool &&
+		!successfulEditTool &&
+		!sessionHasCurrentTurnFinalGateEvidence(a.Session) &&
+		assistantTextClaimsWorkspaceMutationCompletion(reply) {
 		return false
 	}
 	if !finalLookingPostCompletionOnlyToolCalls(calls) {
@@ -9012,12 +9015,17 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 	if a.hasDistinctCrossReviewRouteConfig() {
 		routeMode = "cross_review"
 	}
+	intent := classifyTurnIntent(latestUser)
+	requestClass, requestClassReason := classifyAcceptanceContractRequestClass(latestUser, intent, prefersReadOnlyAnalysisIntent(latestUser) || looksLikeReviewInspectionOnlyRequest(latestUser), looksLikeExplicitEditIntent(latestUser))
 	var b strings.Builder
 	b.WriteString("Codex-grade request handling:\n")
 	fmt.Fprintf(&b, "- Review route mode: %s.\n", routeMode)
-	b.WriteString("- Classify the latest external request before acting: code review, bug finding, targeted modification, implementation plus verification, review-after-modification, documentation/status update, or explicit git cleanup.\n")
+	fmt.Fprintf(&b, "- Request class: %s (%s).\n", requestClass, requestClassReason)
+	b.WriteString("- Classify the latest external request before acting as review_only, document_artifact, review_then_modify, modify_then_review, verification_only, or validation_only.\n")
 	b.WriteString("- Inspect current repository state before making assumptions, and preserve unrelated user changes in a dirty worktree.\n")
 	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")
+	b.WriteString("- For document_artifact requests, use artifact-quality checks as the primary gate: artifact exists, requested topic is covered, content is not placeholder/TODO-only, and verification claims are not unsupported.\n")
+	b.WriteString("- For review_then_modify requests, produce review findings first, tie the repair plan to those findings, patch narrowly, then run post-change review or single-model second pass.\n")
 	b.WriteString("- For modification requests, implement directly with focused edits, then perform a second-pass regression review of touched functions, call sites, ABI or data contracts, initialization defaults, buffer sizes, error paths, cancellation or timeout behavior, logging/output compatibility, and stale docs.\n")
 	b.WriteString("- After edits, run the most relevant available validation, starting focused and broadening only when justified; if validation cannot run, explain the blocker and the next best check.\n")
 	if routeMode == "cross_review" {

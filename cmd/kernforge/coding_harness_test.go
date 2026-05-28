@@ -37,7 +37,7 @@ func TestPatchTransactionRecordsWriteFileAndFinalizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Implemented") {
+	if !strings.Contains(reply, "Changed files: main.go") {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
 	if session.ActivePatchTransaction != nil {
@@ -804,7 +804,7 @@ func TestAcceptanceContractBlocksExplicitVerificationWithoutOutcome(t *testing.T
 				"content": "package main\n",
 			}),
 			{Message: Message{Role: "assistant", Text: "Implemented the change."}},
-			{Message: Message{Role: "assistant", Text: "Implemented the change. Tests not run because no test command is configured."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: no code blocker found. Validation: tests not run because no test command is configured. Remaining risk: no successful test evidence was recorded."}},
 		},
 	}
 	cfg := DefaultConfig(root)
@@ -825,7 +825,7 @@ func TestAcceptanceContractBlocksExplicitVerificationWithoutOutcome(t *testing.T
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tests not run") {
+	if !strings.Contains(reply, "tests not run") {
 		t.Fatalf("expected revised verification status, got %q", reply)
 	}
 	if len(provider.requests) != 3 {

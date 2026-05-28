@@ -106,6 +106,8 @@ func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 		fmt.Fprintf(&b, "\n- 판정: %s", firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"))
 		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
 		fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
+		fmt.Fprintf(&b, "\n- 요청 class: %s", valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly))
+		b.WriteString("\n- 파일 수정: 없음.")
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n- 리뷰 요약: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
@@ -130,6 +132,8 @@ func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 	fmt.Fprintf(&b, "\n- Verdict: %s", firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"))
 	fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
 	fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
+	fmt.Fprintf(&b, "\n- Request class: %s", valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly))
+	b.WriteString("\n- Files edited: none.")
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		fmt.Fprintf(&b, "\n- Review summary: %s", reviewVisibleInlineText(run.Result.Summary))
 	}
