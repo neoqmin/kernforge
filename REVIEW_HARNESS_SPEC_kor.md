@@ -3681,6 +3681,28 @@ P2:
      3. degraded reviewer route는 primary work를 자동 승인하지 않는다. 사용자는 `/review models cross`, `/review`, `/verify --full`, `/continuity continue from review` 같은 다음 명령으로 evidence를 복구해야 한다.
    - 회귀 테스트: mixed review/document classification, explicit no-edit review-only, document-only report skip, document plus code change modification lifecycle, single-model second-pass run/record state, reviewer-only post-change duplicate-call suppression, cross-model triage priority, actionable `needs_user_decision` guidance, generic final-answer rejection, final-answer reviewer sequencing, status/MCP lifecycle metadata, 기존 pre-write/post-change review gate 테스트.
 
+97. Operator-facing lifecycle timeline and status card
+   - 발견: request-class enforcement와 runtime gate가 강해져도 사용자는 여전히 raw JSON, raw model output, 여러 artifact를 직접 맞춰 보지 않으면 현재 phase, blocked/degraded 이유, evidence, 다음 안전 행동을 즉시 알기 어려웠다.
+   - 원칙:
+     1. 기본 `/status`는 compact operator card여야 하며, evidence dump는 `/status detail`로 분리한다.
+     2. lifecycle phase는 내부 legacy phase가 아니라 operator가 이해할 수 있는 timeline 용어로 노출한다.
+     3. blocked 화면은 cross-review noise, route warning, document detail보다 primary blocker를 먼저 보여준다.
+     4. MCP consumer는 prose를 파싱하지 않고 operator card를 렌더링할 수 있어야 한다.
+   - 구현:
+     1. `ReviewLifecyclePhase`와 `ReviewCompactStatus`, `ReviewBlockerSummary`, `ReviewFinalAnswerContractStatus`를 추가해 `classified_request`, `collecting_context`, `pre_write_review`, `applying_change`, `post_change_review`, `single_model_second_pass`, `cross_review_triage`, `artifact_quality_gate`, `verification`, `final_answer_contract`, `blocked`, `completed` timeline을 저장한다. 각 phase는 `pending/running/passed/warned/blocked/skipped`, reason, evidence ref, next safe action, next command를 가진다.
+     2. `/status` 기본 출력은 request class, classification confidence/ambiguity, current lifecycle phase, route mode, route quality, review/repair/document/verification/final-answer gate, second-pass state, cross-review triage counts, blocker class counts, remaining obligations, next recommended command만 compact하게 보여준다. `/status detail`은 timeline과 blocker detail을 펼친다.
+     3. progress 출력은 phase-aware suffix를 붙여 현재 작업, 이유, waiting target, 다음 단계를 보여준다. 긴 대기는 primary model, cross reviewer, local tool, verification command, final-answer correction을 구분하며 gate 통과 전에는 완료처럼 보이는 문구를 피한다.
+     4. blocker class는 `code_repair_blocker`, `reviewer_route_problem`, `evidence_gap`, `verification_gap`, `document_artifact_quality`, `final_answer_contract`, `user_decision_required`로 정리했다. 각 blocker는 why blocks, already checked, evidence refs, next safe action, next command를 가진다.
+     5. `cross_review_triage`는 CLI/Markdown/JSON/MCP에서 accepted_fixed, accepted_deferred, rejected_with_reason, needs_user_decision, incomplete/invalid count를 compact하게 보여주고, detail에는 finding id/title, reviewer route, severity, location, status, reason, required fix, fix evidence, verification evidence, safe continuation guidance를 보여준다. `needs_user_decision`에는 inspect target, safe-to-change scope, do-not-change-yet scope, exact next command가 포함된다.
+     6. single-model state는 `single_model_second_pass_ran`, `single_model_second_pass_cached`, `single_model_second_pass_skipped`, `cross_model_review_ran`, `reviewer_only_post_change_review_used`로 구분한다. single-model second pass를 독립 cross-review로 표시하지 않으며 skipped reason이 acceptable disclosure인지 evidence gap인지 드러낸다.
+     7. document-artifact flow는 artifact path, artifact-quality status, source-review evidence status, verification skip/required reason, remaining limitation을 노출한다. document artifact final-answer correction은 code repair가 아니라 final-answer contract correction으로 표시한다.
+     8. MCP 응답은 additive/omitempty-compatible하게 `lifecycle_timeline`, `compact_status`, `blocker_summary`, `route_quality`, `final_answer_contract_status`, `next_recommended_command`를 추가했다. raw model output 전문은 MCP/status surface에 넣지 않는다.
+   - 알려진 한계:
+     1. timeline은 runtime ledger와 최신 review artifact를 조합하므로, 외부에서 artifact를 수동 삭제하면 evidence ref가 비어 있을 수 있다.
+     2. classifier ambiguity는 여전히 conservative하게 남고, 사용자가 class를 명확히 다시 지시해야 더 좁은 lifecycle로 수렴할 수 있다.
+     3. generated document-only skip rule은 code modification과 섞이는 순간 해제되며, 그 경우 modification review/verification obligation이 다시 우선한다.
+   - 회귀 테스트: compact `/status`, detail timeline/evidence refs, phase-aware progress spam suppression, blocker priority, actionable `needs_user_decision` Markdown/MCP, single-model state labels, document-artifact status/skip reason, generic final-answer rejection, MCP operator-card field, 기존 request-class/pre-write/post-change/final-answer/runtime-gate 테스트.
+
 남은 항목:
 
 1. 수동 smoke 검증

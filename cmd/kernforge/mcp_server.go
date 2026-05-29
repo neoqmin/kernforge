@@ -643,7 +643,9 @@ func (s *kernforgeMCPServer) registerTools() {
 		"file":      map[string]any{"type": "string", "description": "Optional source file related to the request."},
 		"max_chars": map[string]any{"type": "integer", "description": "Maximum response text characters."},
 	}), s.toolLook)
-	s.addTool("kernforge_status", "Show KernForge workspace, provider, latest analysis, verification, evidence, and git status.", mcpObjectSchema(map[string]any{}), s.toolStatus)
+	s.addTool("kernforge_status", "Show KernForge workspace, provider, latest analysis, verification, evidence, git status, and compact operator lifecycle status.", mcpObjectSchema(map[string]any{
+		"detail": map[string]any{"type": "boolean", "description": "Include lifecycle timeline and blocker details. Default false keeps the response compact."},
+	}), s.toolStatus)
 	s.addTool("kernforge_latest_analysis", "Summarize the latest KernForge project analysis artifacts and optionally include one generated document.", mcpObjectSchema(map[string]any{
 		"document":  map[string]any{"type": "string", "description": "Optional latest docs file name, such as INDEX.md or SECURITY_SURFACE.md."},
 		"max_chars": map[string]any{"type": "integer", "description": "Maximum text characters to return."},
@@ -1665,7 +1667,6 @@ func (s *kernforgeMCPServer) toolLook(ctx context.Context, args map[string]any) 
 }
 
 func (s *kernforgeMCPServer) toolStatus(ctx context.Context, args map[string]any) (string, error) {
-	_ = args
 	root := s.workspaceRoot()
 	changed, _ := gitChangedFiles(ctx, root)
 	branch, branchErr := gitCurrentBranch(ctx, root)
@@ -1689,22 +1690,76 @@ func (s *kernforgeMCPServer) toolStatus(ctx context.Context, args map[string]any
 			fuzzCampaigns = len(items)
 		}
 	}
+	ledger := s.rt.runtimeGateLedgerForStatus(runtimeGateActionFinalAnswer)
+	var report *CodingHarnessReport
+	if s.rt.session != nil && s.rt.session.LastCodingHarnessReport != nil {
+		report = s.rt.session.LastCodingHarnessReport
+	}
+	compact := buildReviewCompactStatus(nil, &ledger, report)
+	blockers := buildReviewBlockerSummary(nil, &ledger, report)
+	timeline := reviewLifecycleTimelineForRuntimeGate(s.rt.session, ledger.Action, ledger.ChangedPaths, &ledger, report)
+	contract := reviewFinalAnswerContractStatusForClass(firstNonBlankString(ledger.RequestClass, compactRequestClass(compact)), s.rt.session, report, "")
+	if ledger.ReviewObservability != nil {
+		if ledger.ReviewObservability.CompactStatus != nil {
+			compact = ledger.ReviewObservability.CompactStatus
+		}
+		if ledger.ReviewObservability.BlockerSummary != nil {
+			blockers = ledger.ReviewObservability.BlockerSummary
+		}
+		if len(ledger.ReviewObservability.LifecycleTimeline) > 0 {
+			timeline = ledger.ReviewObservability.LifecycleTimeline
+		}
+		if ledger.ReviewObservability.FinalAnswerContract != nil {
+			contract = ledger.ReviewObservability.FinalAnswerContract
+		}
+	}
+	nextRecommended := map[string]any(nil)
+	if len(ledger.NextCommands) > 0 {
+		next := ledger.NextCommands[0]
+		nextRecommended = map[string]any{
+			"command":               next.Command,
+			"reason":                next.Reason,
+			"when":                  next.When,
+			"safety":                next.Safety,
+			"auto_run":              next.AutoRun,
+			"requires_confirmation": next.RequiresConfirmation,
+			"client_hint":           next.ClientHint,
+			"expected_result":       next.ExpectedResult,
+		}
+	}
 	status := map[string]any{
-		"version":              currentVersion(),
-		"workspace":            root,
-		"mcp_workspace_source": valueOrUnset(s.workspaceSource),
-		"session_id":           s.rt.session.ID,
-		"provider":             valueOrUnset(s.rt.cfg.Provider),
-		"model":                valueOrUnset(s.rt.cfg.Model),
-		"provider_ready":       s.rt.agent != nil && s.rt.agent.Client != nil,
-		"provider_error":       "",
-		"git_branch":           branch,
-		"git_changed_files":    changed,
-		"evidence_count":       evidenceStats.Count,
-		"verification_reports": verificationCount,
-		"function_fuzz_runs":   functionFuzzRuns,
-		"fuzz_campaigns":       fuzzCampaigns,
-		"latest_analysis":      latest,
+		"version":                      currentVersion(),
+		"workspace":                    root,
+		"mcp_workspace_source":         valueOrUnset(s.workspaceSource),
+		"session_id":                   s.rt.session.ID,
+		"provider":                     valueOrUnset(s.rt.cfg.Provider),
+		"model":                        valueOrUnset(s.rt.cfg.Model),
+		"provider_ready":               s.rt.agent != nil && s.rt.agent.Client != nil,
+		"provider_error":               "",
+		"git_branch":                   branch,
+		"git_changed_files":            changed,
+		"evidence_count":               evidenceStats.Count,
+		"verification_reports":         verificationCount,
+		"function_fuzz_runs":           functionFuzzRuns,
+		"fuzz_campaigns":               fuzzCampaigns,
+		"latest_analysis":              latest,
+		"lifecycle_timeline":           timeline,
+		"compact_status":               compact,
+		"blocker_summary":              blockers,
+		"route_quality":                nil,
+		"final_answer_contract_status": contract,
+		"next_recommended_command":     nextRecommended,
+	}
+	if ledger.ReviewObservability != nil {
+		status["route_quality"] = ledger.ReviewObservability.RouteQuality
+	}
+	if !boolValue(args, "detail", false) {
+		delete(status, "lifecycle_timeline")
+		if blockers != nil {
+			compactBlockers := *blockers
+			compactBlockers.SecondaryWarnings = nil
+			status["blocker_summary"] = &compactBlockers
+		}
 	}
 	if s.rt.clientErr != nil {
 		status["provider_error"] = s.rt.clientErr.Error()

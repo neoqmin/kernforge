@@ -922,6 +922,28 @@ func renderReviewMCPResponse(run ReviewRun, maxChars int) string {
 	return renderReviewMCPResponseWithLatestFreshness(run, run.Freshness, maxChars)
 }
 
+func reviewLifecycleForMCP(lifecycle *ReviewRequestLifecycle) *ReviewRequestLifecycle {
+	if lifecycle == nil {
+		return nil
+	}
+	copyLifecycle := *lifecycle
+	copyLifecycle.Timeline = nil
+	return &copyLifecycle
+}
+
+func reviewObservabilityForMCP(observability *ReviewDecisionObservability) *ReviewDecisionObservability {
+	if observability == nil {
+		return nil
+	}
+	copyObservability := *observability
+	copyObservability.Lifecycle = reviewLifecycleForMCP(observability.Lifecycle)
+	copyObservability.LifecycleTimeline = nil
+	copyObservability.CompactStatus = nil
+	copyObservability.BlockerSummary = nil
+	copyObservability.FinalAnswerContract = nil
+	return &copyObservability
+}
+
 func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness ReviewFreshness, maxChars int) string {
 	recommended := map[string]any(nil)
 	if len(run.Gate.NextCommands) > 0 {
@@ -937,46 +959,59 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		}
 	}
 	observability := buildReviewDecisionObservability(&run, &run.RuntimeGateLedger, nil)
+	compactStatus := buildReviewCompactStatus(&run, &run.RuntimeGateLedger, nil)
+	blockerSummary := buildReviewBlockerSummary(&run, &run.RuntimeGateLedger, nil)
+	lifecycleTimeline := reviewLifecycleTimelineForRun(&run, nil, &run.RuntimeGateLedger, nil)
+	lifecycle := reviewLifecycleForMCP(run.Lifecycle)
+	routeQuality := reviewRouteQualityForRun(run)
+	finalAnswerContract := reviewFinalAnswerContractStatusForRun(&run, nil, nil, "")
+	crossReviewTriage := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
 	payload := map[string]any{
-		"summary":                  run.Result.Summary,
-		"review_id":                run.ID,
-		"machine_status":           run.MachineStatus,
-		"status_code":              run.ExitCode,
-		"retryable":                run.ExitCode >= 2 && run.ExitCode <= 5,
-		"request_analysis":         run.RequestAnalysis,
-		"request_class":            firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass),
-		"lifecycle":                run.Lifecycle,
-		"artifact_refs":            run.ArtifactRefs,
-		"result":                   run.Result,
-		"model_plan":               run.ModelPlan,
-		"reviewer_runs":            run.ReviewerRuns,
-		"freshness":                run.Freshness,
-		"latest_review_freshness":  latestFreshness,
-		"redaction":                run.Redaction,
-		"edit_proposals":           run.EditProposals,
-		"runtime_gate_ledger":      run.RuntimeGateLedger,
-		"obligation_ledger":        run.ObligationLedger,
-		"state_transitions":        run.StateTransitions,
-		"action_envelopes":         run.ActionEnvelopes,
-		"approval_ledger":          run.ApprovalLedger,
-		"capability_manifest":      run.CapabilityManifest,
-		"single_model_policy":      run.SingleModelPolicy,
-		"single_model_second_pass": buildReviewSecondPassObservability(run),
-		"cross_review_triage":      run.CrossReviewTriage,
-		"review_observability":     observability,
-		"external_lookup_intents":  run.ExternalLookupIntents,
-		"artifact_integrity":       run.ArtifactIntegrity,
-		"ledger_consistency":       run.LedgerConsistency,
-		"resume_sanity":            run.ResumeSanity,
-		"gate":                     run.Gate,
-		"waivers":                  run.Waivers,
-		"findings":                 run.Findings,
-		"changed_paths":            run.ChangeSet.ChangedPaths,
-		"evidence_sources":         run.Evidence.Sources,
-		"warnings":                 run.Evidence.Warnings,
-		"next_commands":            run.Gate.NextCommands,
-		"recommended_command":      recommended,
-		"follow_up_results":        run.NextCommandResults,
+		"summary":                      run.Result.Summary,
+		"review_id":                    run.ID,
+		"machine_status":               run.MachineStatus,
+		"status_code":                  run.ExitCode,
+		"retryable":                    run.ExitCode >= 2 && run.ExitCode <= 5,
+		"request_analysis":             run.RequestAnalysis,
+		"request_class":                firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass),
+		"lifecycle":                    lifecycle,
+		"lifecycle_timeline":           lifecycleTimeline,
+		"compact_status":               compactStatus,
+		"blocker_summary":              blockerSummary,
+		"route_quality":                routeQuality,
+		"final_answer_contract_status": finalAnswerContract,
+		"next_recommended_command":     recommended,
+		"artifact_refs":                run.ArtifactRefs,
+		"result":                       run.Result,
+		"model_plan":                   run.ModelPlan,
+		"reviewer_runs":                run.ReviewerRuns,
+		"freshness":                    run.Freshness,
+		"latest_review_freshness":      latestFreshness,
+		"redaction":                    run.Redaction,
+		"edit_proposals":               run.EditProposals,
+		"runtime_gate_ledger":          run.RuntimeGateLedger,
+		"obligation_ledger":            run.ObligationLedger,
+		"state_transitions":            run.StateTransitions,
+		"action_envelopes":             run.ActionEnvelopes,
+		"approval_ledger":              run.ApprovalLedger,
+		"capability_manifest":          run.CapabilityManifest,
+		"single_model_policy":          run.SingleModelPolicy,
+		"single_model_second_pass":     buildReviewSecondPassObservability(run),
+		"cross_review_triage":          crossReviewTriage,
+		"review_observability":         reviewObservabilityForMCP(observability),
+		"external_lookup_intents":      run.ExternalLookupIntents,
+		"artifact_integrity":           run.ArtifactIntegrity,
+		"ledger_consistency":           run.LedgerConsistency,
+		"resume_sanity":                run.ResumeSanity,
+		"gate":                         run.Gate,
+		"waivers":                      run.Waivers,
+		"findings":                     run.Findings,
+		"changed_paths":                run.ChangeSet.ChangedPaths,
+		"evidence_sources":             run.Evidence.Sources,
+		"warnings":                     run.Evidence.Warnings,
+		"next_commands":                run.Gate.NextCommands,
+		"recommended_command":          recommended,
+		"follow_up_results":            run.NextCommandResults,
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
 	return mcpLimitText("KernForge review\n\n```json\n"+string(data)+"\n```", maxChars)

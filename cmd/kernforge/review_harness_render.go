@@ -147,6 +147,80 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		b.WriteString("\n")
 	}
+	if compact := buildReviewCompactStatus(&run, &run.RuntimeGateLedger, nil); compact != nil {
+		b.WriteString("## Compact Operator Status\n\n")
+		fmt.Fprintf(&b, "- status: `%s`\n", reviewCompactStatusLine(compact))
+		fmt.Fprintf(&b, "- gates: `%s`\n", reviewGateCompactLine(compact))
+		if len(compact.CrossReviewTriageCounts) > 0 {
+			fmt.Fprintf(&b, "- cross_review_triage_counts: `%s`\n", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{crossReviewTriageAcceptedFixed, crossReviewTriageAcceptedDeferred, crossReviewTriageRejectedWithReason, crossReviewTriageNeedsUserDecision, "incomplete_invalid"}))
+		}
+		if len(compact.BlockersByClass) > 0 {
+			fmt.Fprintf(&b, "- blockers_by_class: `%s`\n", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder()))
+		}
+		if compact.NextRecommendedCommand != "" {
+			fmt.Fprintf(&b, "- next_recommended_command: `%s`\n", compact.NextRecommendedCommand)
+		}
+		b.WriteString("\n")
+	}
+	if timeline := reviewLifecycleTimelineForRun(&run, nil, &run.RuntimeGateLedger, nil); len(timeline) > 0 {
+		b.WriteString("## Lifecycle Timeline\n\n")
+		for _, item := range timeline {
+			fmt.Fprintf(&b, "- `%s` status=`%s`", item.Phase, item.Status)
+			if strings.TrimSpace(item.Reason) != "" {
+				fmt.Fprintf(&b, " reason=%s", item.Reason)
+			}
+			if strings.TrimSpace(item.EvidenceRef) != "" {
+				fmt.Fprintf(&b, " evidence=`%s`", item.EvidenceRef)
+			}
+			if strings.TrimSpace(item.NextSafeAction) != "" {
+				fmt.Fprintf(&b, " next_safe_action=%s", item.NextSafeAction)
+			}
+			if strings.TrimSpace(item.NextCommand) != "" {
+				fmt.Fprintf(&b, " next_command=`%s`", item.NextCommand)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if blockerSummary := buildReviewBlockerSummary(&run, &run.RuntimeGateLedger, nil); blockerSummary != nil && blockerSummary.HasBlockers {
+		b.WriteString("## Blocker Summary\n\n")
+		fmt.Fprintf(&b, "- counts: `%s`\n", reviewBlockerSummaryStatusLine(blockerSummary))
+		for _, item := range blockerSummary.Primary {
+			fmt.Fprintf(&b, "- `%s` %s\n", item.Class, item.Title)
+			if strings.TrimSpace(item.WhyBlocks) != "" {
+				fmt.Fprintf(&b, "  - why_blocks: %s\n", item.WhyBlocks)
+			}
+			if strings.TrimSpace(item.AlreadyChecked) != "" {
+				fmt.Fprintf(&b, "  - already_checked: %s\n", item.AlreadyChecked)
+			}
+			if len(item.EvidenceRefs) > 0 {
+				fmt.Fprintf(&b, "  - evidence_refs: `%s`\n", strings.Join(item.EvidenceRefs, "`, `"))
+			}
+			if strings.TrimSpace(item.NextSafeAction) != "" {
+				fmt.Fprintf(&b, "  - next_safe_action: %s\n", item.NextSafeAction)
+			}
+			if strings.TrimSpace(item.NextCommand) != "" {
+				fmt.Fprintf(&b, "  - next_command: `%s`\n", item.NextCommand)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if finalContract := reviewFinalAnswerContractStatusForRun(&run, nil, nil, ""); finalContract != nil {
+		b.WriteString("## Final Answer Contract\n\n")
+		fmt.Fprintf(&b, "- status: `%s`\n", finalContract.Status)
+		fmt.Fprintf(&b, "- request_class: `%s`\n", finalContract.RequestClass)
+		if strings.TrimSpace(finalContract.Reason) != "" {
+			fmt.Fprintf(&b, "- reason: %s\n", finalContract.Reason)
+		}
+		for _, requirement := range finalContract.Requirements {
+			fmt.Fprintf(&b, "- `%s` status=`%s`", requirement.Requirement, requirement.Status)
+			if strings.TrimSpace(requirement.Reason) != "" {
+				fmt.Fprintf(&b, " reason=%s", requirement.Reason)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 	if len(run.ObligationLedger.Items) > 0 {
 		b.WriteString("## Obligation Ledger\n\n")
 		fmt.Fprintf(&b, "- total: `%d` open: `%d`\n", run.ObligationLedger.TotalCount, run.ObligationLedger.OpenCount)

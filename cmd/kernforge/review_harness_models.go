@@ -1288,6 +1288,13 @@ func emitReviewPipelineProgress(rt *runtimeState, run ReviewRun, step int, engli
 		reviewProgressSentence(localizedText(rt.cfg, englishDetail, koreanDetail)),
 		localizedText(rt.cfg, flowEnglish, flowKorean),
 	)
+	message = strings.TrimSpace(message + " " + reviewOperatorProgressSuffix(
+		reviewPipelinePhaseForStep(step),
+		reviewTimelineStatusRunning,
+		localizedText(rt.cfg, englishDetail, koreanDetail),
+		reviewPipelineWaitingOnForStep(step),
+		reviewPipelinePhaseForStep(step+1),
+	))
 	rt.agent.EmitProgress(message)
 }
 
@@ -1969,21 +1976,21 @@ func formatReviewModelLongWaitProgress(cfg Config, reviewerRun ReviewReviewerRun
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	switch strings.ToLower(strings.TrimSpace(reviewerRun.Kind)) {
 	case "main":
-		return fmt.Sprintf(
+		return strings.TrimSpace(fmt.Sprintf(
 			localizedText(cfg, "Main model is still reading code and checking the repair direction (%s elapsed). actor=main_model next_transition=cross_review_or_gate_decision. When it returns, Kernforge will pass the draft to the review model or compute the gate if no separate reviewer is configured.", "메인 모델이 아직 코드를 읽고 수정 방향을 검토 중입니다(경과 %s). actor=main_model next_transition=cross_review_or_gate_decision. 결과가 오면 리뷰 모델에 초안을 전달하거나, 별도 리뷰 모델이 없으면 바로 게이트를 계산합니다."),
 			elapsedText,
-		)
+		) + " " + reviewOperatorProgressSuffix("model_review", reviewTimelineStatusRunning, "reading code and checking repair direction", "primary_model", "cross_review_or_gate_decision"))
 	case "cross":
-		return fmt.Sprintf(
+		return strings.TrimSpace(fmt.Sprintf(
 			localizedText(cfg, "Review model is still cross-checking the main draft (%s elapsed). actor=reviewer_model next_transition=merge_reviews. When it returns, Kernforge will merge it with the main model review; timeout, cancellation, or an empty response will be recorded in the final gate.", "리뷰 모델이 아직 메인 초안을 교차 검토 중입니다(경과 %s). actor=reviewer_model next_transition=merge_reviews. 결과가 오면 메인 모델 리뷰와 병합하고, timeout/취소/빈 응답은 최종 게이트에 실패 상태로 기록합니다."),
 			elapsedText,
-		)
+		) + " " + reviewOperatorProgressSuffix("cross_review", reviewTimelineStatusRunning, "cross-checking main draft", "cross_reviewer", "merge_reviews"))
 	default:
-		return fmt.Sprintf(
+		return strings.TrimSpace(fmt.Sprintf(
 			localizedText(cfg, "Review model %s is still running (%s elapsed). actor=reviewer_model next_transition=gate_decision. Kernforge will use the result in the final gate when it returns.", "리뷰 모델 %s가 아직 실행 중입니다(경과 %s). actor=reviewer_model next_transition=gate_decision. 결과가 오면 최종 게이트에 반영합니다."),
 			roleName,
 			elapsedText,
-		)
+		) + " " + reviewOperatorProgressSuffix("review_model", reviewTimelineStatusRunning, "review model still running", "reviewer", "gate_decision"))
 	}
 }
 
