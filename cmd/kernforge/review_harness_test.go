@@ -6882,6 +6882,72 @@ func TestReviewMergeDeduplicatesGenericRepairContractFindings(t *testing.T) {
 	}
 }
 
+func TestReviewMergeKeepsDistinctCreateProcessRepairContracts(t *testing.T) {
+	findings, merge := mergeReviewFindings([]ReviewFinding{
+		{
+			ID:           "RF-001",
+			Source:       "model",
+			ReviewerRole: "primary_reviewer",
+			Severity:     reviewSeverityHigh,
+			Category:     "correctness",
+			Quality:      reviewFindingQualityComplete,
+			Path:         "Project/ProcessLauncher.cpp",
+			Line:         158,
+			Symbol:       "CreateChildProcess",
+			Title:        "CreateProcessW의 lpCommandLine 인수로 읽기 전용 메모리 포인터 전달",
+			Evidence:     "CreateProcessW 함수의 두 번째 인수로 childProcessPath.c_str()을 PWSTR로 캐스팅하여 전달하고 있습니다.",
+			Impact:       "CreateProcessW는 내부적으로 lpCommandLine 문자열을 수정할 수 있습니다.",
+			RequiredFix:  "std::wstring commandLine = childProcessPath; 같은 수정 가능한 버퍼를 전달해야 합니다.",
+		},
+		{
+			ID:           "RF-002",
+			Source:       "model",
+			ReviewerRole: "cross_reviewer",
+			Severity:     reviewSeverityHigh,
+			Category:     "correctness",
+			Quality:      reviewFindingQualityComplete,
+			Path:         "Project/ProcessLauncher.cpp",
+			Line:         158,
+			Symbol:       "CreateChildProcess",
+			Title:        "확인된 RF-001: CreateProcessW에 수정 가능한 lpCommandLine 버퍼를 전달하지 않음",
+			Evidence:     "158번 라인에서 `(PWSTR)childProcessPath.c_str()`를 CreateProcessW의 두 번째 인수로 전달합니다.",
+			Impact:       "const 버퍼를 강제로 캐스팅해 수정 가능한 포인터처럼 전달하면 액세스 위반으로 실패할 수 있습니다.",
+			RequiredFix:  "`std::wstring commandLine = childProcessPath;` 같은 수정 가능한 버퍼를 만들고 `commandLine.data()`를 전달해야 합니다.",
+		},
+		{
+			ID:           "RF-003",
+			Source:       "model",
+			ReviewerRole: "cross_reviewer",
+			Severity:     reviewSeverityHigh,
+			Category:     "correctness",
+			Quality:      reviewFindingQualityComplete,
+			Path:         "Project/ProcessLauncher.cpp",
+			Line:         156,
+			Symbol:       "CreateChildProcess",
+			Title:        "누락된 문제: 공백이 있는 경로를 따옴표 없이 lpCommandLine으로 전달함",
+			Evidence:     "lpApplicationName을 nullptr로 전달하며 따옴표 없는 childProcessPath를 lpCommandLine으로 전달합니다.",
+			Impact:       "설치 경로에 공백이 있으면 CreateProcessW가 실행 파일 경로를 잘못 파싱할 수 있습니다.",
+			RequiredFix:  "lpApplicationName에 childProcessPath.c_str()를 전달하고 lpCommandLine에는 수정 가능한 따옴표 포함 명령줄을 전달해야 합니다.",
+		},
+	})
+	if len(findings) != 2 {
+		t.Fatalf("expected duplicate writable-buffer finding plus distinct quoted-path finding, got %#v", findings)
+	}
+	if containsString(merge.SuppressedDuplicates, "RF-003") {
+		t.Fatalf("quoted path finding must not be suppressed as a duplicate, merge=%#v", merge)
+	}
+	foundQuotedPath := false
+	for _, finding := range findings {
+		text := strings.ToLower(finding.Title + " " + finding.Evidence + " " + finding.RequiredFix)
+		if strings.Contains(text, "lpapplicationname") || strings.Contains(text, "따옴표") {
+			foundQuotedPath = true
+		}
+	}
+	if !foundQuotedPath {
+		t.Fatalf("merged findings lost the lpApplicationName/quoted path contract: %#v", findings)
+	}
+}
+
 func TestVagueReviewerFindingDoesNotBecomeRepairBlocker(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
@@ -11673,7 +11739,7 @@ func TestReadOnlySourceAnalysisHighPerformanceFindingWarnsWithoutBlocking(t *tes
 func TestReadOnlyReviewHighCorrectnessFindingNeedsRevision(t *testing.T) {
 	run := ReviewRun{
 		ID:           "review-read-only-correctness",
-		Objective:    "@Tavern/TavernMaster/TaverDartManager.cpp CreateDartProcess 함수에 버그가 있는지 검토해줘",
+		Objective:    "@Project/ProcessLauncher.cpp CreateChildProcess 함수에 버그가 있는지 검토해줘",
 		Target:       reviewTargetSelection,
 		Mode:         reviewModeLiveFix,
 		RequestClass: reviewRequestClassReviewOnly,
@@ -11682,8 +11748,8 @@ func TestReadOnlyReviewHighCorrectnessFindingNeedsRevision(t *testing.T) {
 			Source:      "model",
 			Severity:    reviewSeverityHigh,
 			Category:    "correctness",
-			Path:        "Tavern/TavernMaster/TaverDartManager.cpp",
-			Symbol:      "CreateDartProcess",
+			Path:        "Project/ProcessLauncher.cpp",
+			Symbol:      "CreateChildProcess",
 			Title:       "CreateProcessW command line buffer can crash",
 			Evidence:    "CreateProcessW can modify lpCommandLine, but the finding points at a const string buffer cast to PWSTR.",
 			Impact:      "Process creation can crash on a valid review target path.",
