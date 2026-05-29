@@ -53,6 +53,11 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 	if len(ledger.NextCommands) == 0 || ledger.NextCommands[0].Command != "/review" {
 		t.Fatalf("expected /review recovery command, got %#v", ledger.NextCommands)
 	}
+	if ledger.StaleContextSummary == nil ||
+		ledger.StaleContextSummary.Status != staleContextStatusBlocked ||
+		ledger.StaleContextSummary.Counts[staleContextKindChangedFilesAfterReview] == 0 {
+		t.Fatalf("expected stale context summary for changed files after review, got %#v", ledger.StaleContextSummary)
+	}
 }
 
 func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *testing.T) {
@@ -996,6 +1001,73 @@ func TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning(t *testi
 	}
 	if !strings.Contains(strings.Join(ledger.Warnings, " "), "latest verification predates") {
 		t.Fatalf("expected stale verification warning, got %#v", ledger.Warnings)
+	}
+	if ledger.StaleContextSummary == nil ||
+		ledger.StaleContextSummary.Status != staleContextStatusWarned ||
+		ledger.StaleContextSummary.Counts[staleContextKindStaleVerification] == 0 {
+		t.Fatalf("expected stale verification summary warning, got %#v", ledger.StaleContextSummary)
+	}
+}
+
+func TestRuntimeGateBlocksDocumentArtifactChangedAfterQualityGate(t *testing.T) {
+	root := initTestGitRepo(t)
+	now := time.Now()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "report.md"), []byte("# Report\n\nCurrent content.\n"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		RequestClass:      reviewRequestClassDocumentArtifact,
+		LifecycleKind:     reviewLifecycleKindDocumentArtifact,
+		SourcePrompt:      "write docs/report.md as the document artifact",
+		RequiredArtifacts: []string{"docs/report.md"},
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		GeneratedAt: now.Add(-2 * time.Minute),
+		Approved:    true,
+		ArtifactQuality: ArtifactQualityReport{
+			GeneratedAt: now.Add(-2 * time.Minute),
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "docs/report.md",
+				Kind:         "markdown",
+				ContentChars: 64,
+				Substantive:  true,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:          "patch-doc-after-quality",
+		Status:      patchTransactionStatusCommitted,
+		StartedAt:   now.Add(-time.Minute),
+		UpdatedAt:   now,
+		CompletedAt: now,
+		Entries: []PatchTransactionEntry{{
+			ID:          "patch-doc-after-quality-001",
+			ToolName:    "write_file",
+			Status:      "success",
+			StartedAt:   now.Add(-time.Minute),
+			CompletedAt: now,
+			Paths: []PatchPathChange{{
+				Path:      "docs/report.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusBlocked {
+		t.Fatalf("expected stale document artifact quality to block final answer, got %#v", ledger)
+	}
+	if ledger.StaleContextSummary == nil ||
+		ledger.StaleContextSummary.Counts[staleContextKindChangedArtifactsAfterQuality] == 0 {
+		t.Fatalf("expected stale artifact-quality summary, got %#v", ledger.StaleContextSummary)
+	}
+	if !strings.Contains(strings.Join(ledger.Blockers, " "), "artifact-quality evidence is stale") {
+		t.Fatalf("expected artifact-quality stale blocker, got %#v", ledger.Blockers)
 	}
 }
 

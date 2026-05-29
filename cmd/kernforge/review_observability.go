@@ -29,6 +29,7 @@ type ReviewDecisionObservability struct {
 	RemainingObligations     *ReviewRemainingObligationSummary `json:"remaining_obligations,omitempty"`
 	IncompleteTriageBlockers []string                          `json:"incomplete_triage_blockers,omitempty"`
 	FinalAnswerCorrection    *FinalAnswerCorrectionVisibility  `json:"final_answer_correction,omitempty"`
+	StaleContextSummary      *StaleContextSummary              `json:"stale_context_summary,omitempty"`
 	NextRecommendedCommand   *ReviewNextCommand                `json:"next_recommended_command,omitempty"`
 	ResidualRiskSummary      string                            `json:"residual_risk_summary,omitempty"`
 }
@@ -146,6 +147,7 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 	summary.LifecycleTimeline = reviewLifecycleTimelineForRun(&copyRun, nil, ledger, report)
 	summary.BlockerSummary = buildReviewBlockerSummary(&copyRun, ledger, report)
 	summary.FinalAnswerContract = reviewFinalAnswerContractStatusForRun(&copyRun, nil, report, "")
+	summary.StaleContextSummary = buildStaleContextSummary(nil, &copyRun, ledger, report)
 	if ledger != nil {
 		summary.CompactStatus = buildReviewCompactStatus(&copyRun, ledger, report)
 		if len(ledger.NextCommands) > 0 {
@@ -157,6 +159,11 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 			correction.Normalize()
 			summary.FinalAnswerCorrection = &correction
 		}
+		if ledger.StaleContextSummary != nil {
+			staleSummary := *ledger.StaleContextSummary
+			staleSummary.Normalize()
+			summary.StaleContextSummary = &staleSummary
+		}
 	}
 	if summary.CompactStatus == nil {
 		summary.CompactStatus = buildReviewCompactStatus(&copyRun, nil, report)
@@ -166,12 +173,12 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		summary.NextRecommendedCommand = &next
 	}
 	if report != nil {
-		if correction := finalAnswerCorrectionVisibilityFromReport(report, false); correction != nil {
-			summary.FinalAnswerCorrection = correction
-		} else if report.FinalAnswerCorrection != nil {
+		if report.FinalAnswerCorrection != nil {
 			correction := *report.FinalAnswerCorrection
 			correction.Normalize()
 			summary.FinalAnswerCorrection = &correction
+		} else if correction := finalAnswerCorrectionVisibilityFromReport(report, false); correction != nil {
+			summary.FinalAnswerCorrection = correction
 		}
 	}
 	return summary

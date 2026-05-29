@@ -1288,7 +1288,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						reply = preFinalCodingHarnessBlockedReply(a.Session.LastCodingHarnessReport)
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
-					a.markFinalAnswerCorrectionAccepted()
+					a.markFinalAnswerCorrectionRejected("correction_attempts_exhausted")
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err

@@ -966,6 +966,10 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 	routeQuality := reviewRouteQualityForRun(run)
 	finalAnswerContract := reviewFinalAnswerContractStatusForRun(&run, nil, nil, "")
 	crossReviewTriage := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
+	staleContext := buildStaleContextSummary(nil, &run, &run.RuntimeGateLedger, nil)
+	if run.RuntimeGateLedger.StaleContextSummary != nil {
+		staleContext = run.RuntimeGateLedger.StaleContextSummary
+	}
 	payload := map[string]any{
 		"summary":                      run.Result.Summary,
 		"review_id":                    run.ID,
@@ -983,6 +987,8 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"blocker_summary":              blockerSummary,
 		"route_quality":                routeQuality,
 		"final_answer_contract_status": finalAnswerContract,
+		"final_answer_correction":      run.RuntimeGateLedger.FinalAnswerCorrection,
+		"stale_context_summary":        staleContext,
 		"next_recommended_command":     recommended,
 		"artifact_refs":                run.ArtifactRefs,
 		"result":                       run.Result,

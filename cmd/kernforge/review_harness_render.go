@@ -217,6 +217,27 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		b.WriteString("\n")
 	}
+	if staleSummary := buildStaleContextSummary(nil, &run, &run.RuntimeGateLedger, nil); staleSummary != nil {
+		b.WriteString("## Stale Context Summary\n\n")
+		fmt.Fprintf(&b, "- status: `%s`\n", staleContextSummaryStatusLine(staleSummary))
+		for _, item := range staleSummary.Items {
+			fmt.Fprintf(&b, "- `%s` status=`%s` severity=`%s`", item.Kind, item.Status, item.Severity)
+			if strings.TrimSpace(item.Reason) != "" {
+				fmt.Fprintf(&b, " reason=%s", item.Reason)
+			}
+			if strings.TrimSpace(item.EvidenceRef) != "" {
+				fmt.Fprintf(&b, " evidence=`%s`", item.EvidenceRef)
+			}
+			if strings.TrimSpace(item.NextSafeAction) != "" {
+				fmt.Fprintf(&b, " next_safe_action=%s", item.NextSafeAction)
+			}
+			if strings.TrimSpace(item.NextCommand) != "" {
+				fmt.Fprintf(&b, " next_command=`%s`", item.NextCommand)
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 	if finalContract := reviewFinalAnswerContractStatusForRun(&run, nil, nil, ""); finalContract != nil {
 		b.WriteString("## Final Answer Contract\n\n")
 		fmt.Fprintf(&b, "- status: `%s`\n", finalContract.Status)

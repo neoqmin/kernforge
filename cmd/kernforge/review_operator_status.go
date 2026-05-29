@@ -101,6 +101,7 @@ type ReviewFinalAnswerContractStatus struct {
 	GenericCompletionRejected bool                                 `json:"generic_completion_rejected,omitempty"`
 	CorrectionRequired        bool                                 `json:"correction_required,omitempty"`
 	CorrectionAccepted        bool                                 `json:"correction_accepted,omitempty"`
+	CorrectionRejected        bool                                 `json:"correction_rejected,omitempty"`
 	ArtifactPath              string                               `json:"artifact_path,omitempty"`
 	ArtifactQualityStatus     string                               `json:"artifact_quality_status,omitempty"`
 	VerificationLimitation    string                               `json:"verification_limitation,omitempty"`
@@ -1018,6 +1019,13 @@ func reviewFinalAnswerContractStatusForClass(class string, session *Session, rep
 			correction.Normalize()
 			status.CorrectionRequired = correction.Required
 			status.CorrectionAccepted = correction.Corrected
+			status.CorrectionRejected = correction.Rejected
+			if correction.Rejected {
+				status.Status = reviewFinalAnswerContractStatusBlocked
+				status.Reason = "final-answer contract correction was rejected after recorded attempts"
+				reviewFinalAnswerContractBlockRequirements(status, correction.Reasons)
+				return status
+			}
 			if correction.Required && !correction.Corrected {
 				status.Status = reviewFinalAnswerContractStatusBlocked
 				status.Reason = "final-answer contract correction is required"
