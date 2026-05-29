@@ -1029,14 +1029,85 @@ func (rt *runtimeState) runtimeGateLedgerForStatus(action string) RuntimeGateLed
 }
 
 func (rt *runtimeState) printRuntimeGateStatus(action string) {
+	rt.printRuntimeGateStatusWithDetail(action, false)
+}
+
+func (rt *runtimeState) printRuntimeGateStatusDetail(action string) {
+	rt.printRuntimeGateStatusWithDetail(action, true)
+}
+
+func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail bool) {
 	if rt == nil {
 		return
 	}
 	ledger := rt.runtimeGateLedgerForStatus(action)
 	ledger.Normalize()
+	var report *CodingHarnessReport
+	if rt.session != nil && rt.session.LastCodingHarnessReport != nil {
+		report = rt.session.LastCodingHarnessReport
+	}
+	compact := buildReviewCompactStatus(nil, &ledger, report)
+	blockers := buildReviewBlockerSummary(nil, &ledger, report)
+	timeline := reviewLifecycleTimelineForRuntimeGate(rt.session, ledger.Action, ledger.ChangedPaths, &ledger, report)
+	if ledger.ReviewObservability != nil {
+		if ledger.ReviewObservability.CompactStatus != nil {
+			compact = ledger.ReviewObservability.CompactStatus
+		}
+		if ledger.ReviewObservability.BlockerSummary != nil {
+			blockers = ledger.ReviewObservability.BlockerSummary
+		}
+		if len(ledger.ReviewObservability.LifecycleTimeline) > 0 {
+			timeline = ledger.ReviewObservability.LifecycleTimeline
+		}
+	}
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.subsection("Runtime Gate"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("operator_status", reviewCompactStatusLine(compact)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("gates", reviewGateCompactLine(compact)))
+	if compact != nil {
+		if compact.SecondPassState != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("second_pass_state", compact.SecondPassState))
+		}
+		if len(compact.CrossReviewTriageCounts) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review_triage_counts", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{
+				crossReviewTriageAcceptedFixed,
+				crossReviewTriageAcceptedDeferred,
+				crossReviewTriageRejectedWithReason,
+				crossReviewTriageNeedsUserDecision,
+				"incomplete_invalid",
+			})))
+		}
+		if len(compact.BlockersByClass) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("blockers_by_class", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder())))
+		}
+		if len(compact.RemainingObligations) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_obligations", strings.Join(compact.RemainingObligations, ", ")))
+		}
+		if compact.DocumentArtifactPath != "" || compact.ArtifactQualityStatus != "" || compact.VerificationSkipReason != "" {
+			parts := []string{}
+			if compact.DocumentArtifactPath != "" {
+				parts = append(parts, "path="+compact.DocumentArtifactPath)
+			}
+			if compact.ArtifactQualityStatus != "" {
+				parts = append(parts, "artifact_quality="+compact.ArtifactQualityStatus)
+			}
+			if compact.VerificationSkipReason != "" {
+				parts = append(parts, "verification="+compact.VerificationSkipReason)
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("document_artifact", strings.Join(parts, " ")))
+		}
+	}
+	if blockers != nil && blockers.HasBlockers {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("blocker_summary", reviewBlockerSummaryStatusLine(blockers)))
+		if len(blockers.Primary) > 0 {
+			primary := blockers.Primary[0]
+			fmt.Fprintln(rt.writer, rt.ui.warnLine(primary.Class+": "+primary.WhyBlocks))
+			if primary.NextCommand != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("primary_blocker_next", primary.NextCommand))
+			}
+		}
+	}
 	if ledger.RequestClass != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("request_class", ledger.RequestClass))
 	}
@@ -1143,6 +1214,33 @@ func (rt *runtimeState) printRuntimeGateStatus(action string) {
 	}
 	if line := runtimeGatePrimaryNextCommandLine(ledger); line != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("next_command", line))
+	}
+	if detail {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, rt.ui.subsection("Lifecycle Timeline"))
+		for _, item := range timeline {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV(item.Phase, reviewLifecyclePhaseLine(item)))
+		}
+		if blockers != nil && len(blockers.Primary) > 0 {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Blocker Details"))
+			for _, item := range blockers.Primary {
+				line := item.Class + ": " + item.WhyBlocks
+				if item.AlreadyChecked != "" {
+					line += " checked=" + item.AlreadyChecked
+				}
+				if len(item.EvidenceRefs) > 0 {
+					line += " evidence=" + strings.Join(limitStrings(item.EvidenceRefs, 3), ",")
+				}
+				if item.NextSafeAction != "" {
+					line += " next_safe_action=" + item.NextSafeAction
+				}
+				if item.NextCommand != "" {
+					line += " next_command=" + item.NextCommand
+				}
+				fmt.Fprintln(rt.writer, rt.ui.warnLine(line))
+			}
+		}
 	}
 }
 

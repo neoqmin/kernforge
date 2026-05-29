@@ -54,7 +54,9 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, fi
 		}
 		a.Session.LastDocumentArtifactFingerprint = artifactFingerprint
 		if a.EmitProgress != nil {
-			a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Skipping automatic post-change review because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 자동 변경 후 리뷰를 건너뜁니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다."))
+			line := localizedTextForReviewRequest(a.Config, skipRequest, "Skipping automatic post-change review because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 자동 변경 후 리뷰를 건너뜁니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다.")
+			line = strings.TrimSpace(line + " " + reviewOperatorProgressSuffix(reviewLifecyclePhasePostChangeReview, reviewTimelineStatusSkipped, "document_artifact flow uses artifact quality gate", reviewLifecyclePhaseArtifactQualityGate, reviewLifecyclePhaseFinalAnswerContract))
+			a.EmitProgress(line)
 		}
 		return true, false, "", artifactFingerprint, nil
 	}
@@ -197,7 +199,9 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	request := preWriteReviewUserRequest(a.Session)
 	if skipRequest := preWriteGeneratedDocumentArtifactRequest(a.Session, preview, request); skipRequest != "" {
 		if a.EmitProgress != nil {
-			a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Skipping blocking pre-write review for generated document artifact; artifact quality checks will validate the saved report after writing.", "생성 문서 산출물은 차단형 쓰기 전 리뷰를 건너뜁니다. 저장 후 산출물 품질 검사로 보고서를 확인합니다."))
+			line := localizedTextForReviewRequest(a.Config, skipRequest, "Skipping blocking pre-write review for generated document artifact; artifact quality checks will validate the saved report after writing.", "생성 문서 산출물은 차단형 쓰기 전 리뷰를 건너뜁니다. 저장 후 산출물 품질 검사로 보고서를 확인합니다.")
+			line = strings.TrimSpace(line + " " + reviewOperatorProgressSuffix(reviewLifecyclePhasePreWriteReview, reviewTimelineStatusSkipped, "document_artifact flow uses artifact quality gate", reviewLifecyclePhaseArtifactQualityGate, reviewLifecyclePhaseArtifactQualityGate))
+			a.EmitProgress(line)
 		}
 		return nil
 	}
@@ -323,6 +327,13 @@ func (a *Agent) emitRepairWorkflowProgress(request string, step int, englishStag
 		reviewProgressSentence(localizedTextForReviewRequest(a.Config, request, englishDetail, koreanDetail)),
 		localizedTextForReviewRequest(a.Config, request, flowEnglish, flowKorean),
 	)
+	message = strings.TrimSpace(message + " " + reviewOperatorProgressSuffix(
+		repairWorkflowPhaseForStep(step),
+		reviewTimelineStatusRunning,
+		localizedTextForReviewRequest(a.Config, request, englishDetail, koreanDetail),
+		repairWorkflowWaitingOnForStep(step),
+		repairWorkflowPhaseForStep(step+1),
+	))
 	a.EmitProgress(message)
 }
 
@@ -2023,6 +2034,12 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 	warningCount := len(run.Gate.WarningFindings)
 	content := preWriteReviewFinalContentProgress(cfg, run)
 	report := preWriteReviewReportProgressSuffix(cfg, run)
+	prefixEnglish := "Automatic pre-write review gate evaluated."
+	prefixKorean := "자동 쓰기 전 리뷰 게이트를 판정했습니다."
+	if proceedToPreview {
+		prefixEnglish = "Automatic pre-write review completed."
+		prefixKorean = "자동 쓰기 전 리뷰가 완료되었습니다."
+	}
 	if korean {
 		action := "diff preview로 진행하지 않습니다."
 		if proceedToPreview {
@@ -2031,7 +2048,7 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 				action += " 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence 확인 부족입니다."
 			}
 		}
-		return strings.TrimSpace(fmt.Sprintf("자동 쓰기 전 리뷰가 완료되었습니다. 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s", verdict, blockerCount, warningCount, content, action, report))
+		return strings.TrimSpace(fmt.Sprintf("%s 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s %s", prefixKorean, verdict, blockerCount, warningCount, content, action, report, reviewOperatorProgressSuffix(reviewLifecyclePhasePreWriteReview, reviewTimelineStatusFromVerdict(verdict), "pre-write gate evaluated", "reviewer", reviewLifecyclePhaseApplyingChange)))
 	}
 	action := "Not proceeding to diff preview."
 	if proceedToPreview {
@@ -2040,7 +2057,7 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 			action += " Remaining warnings are review-evidence visibility gaps, not confirmed unresolved code blockers."
 		}
 	}
-	return strings.TrimSpace(fmt.Sprintf("Automatic pre-write review completed. Final review result: %s (blockers=%d, warnings=%d). %s %s%s", verdict, blockerCount, warningCount, content, action, report))
+	return strings.TrimSpace(fmt.Sprintf("%s Final review result: %s (blockers=%d, warnings=%d). %s %s%s %s", prefixEnglish, verdict, blockerCount, warningCount, content, action, report, reviewOperatorProgressSuffix(reviewLifecyclePhasePreWriteReview, reviewTimelineStatusFromVerdict(verdict), "pre-write gate evaluated", "reviewer", reviewLifecyclePhaseApplyingChange)))
 }
 
 func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {

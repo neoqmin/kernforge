@@ -244,12 +244,19 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - edit target mismatch나 pre-write review 차단처럼 stale-context 복구 신호가 생긴 뒤에는 넓은 recovery patch를 workspace에 적용하지 않고 연기한다. 차단된 pre-write proposal은 적용된 상태가 아니므로, 다음 edit tool은 `read_file`, `grep`, `git_diff`로 현재 파일 또는 현재 diff를 다시 확인한 뒤에만 실행된다. 모델은 거절된 proposal의 delta가 아니라 현재 상태에 바로 적용 가능한 좁은 standalone patch를 다시 제출해야 한다.
 - pre-write review는 `edit_proposals`를 review artifact와 MCP 응답에 보존하므로 승인된 proposal 의도, raw preview, changed path, freshness 판정이 서로 연결된다.
 - runtime gate freshness는 stale review, waiver 없는 review blocker, 실패한 verification, 누락된 review coverage가 있으면 final answer, git write, MCP write-side action, completion audit handoff를 차단하거나 경고한다.
+- `/status` 기본 출력은 compact operator card다. request class, classification confidence/ambiguity, 현재 lifecycle phase, route mode, reviewer route quality, review/repair/document/verification/final-answer gate, second-pass state, cross-review triage count, blocker class, 남은 obligation, 다음 추천 명령을 한눈에 보여준다.
+- `/status detail`은 evidence가 많은 확장 보기다. detail mode는 `classified_request`, `collecting_context`, `pre_write_review`, `applying_change`, `post_change_review`, `single_model_second_pass`, `cross_review_triage`, `artifact_quality_gate`, `verification`, `final_answer_contract`, `blocked`, `completed` timeline을 status/reason/evidence ref/next safe action과 함께 펼친다.
+- progress line은 phase-aware 상태로 출력된다. 긴 대기 중에는 primary model, cross reviewer, local tool, verification command, final-answer correction 중 무엇을 기다리는지 표시하고 같은 status spam은 반복하지 않는다.
+- blocked 상태는 blocker-first로 렌더링한다. primary blocker는 `code_repair_blocker`, `reviewer_route_problem`, `evidence_gap`, `verification_gap`, `document_artifact_quality`, `final_answer_contract`, `user_decision_required`로 묶고, 왜 막는지, 이미 확인한 것, 안전한 다음 행동, 다음 명령을 같이 보여준다.
+- MCP review/status 응답은 하위 호환 field를 유지하면서 `lifecycle_timeline`, `compact_status`, `blocker_summary`, `route_quality`, `final_answer_contract_status`, `next_recommended_command` operator-card field를 추가한다. 이 surface는 raw model output을 dump하지 않는다.
 - review quality gate는 provider별 omission pattern을 재시도하고, weak 또는 근거가 부족한 high severity model finding은 evidence-gap warning으로 낮춘다. model finding이 gate를 막으려면 path 또는 symbol, evidence, impact, required fix가 모두 필요하다.
 - 수정 전 리뷰 finding은 patch/write tool 실행 전에 사용자에게 보이게 요약되므로, 어떤 RF 항목을 근거로 수정했는지 대화 로그에서 확인할 수 있다.
 - 로컬 코드 수리는 사용자가 외부 리서치를 명시적으로 요청하지 않는 한 web/search/browser MCP tool로 review gate를 만족시키려 하지 않는다.
 - final answer 직전 coding harness와 `/completion-audit`가 acceptance contract, 실제 변경 path, artifact 생성 여부, artifact 내용 품질, scenario replay 상태, subagent/reviewer 근거, test impact, open task, verification, background job 상태와 필수 completion fact를 검토한다.
 - 수정/로컬 리뷰 lifecycle의 final answer는 변경 파일 또는 무변경, review/self-review 결과, validation 결과 또는 미실행 이유, remaining risk를 빠뜨릴 수 없다. 누락되면 사용자에게 보이기 전에 final-answer-only correction으로 되돌린다.
+- single-model mode는 degraded fallback이 아니라 `single_model_second_pass_ran`, `single_model_second_pass_cached`, `single_model_second_pass_skipped` 중 하나로 보인다. 독립 cross route는 `cross_model_review_ran`, reviewer-only post-change 경로는 `reviewer_only_post_change_review_used`로 분리되며 single-model second pass를 독립 cross-review처럼 표시하지 않는다.
 - 요청한 문서나 보고서 artifact가 placeholder/TODO이거나 핵심 주제를 전혀 담지 않으면 artifact quality blocker로 최종 답변을 막는다.
+- document-only flow는 artifact path, artifact-quality status, 필요한 경우 source-review evidence status, build/test verification skip 또는 required reason을 명시한다. 문서 artifact 최종 답변을 고친 경우 code repair가 아니라 final-answer contract correction으로 표시한다.
 - 사용자가 trigger/expected/observed가 있는 bug scenario를 준 경우, 코드 변경 후 replay/verification 결과 또는 "실행하지 못했다"는 명시적 disclosure 없이 해결을 주장하면 scenario replay blocker가 걸린다.
 - root-cause 답변에서 worker evidence가 사용자 증상으로 이어지는 causal bridge를 제공하지 못하거나 reviewer issue를 숨기면 subagent orchestration blocker가 걸린다.
 - verification 실패가 발생하면 failure repair harness가 첫 의미 있는 실패 줄, 반복 횟수, 좁은 재실행 명령, 다음 수리 단계를 active context로 유지한다.

@@ -23,6 +23,7 @@ type ReviewRequestLifecycle struct {
 	Phase                    string                   `json:"phase,omitempty"`
 	RouteMode                string                   `json:"route_mode,omitempty"`
 	Reason                   string                   `json:"reason,omitempty"`
+	Timeline                 []ReviewLifecyclePhase   `json:"timeline,omitempty"`
 	ClassificationConfidence float64                  `json:"classification_confidence,omitempty"`
 	ClassificationAmbiguous  bool                     `json:"classification_ambiguous,omitempty"`
 	AmbiguityWarnings        []string                 `json:"ambiguity_warnings,omitempty"`
@@ -87,6 +88,7 @@ func (l *ReviewRequestLifecycle) Normalize() {
 	l.Phase = strings.TrimSpace(l.Phase)
 	l.RouteMode = strings.TrimSpace(l.RouteMode)
 	l.Reason = strings.TrimSpace(l.Reason)
+	l.Timeline = normalizeReviewLifecycleTimeline(l.Timeline)
 	if l.ClassificationConfidence < 0 {
 		l.ClassificationConfidence = 0
 	}
@@ -647,6 +649,7 @@ func buildReviewRequestLifecycle(run *ReviewRun, session *Session) *ReviewReques
 		Phase:                    reviewLifecyclePhaseForRun(*run),
 		RouteMode:                reviewRouteModeForRun(*run),
 		Reason:                   reason,
+		Timeline:                 reviewLifecycleTimelineForRun(run, session, nil, nil),
 		ClassificationConfidence: run.RequestAnalysis.RequestClassConfidence,
 		ClassificationAmbiguous:  run.RequestAnalysis.RequestClassAmbiguous,
 		AmbiguityWarnings:        run.RequestAnalysis.AmbiguityWarnings,
@@ -763,11 +766,13 @@ func buildRuntimeGateLifecycle(session *Session, action string, changedPaths []s
 		RequestClass:             class,
 		Phase:                    "runtime_gate",
 		Reason:                   reason,
+		Timeline:                 reviewLifecycleTimelineForRuntimeGate(session, action, changedPaths, nil, nil),
 		ClassificationConfidence: reviewRuntimeGateRequestClassConfidence(session),
 		ClassificationAmbiguous:  reviewRuntimeGateRequestClassAmbiguous(session),
 		AmbiguityWarnings:        reviewRuntimeGateRequestClassAmbiguityWarnings(session),
 		Contract:                 reviewLifecycleContractForClass(class),
 		DocumentGateStatus:       reviewRuntimeGateDocumentStatus(session, class),
+		VerificationGateStatus:   reviewRuntimeGateVerificationStatus(session, class, changedPaths),
 	}
 	lifecycle.Normalize()
 	return lifecycle
@@ -819,6 +824,38 @@ func reviewRuntimeGateDocumentStatus(session *Session, class string) string {
 		return "blocked"
 	}
 	return "pending"
+}
+
+func reviewRuntimeGateVerificationStatus(session *Session, class string, changedPaths []string) string {
+	if normalizeReviewRequestClass(class) == reviewRequestClassDocumentArtifact {
+		return "skipped_document_artifact_only"
+	}
+	if session != nil && session.LastVerification != nil {
+		if session.LastVerification.WasSkipped() {
+			return "skipped"
+		}
+		if session.LastVerification.HasFailures() {
+			return "failed"
+		}
+		return "recorded"
+	}
+	if len(changedPaths) > 0 {
+		return "gap_recorded"
+	}
+	return "not_required"
+}
+
+func reviewDocumentArtifactVerificationSkipReason(status string) string {
+	switch strings.TrimSpace(status) {
+	case "skipped_document_artifact_only":
+		return "build/test verification skipped because this is a document-only artifact flow"
+	case "skipped":
+		return "verification was skipped and must be disclosed if finalizing"
+	case "not_required", "not_applicable":
+		return "build/test verification not required for this status snapshot"
+	default:
+		return ""
+	}
 }
 
 func reviewRuntimeGateRequestClassConfidence(session *Session) float64 {

@@ -14,20 +14,62 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 	if autoReview == "off" {
 		decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), prefersReadOnlyAnalysisIntent(request) || looksLikeReviewInspectionOnlyRequest(request), looksLikeExplicitEditIntent(request))
 		requestClass, requestClassReason := decision.RequestClass, decision.Reason
+		lifecycle := ReviewRequestLifecycle{
+			RequestClass:             requestClass,
+			Phase:                    "skipped",
+			Reason:                   requestClassReason,
+			ClassificationConfidence: decision.Confidence,
+			ClassificationAmbiguous:  decision.Ambiguous,
+			AmbiguityWarnings:        decision.AmbiguityWarnings,
+			Contract:                 reviewLifecycleContractForClass(requestClass),
+			Timeline: []ReviewLifecyclePhase{{
+				Phase:          reviewLifecyclePhaseClassifiedRequest,
+				Status:         reviewTimelineStatusPassed,
+				Reason:         requestClassReason,
+				EvidenceRef:    "mcp.auto_review",
+				NextSafeAction: "set auto_review=on or omit auto_review=off to run the review harness",
+				NextCommand:    "kernforge_review",
+			}, {
+				Phase:          "skipped",
+				Status:         reviewTimelineStatusSkipped,
+				Reason:         "MCP review skipped because auto_review=off",
+				EvidenceRef:    "mcp.arguments.auto_review",
+				NextSafeAction: "run kernforge_review with auto_review=on when review evidence is required",
+				NextCommand:    "kernforge_review",
+			}},
+		}
+		lifecycle.Normalize()
+		compact := &ReviewCompactStatus{
+			RequestClass:              requestClass,
+			ClassificationConfidence:  decision.Confidence,
+			ClassificationAmbiguous:   decision.Ambiguous,
+			ClassificationAmbiguity:   decision.AmbiguityWarnings,
+			CurrentLifecyclePhase:     "skipped",
+			RouteMode:                 reviewRouteModeDeterministicOnly,
+			ReviewGateStatus:          "skipped",
+			RepairGateStatus:          "skipped",
+			DocumentGateStatus:        reviewRuntimeGateDocumentStatus(nil, requestClass),
+			VerificationGateStatus:    "skipped",
+			FinalAnswerContractStatus: reviewFinalAnswerContractStatusPending,
+			NextRecommendedCommand:    "kernforge_review",
+		}
+		compact.Normalize()
 		payload := map[string]any{
-			"summary":        "MCP review skipped because auto_review=off.",
-			"machine_status": reviewMachineStatusWarning,
-			"status_code":    0,
-			"retryable":      false,
-			"request_class":  requestClass,
-			"lifecycle": ReviewRequestLifecycle{
-				RequestClass:             requestClass,
-				Phase:                    "skipped",
-				Reason:                   requestClassReason,
-				ClassificationConfidence: decision.Confidence,
-				ClassificationAmbiguous:  decision.Ambiguous,
-				AmbiguityWarnings:        decision.AmbiguityWarnings,
-				Contract:                 reviewLifecycleContractForClass(requestClass),
+			"summary":                      "MCP review skipped because auto_review=off.",
+			"machine_status":               reviewMachineStatusWarning,
+			"status_code":                  0,
+			"retryable":                    false,
+			"request_class":                requestClass,
+			"lifecycle":                    lifecycle,
+			"lifecycle_timeline":           lifecycle.Timeline,
+			"compact_status":               compact,
+			"blocker_summary":              (*ReviewBlockerSummary)(nil),
+			"route_quality":                ReviewRouteQualitySummary{Status: "skipped"},
+			"final_answer_contract_status": reviewFinalAnswerContractStatusForClass(requestClass, nil, nil, ""),
+			"next_recommended_command": map[string]any{
+				"command": "kernforge_review",
+				"reason":  "auto_review=off skipped the review harness",
+				"safety":  "read_only",
 			},
 		}
 		data, _ := json.MarshalIndent(payload, "", "  ")

@@ -14,10 +14,14 @@ type ReviewDecisionObservability struct {
 	Flow                     string                            `json:"flow,omitempty"`
 	RequestClass             string                            `json:"request_class,omitempty"`
 	Lifecycle                *ReviewRequestLifecycle           `json:"lifecycle,omitempty"`
+	LifecycleTimeline        []ReviewLifecyclePhase            `json:"lifecycle_timeline,omitempty"`
+	CompactStatus            *ReviewCompactStatus              `json:"compact_status,omitempty"`
+	BlockerSummary           *ReviewBlockerSummary             `json:"blocker_summary,omitempty"`
 	Gate                     ReviewGateObservability           `json:"gate,omitempty"`
 	SingleModelSecondPass    *ReviewSecondPassObservability    `json:"single_model_second_pass,omitempty"`
 	CrossReviewTriage        *ReviewCrossReviewTriageSummary   `json:"cross_review_triage,omitempty"`
 	RouteQuality             *ReviewRouteQualitySummary        `json:"route_quality,omitempty"`
+	FinalAnswerContract      *ReviewFinalAnswerContractStatus  `json:"final_answer_contract_status,omitempty"`
 	BlockerClasses           *ReviewBlockerClassCounts         `json:"blocker_classes,omitempty"`
 	RemainingObligations     *ReviewRemainingObligationSummary `json:"remaining_obligations,omitempty"`
 	IncompleteTriageBlockers []string                          `json:"incomplete_triage_blockers,omitempty"`
@@ -34,8 +38,12 @@ type ReviewGateObservability struct {
 
 type ReviewSecondPassObservability struct {
 	Status        string   `json:"status,omitempty"`
+	State         string   `json:"state,omitempty"`
 	Ran           bool     `json:"ran"`
 	CacheHit      bool     `json:"cache_hit,omitempty"`
+	CrossModelRan bool     `json:"cross_model_review_ran,omitempty"`
+	ReviewerOnly  bool     `json:"reviewer_only_post_change_review_used,omitempty"`
+	EvidenceGap   bool     `json:"evidence_gap,omitempty"`
 	ModelRoute    string   `json:"model_route,omitempty"`
 	FindingCount  int      `json:"finding_count,omitempty"`
 	ReviewedPaths []string `json:"reviewed_paths,omitempty"`
@@ -105,6 +113,7 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		SingleModelSecondPass:    buildReviewSecondPassObservability(copyRun),
 		CrossReviewTriage:        buildReviewCrossReviewTriageSummary(copyRun.CrossReviewTriage),
 		RouteQuality:             reviewRouteQualityForRun(copyRun),
+		FinalAnswerContract:      reviewFinalAnswerContractStatusForRun(&copyRun, nil, report, ""),
 		BlockerClasses:           buildReviewBlockerClassCounts(copyRun, report),
 		RemainingObligations:     buildReviewRemainingObligationSummary(copyRun.ObligationLedger),
 		IncompleteTriageBlockers: reviewIncompleteTriageBlockers(copyRun.CrossReviewTriage),
@@ -119,7 +128,11 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 	if summary.Lifecycle != nil {
 		summary.Lifecycle.Normalize()
 	}
+	summary.LifecycleTimeline = reviewLifecycleTimelineForRun(&copyRun, nil, ledger, report)
+	summary.BlockerSummary = buildReviewBlockerSummary(&copyRun, ledger, report)
+	summary.FinalAnswerContract = reviewFinalAnswerContractStatusForRun(&copyRun, nil, report, "")
 	if ledger != nil {
+		summary.CompactStatus = buildReviewCompactStatus(&copyRun, ledger, report)
 		if len(ledger.NextCommands) > 0 {
 			next := ledger.NextCommands[0]
 			summary.NextRecommendedCommand = &next
@@ -129,6 +142,9 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 			correction.Normalize()
 			summary.FinalAnswerCorrection = &correction
 		}
+	}
+	if summary.CompactStatus == nil {
+		summary.CompactStatus = buildReviewCompactStatus(&copyRun, nil, report)
 	}
 	if summary.NextRecommendedCommand == nil && len(copyRun.Gate.NextCommands) > 0 {
 		next := copyRun.Gate.NextCommands[0]
@@ -147,14 +163,23 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 }
 
 func buildReviewSecondPassObservability(run ReviewRun) *ReviewSecondPassObservability {
+	crossModelRan := reviewRunHasReviewerRun(run, "cross_reviewer")
+	reviewerOnlyPostChange := strings.EqualFold(strings.TrimSpace(run.Trigger), "post_change") &&
+		len(run.ReviewerRuns) > 0 &&
+		!reviewRunHasReviewerRun(run, "primary_reviewer")
 	if run.SingleModelSecondPass != nil {
 		second := *run.SingleModelSecondPass
 		status := strings.TrimSpace(strings.ToLower(second.Status))
 		ran := status != "" && status != "skipped" && status != "not_applicable" && status != "pending"
+		state := reviewSecondPassState(status, ran, second.CacheHit, crossModelRan, reviewerOnlyPostChange, strings.TrimSpace(second.SkippedReason))
 		return &ReviewSecondPassObservability{
 			Status:        valueOrDefault(status, "unknown"),
+			State:         state,
 			Ran:           ran,
 			CacheHit:      second.CacheHit,
+			CrossModelRan: crossModelRan,
+			ReviewerOnly:  reviewerOnlyPostChange,
+			EvidenceGap:   reviewSecondPassSkippedIsEvidenceGap(state, strings.TrimSpace(second.SkippedReason)),
 			ModelRoute:    strings.TrimSpace(second.Model),
 			FindingCount:  second.FindingCount,
 			ReviewedPaths: normalizeTaskStateList(second.ReviewedPaths, 32),
@@ -174,9 +199,14 @@ func buildReviewSecondPassObservability(run ReviewRun) *ReviewSecondPassObservab
 	} else if reviewRunHasReviewerRun(run, "cross_reviewer") {
 		reason = "independent cross-review route ran instead of single-model second pass"
 	}
+	state := reviewSecondPassState(status, false, false, crossModelRan, reviewerOnlyPostChange, reason)
 	return &ReviewSecondPassObservability{
 		Status:        status,
+		State:         state,
 		Ran:           false,
+		CrossModelRan: crossModelRan,
+		ReviewerOnly:  reviewerOnlyPostChange,
+		EvidenceGap:   reviewSecondPassSkippedIsEvidenceGap(state, reason),
 		SkippedReason: reason,
 	}
 }
@@ -496,10 +526,20 @@ func reviewSecondPassStatusLine(obs *ReviewSecondPassObservability) string {
 	if obs == nil {
 		return "none"
 	}
-	parts := []string{"status=" + valueOrDefault(obs.Status, "unknown")}
+	parts := []string{"state=" + valueOrDefault(obs.State, "unknown")}
+	parts = append(parts, "status="+valueOrDefault(obs.Status, "unknown"))
 	parts = append(parts, fmt.Sprintf("ran=%t", obs.Ran))
 	if obs.CacheHit {
 		parts = append(parts, "cache_hit=true")
+	}
+	if obs.CrossModelRan {
+		parts = append(parts, "cross_model_review_ran=true")
+	}
+	if obs.ReviewerOnly {
+		parts = append(parts, "reviewer_only_post_change_review_used=true")
+	}
+	if obs.EvidenceGap {
+		parts = append(parts, "evidence_gap=true")
 	}
 	if obs.ModelRoute != "" {
 		parts = append(parts, "route="+obs.ModelRoute)
@@ -527,13 +567,9 @@ func reviewCrossReviewTriageStatusLine(obs *ReviewCrossReviewTriageSummary) stri
 		crossReviewTriageRejectedWithReason,
 		crossReviewTriageNeedsUserDecision,
 	} {
-		if count := obs.StatusCounts[status]; count > 0 {
-			parts = append(parts, fmt.Sprintf("%s=%d", status, count))
-		}
+		parts = append(parts, fmt.Sprintf("%s=%d", status, obs.StatusCounts[status]))
 	}
-	if obs.IncompleteCount > 0 {
-		parts = append(parts, fmt.Sprintf("incomplete=%d", obs.IncompleteCount))
-	}
+	parts = append(parts, fmt.Sprintf("incomplete_invalid=%d", obs.IncompleteCount))
 	if obs.UserActionNeeded {
 		parts = append(parts, "user_action=true")
 	}

@@ -6335,8 +6335,13 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			}
 		}
 	case "status":
+		detailStatus := statusCommandDetailRequested(cmd.Args)
 		fmt.Fprintln(rt.writer, rt.ui.section("Status"))
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Current session and runtime state. Use /config for effective settings."))
+		if detailStatus {
+			fmt.Fprintln(rt.writer, rt.ui.hintLine("Current session and runtime state with lifecycle timeline detail. Use /status for the compact operator view."))
+		} else {
+			fmt.Fprintln(rt.writer, rt.ui.hintLine("Current session and runtime state. Use /status detail for lifecycle timeline evidence and /config for effective settings."))
+		}
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Connection",
 			kv("version", currentVersion()),
@@ -6410,7 +6415,11 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if rt.session.LastSelection != nil && rt.session.LastSelection.HasSelection() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("selection", rt.session.LastSelection.Summary(rt.workspace.Root)))
 		}
-		rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
+		if detailStatus {
+			rt.printRuntimeGateStatusDetail(runtimeGateActionFinalAnswer)
+		} else {
+			rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
+		}
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Data",
 			kv("memory_files", fmt.Sprintf("%d", len(rt.memory.Files))),
