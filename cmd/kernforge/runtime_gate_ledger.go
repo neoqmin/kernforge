@@ -41,6 +41,7 @@ type RuntimeGateLedger struct {
 	NextCommands          []ReviewNextCommand              `json:"next_commands,omitempty"`
 	ReviewObservability   *ReviewDecisionObservability     `json:"review_observability,omitempty"`
 	FinalAnswerCorrection *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
+	StaleContextSummary   *StaleContextSummary             `json:"stale_context_summary,omitempty"`
 }
 
 type ReviewTransaction struct {
@@ -120,6 +121,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 
 	runtimeGateAttachVerification(session, &ledger)
 	runtimeGateAttachCodingHarness(session, &ledger)
+	runtimeGateAttachStaleContext(session, &ledger, observedReview)
 	ledger.Normalize()
 	if observedReview != nil {
 		var report *CodingHarnessReport
@@ -254,6 +256,9 @@ func (l *RuntimeGateLedger) Normalize() {
 	if l.FinalAnswerCorrection != nil {
 		l.FinalAnswerCorrection.Normalize()
 	}
+	if l.StaleContextSummary != nil {
+		l.StaleContextSummary.Normalize()
+	}
 	if l.ReviewObservability != nil && l.ReviewObservability.FinalAnswerCorrection != nil {
 		l.ReviewObservability.FinalAnswerCorrection.Normalize()
 	}
@@ -382,6 +387,9 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 	}
 	if l.FinalAnswerCorrection != nil {
 		lines = append(lines, "- Final answer correction: "+finalAnswerCorrectionStatusLine(l.FinalAnswerCorrection))
+	}
+	if l.StaleContextSummary != nil {
+		lines = append(lines, "- Stale context: "+staleContextSummaryStatusLine(l.StaleContextSummary))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -805,6 +813,41 @@ func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger)
 	}
 }
 
+func runtimeGateAttachStaleContext(session *Session, ledger *RuntimeGateLedger, review *ReviewRun) {
+	if ledger == nil {
+		return
+	}
+	var report *CodingHarnessReport
+	if session != nil && session.LastCodingHarnessReport != nil {
+		report = session.LastCodingHarnessReport
+	}
+	summary := buildStaleContextSummary(session, review, ledger, report)
+	if summary == nil {
+		return
+	}
+	ledger.StaleContextSummary = summary
+	for _, item := range summary.Items {
+		if item.Kind != staleContextKindChangedArtifactsAfterQuality {
+			continue
+		}
+		message := "artifact-quality evidence is stale: " + item.Reason
+		if item.Severity == staleContextSeverityBlocker {
+			ledger.Blockers = appendTaskStateItem(ledger.Blockers, message, 32)
+		} else {
+			ledger.Warnings = appendTaskStateItem(ledger.Warnings, message, 32)
+		}
+		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+			ID:             "artifact-quality",
+			Command:        "/status detail",
+			Reason:         "document artifact changed after the artifact-quality gate",
+			Safety:         "read_only",
+			When:           "before final answer or git write",
+			ClientHint:     "Rerun or refresh the artifact-quality gate for the current artifact contents.",
+			ExpectedResult: "The artifact-quality summary matches the latest artifact state.",
+		})
+	}
+}
+
 func runtimeGateGeneratedDocumentArtifactHarnessBlockersAreAnswerOnly(session *Session, ledger *RuntimeGateLedger, report *CodingHarnessReport) bool {
 	if session == nil || ledger == nil || report == nil {
 		return false
@@ -1108,6 +1151,9 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 			}
 		}
 	}
+	if ledger.StaleContextSummary != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_context", staleContextSummaryStatusLine(ledger.StaleContextSummary)))
+	}
 	if ledger.RequestClass != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("request_class", ledger.RequestClass))
 	}
@@ -1248,6 +1294,26 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 					line += " next_command=" + item.NextCommand
 				}
 				fmt.Fprintln(rt.writer, rt.ui.warnLine(line))
+			}
+		}
+		if ledger.StaleContextSummary != nil && ledger.StaleContextSummary.HasStaleContext {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Stale Context"))
+			for _, item := range ledger.StaleContextSummary.Items {
+				line := fmt.Sprintf("%s status=%s severity=%s", item.Kind, item.Status, item.Severity)
+				if item.Reason != "" {
+					line += " reason=" + compactPromptSection(item.Reason, 160)
+				}
+				if item.EvidenceRef != "" {
+					line += " evidence=" + item.EvidenceRef
+				}
+				if item.NextSafeAction != "" {
+					line += " next_safe_action=" + compactPromptSection(item.NextSafeAction, 160)
+				}
+				if item.NextCommand != "" {
+					line += " next_command=" + item.NextCommand
+				}
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_context_item", line))
 			}
 		}
 	}

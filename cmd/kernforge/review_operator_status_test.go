@@ -374,6 +374,8 @@ func TestMCPReviewResponseExposesOperatorCardFieldsWithoutRawModelDump(t *testin
 		`"blocker_summary"`,
 		`"route_quality"`,
 		`"final_answer_contract_status"`,
+		`"final_answer_correction"`,
+		`"stale_context_summary"`,
 		`"next_recommended_command"`,
 	} {
 		if !strings.Contains(rendered, want) {
@@ -404,7 +406,7 @@ func TestMCPStatusResponseAddsCompactOperatorFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("toolStatus: %v", err)
 	}
-	for _, want := range []string{`"compact_status"`, `"lifecycle_timeline"`, `"blocker_summary"`, `"next_recommended_command"`} {
+	for _, want := range []string{`"compact_status"`, `"lifecycle_timeline"`, `"blocker_summary"`, `"stale_context_summary"`, `"next_recommended_command"`} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected MCP status to include %s, got:\n%s", want, rendered)
 		}
@@ -427,6 +429,7 @@ func TestMCPReviewAutoOffExposesLifecycleKindWithoutModelRun(t *testing.T) {
 		`"secondary_request_classes"`,
 		`"compact_status"`,
 		`"lifecycle_timeline"`,
+		`"stale_context_summary"`,
 		`"next_recommended_command"`,
 	} {
 		if !strings.Contains(rendered, want) {

@@ -1749,6 +1749,8 @@ func (s *kernforgeMCPServer) toolStatus(ctx context.Context, args map[string]any
 		"blocker_summary":              blockers,
 		"route_quality":                nil,
 		"final_answer_contract_status": contract,
+		"final_answer_correction":      ledger.FinalAnswerCorrection,
+		"stale_context_summary":        ledger.StaleContextSummary,
 		"next_recommended_command":     nextRecommended,
 	}
 	if ledger.ReviewObservability != nil {

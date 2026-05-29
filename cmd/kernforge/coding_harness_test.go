@@ -1083,6 +1083,11 @@ func TestPreFinalHarnessAnswerOnlyRevisionDisablesTools(t *testing.T) {
 	if session.LastFinalAnswerCorrection == nil || !session.LastFinalAnswerCorrection.Corrected {
 		t.Fatalf("expected final-answer correction lifecycle to be recorded, got %#v", session.LastFinalAnswerCorrection)
 	}
+	if session.LastFinalAnswerCorrection.Status != finalAnswerCorrectionStatusAccepted ||
+		session.LastFinalAnswerCorrection.AttemptCount == 0 ||
+		session.LastFinalAnswerCorrection.MaxAttempts != finalAnswerCorrectionDefaultMaxAttempts {
+		t.Fatalf("expected accepted correction attempt state, got %#v", session.LastFinalAnswerCorrection)
+	}
 	for _, want := range []string{"changed_file_disclosure", "validation_disclosure", "remaining_risk_disclosure"} {
 		if !containsString(session.LastFinalAnswerCorrection.Reasons, want) {
 			t.Fatalf("expected correction reason %q, got %#v", want, session.LastFinalAnswerCorrection)
@@ -1197,6 +1202,46 @@ func TestPreFinalHarnessExhaustionReturnsBlockedReply(t *testing.T) {
 	}
 	if len(provider.requests[2].Tools) != 0 || len(provider.requests[3].Tools) != 0 {
 		t.Fatalf("expected exhausted answer-only correction turns to keep tools disabled, got %d and %d tools", len(provider.requests[2].Tools), len(provider.requests[3].Tools))
+	}
+	if session.LastFinalAnswerCorrection == nil ||
+		!session.LastFinalAnswerCorrection.Rejected ||
+		session.LastFinalAnswerCorrection.Status != finalAnswerCorrectionStatusRejected ||
+		session.LastFinalAnswerCorrection.AttemptCount < 3 {
+		t.Fatalf("expected exhausted correction to be recorded as rejected with attempts, got %#v", session.LastFinalAnswerCorrection)
+	}
+}
+
+func TestReviewObservabilityPreservesRejectedFinalAnswerCorrection(t *testing.T) {
+	report := &CodingHarnessReport{
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Changed-file summary is missing",
+			Detail:   "Changed paths are recorded but not disclosed.",
+		}},
+		FinalAnswerCorrection: &FinalAnswerCorrectionVisibility{
+			Required:     true,
+			Rejected:     true,
+			Status:       finalAnswerCorrectionStatusRejected,
+			AttemptCount: 3,
+			MaxAttempts:  finalAnswerCorrectionDefaultMaxAttempts,
+			Reasons:      []string{"changed_file_disclosure", "correction_attempts_exhausted"},
+		},
+	}
+	report.Normalize()
+	run := &ReviewRun{
+		ID:           "review-test",
+		RequestClass: reviewRequestClassModifyThenReview,
+	}
+
+	observability := buildReviewDecisionObservability(run, nil, report)
+
+	if observability == nil || observability.FinalAnswerCorrection == nil {
+		t.Fatalf("expected final-answer correction in observability, got %#v", observability)
+	}
+	if !observability.FinalAnswerCorrection.Rejected ||
+		observability.FinalAnswerCorrection.Status != finalAnswerCorrectionStatusRejected ||
+		observability.FinalAnswerCorrection.AttemptCount != 3 {
+		t.Fatalf("expected rejected correction state to be preserved, got %#v", observability.FinalAnswerCorrection)
 	}
 }
 
