@@ -6948,6 +6948,151 @@ func TestReviewMergeKeepsDistinctCreateProcessRepairContracts(t *testing.T) {
 	}
 }
 
+func TestReviewParserMergeKeepsDistinctCrossCreateProcessContracts(t *testing.T) {
+	primaryRaw := `REVIEW_RESULT
+verdict: needs_revision
+summary: CreateChildProcess passes a read-only command-line buffer to CreateProcessW.
+findings:
+- severity: high
+  category: correctness
+  path: Project/ProcessLauncher.cpp
+  line: 158
+  symbol: CreateChildProcess
+  title: CreateProcessW의 lpCommandLine 인자로 읽기 전용 문자열 포인터를 전달함
+  evidence: CreateProcessW 호출 시 두 번째 인자인 lpCommandLine에 childProcessPath.c_str()을 PWSTR로 캐스팅하여 전달하고 있습니다.
+  impact: CreateProcessW는 lpCommandLine 문자열의 내용을 수정할 수 있으므로 읽기 전용 메모리에서 접근 위반이 발생할 수 있습니다.
+  required_fix: childProcessPath.c_str() 대신 수정 가능한 std::wstring 또는 std::vector<wchar_t> 버퍼를 전달해야 합니다.
+  test_recommendation: CreateProcessW 호출 시 수정 가능한 버퍼가 전달되는지 검증해야 합니다.
+  resolution_status:
+  evidence_refs:
+  fix_refs:
+  verification_refs:`
+	crossRaw := `REVIEW_RESULT
+verdict: needs_revision
+summary: Primary finding is valid, and a separate unquoted executable path issue is also present.
+findings:
+- severity: high
+  category: correctness
+  path: Project/ProcessLauncher.cpp
+  line: 158
+  symbol: CreateChildProcess
+  title: 확인된 primary issue: CreateProcessW에 수정 가능한 명령줄 버퍼를 전달하지 않음
+  evidence: line 156부터 line 158까지 CreateProcessW(nullptr, (PWSTR)childProcessPath.c_str(), ...)로 호출합니다.
+  impact: API가 명령줄 버퍼를 수정할 때 정의되지 않은 동작이나 프로세스 생성 중 크래시가 발생할 수 있습니다.
+  required_fix: 수정 가능한 std::wstring 버퍼를 null 종료 포함 형태로 준비해 lpCommandLine에 전달해야 합니다.
+  test_recommendation: 수정 가능한 버퍼를 사용한 뒤 CreateChildProcess가 정상적으로 프로세스를 생성하는지 검증해야 합니다.
+  resolution_status: confirmed_primary
+  evidence_refs:
+  fix_refs:
+  verification_refs:
+- severity: high
+  category: correctness
+  path: Project/ProcessLauncher.cpp
+  line: 156
+  symbol: CreateChildProcess
+  title: 누락된 issue: lpApplicationName이 null이고 실행 파일 경로가 따옴표로 보호되지 않음
+  evidence: executablePath를 moduleBasePath와 child executable name으로 만들고, CreateProcessW(nullptr, (PWSTR)childProcessPath.c_str(), ...)로 전달합니다. 경로에 공백이 있어도 따옴표로 감싸지지 않습니다.
+  impact: moduleBasePath에 공백이 포함되면 Windows가 명령줄의 첫 토큰을 실행 파일로 해석하여 프로세스 생성에 실패하거나 의도하지 않은 실행 파일을 선택할 수 있습니다.
+  required_fix: lpApplicationName에 childProcessPath.c_str()를 전달하고, lpCommandLine에는 따옴표로 감싼 실행 파일 경로를 포함한 수정 가능한 버퍼를 전달해야 합니다.
+  test_recommendation: moduleBasePath에 공백이 포함된 경로에서 CreateChildProcess를 호출해 실제 실행된 프로세스 경로가 childProcessPath와 일치하는지 검증해야 합니다.
+  resolution_status:
+  evidence_refs:
+  fix_refs:
+  verification_refs:`
+	primaryFindings, primaryQuality := parseModelReviewFindingsForLanguage(primaryRaw, "primary_reviewer", true)
+	crossFindings, crossQuality := parseModelReviewFindingsForLanguage(crossRaw, "cross_reviewer", true)
+	if primaryQuality != reviewModelQualityUsable {
+		t.Fatalf("expected usable primary output, got %s findings=%#v", primaryQuality, primaryFindings)
+	}
+	if crossQuality != reviewModelQualityUsable {
+		t.Fatalf("expected usable cross output, got %s findings=%#v", crossQuality, crossFindings)
+	}
+	if len(primaryFindings) != 1 {
+		t.Fatalf("expected one primary finding, got %#v", primaryFindings)
+	}
+	if len(crossFindings) != 2 {
+		t.Fatalf("expected two cross findings, got %#v", crossFindings)
+	}
+	run := ReviewRun{
+		ID:      "review-create-process-replay",
+		Trigger: reviewBeforeFixTrigger,
+		Mode:    reviewModeLiveFix,
+		Findings: append(append([]ReviewFinding{}, primaryFindings...), append(crossFindings, ReviewFinding{
+			ID:          "RF-EVIDENCE",
+			Source:      "deterministic",
+			Severity:    reviewSeverityInfo,
+			Category:    "evidence_gap",
+			Title:       "Review evidence warning",
+			Evidence:    "Evidence pack did not include dynamic execution output.",
+			RequiredFix: "Record this as a verification gap without suppressing model findings.",
+		})...),
+	}
+	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	refreshReviewCrossReviewTriage(&run)
+	run.Gate = evaluateReviewGate(run)
+	foundQuotedPath := false
+	foundTriage := false
+	for _, finding := range run.Findings {
+		text := strings.ToLower(finding.Title + " " + finding.Evidence + " " + finding.RequiredFix)
+		if strings.Contains(text, "lpapplicationname") || strings.Contains(text, "따옴표") {
+			foundQuotedPath = true
+		}
+	}
+	if !foundQuotedPath {
+		t.Fatalf("merged findings lost the lpApplicationName/quoted path contract: %#v merge=%#v", run.Findings, run.MergeResult)
+	}
+	if run.CrossReviewTriage != nil {
+		for _, item := range run.CrossReviewTriage.Items {
+			text := strings.ToLower(item.Title + " " + item.RequiredFix)
+			if item.TriageStatus == crossReviewTriageNeedsUserDecision &&
+				(strings.Contains(text, "lpapplicationname") || strings.Contains(text, "따옴표")) {
+				foundTriage = true
+			}
+		}
+	}
+	if !foundTriage {
+		t.Fatalf("distinct cross finding must remain in needs-user-decision triage: %#v", run.CrossReviewTriage)
+	}
+	if run.Gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected high actionable finding to require revision, got %#v", run.Gate)
+	}
+}
+
+func TestReviewArtifactsExposeKernforgeBuildIdentity(t *testing.T) {
+	run := ReviewRun{
+		ID:               "review-build-identity",
+		SchemaVersion:    reviewSchemaVersion,
+		KernforgeVersion: "1.2.3.4",
+		KernforgeBuild: KernforgeBuildIdentity{
+			Version:     "1.2.3.4",
+			Commit:      "abcdef123456",
+			BuildTime:   "2026-05-29T12:00:00Z",
+			StampSource: "test",
+		},
+		Mode:          reviewModeLiveFix,
+		MachineStatus: "completed",
+		Result: ReviewResult{
+			Summary: "ok",
+			Verdict: reviewVerdictApproved,
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+	markdown := renderReviewRunMarkdown(run)
+	for _, want := range []string{"KernForge build", "abcdef123456", "source=test"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing build identity %q:\n%s", want, markdown)
+		}
+	}
+	mcp := renderReviewMCPResponse(run, 20000)
+	for _, want := range []string{`"kernforge_version": "1.2.3.4"`, `"kernforge_build"`, `"commit": "abcdef123456"`} {
+		if !strings.Contains(mcp, want) {
+			t.Fatalf("mcp response missing build identity %q:\n%s", want, mcp)
+		}
+	}
+}
+
 func TestVagueReviewerFindingDoesNotBecomeRepairBlocker(t *testing.T) {
 	run := ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,

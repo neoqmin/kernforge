@@ -575,12 +575,21 @@ func reviewFindingsHaveDistinctSpecificRepairContract(left ReviewFinding, right 
 	if len(leftSignals) == 0 || len(rightSignals) == 0 {
 		return false
 	}
+	leftOnly := false
 	for signal := range leftSignals {
-		if rightSignals[signal] {
-			return false
+		if !rightSignals[signal] {
+			leftOnly = true
+			break
 		}
 	}
-	return true
+	rightOnly := false
+	for signal := range rightSignals {
+		if !leftSignals[signal] {
+			rightOnly = true
+			break
+		}
+	}
+	return leftOnly || rightOnly
 }
 
 func reviewFindingSpecificRepairSignals(finding ReviewFinding) map[string]bool {
