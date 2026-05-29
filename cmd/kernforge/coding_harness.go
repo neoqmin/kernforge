@@ -247,6 +247,16 @@ func (s *Session) normalizeCodingHarnessState() {
 	if s.LastCodingHarnessReport != nil {
 		s.LastCodingHarnessReport.Normalize()
 	}
+	if s.LastFinalAnswerCorrection != nil {
+		s.LastFinalAnswerCorrection.Normalize()
+	}
+	if s.LastReviewRun != nil {
+		s.LastReviewRun.RouteHealthEvents = reviewRouteHealthEventsFromRun(s.LastReviewRun)
+		s.LastReviewRun.ModelPlan.RouteHealthEvents = append([]ReviewRouteHealthEvent(nil), s.LastReviewRun.RouteHealthEvents...)
+	}
+	if s.LastLiveProviderDrill != nil {
+		s.LastLiveProviderDrill.Normalize()
+	}
 	if s.LastUserChangeIsolationReport != nil {
 		s.LastUserChangeIsolationReport.Normalize()
 	}

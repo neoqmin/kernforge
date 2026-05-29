@@ -160,6 +160,8 @@ type ReviewRun struct {
 	RuntimeGateLedger     RuntimeGateLedger            `json:"runtime_gate_ledger,omitempty"`
 	Lifecycle             *ReviewRequestLifecycle      `json:"lifecycle,omitempty"`
 	DecisionObservability *ReviewDecisionObservability `json:"decision_observability,omitempty"`
+	RouteHealthEvents     []ReviewRouteHealthEvent     `json:"route_health_events,omitempty"`
+	LiveProviderDrill     *LiveProviderDrillReport     `json:"live_provider_drill,omitempty"`
 	NextCommandResults    []ReviewNextCommandRun       `json:"next_command_results,omitempty"`
 	ArtifactRefs          []string                     `json:"artifact_refs,omitempty"`
 	AuditTrail            []string                     `json:"audit_trail,omitempty"`
@@ -245,32 +247,46 @@ type ReviewEvidencePack struct {
 }
 
 type ReviewModelPlan struct {
-	Strategy           string                  `json:"strategy,omitempty"`
-	RequiredRoles      []string                `json:"required_roles,omitempty"`
-	OptionalRoles      []string                `json:"optional_roles,omitempty"`
-	RequiredLenses     []string                `json:"required_lenses,omitempty"`
-	OptionalLenses     []string                `json:"optional_lenses,omitempty"`
-	AssignedModels     map[string]string       `json:"assigned_models,omitempty"`
-	CapabilityProfiles []ReviewModelCapability `json:"capability_profiles,omitempty"`
-	RouteHealth        []ReviewRouteHealth     `json:"route_health,omitempty"`
-	MissingRoles       []string                `json:"missing_roles,omitempty"`
-	DegradedRoles      []string                `json:"degraded_roles,omitempty"`
-	RouteLimits        []string                `json:"route_limits,omitempty"`
-	UserGuidance       []string                `json:"user_guidance,omitempty"`
+	Strategy           string                   `json:"strategy,omitempty"`
+	RequiredRoles      []string                 `json:"required_roles,omitempty"`
+	OptionalRoles      []string                 `json:"optional_roles,omitempty"`
+	RequiredLenses     []string                 `json:"required_lenses,omitempty"`
+	OptionalLenses     []string                 `json:"optional_lenses,omitempty"`
+	AssignedModels     map[string]string        `json:"assigned_models,omitempty"`
+	CapabilityProfiles []ReviewModelCapability  `json:"capability_profiles,omitempty"`
+	RouteHealth        []ReviewRouteHealth      `json:"route_health,omitempty"`
+	RouteHealthEvents  []ReviewRouteHealthEvent `json:"route_health_events,omitempty"`
+	MissingRoles       []string                 `json:"missing_roles,omitempty"`
+	DegradedRoles      []string                 `json:"degraded_roles,omitempty"`
+	RouteLimits        []string                 `json:"route_limits,omitempty"`
+	UserGuidance       []string                 `json:"user_guidance,omitempty"`
 }
 
 type ReviewReviewerRun struct {
-	Role                    string    `json:"role,omitempty"`
-	Kind                    string    `json:"kind,omitempty"`
-	Model                   string    `json:"model,omitempty"`
-	StartedAt               time.Time `json:"started_at,omitempty"`
-	FinishedAt              time.Time `json:"finished_at,omitempty"`
-	Status                  string    `json:"status,omitempty"`
-	ModelQuality            string    `json:"model_quality,omitempty"`
-	Error                   string    `json:"error,omitempty"`
-	RawOutputPath           string    `json:"raw_output_path,omitempty"`
-	RawProviderResponsePath string    `json:"raw_provider_response_path,omitempty"`
-	PromptPath              string    `json:"prompt_path,omitempty"`
+	Role                       string    `json:"role,omitempty"`
+	Kind                       string    `json:"kind,omitempty"`
+	Model                      string    `json:"model,omitempty"`
+	Provider                   string    `json:"provider,omitempty"`
+	ProviderLabel              string    `json:"provider_label,omitempty"`
+	ModelID                    string    `json:"model_id,omitempty"`
+	StartedAt                  time.Time `json:"started_at,omitempty"`
+	FinishedAt                 time.Time `json:"finished_at,omitempty"`
+	LatencyMS                  int64     `json:"latency_ms,omitempty"`
+	Status                     string    `json:"status,omitempty"`
+	ModelQuality               string    `json:"model_quality,omitempty"`
+	Error                      string    `json:"error,omitempty"`
+	FailureClass               string    `json:"failure_class,omitempty"`
+	FailureRecommendation      string    `json:"failure_recommendation,omitempty"`
+	RetryCount                 int       `json:"retry_count,omitempty"`
+	MalformedOutputCount       int       `json:"malformed_output_count,omitempty"`
+	WeakOutputDegraded         bool      `json:"weak_output_degraded,omitempty"`
+	DuplicatedOutput           bool      `json:"duplicated_output,omitempty"`
+	EvidenceFreeOutput         bool      `json:"evidence_free_output,omitempty"`
+	ToolCallMismatch           bool      `json:"tool_call_mismatch,omitempty"`
+	ReviewerMainModelCollision bool      `json:"reviewer_main_model_collision,omitempty"`
+	RawOutputPath              string    `json:"raw_output_path,omitempty"`
+	RawProviderResponsePath    string    `json:"raw_provider_response_path,omitempty"`
+	PromptPath                 string    `json:"prompt_path,omitempty"`
 }
 
 type ReviewMergeResult struct {
@@ -659,6 +675,8 @@ func (s *Session) recordReviewRun(run ReviewRun) {
 	if s == nil {
 		return
 	}
+	run.RouteHealthEvents = reviewRouteHealthEventsFromRun(&run)
+	run.ModelPlan.RouteHealthEvents = append([]ReviewRouteHealthEvent(nil), run.RouteHealthEvents...)
 	s.ReviewRouteHealth = mergeReviewRouteHealthHistory(s.ReviewRouteHealth, reviewRouteHealthFromRun(&run), 8)
 	copyRun := run
 	s.LastReviewRun = &copyRun
@@ -819,6 +837,8 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		run.Result.DegradedReason = "model review disabled by --no-model"
 		run.Result.ModelQuality = reviewModelQualityUsable
 	}
+	run.RouteHealthEvents = reviewRouteHealthEventsFromRun(&run)
+	run.ModelPlan.RouteHealthEvents = append([]ReviewRouteHealthEvent(nil), run.RouteHealthEvents...)
 	emitReviewPipelineProgress(rt, run, 4, "merge/check", "병합/검산", "Normalize findings, separate route/meta noise, and preserve actionable code blockers.", "finding을 정규화하고 route/meta 노이즈와 실행 가능한 코드 blocker를 분리합니다.")
 	normalizeNonBlockingReviewMetaFindings(&run)
 	normalizeNonBlockingVerificationOnlyFindings(&run)

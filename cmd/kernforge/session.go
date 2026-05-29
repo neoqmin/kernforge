@@ -57,6 +57,7 @@ type Session struct {
 	LastReviewRun                   *ReviewRun                       `json:"last_review_run,omitempty"`
 	PendingReviewRepairConfirm      *ReviewRepairConfirmationState   `json:"pending_review_repair_confirmation,omitempty"`
 	ReviewRouteHealth               []ReviewRouteHealth              `json:"review_route_health,omitempty"`
+	LastLiveProviderDrill           *LiveProviderDrillReport         `json:"last_live_provider_drill,omitempty"`
 	SecondPassReviewCache           []SecondPassReviewCacheEntry     `json:"second_pass_review_cache,omitempty"`
 	ExternalLookupIntents           []ReviewExternalLookupIntent     `json:"external_lookup_intents,omitempty"`
 	RuntimeGateLedger               *RuntimeGateLedger               `json:"runtime_gate_ledger,omitempty"`
@@ -147,6 +148,9 @@ func (s *Session) ApproxChars() int {
 	}
 	if s.RuntimeGateLedger != nil {
 		total += len(s.RuntimeGateLedger.RenderPromptSection())
+	}
+	if s.LastLiveProviderDrill != nil {
+		total += len(liveProviderDrillStatusLine(s.LastLiveProviderDrill))
 	}
 	if s.ActiveFailureRepair != nil {
 		total += len(s.ActiveFailureRepair.RenderPromptSection())
@@ -404,6 +408,12 @@ func (s *Session) ExportText() string {
 			b.WriteString("## Runtime Gate Ledger\n\n")
 			b.WriteString(rendered)
 			b.WriteString("\n\n")
+		}
+	}
+	if s.LastLiveProviderDrill != nil {
+		if rendered := strings.TrimSpace(renderLiveProviderDrillMarkdown(s.LastLiveProviderDrill)); rendered != "" {
+			b.WriteString(rendered)
+			b.WriteString("\n")
 		}
 	}
 	if s.ActiveFailureRepair != nil {

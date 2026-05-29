@@ -42,6 +42,8 @@ type RuntimeGateLedger struct {
 	ReviewObservability   *ReviewDecisionObservability     `json:"review_observability,omitempty"`
 	FinalAnswerCorrection *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
 	StaleContextSummary   *StaleContextSummary             `json:"stale_context_summary,omitempty"`
+	RouteHealthEvents     []ReviewRouteHealthEvent         `json:"route_health_events,omitempty"`
+	LiveProviderDrill     *LiveProviderDrillReport         `json:"live_provider_drill,omitempty"`
 }
 
 type ReviewTransaction struct {
@@ -122,6 +124,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	runtimeGateAttachVerification(session, &ledger)
 	runtimeGateAttachCodingHarness(session, &ledger)
 	runtimeGateAttachStaleContext(session, &ledger, observedReview)
+	runtimeGateAttachRouteHealth(session, &ledger, observedReview)
 	ledger.Normalize()
 	if observedReview != nil {
 		var report *CodingHarnessReport
@@ -259,6 +262,13 @@ func (l *RuntimeGateLedger) Normalize() {
 	if l.StaleContextSummary != nil {
 		l.StaleContextSummary.Normalize()
 	}
+	for i := range l.RouteHealthEvents {
+		l.RouteHealthEvents[i].Normalize()
+	}
+	l.RouteHealthEvents = dedupeReviewRouteHealthEvents(l.RouteHealthEvents, 32)
+	if l.LiveProviderDrill != nil {
+		l.LiveProviderDrill.Normalize()
+	}
 	if l.ReviewObservability != nil && l.ReviewObservability.FinalAnswerCorrection != nil {
 		l.ReviewObservability.FinalAnswerCorrection.Normalize()
 	}
@@ -390,6 +400,12 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 	}
 	if l.StaleContextSummary != nil {
 		lines = append(lines, "- Stale context: "+staleContextSummaryStatusLine(l.StaleContextSummary))
+	}
+	if len(l.RouteHealthEvents) > 0 {
+		lines = append(lines, "- Route health events: "+strings.Join(reviewRouteHealthEventClasses(l.RouteHealthEvents), ", "))
+	}
+	if l.LiveProviderDrill != nil {
+		lines = append(lines, "- Live provider drill: "+liveProviderDrillStatusLine(l.LiveProviderDrill))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -781,16 +797,24 @@ func runtimeGatePatchTransactionScopeWarningsForAction(session *Session, action 
 }
 
 func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger) {
-	if session == nil || ledger == nil || session.LastCodingHarnessReport == nil {
+	if session == nil || ledger == nil {
 		return
 	}
-	report := *session.LastCodingHarnessReport
-	report.Normalize()
 	if session.LastFinalAnswerCorrection != nil {
 		correction := *session.LastFinalAnswerCorrection
 		correction.Normalize()
 		ledger.FinalAnswerCorrection = &correction
-	} else if report.FinalAnswerCorrection != nil {
+	} else if session.RuntimeGateLedger != nil && session.RuntimeGateLedger.FinalAnswerCorrection != nil {
+		correction := *session.RuntimeGateLedger.FinalAnswerCorrection
+		correction.Normalize()
+		ledger.FinalAnswerCorrection = &correction
+	}
+	if session.LastCodingHarnessReport == nil {
+		return
+	}
+	report := *session.LastCodingHarnessReport
+	report.Normalize()
+	if ledger.FinalAnswerCorrection == nil && report.FinalAnswerCorrection != nil {
 		correction := *report.FinalAnswerCorrection
 		correction.Normalize()
 		ledger.FinalAnswerCorrection = &correction
@@ -828,6 +852,19 @@ func runtimeGateAttachStaleContext(session *Session, ledger *RuntimeGateLedger, 
 	ledger.StaleContextSummary = summary
 	for _, item := range summary.Items {
 		if item.Kind != staleContextKindChangedArtifactsAfterQuality {
+			if item.FinalizationBlocked && item.Kind == staleContextKindCorrectionPendingNewRequest {
+				message := "stale context blocks finalization: " + item.Reason
+				ledger.Blockers = appendTaskStateItem(ledger.Blockers, message, 32)
+				ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+					ID:             item.Kind,
+					Command:        firstNonBlankString(item.NextCommand, "/status detail"),
+					Reason:         item.Reason,
+					Safety:         "read_only",
+					When:           "before final answer or git write",
+					ClientHint:     item.NextSafeAction,
+					ExpectedResult: "The stale context item is resolved or explicitly disclosed.",
+				})
+			}
 			continue
 		}
 		message := "artifact-quality evidence is stale: " + item.Reason
@@ -845,6 +882,45 @@ func runtimeGateAttachStaleContext(session *Session, ledger *RuntimeGateLedger, 
 			ClientHint:     "Rerun or refresh the artifact-quality gate for the current artifact contents.",
 			ExpectedResult: "The artifact-quality summary matches the latest artifact state.",
 		})
+	}
+}
+
+func runtimeGateAttachRouteHealth(session *Session, ledger *RuntimeGateLedger, review *ReviewRun) {
+	if ledger == nil {
+		return
+	}
+	if review != nil {
+		ledger.RouteHealthEvents = append(ledger.RouteHealthEvents, reviewRouteHealthEventsFromRun(review)...)
+	}
+	if session != nil {
+		if session.RuntimeGateLedger != nil {
+			ledger.RouteHealthEvents = append(ledger.RouteHealthEvents, session.RuntimeGateLedger.RouteHealthEvents...)
+			if ledger.LiveProviderDrill == nil && session.RuntimeGateLedger.LiveProviderDrill != nil {
+				drill := *session.RuntimeGateLedger.LiveProviderDrill
+				drill.Normalize()
+				ledger.LiveProviderDrill = &drill
+			}
+		}
+		if session.LastReviewRun != nil && review == nil {
+			ledger.RouteHealthEvents = append(ledger.RouteHealthEvents, reviewRouteHealthEventsFromRun(session.LastReviewRun)...)
+		}
+		if session.LastLiveProviderDrill != nil {
+			drill := *session.LastLiveProviderDrill
+			drill.Normalize()
+			ledger.LiveProviderDrill = &drill
+			ledger.RouteHealthEvents = append(ledger.RouteHealthEvents, drill.RouteHealthEvents...)
+		}
+	}
+	ledger.RouteHealthEvents = dedupeReviewRouteHealthEvents(ledger.RouteHealthEvents, 32)
+	if len(ledger.RouteHealthEvents) == 0 {
+		return
+	}
+	classes := reviewRouteHealthEventClasses(ledger.RouteHealthEvents)
+	if len(classes) > 0 && ledger.Lifecycle != nil {
+		ledger.Lifecycle.RouteDegradedReasons = append(ledger.Lifecycle.RouteDegradedReasons, "route health events: "+strings.Join(classes, ", "))
+		if ledger.Lifecycle.RouteQuality == "" || ledger.Lifecycle.RouteQuality == "healthy" || ledger.Lifecycle.RouteQuality == "single_model" {
+			ledger.Lifecycle.RouteQuality = "degraded"
+		}
 	}
 }
 
@@ -1154,6 +1230,15 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 	if ledger.StaleContextSummary != nil {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_context", staleContextSummaryStatusLine(ledger.StaleContextSummary)))
 	}
+	if ledger.FinalAnswerCorrection != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_status", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
+	}
+	if len(ledger.RouteHealthEvents) > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("route_health_events", strings.Join(reviewRouteHealthEventClasses(ledger.RouteHealthEvents), ", ")))
+	}
+	if ledger.LiveProviderDrill != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("live_provider_drill", liveProviderDrillStatusLine(ledger.LiveProviderDrill)))
+	}
 	if ledger.RequestClass != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("request_class", ledger.RequestClass))
 	}
@@ -1239,6 +1324,15 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 		if detail := finalAnswerCorrectionDetailedLine(ledger.FinalAnswerCorrection); detail != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_detail", detail))
 		}
+		if ledger.FinalAnswerCorrection.Contract != nil && detail {
+			contract := ledger.FinalAnswerCorrection.Contract
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_contract", strings.Join([]string{
+				"state=" + valueOrDefault(contract.State, ledger.FinalAnswerCorrection.Status),
+				fmt.Sprintf("edits_prohibited=%t", contract.EditsProhibited),
+				"verification=" + valueOrDefault(contract.VerificationMode, "not_required"),
+				"next=" + valueOrDefault(contract.NextCommand, "/status detail"),
+			}, " ")))
+		}
 	}
 	if ledger.PatchTransactionID != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("patch_transaction", ledger.PatchTransactionID))
@@ -1313,7 +1407,28 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 				if item.NextCommand != "" {
 					line += " next_command=" + item.NextCommand
 				}
+				line += fmt.Sprintf(" finalization_blocked=%t allowed_with_disclosure=%t", item.FinalizationBlocked, item.AllowedWithDisclosure)
 				fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_context_item", line))
+			}
+		}
+		if len(ledger.RouteHealthEvents) > 0 {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Route Health Events"))
+			for _, event := range ledger.RouteHealthEvents {
+				line := fmt.Sprintf("role=%s class=%s status=%s provider=%s model=%s latency_ms=%d retries=%d malformed=%d",
+					event.Role,
+					event.FailureClass,
+					event.Status,
+					firstNonBlankString(event.ProviderLabel, event.Provider),
+					firstNonBlankString(event.ModelID, event.ModelLabel),
+					event.LatencyMS,
+					event.RetryCount,
+					event.MalformedOutputCount,
+				)
+				if event.Recommendation != "" {
+					line += " recommendation=" + compactPromptSection(event.Recommendation, 160)
+				}
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("route_health_event", line))
 			}
 		}
 	}
@@ -1375,7 +1490,9 @@ func runtimeGateLedgerEmpty(ledger RuntimeGateLedger) bool {
 		len(ledger.NextCommands) == 0 &&
 		ledger.Lifecycle == nil &&
 		ledger.ReviewObservability == nil &&
-		ledger.FinalAnswerCorrection == nil
+		ledger.FinalAnswerCorrection == nil &&
+		len(ledger.RouteHealthEvents) == 0 &&
+		ledger.LiveProviderDrill == nil
 }
 
 func runtimeGatePrimaryNextCommandLine(ledger RuntimeGateLedger) string {

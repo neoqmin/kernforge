@@ -20,6 +20,8 @@ const (
 	staleContextKindStaleReviewEvidence          = "stale_review_evidence"
 	staleContextKindStaleVerification            = "stale_verification"
 	staleContextKindStaleFinalAnswerDraft        = "stale_final_answer_draft"
+	staleContextKindReviewEvidenceBeforeResume   = "review_evidence_before_resume"
+	staleContextKindCorrectionPendingNewRequest  = "correction_pending_new_request"
 )
 
 type StaleContextSummary struct {
@@ -34,13 +36,15 @@ type StaleContextSummary struct {
 }
 
 type StaleContextItem struct {
-	Kind           string `json:"kind,omitempty"`
-	Severity       string `json:"severity,omitempty"`
-	Status         string `json:"status,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	EvidenceRef    string `json:"evidence_ref,omitempty"`
-	NextSafeAction string `json:"next_safe_action,omitempty"`
-	NextCommand    string `json:"next_command,omitempty"`
+	Kind                  string `json:"kind,omitempty"`
+	Severity              string `json:"severity,omitempty"`
+	Status                string `json:"status,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+	EvidenceRef           string `json:"evidence_ref,omitempty"`
+	NextSafeAction        string `json:"next_safe_action,omitempty"`
+	NextCommand           string `json:"next_command,omitempty"`
+	FinalizationBlocked   bool   `json:"finalization_blocked,omitempty"`
+	AllowedWithDisclosure bool   `json:"allowed_with_disclosure,omitempty"`
 }
 
 func buildStaleContextSummary(session *Session, run *ReviewRun, ledger *RuntimeGateLedger, report *CodingHarnessReport) *StaleContextSummary {
@@ -125,6 +129,19 @@ func buildStaleContextSummary(session *Session, run *ReviewRun, ledger *RuntimeG
 			}
 		}
 	}
+	if !summary.hasKind(staleContextKindStaleVerification) {
+		if reason, evidenceRef, ok := staleVerificationReason(session, ledger); ok {
+			summary.add(StaleContextItem{
+				Kind:           staleContextKindStaleVerification,
+				Severity:       staleContextSeverityWarning,
+				Status:         staleContextStatusWarned,
+				Reason:         reason,
+				EvidenceRef:    evidenceRef,
+				NextSafeAction: "rerun focused verification for the current patch or disclose the verification gap",
+				NextCommand:    "/verify --full",
+			})
+		}
+	}
 	if report != nil {
 		if reason, ok := staleArtifactQualityReason(session, ledger, report); ok {
 			severity := staleContextSeverityWarning
@@ -153,6 +170,30 @@ func buildStaleContextSummary(session *Session, run *ReviewRun, ledger *RuntimeG
 			EvidenceRef:    "session.final_answer_candidate",
 			NextSafeAction: "discard the stale draft and rebuild the final answer from the current ledger",
 			NextCommand:    "/status detail",
+		})
+	}
+	if reviewEvidenceBeforeResume(session, run) {
+		summary.add(StaleContextItem{
+			Kind:                  staleContextKindReviewEvidenceBeforeResume,
+			Severity:              staleContextSeverityWarning,
+			Status:                staleContextStatusWarned,
+			Reason:                "review evidence was created before context compaction or session resume; use ledger evidence refs before finalizing",
+			EvidenceRef:           firstNonBlankString(reviewEvidenceRefForResume(run), "session.compaction"),
+			NextSafeAction:        "confirm the runtime ledger still references the latest review evidence after resume",
+			NextCommand:           "/status detail",
+			AllowedWithDisclosure: true,
+		})
+	}
+	if pendingCorrectionInterruptedByUser(session) {
+		summary.add(StaleContextItem{
+			Kind:                staleContextKindCorrectionPendingNewRequest,
+			Severity:            staleContextSeverityBlocker,
+			Status:              staleContextStatusBlocked,
+			Reason:              "a new user request arrived while a final-answer correction contract was pending",
+			EvidenceRef:         "session.last_final_answer_correction",
+			NextSafeAction:      "resolve, reject, or explicitly disclose the pending correction contract before finalizing the interrupted work",
+			NextCommand:         "/status detail",
+			FinalizationBlocked: true,
 		})
 	}
 	summary.Normalize()
@@ -236,6 +277,12 @@ func (i *StaleContextItem) Normalize() {
 			i.Status = staleContextStatusWarned
 		}
 	}
+	if i.Severity == staleContextSeverityBlocker || i.Status == staleContextStatusBlocked {
+		i.FinalizationBlocked = true
+		i.AllowedWithDisclosure = false
+	} else if !i.FinalizationBlocked {
+		i.AllowedWithDisclosure = true
+	}
 }
 
 func (s *StaleContextSummary) add(item StaleContextItem) {
@@ -247,6 +294,22 @@ func (s *StaleContextSummary) add(item StaleContextItem) {
 		return
 	}
 	s.Items = append(s.Items, item)
+}
+
+func (s *StaleContextSummary) hasKind(kind string) bool {
+	if s == nil {
+		return false
+	}
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "" {
+		return false
+	}
+	for _, item := range s.Items {
+		if strings.EqualFold(strings.TrimSpace(item.Kind), kind) {
+			return true
+		}
+	}
+	return false
 }
 
 func staleArtifactQualityReason(session *Session, ledger *RuntimeGateLedger, report *CodingHarnessReport) (string, bool) {
@@ -305,6 +368,51 @@ func artifactPathChangedAfter(session *Session, ledger *RuntimeGateLedger, artif
 				normalized := strings.ToLower(filepath.ToSlash(normalizeSessionRelativePath(path.Path)))
 				if artifactSet[normalized] {
 					return path.Path, changedAt
+				}
+			}
+		}
+	}
+	return "", time.Time{}
+}
+
+func staleVerificationReason(session *Session, ledger *RuntimeGateLedger) (string, string, bool) {
+	if session == nil || session.LastVerification == nil {
+		return "", "", false
+	}
+	report := *session.LastVerification
+	reportTime := verificationReportTimestamp(report, time.Time{})
+	if reportTime.IsZero() {
+		return "", "", false
+	}
+	changed, changedAt := patchPathChangedAfter(session, ledger, reportTime)
+	if changed == "" {
+		return "", "", false
+	}
+	evidenceRef := ""
+	if ledger != nil {
+		evidenceRef = ledger.VerificationReportID
+	}
+	if evidenceRef == "" {
+		evidenceRef = runtimeGateVerificationReportID(report)
+	}
+	return fmt.Sprintf("%s changed after verification at %s", filepath.ToSlash(changed), changedAt.Format(time.RFC3339)), evidenceRef, true
+}
+
+func patchPathChangedAfter(session *Session, ledger *RuntimeGateLedger, since time.Time) (string, time.Time) {
+	if session == nil || since.IsZero() {
+		return "", time.Time{}
+	}
+	for _, tx := range staleContextPatchTransactions(session, ledger) {
+		tx.Normalize()
+		for _, entry := range tx.Entries {
+			changedAt := firstNonZeroTime(entry.CompletedAt, tx.CompletedAt, tx.UpdatedAt, entry.StartedAt, tx.StartedAt)
+			if changedAt.IsZero() || !changedAt.After(since) {
+				continue
+			}
+			for _, path := range entry.Paths {
+				normalized := normalizeSessionRelativePath(path.Path)
+				if normalized != "" {
+					return normalized, changedAt
 				}
 			}
 		}
@@ -382,6 +490,8 @@ func staleContextSummaryStatusLine(summary *StaleContextSummary) string {
 		staleContextKindStaleReviewEvidence,
 		staleContextKindStaleVerification,
 		staleContextKindStaleFinalAnswerDraft,
+		staleContextKindReviewEvidenceBeforeResume,
+		staleContextKindCorrectionPendingNewRequest,
 	} {
 		if count := copySummary.Counts[kind]; count > 0 {
 			parts = append(parts, fmt.Sprintf("%s=%d", kind, count))
@@ -391,4 +501,56 @@ func staleContextSummaryStatusLine(summary *StaleContextSummary) string {
 		parts = append(parts, "next="+copySummary.NextCommand)
 	}
 	return strings.Join(parts, " ")
+}
+
+func reviewEvidenceBeforeResume(session *Session, run *ReviewRun) bool {
+	if session == nil || run == nil || strings.TrimSpace(run.ID) == "" {
+		return false
+	}
+	if len(session.Messages) == 0 && strings.TrimSpace(session.Summary) == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(session.Summary), "compact") && strings.Contains(strings.ToLower(session.Summary), "review") {
+		return true
+	}
+	for _, msg := range session.Messages {
+		if len(msg.CodexCompactionItems) > 0 {
+			return true
+		}
+	}
+	for _, event := range session.ConversationEvents {
+		text := strings.ToLower(strings.Join([]string{event.Kind, event.Summary, event.Raw}, " "))
+		if strings.Contains(text, "compact") || strings.Contains(text, "resume") {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewEvidenceRefForResume(run *ReviewRun) string {
+	if run == nil {
+		return ""
+	}
+	if len(run.ArtifactRefs) > 0 {
+		return run.ArtifactRefs[0]
+	}
+	if strings.TrimSpace(run.ID) != "" {
+		return "review:" + strings.TrimSpace(run.ID)
+	}
+	return ""
+}
+
+func pendingCorrectionInterruptedByUser(session *Session) bool {
+	if session == nil || session.LastFinalAnswerCorrection == nil {
+		return false
+	}
+	correction := *session.LastFinalAnswerCorrection
+	correction.Normalize()
+	if !correction.Required || correction.Corrected || correction.Rejected {
+		return false
+	}
+	if correction.hasRecordedMessages || correction.HasRecordedMessages {
+		return finalAnswerCorrectionHasExternalUserAfter(session, correction.recordedMessageCount)
+	}
+	return false
 }

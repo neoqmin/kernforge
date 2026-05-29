@@ -234,6 +234,7 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 			if strings.TrimSpace(item.NextCommand) != "" {
 				fmt.Fprintf(&b, " next_command=`%s`", item.NextCommand)
 			}
+			fmt.Fprintf(&b, " finalization_blocked=`%t` allowed_with_disclosure=`%t`", item.FinalizationBlocked, item.AllowedWithDisclosure)
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
@@ -256,6 +257,52 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+	}
+	if run.RuntimeGateLedger.FinalAnswerCorrection != nil {
+		correction := *run.RuntimeGateLedger.FinalAnswerCorrection
+		correction.Normalize()
+		b.WriteString("## Final Answer Correction Contract\n\n")
+		fmt.Fprintf(&b, "- status: `%s`\n", correction.Status)
+		fmt.Fprintf(&b, "- attempt_count: `%d`\n", correction.AttemptCount)
+		fmt.Fprintf(&b, "- max_attempts: `%d`\n", correction.MaxAttempts)
+		fmt.Fprintf(&b, "- accepted: `%t`\n", correction.Corrected)
+		fmt.Fprintf(&b, "- rejected: `%t`\n", correction.Rejected)
+		if correction.Contract != nil {
+			fmt.Fprintf(&b, "- edits_prohibited: `%t`\n", correction.Contract.EditsProhibited)
+			fmt.Fprintf(&b, "- verification_mode: `%s`\n", correction.Contract.VerificationMode)
+			if len(correction.Contract.MissingDisclosureFields) > 0 {
+				fmt.Fprintf(&b, "- missing_disclosure_fields: `%s`\n", strings.Join(correction.Contract.MissingDisclosureFields, "`, `"))
+			}
+			if len(correction.Contract.RequiredAnswerShape) > 0 {
+				fmt.Fprintf(&b, "- required_answer_shape: `%s`\n", strings.Join(correction.Contract.RequiredAnswerShape, "`, `"))
+			}
+			if correction.Contract.NextCommand != "" {
+				fmt.Fprintf(&b, "- next_command: `%s`\n", correction.Contract.NextCommand)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(run.RouteHealthEvents) > 0 {
+		b.WriteString("## Route Health Events\n\n")
+		fmt.Fprintf(&b, "- route_health_events: `%s`\n", strings.Join(reviewRouteHealthEventClasses(run.RouteHealthEvents), "`, `"))
+		for _, event := range dedupeReviewRouteHealthEvents(run.RouteHealthEvents, 16) {
+			fmt.Fprintf(&b, "- `%s` role=`%s` class=`%s` status=`%s` provider=`%s` model=`%s` latency_ms=`%d` retry_count=`%d` malformed=`%d` recommendation=%s\n",
+				firstNonBlankString(event.TurnID, "turn"),
+				event.Role,
+				event.FailureClass,
+				event.Status,
+				firstNonBlankString(event.ProviderLabel, event.Provider),
+				firstNonBlankString(event.ModelID, event.ModelLabel),
+				event.LatencyMS,
+				event.RetryCount,
+				event.MalformedOutputCount,
+				event.Recommendation,
+			)
+		}
+		b.WriteString("\n")
+	}
+	if run.LiveProviderDrill != nil {
+		b.WriteString(renderLiveProviderDrillMarkdown(run.LiveProviderDrill))
 	}
 	if len(run.ObligationLedger.Items) > 0 {
 		b.WriteString("## Obligation Ledger\n\n")
