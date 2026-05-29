@@ -829,8 +829,6 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		}
 		run.ReviewerRuns = append(run.ReviewerRuns, reviewerRuns...)
 		run.Findings = append(run.Findings, modelFindings...)
-		run.CrossReviewTriage = buildCrossReviewTriageLedger(run)
-		run.Findings = append(run.Findings, crossReviewTriageConsistencyFindings(run)...)
 		run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
 	} else if opts.NoModel {
 		run.Result.Degraded = true
@@ -848,6 +846,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	refreshReviewCrossReviewTriage(&run)
 	run.ObligationLedger = buildReviewObligationLedger(run)
 	emitReviewPipelineProgress(rt, run, 5, "gate decision", "게이트 판정", "Decide approved, approved_with_warnings, needs_revision, or insufficient_evidence.", "approved, approved_with_warnings, needs_revision, insufficient_evidence 중 하나로 판정합니다.")
 	run.Gate = evaluateReviewGate(run)

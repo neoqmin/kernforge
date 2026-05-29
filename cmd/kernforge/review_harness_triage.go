@@ -65,6 +65,20 @@ func buildCrossReviewTriageLedger(run ReviewRun) *CrossReviewTriageLedger {
 	return normalizedCrossReviewTriageLedger(ledger)
 }
 
+func refreshReviewCrossReviewTriage(run *ReviewRun) {
+	if run == nil {
+		return
+	}
+	run.CrossReviewTriage = buildCrossReviewTriageLedger(*run)
+	consistency := crossReviewTriageConsistencyFindings(*run)
+	if len(consistency) == 0 {
+		return
+	}
+	run.Findings = append(run.Findings, consistency...)
+	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	run.CrossReviewTriage = buildCrossReviewTriageLedger(*run)
+}
+
 func normalizedCrossReviewTriageLedger(ledger *CrossReviewTriageLedger) *CrossReviewTriageLedger {
 	if ledger == nil {
 		return nil
