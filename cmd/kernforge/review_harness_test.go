@@ -11670,6 +11670,52 @@ func TestReadOnlySourceAnalysisHighPerformanceFindingWarnsWithoutBlocking(t *tes
 	}
 }
 
+func TestReadOnlyReviewHighCorrectnessFindingNeedsRevision(t *testing.T) {
+	run := ReviewRun{
+		ID:           "review-read-only-correctness",
+		Objective:    "@Tavern/TavernMaster/TaverDartManager.cpp CreateDartProcess 함수에 버그가 있는지 검토해줘",
+		Target:       reviewTargetSelection,
+		Mode:         reviewModeLiveFix,
+		RequestClass: reviewRequestClassReviewOnly,
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "Tavern/TavernMaster/TaverDartManager.cpp",
+			Symbol:      "CreateDartProcess",
+			Title:       "CreateProcessW command line buffer can crash",
+			Evidence:    "CreateProcessW can modify lpCommandLine, but the finding points at a const string buffer cast to PWSTR.",
+			Impact:      "Process creation can crash on a valid review target path.",
+			RequiredFix: "Pass a writable quoted command line buffer or use lpApplicationName for the executable path.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	run.Gate = evaluateReviewGate(run)
+	run.finalizeStatus(false)
+
+	if run.Gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected high correctness review-only finding to require revision, got %#v", run.Gate)
+	}
+	if len(run.Gate.BlockingFindings) != 1 || run.Gate.BlockingFindings[0] != "RF-001" {
+		t.Fatalf("expected RF-001 blocker, got %#v", run.Gate.BlockingFindings)
+	}
+	if run.Gate.Action != reviewGateActionRepairRequired {
+		t.Fatalf("expected repair_required gate action, got %#v", run.Gate)
+	}
+	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
+	for _, want := range []string{
+		"needs_revision",
+		"blocker=1",
+		"[RF-001] high: CreateProcessW command line buffer can crash",
+		"수정은 사용자가 원할 때만 이어갑니다",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered review to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestApprovedReviewRendersInfoFindingWhenNoWarnings(t *testing.T) {
 	run := ReviewRun{
 		ID:     "review-info",
@@ -11973,6 +12019,74 @@ func TestCrossReviewFindingCreatesTriageLedgerEntry(t *testing.T) {
 	}
 	if !reviewNextCommandsContainID(run.Gate.NextCommands, "cross-review-triage") {
 		t.Fatalf("expected cross-review triage next command, got %#v", run.Gate.NextCommands)
+	}
+}
+
+func TestCrossReviewTriageRefreshesIDsAfterFindingMerge(t *testing.T) {
+	run := ReviewRun{
+		ID:     "review-renumbered-triage",
+		Target: reviewTargetChange,
+		Mode:   reviewModeGeneralChange,
+		Findings: []ReviewFinding{
+			{
+				ID:           "RF-001",
+				Source:       "model",
+				ReviewerRole: "primary",
+				Severity:     reviewSeverityMedium,
+				Category:     "correctness",
+				Path:         "main.go",
+				Symbol:       "zPrimary",
+				Title:        "A primary warning",
+				Evidence:     "Primary warning evidence.",
+				RequiredFix:  "Update the primary path.",
+				Quality:      reviewFindingQualityComplete,
+			},
+			{
+				ID:           "RF-001",
+				Source:       "model",
+				ReviewerRole: "cross_reviewer",
+				Severity:     reviewSeverityMedium,
+				Category:     "correctness",
+				Path:         "main.go",
+				Symbol:       "aCross",
+				Title:        "Z cross warning",
+				Evidence:     "Cross reviewer warning evidence.",
+				RequiredFix:  "Update the cross-reviewed path.",
+				Quality:      reviewFindingQualityComplete,
+			},
+			{
+				ID:           "RF-003",
+				Source:       "deterministic",
+				ReviewerRole: "collector",
+				Severity:     reviewSeverityInfo,
+				Category:     "evidence_gap",
+				Title:        "Evidence note",
+				Evidence:     "A non-blocking evidence note.",
+				Quality:      reviewFindingQualityPartial,
+			},
+		},
+	}
+	run.CrossReviewTriage = buildCrossReviewTriageLedger(run)
+	if run.CrossReviewTriage == nil || len(run.CrossReviewTriage.Items) != 1 {
+		t.Fatalf("expected initial triage item, got %#v", run.CrossReviewTriage)
+	}
+	staleID := run.CrossReviewTriage.Items[0].FindingID
+	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	refreshReviewCrossReviewTriage(&run)
+
+	if run.CrossReviewTriage == nil || len(run.CrossReviewTriage.Items) != 1 {
+		t.Fatalf("expected refreshed triage item, got %#v", run.CrossReviewTriage)
+	}
+	item := run.CrossReviewTriage.Items[0]
+	if item.FindingID == staleID {
+		t.Fatalf("test setup expected renumbered cross-review finding, stale=%q item=%#v findings=%#v", staleID, item, run.Findings)
+	}
+	finalIDs := reviewFindingIDSet(reviewFindingIDs(run.Findings))
+	if !finalIDs[item.FindingID] {
+		t.Fatalf("triage item should reference a final finding ID, item=%#v final=%#v", item, reviewFindingIDs(run.Findings))
+	}
+	if strings.Contains(item.UserActionPrompt, staleID) {
+		t.Fatalf("triage prompt must not contain stale finding ID %q, got %q", staleID, item.UserActionPrompt)
 	}
 }
 

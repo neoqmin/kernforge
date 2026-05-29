@@ -1323,7 +1323,7 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		return false
 	}
 	if reviewRunLooksReadOnlyAnalysis(run) {
-		return false
+		return reviewReadOnlyFindingBlocksGate(run, finding)
 	}
 	if strings.EqualFold(finding.Category, "evidence_gap") {
 		return false
@@ -1358,6 +1358,42 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		}
 	}
 	return false
+}
+
+func reviewReadOnlyFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
+	finding.Normalize()
+	if strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") &&
+		!reviewFindingLooksImplementationRepairDespiteGapCategory(finding) {
+		return false
+	}
+	if reviewFindingLooksAdvisoryStyleCategory(finding) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "performance") ||
+		strings.EqualFold(finding.Category, "documentation") {
+		return false
+	}
+	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityHigh) {
+		return false
+	}
+	if !reviewFindingLooksActionableForRepairGate(finding) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "security") ||
+		strings.EqualFold(finding.Category, "bypass_surface") ||
+		strings.EqualFold(finding.Category, "credential_leak") {
+		return true
+	}
+	for _, pack := range run.PolicyPacks {
+		if strings.EqualFold(pack, "windows_kernel_driver") ||
+			strings.EqualFold(pack, "anti_cheat_telemetry") {
+			return true
+		}
+	}
+	return true
 }
 
 func reviewHasOnlyEvidenceBlockers(findings []ReviewFinding, ids []string) bool {
