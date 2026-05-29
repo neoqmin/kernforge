@@ -971,6 +971,8 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		staleContext = run.RuntimeGateLedger.StaleContextSummary
 	}
 	payload := map[string]any{
+		"kernforge_version":            run.KernforgeVersion,
+		"kernforge_build":              run.KernforgeBuild,
 		"summary":                      run.Result.Summary,
 		"review_id":                    run.ID,
 		"machine_status":               run.MachineStatus,

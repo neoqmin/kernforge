@@ -11,6 +11,11 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	b.WriteString("# KernForge Review\n\n")
 	fmt.Fprintf(&b, "- Review ID: `%s`\n", run.ID)
 	fmt.Fprintf(&b, "- Schema: `%s`\n", run.SchemaVersion)
+	if build := kernforgeBuildIdentitySummary(run.KernforgeBuild); strings.TrimSpace(build) != "" {
+		fmt.Fprintf(&b, "- KernForge build: `%s`\n", build)
+	} else if strings.TrimSpace(run.KernforgeVersion) != "" {
+		fmt.Fprintf(&b, "- KernForge version: `%s`\n", run.KernforgeVersion)
+	}
 	fmt.Fprintf(&b, "- Target: `%s`\n", run.Target)
 	fmt.Fprintf(&b, "- Mode: `%s`\n", run.Mode)
 	fmt.Fprintf(&b, "- Flow: `%s`\n", run.Flow)
