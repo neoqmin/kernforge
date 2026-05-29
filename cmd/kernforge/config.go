@@ -1616,6 +1616,13 @@ func applyEnv(cfg *Config) {
 		if cfg.BaseURL == "" {
 			cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(cfg.Provider, "")
 		}
+	case "open-webui":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeOpenWebUIBaseURL("")
+		}
+		if cfg.APIKey == "" {
+			envString("OPEN_WEBUI_API_KEY", &cfg.APIKey)
+		}
 	case "openai", "openai-compatible":
 		if cfg.APIKey == "" {
 			envString("OPENAI_API_KEY", &cfg.APIKey)
@@ -2054,6 +2061,8 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 			return normalizeLocalOpenAICompatibleBaseURL(provider, "")
 		}
 		return normalizeLocalOpenAICompatibleBaseURL(provider, baseURL)
+	case "open-webui":
+		return normalizeOpenWebUIBaseURL(baseURL)
 	default:
 		return strings.TrimSpace(baseURL)
 	}
@@ -3709,8 +3718,9 @@ Provider and model commands control which model is active and how planning/revie
 
 /provider
 - Choose and configure a provider interactively.
-- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider deepseek, /provider opencode, /provider opencode-go, /provider ollama, /provider codex-cli, /provider openai-codex, /provider lmstudio, /provider vllm, or /provider llama.cpp.
+- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider deepseek, /provider opencode, /provider opencode-go, /provider ollama, /provider codex-cli, /provider openai-codex, /provider lmstudio, /provider vllm, /provider llama.cpp, or /provider open-webui.
 - LM Studio, vLLM, and llama.cpp use provider-specific local defaults unless you pass or save a base URL; custom base URLs are preserved when reconfiguring the same provider.
+- Open WebUI defaults to http://localhost:3000 and uses /api/chat/completions; set a base URL and API key to connect to a remote instance.
 
 /provider status
 - Show the active provider, normalized base URL, API key presence, and provider-specific budget visibility.

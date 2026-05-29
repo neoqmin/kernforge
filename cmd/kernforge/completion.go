@@ -334,6 +334,7 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"lmstudio":                  "Switch to local LM Studio OpenAI-compatible provider setup.",
 		"vllm":                      "Switch to local vLLM OpenAI-compatible provider setup.",
 		"llama.cpp":                 "Switch to local llama.cpp OpenAI-compatible provider setup.",
+		"open-webui":                "Switch to Open WebUI provider setup.",
 	},
 	"effort": {
 		"main":              "Set reasoning effort for the active main model.",
