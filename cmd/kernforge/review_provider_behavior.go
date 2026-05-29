@@ -36,18 +36,24 @@ type ReviewModelCapability struct {
 }
 
 type ReviewRouteHealth struct {
-	Role              string  `json:"role,omitempty"`
-	Model             string  `json:"model,omitempty"`
-	RecentRuns        int     `json:"recent_runs,omitempty"`
-	TimeoutRate       float64 `json:"timeout_rate,omitempty"`
-	EmptyResponseRate float64 `json:"empty_response_rate,omitempty"`
-	WeakRate          float64 `json:"weak_rate,omitempty"`
-	UsableFindingRate float64 `json:"usable_finding_rate,omitempty"`
-	LastStatus        string  `json:"last_status,omitempty"`
-	LastQuality       string  `json:"last_quality,omitempty"`
-	LastTimeout       bool    `json:"last_timeout,omitempty"`
-	MedianLatencyMS   int64   `json:"median_latency_ms,omitempty"`
-	Recommendation    string  `json:"recommendation,omitempty"`
+	Role              string         `json:"role,omitempty"`
+	Model             string         `json:"model,omitempty"`
+	Provider          string         `json:"provider,omitempty"`
+	ProviderLabel     string         `json:"provider_label,omitempty"`
+	ModelID           string         `json:"model_id,omitempty"`
+	RecentRuns        int            `json:"recent_runs,omitempty"`
+	TimeoutRate       float64        `json:"timeout_rate,omitempty"`
+	EmptyResponseRate float64        `json:"empty_response_rate,omitempty"`
+	WeakRate          float64        `json:"weak_rate,omitempty"`
+	UsableFindingRate float64        `json:"usable_finding_rate,omitempty"`
+	LastStatus        string         `json:"last_status,omitempty"`
+	LastQuality       string         `json:"last_quality,omitempty"`
+	LastFailureClass  string         `json:"last_failure_class,omitempty"`
+	FailureClasses    []string       `json:"failure_classes,omitempty"`
+	FailureCounts     map[string]int `json:"failure_counts,omitempty"`
+	LastTimeout       bool           `json:"last_timeout,omitempty"`
+	MedianLatencyMS   int64          `json:"median_latency_ms,omitempty"`
+	Recommendation    string         `json:"recommendation,omitempty"`
 }
 
 type reviewModelCapabilityRule struct {
@@ -315,28 +321,41 @@ func reviewRouteHealthFromRun(run *ReviewRun) []ReviewRouteHealth {
 			role = "primary_reviewer"
 		}
 		health := ReviewRouteHealth{
-			Role:        role,
-			Model:       reviewerRun.Model,
-			RecentRuns:  1,
-			LastStatus:  reviewerRun.Status,
-			LastQuality: reviewerRun.ModelQuality,
+			Role:          role,
+			Model:         reviewerRun.Model,
+			Provider:      reviewerRun.Provider,
+			ProviderLabel: reviewerRun.ProviderLabel,
+			ModelID:       reviewerRun.ModelID,
+			RecentRuns:    1,
+			LastStatus:    reviewerRun.Status,
+			LastQuality:   reviewerRun.ModelQuality,
 		}
-		if !reviewerRun.StartedAt.IsZero() && !reviewerRun.FinishedAt.IsZero() {
+		if reviewerRun.LatencyMS > 0 {
+			health.MedianLatencyMS = reviewerRun.LatencyMS
+		} else if !reviewerRun.StartedAt.IsZero() && !reviewerRun.FinishedAt.IsZero() {
 			health.MedianLatencyMS = reviewerRun.FinishedAt.Sub(reviewerRun.StartedAt).Milliseconds()
+		}
+		if event, ok := reviewRouteHealthEventFromReviewerRun(reviewerRun); ok {
+			health.LastFailureClass = event.FailureClass
+			health.FailureClasses = append(health.FailureClasses, event.FailureClass)
+			health.FailureCounts = map[string]int{event.FailureClass: 1}
+			if event.Recommendation != "" {
+				health.Recommendation = event.Recommendation
+			}
 		}
 		lowerError := strings.ToLower(strings.TrimSpace(reviewerRun.Error))
 		if strings.Contains(lowerError, "timeout") {
 			health.LastTimeout = true
 			health.TimeoutRate = 1
-			health.Recommendation = "route timed out recently; consider a stronger or closer reviewer route"
+			health.Recommendation = reviewRouteHealthRecommendationForClass(providerFailureClassTimeout)
 		}
 		if strings.Contains(lowerError, "empty response") {
 			health.EmptyResponseRate = 1
-			health.Recommendation = "route returned empty output recently; retry with a different reviewer"
+			health.Recommendation = reviewRouteHealthRecommendationForClass(providerFailureClassEmptyResponse)
 		}
 		if strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityWeak) {
 			health.WeakRate = 1
-			health.Recommendation = "route produced weak structured output recently; avoid strict retry loops"
+			health.Recommendation = reviewRouteHealthRecommendationForClass(providerFailureClassMalformedResponse)
 		}
 		if strings.EqualFold(strings.TrimSpace(reviewerRun.Status), "completed") &&
 			(strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityUsable) ||
@@ -430,6 +449,9 @@ func combineReviewRouteHealth(previous ReviewRouteHealth, latest ReviewRouteHeal
 	return ReviewRouteHealth{
 		Role:              firstNonBlankString(latest.Role, previous.Role),
 		Model:             firstNonBlankString(latest.Model, previous.Model),
+		Provider:          firstNonBlankString(latest.Provider, previous.Provider),
+		ProviderLabel:     firstNonBlankString(latest.ProviderLabel, previous.ProviderLabel),
+		ModelID:           firstNonBlankString(latest.ModelID, previous.ModelID),
 		RecentRuns:        newRuns,
 		TimeoutRate:       weighted(previous.TimeoutRate, latest.TimeoutRate),
 		EmptyResponseRate: weighted(previous.EmptyResponseRate, latest.EmptyResponseRate),
@@ -437,12 +459,38 @@ func combineReviewRouteHealth(previous ReviewRouteHealth, latest ReviewRouteHeal
 		UsableFindingRate: weighted(previous.UsableFindingRate, latest.UsableFindingRate),
 		LastStatus:        firstNonBlankString(latest.LastStatus, previous.LastStatus),
 		LastQuality:       firstNonBlankString(latest.LastQuality, previous.LastQuality),
+		LastFailureClass:  firstNonBlankString(latest.LastFailureClass, previous.LastFailureClass),
+		FailureClasses:    analysisUniqueStrings(append(previous.FailureClasses, latest.FailureClasses...)),
+		FailureCounts:     mergeReviewRouteFailureCounts(previous.FailureCounts, latest.FailureCounts),
 		LastTimeout:       latest.LastTimeout,
 		MedianLatencyMS:   latency,
 	}
 }
 
+func mergeReviewRouteFailureCounts(a map[string]int, b map[string]int) map[string]int {
+	out := map[string]int{}
+	for key, value := range a {
+		key = normalizeProviderFailureClass(key)
+		if key != "" && value > 0 {
+			out[key] += value
+		}
+	}
+	for key, value := range b {
+		key = normalizeProviderFailureClass(key)
+		if key != "" && value > 0 {
+			out[key] += value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func reviewRouteHealthRecommendation(item ReviewRouteHealth) string {
+	if item.LastFailureClass != "" {
+		return reviewRouteHealthRecommendationForClass(item.LastFailureClass)
+	}
 	if item.RecentRuns >= 2 {
 		if item.TimeoutRate >= 0.50 {
 			return "route is timeout-heavy; reduce strict retries and consider a closer or stronger reviewer"

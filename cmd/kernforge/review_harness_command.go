@@ -989,6 +989,8 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"final_answer_contract_status": finalAnswerContract,
 		"final_answer_correction":      run.RuntimeGateLedger.FinalAnswerCorrection,
 		"stale_context_summary":        staleContext,
+		"route_health_events":          reviewRouteHealthEventsFromRun(&run),
+		"live_provider_drill":          run.LiveProviderDrill,
 		"next_recommended_command":     recommended,
 		"artifact_refs":                run.ArtifactRefs,
 		"result":                       run.Result,

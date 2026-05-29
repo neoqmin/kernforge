@@ -78,6 +78,8 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 			"final_answer_contract_status": reviewFinalAnswerContractStatusForClass(requestClass, nil, nil, ""),
 			"final_answer_correction":      (*FinalAnswerCorrectionVisibility)(nil),
 			"stale_context_summary":        (&StaleContextSummary{Status: staleContextStatusFresh}),
+			"route_health_events":          []ReviewRouteHealthEvent(nil),
+			"live_provider_drill":          (*LiveProviderDrillReport)(nil),
 			"next_recommended_command": map[string]any{
 				"command": "kernforge_review",
 				"reason":  "auto_review=off skipped the review harness",

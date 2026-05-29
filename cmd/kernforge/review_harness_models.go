@@ -444,6 +444,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		Model:     label,
 		StartedAt: time.Now(),
 	}
+	reviewerRun.Provider, reviewerRun.ProviderLabel, reviewerRun.ModelID = reviewReviewerRunProviderModel(rt.cfg, role, label, model)
 	if setupErr != nil || client == nil || strings.TrimSpace(model) == "" {
 		reviewerRun.Status = "failed"
 		reviewerRun.ModelQuality = reviewModelQualityFailed
@@ -453,6 +454,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 			reviewerRun.Error = "no reviewer model configured"
 		}
 		reviewerRun.FinishedAt = time.Now()
+		finalizeReviewReviewerRunTelemetry(&reviewerRun)
 		if run != nil {
 			run.Result.Degraded = true
 			run.Result.DegradedReason = strings.TrimSpace(reviewerRun.Error)
@@ -476,6 +478,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 			reviewerRun.ModelQuality = reviewModelQualityFailed
 			reviewerRun.Error = "review route health skipped repeated reviewer call after recent unhealthy reviewer output"
 			reviewerRun.FinishedAt = time.Now()
+			finalizeReviewReviewerRunTelemetry(&reviewerRun)
 			run.Result.Degraded = true
 			run.Result.DegradedReason = reviewerRun.Error
 			if run.Result.ModelQuality == "" || reviewModelQualityRank(reviewModelQualityFailed) > reviewModelQualityRank(run.Result.ModelQuality) {
@@ -517,6 +520,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		reviewerRun.Status = "failed"
 		reviewerRun.ModelQuality = reviewModelQualityFailed
 		reviewerRun.Error = reviewModelCallErrorText(err, softTimeout)
+		finalizeReviewReviewerRunTelemetry(&reviewerRun)
 		run.Result.Degraded = true
 		run.Result.DegradedReason = "review model failed: " + reviewerRun.Error
 		emitReviewModelResultProgress(rt, reviewerRun, 0)
@@ -545,6 +549,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 			retryReason = "empty_response"
 		}
 		if retryReason != "" {
+			reviewerRun.RetryCount++
 			if retryReason == "reasoning_only" {
 				emitReviewModelReasoningOnlyRetryProgress(rt, reviewerRun, label)
 			} else {
@@ -607,12 +612,14 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 			reviewerRun.RawOutputPath = rawPath
 			reviewerRun.Status = "failed"
 			reviewerRun.ModelQuality = reviewModelQualityFailed
+			reviewerRun.FailureClass = providerFailureClassEmptyResponse
 			if strings.TrimSpace(reviewerRun.Error) == "" {
 				reviewerRun.Error = "review model returned empty response"
 				if strings.TrimSpace(resp.Message.ReasoningContent) != "" {
 					reviewerRun.Error = "review model returned empty content while reasoning_content was present"
 				}
 			}
+			finalizeReviewReviewerRunTelemetry(&reviewerRun)
 			run.Redaction = mergeReviewRedactionReports(run.Redaction, rawRedaction)
 			run.Result.Degraded = true
 			run.Result.DegradedReason = reviewerRun.Error
@@ -631,6 +638,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	if reviewStopReasonLooksTruncated(rawStopReason) {
 		roleFindings = append(roleFindings, reviewTruncatedTailFindingPlaceholder(role, reviewRunPrefersKorean(rt.cfg, *run)))
 		quality = reviewModelQualityWeak
+		reviewerRun.MalformedOutputCount++
 	}
 	for i := range roleFindings {
 		roleFindings[i].ReviewerRole = role
@@ -652,6 +660,8 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	}
 	omissionRetryFailed := false
 	for attempt := 1; attempt <= omissionRetryBudget && reviewShouldRetryOmittedReviewOutput(raw, roleFindings, quality); attempt++ {
+		reviewerRun.RetryCount++
+		reviewerRun.MalformedOutputCount++
 		emitReviewModelRetryProgress(rt, role, label, attempt, omissionRetryBudget)
 		retryPrompt := buildReviewModelOmissionRetryPrompt(rt.cfg, *run, role)
 		retryPromptPath, retryRawPath := reviewRoleAttemptArtifactPaths(root, run.ID, role, attempt)
@@ -675,6 +685,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		reviewerRun.FinishedAt = time.Now()
 		if retryErr != nil {
 			reviewerRun.Error = "omission retry failed: " + reviewModelCallErrorText(retryErr, softTimeout)
+			reviewerRun.FailureClass = providerFailureClassRetryExhausted
 			omissionRetryFailed = true
 			break
 		}
@@ -702,6 +713,13 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	}
 	reviewerRun.Status = "completed"
 	reviewerRun.ModelQuality = quality
+	if quality == reviewModelQualityWeak || quality == reviewModelQualityFailed {
+		reviewerRun.WeakOutputDegraded = true
+		if reviewerRun.FailureClass == "" {
+			reviewerRun.FailureClass = providerFailureClassMalformedResponse
+		}
+	}
+	finalizeReviewReviewerRunTelemetry(&reviewerRun)
 	emitReviewModelResultProgress(rt, reviewerRun, len(roleFindings))
 	if quality == reviewModelQualityWeak || quality == reviewModelQualityFailed {
 		run.Result.Degraded = true

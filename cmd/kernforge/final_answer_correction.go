@@ -7,21 +7,40 @@ import (
 )
 
 type FinalAnswerCorrectionVisibility struct {
-	Required             bool      `json:"required"`
-	Corrected            bool      `json:"corrected,omitempty"`
-	Rejected             bool      `json:"rejected,omitempty"`
-	Status               string    `json:"status,omitempty"`
-	Source               string    `json:"source,omitempty"`
-	Reasons              []string  `json:"reasons,omitempty"`
-	FindingTitles        []string  `json:"finding_titles,omitempty"`
-	AttemptCount         int       `json:"attempt_count,omitempty"`
-	MaxAttempts          int       `json:"max_attempts,omitempty"`
-	RecordedAt           time.Time `json:"recorded_at,omitempty"`
-	CorrectedAt          time.Time `json:"corrected_at,omitempty"`
-	RejectedAt           time.Time `json:"rejected_at,omitempty"`
-	LastAttemptAt        time.Time `json:"last_attempt_at,omitempty"`
+	Required             bool                           `json:"required"`
+	Corrected            bool                           `json:"corrected,omitempty"`
+	Rejected             bool                           `json:"rejected,omitempty"`
+	Status               string                         `json:"status,omitempty"`
+	Source               string                         `json:"source,omitempty"`
+	Reasons              []string                       `json:"reasons,omitempty"`
+	FindingTitles        []string                       `json:"finding_titles,omitempty"`
+	Contract             *FinalAnswerCorrectionContract `json:"contract,omitempty"`
+	AttemptCount         int                            `json:"attempt_count,omitempty"`
+	MaxAttempts          int                            `json:"max_attempts,omitempty"`
+	RecordedMessageCount int                            `json:"recorded_message_count,omitempty"`
+	HasRecordedMessages  bool                           `json:"has_recorded_messages,omitempty"`
+	RecordedAt           time.Time                      `json:"recorded_at,omitempty"`
+	CorrectedAt          time.Time                      `json:"corrected_at,omitempty"`
+	RejectedAt           time.Time                      `json:"rejected_at,omitempty"`
+	LastAttemptAt        time.Time                      `json:"last_attempt_at,omitempty"`
 	recordedMessageCount int
 	hasRecordedMessages  bool
+}
+
+type FinalAnswerCorrectionContract struct {
+	MissingDisclosureFields    []string `json:"missing_disclosure_fields,omitempty"`
+	RequiredAnswerShape        []string `json:"required_answer_shape,omitempty"`
+	EditsProhibited            bool     `json:"edits_prohibited"`
+	VerificationMode           string   `json:"verification_mode,omitempty"`
+	VerificationMustRerun      bool     `json:"verification_must_rerun,omitempty"`
+	VerificationDisclosureOnly bool     `json:"verification_disclosure_only,omitempty"`
+	AttemptCount               int      `json:"attempt_count,omitempty"`
+	MaxAttempts                int      `json:"max_attempts,omitempty"`
+	State                      string   `json:"state,omitempty"`
+	Accepted                   bool     `json:"accepted,omitempty"`
+	Rejected                   bool     `json:"rejected,omitempty"`
+	ManualRecoveryNeeded       bool     `json:"manual_recovery_needed,omitempty"`
+	NextCommand                string   `json:"next_command,omitempty"`
 }
 
 const (
@@ -41,6 +60,17 @@ func (v *FinalAnswerCorrectionVisibility) Normalize() {
 	}
 	v.Reasons = normalizeTaskStateList(v.Reasons, 8)
 	v.FindingTitles = normalizeTaskStateList(v.FindingTitles, 12)
+	if v.RecordedMessageCount > 0 {
+		v.recordedMessageCount = v.RecordedMessageCount
+		v.hasRecordedMessages = true
+	}
+	if v.HasRecordedMessages {
+		v.hasRecordedMessages = true
+	}
+	if v.hasRecordedMessages {
+		v.RecordedMessageCount = v.recordedMessageCount
+		v.HasRecordedMessages = true
+	}
 	if !v.Required && len(v.Reasons) > 0 {
 		v.Required = true
 	}
@@ -73,6 +103,108 @@ func (v *FinalAnswerCorrectionVisibility) Normalize() {
 	default:
 		v.Status = strings.TrimSpace(v.Status)
 	}
+	if v.Contract == nil && v.Required {
+		v.Contract = buildFinalAnswerCorrectionContract(*v)
+	}
+	if v.Contract != nil {
+		v.Contract.Normalize(v)
+	}
+}
+
+func (c *FinalAnswerCorrectionContract) Normalize(parent *FinalAnswerCorrectionVisibility) {
+	if c == nil {
+		return
+	}
+	c.MissingDisclosureFields = normalizeTaskStateList(c.MissingDisclosureFields, 12)
+	c.RequiredAnswerShape = normalizeTaskStateList(c.RequiredAnswerShape, 12)
+	c.VerificationMode = strings.TrimSpace(strings.ToLower(c.VerificationMode))
+	c.State = strings.TrimSpace(strings.ToLower(c.State))
+	c.NextCommand = strings.TrimSpace(c.NextCommand)
+	if parent != nil {
+		c.AttemptCount = parent.AttemptCount
+		c.MaxAttempts = parent.MaxAttempts
+		c.State = parent.Status
+		c.Accepted = parent.Corrected
+		c.Rejected = parent.Rejected
+	}
+	if c.VerificationMode == "" {
+		if containsString(c.MissingDisclosureFields, "validation_disclosure") {
+			c.VerificationMode = "disclose_only"
+			c.VerificationDisclosureOnly = true
+		} else {
+			c.VerificationMode = "not_required"
+		}
+	}
+	if c.VerificationMode == "rerun_required" {
+		c.VerificationMustRerun = true
+		c.VerificationDisclosureOnly = false
+	} else if c.VerificationMode == "disclose_only" {
+		c.VerificationDisclosureOnly = true
+	}
+	if len(c.RequiredAnswerShape) == 0 {
+		c.RequiredAnswerShape = finalAnswerRequiredShapeForReasons(c.MissingDisclosureFields)
+	}
+	if c.NextCommand == "" {
+		c.NextCommand = "/status detail"
+	}
+	c.ManualRecoveryNeeded = c.Rejected || (c.MaxAttempts > 0 && c.AttemptCount >= c.MaxAttempts && !c.Accepted)
+}
+
+func buildFinalAnswerCorrectionContract(visibility FinalAnswerCorrectionVisibility) *FinalAnswerCorrectionContract {
+	reasons := normalizeTaskStateList(visibility.Reasons, 12)
+	contract := &FinalAnswerCorrectionContract{
+		MissingDisclosureFields: reasons,
+		RequiredAnswerShape:     finalAnswerRequiredShapeForReasons(reasons),
+		EditsProhibited:         true,
+		VerificationMode:        finalAnswerCorrectionVerificationMode(reasons),
+		AttemptCount:            visibility.AttemptCount,
+		MaxAttempts:             visibility.MaxAttempts,
+		State:                   visibility.Status,
+		Accepted:                visibility.Corrected,
+		Rejected:                visibility.Rejected,
+		NextCommand:             "/status detail",
+	}
+	contract.Normalize(&visibility)
+	return contract
+}
+
+func finalAnswerRequiredShapeForReasons(reasons []string) []string {
+	shape := []string{}
+	add := func(item string) {
+		if item != "" {
+			shape = append(shape, item)
+		}
+	}
+	add("start with the concrete outcome, not a generic completion sentence")
+	if containsString(reasons, "review_only_findings_first_no_edit") {
+		add("for review-only requests, list findings first and explicitly state that no edits were made")
+	}
+	if containsString(reasons, "changed_file_disclosure") {
+		add("include the changed file or artifact paths that were actually touched")
+	}
+	if containsString(reasons, "document_artifact_disclosure") {
+		add("include the document artifact path and artifact-quality gate status")
+	}
+	if containsString(reasons, "review_self_review_disclosure") {
+		add("include the latest review result or state that review was not run")
+	}
+	if containsString(reasons, "validation_disclosure") {
+		add("include verification status exactly: passed, failed, skipped, or not run")
+	}
+	if containsString(reasons, "remaining_risk_disclosure") {
+		add("include unresolved risks, residual risk, or the absence of remaining known blockers")
+	}
+	if len(shape) == 1 {
+		add("include verification and remaining-risk disclosure when they are known")
+	}
+	return normalizeTaskStateList(shape, 12)
+}
+
+func finalAnswerCorrectionVerificationMode(reasons []string) string {
+	if containsString(reasons, "validation_disclosure") {
+		return "disclose_only"
+	}
+	return "not_required"
 }
 
 func finalAnswerCorrectionVisibilityFromReport(report *CodingHarnessReport, corrected bool) *FinalAnswerCorrectionVisibility {
@@ -110,6 +242,26 @@ func finalAnswerCorrectionVisibilityFromReport(report *CodingHarnessReport, corr
 		visibility.Status = finalAnswerCorrectionStatusRequired
 	}
 	return visibility
+}
+
+func finalAnswerCorrectionShouldReplace(existing *FinalAnswerCorrectionVisibility, next *FinalAnswerCorrectionVisibility) bool {
+	if next == nil {
+		return false
+	}
+	if existing == nil {
+		return true
+	}
+	existingCopy := *existing
+	nextCopy := *next
+	existingCopy.Normalize()
+	nextCopy.Normalize()
+	if existingCopy.Rejected && !nextCopy.Rejected {
+		return false
+	}
+	if existingCopy.Corrected && !nextCopy.Corrected {
+		return false
+	}
+	return true
 }
 
 func finalAnswerCorrectionReasonForFinding(finding CodingHarnessFinding) string {
@@ -176,6 +328,15 @@ func finalAnswerCorrectionStatusLine(visibility *FinalAnswerCorrectionVisibility
 	if len(copyVisibility.Reasons) > 0 {
 		parts = append(parts, "reasons="+strings.Join(copyVisibility.Reasons, ","))
 	}
+	if copyVisibility.Contract != nil {
+		parts = append(parts, "contract_state="+valueOrDefault(copyVisibility.Contract.State, copyVisibility.Status))
+		if copyVisibility.Contract.EditsProhibited {
+			parts = append(parts, "edits_prohibited=true")
+		}
+		if copyVisibility.Contract.VerificationMode != "" {
+			parts = append(parts, "verification="+copyVisibility.Contract.VerificationMode)
+		}
+	}
 	if len(parts) == 0 {
 		return "none"
 	}
@@ -189,9 +350,26 @@ func finalAnswerCorrectionDetailedLine(visibility *FinalAnswerCorrectionVisibili
 	copyVisibility := *visibility
 	copyVisibility.Normalize()
 	if len(copyVisibility.FindingTitles) == 0 {
-		return ""
+		if copyVisibility.Contract == nil {
+			return ""
+		}
 	}
-	return "titles=" + strings.Join(limitStrings(copyVisibility.FindingTitles, 4), " | ")
+	parts := []string{}
+	if len(copyVisibility.FindingTitles) > 0 {
+		parts = append(parts, "titles="+strings.Join(limitStrings(copyVisibility.FindingTitles, 4), " | "))
+	}
+	if copyVisibility.Contract != nil {
+		if len(copyVisibility.Contract.MissingDisclosureFields) > 0 {
+			parts = append(parts, "missing="+strings.Join(copyVisibility.Contract.MissingDisclosureFields, ","))
+		}
+		if len(copyVisibility.Contract.RequiredAnswerShape) > 0 {
+			parts = append(parts, "shape="+strings.Join(limitStrings(copyVisibility.Contract.RequiredAnswerShape, 3), " | "))
+		}
+		if copyVisibility.Contract.NextCommand != "" {
+			parts = append(parts, "next="+copyVisibility.Contract.NextCommand)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (a *Agent) recordFinalAnswerCorrectionRequired(report *CodingHarnessReport) {
@@ -224,6 +402,9 @@ func (a *Agent) recordFinalAnswerCorrectionRequired(report *CodingHarnessReport)
 	visibility.Status = finalAnswerCorrectionStatusRequired
 	visibility.recordedMessageCount = len(a.Session.Messages)
 	visibility.hasRecordedMessages = true
+	visibility.RecordedMessageCount = visibility.recordedMessageCount
+	visibility.HasRecordedMessages = true
+	visibility.Contract = buildFinalAnswerCorrectionContract(*visibility)
 	a.Session.LastFinalAnswerCorrection = visibility
 	if report != nil {
 		report.FinalAnswerCorrection = visibility
@@ -248,6 +429,12 @@ func (a *Agent) markFinalAnswerCorrectionAccepted() {
 		visibility.CorrectedAt = time.Now()
 	}
 	visibility.Normalize()
+	if visibility.Contract != nil {
+		visibility.Contract.State = finalAnswerCorrectionStatusAccepted
+		visibility.Contract.Accepted = true
+		visibility.Contract.Rejected = false
+		visibility.Contract.Normalize(&visibility)
+	}
 	a.Session.LastFinalAnswerCorrection = &visibility
 	if a.Session.LastCodingHarnessReport != nil {
 		a.Session.LastCodingHarnessReport.FinalAnswerCorrection = &visibility
@@ -269,6 +456,13 @@ func (a *Agent) markFinalAnswerCorrectionRejected(reason string) {
 		visibility.RejectedAt = time.Now()
 	}
 	visibility.Normalize()
+	if visibility.Contract != nil {
+		visibility.Contract.State = finalAnswerCorrectionStatusRejected
+		visibility.Contract.Accepted = false
+		visibility.Contract.Rejected = true
+		visibility.Contract.ManualRecoveryNeeded = true
+		visibility.Contract.Normalize(&visibility)
+	}
 	a.Session.LastFinalAnswerCorrection = &visibility
 	if a.Session.LastCodingHarnessReport != nil {
 		a.Session.LastCodingHarnessReport.FinalAnswerCorrection = &visibility

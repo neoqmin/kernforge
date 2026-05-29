@@ -135,26 +135,21 @@ func TestOptionalRealProviderSmokePathSkipsWithoutConfig(t *testing.T) {
 	cfg.Model = model
 	cfg.BaseURL = strings.TrimSpace(os.Getenv("KERNFORGE_REAL_BASE_URL"))
 	cfg.APIKey = strings.TrimSpace(os.Getenv("KERNFORGE_REAL_API_KEY"))
-	client, err := NewProviderClient(cfg)
-	if err != nil {
+	if _, err := NewProviderClient(cfg); err != nil {
 		t.Skipf("skipped real-provider smoke: provider config unavailable: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	resp, err := client.Complete(ctx, ChatRequest{
-		Model: model,
-		Messages: []Message{{
-			Role: "user",
-			Text: "Reply with exactly: REVIEW_RESULT\nverdict: approved\nsummary: provider smoke ok",
-		}},
-		MaxTokens:  128,
-		WorkingDir: root,
-	})
+	report, err := runOptionalRealProviderSmokeDrill(ctx, root, cfg)
 	if err != nil {
 		t.Fatalf("real-provider smoke failed: %v", err)
 	}
-	if !strings.Contains(strings.ToLower(resp.Message.Text), "provider smoke ok") {
-		t.Fatalf("unexpected real-provider smoke response: %q", resp.Message.Text)
+	if report.Status != liveProviderDrillStatusPassed || len(report.Turns) == 0 || report.FinalGateStatus != runtimeGateStatusReady {
+		t.Fatalf("unexpected real-provider smoke drill report: %#v", report)
+	}
+	rendered := renderLiveProviderDrillMarkdown(&report)
+	if !strings.Contains(rendered, "real-provider smoke completed") || !strings.Contains(rendered, "latency_ms") {
+		t.Fatalf("expected real-provider smoke drill artifact, got:\n%s", rendered)
 	}
 }
 

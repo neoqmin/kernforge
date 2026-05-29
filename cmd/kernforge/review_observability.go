@@ -67,14 +67,18 @@ type ReviewCrossReviewTriageSummary struct {
 }
 
 type ReviewRouteQualitySummary struct {
-	Status          string   `json:"status,omitempty"`
-	Degraded        bool     `json:"degraded,omitempty"`
-	ReviewerRuns    int      `json:"reviewer_runs,omitempty"`
-	WeakOutputs     int      `json:"weak_outputs,omitempty"`
-	FailedOutputs   int      `json:"failed_outputs,omitempty"`
-	DegradedRoutes  []string `json:"degraded_routes,omitempty"`
-	Reasons         []string `json:"reasons,omitempty"`
-	Recommendations []string `json:"recommendations,omitempty"`
+	Status           string                   `json:"status,omitempty"`
+	Degraded         bool                     `json:"degraded,omitempty"`
+	ReviewerRuns     int                      `json:"reviewer_runs,omitempty"`
+	WeakOutputs      int                      `json:"weak_outputs,omitempty"`
+	FailedOutputs    int                      `json:"failed_outputs,omitempty"`
+	MalformedOutputs int                      `json:"malformed_outputs,omitempty"`
+	RetryCount       int                      `json:"retry_count,omitempty"`
+	DegradedRoutes   []string                 `json:"degraded_routes,omitempty"`
+	FailureClasses   []string                 `json:"failure_classes,omitempty"`
+	HealthEvents     []ReviewRouteHealthEvent `json:"health_events,omitempty"`
+	Reasons          []string                 `json:"reasons,omitempty"`
+	Recommendations  []string                 `json:"recommendations,omitempty"`
 }
 
 type ReviewBlockerClassCounts struct {
@@ -173,11 +177,18 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		summary.NextRecommendedCommand = &next
 	}
 	if report != nil {
+		var correction *FinalAnswerCorrectionVisibility
 		if report.FinalAnswerCorrection != nil {
-			correction := *report.FinalAnswerCorrection
-			correction.Normalize()
-			summary.FinalAnswerCorrection = &correction
-		} else if correction := finalAnswerCorrectionVisibilityFromReport(report, false); correction != nil {
+			copyCorrection := *report.FinalAnswerCorrection
+			copyCorrection.Normalize()
+			correction = &copyCorrection
+		} else {
+			correction = finalAnswerCorrectionVisibilityFromReport(report, false)
+			if correction != nil {
+				correction.Normalize()
+			}
+		}
+		if finalAnswerCorrectionShouldReplace(summary.FinalAnswerCorrection, correction) {
 			summary.FinalAnswerCorrection = correction
 		}
 	}
@@ -289,6 +300,15 @@ func reviewRouteQualityForRun(run ReviewRun) *ReviewRouteQualitySummary {
 		status := strings.TrimSpace(reviewerRun.Status)
 		quality := strings.TrimSpace(reviewerRun.ModelQuality)
 		model := strings.TrimSpace(reviewerRun.Model)
+		summary.RetryCount += reviewerRun.RetryCount
+		summary.MalformedOutputs += reviewerRun.MalformedOutputCount
+		if event, ok := reviewRouteHealthEventFromReviewerRun(reviewerRun); ok {
+			summary.HealthEvents = append(summary.HealthEvents, event)
+			summary.FailureClasses = append(summary.FailureClasses, event.FailureClass)
+			if event.Recommendation != "" {
+				summary.Recommendations = append(summary.Recommendations, event.Recommendation)
+			}
+		}
 		if strings.EqualFold(status, "failed") || strings.EqualFold(quality, reviewModelQualityFailed) || strings.TrimSpace(reviewerRun.Error) != "" {
 			summary.FailedOutputs++
 			summary.DegradedRoutes = append(summary.DegradedRoutes, role)
@@ -310,15 +330,35 @@ func reviewRouteQualityForRun(run ReviewRun) *ReviewRouteQualitySummary {
 			if strings.TrimSpace(health.Recommendation) != "" {
 				summary.Recommendations = append(summary.Recommendations, health.Recommendation)
 			}
+			if health.LastFailureClass != "" {
+				summary.FailureClasses = append(summary.FailureClasses, health.LastFailureClass)
+			}
+		}
+	}
+	for _, event := range reviewRouteHealthEventsFromRun(&run) {
+		summary.HealthEvents = append(summary.HealthEvents, event)
+		if event.FailureClass != "" {
+			summary.FailureClasses = append(summary.FailureClasses, event.FailureClass)
+		}
+		if event.Recommendation != "" {
+			summary.Recommendations = append(summary.Recommendations, event.Recommendation)
+		}
+		if event.MalformedOutputCount > 0 {
+			summary.MalformedOutputs += event.MalformedOutputCount
+		}
+		if event.RetryCount > 0 {
+			summary.RetryCount += event.RetryCount
 		}
 	}
 	if run.Result.Degraded {
 		summary.Reasons = append(summary.Reasons, firstNonBlankString(run.Result.DegradedReason, "review result is degraded"))
 	}
 	summary.DegradedRoutes = normalizeTaskStateList(summary.DegradedRoutes, 8)
+	summary.FailureClasses = normalizeTaskStateList(summary.FailureClasses, 8)
+	summary.HealthEvents = dedupeReviewRouteHealthEvents(summary.HealthEvents, 16)
 	summary.Reasons = normalizeTaskStateList(summary.Reasons, 8)
 	summary.Recommendations = normalizeTaskStateList(summary.Recommendations, 8)
-	summary.Degraded = len(summary.Reasons) > 0 || summary.WeakOutputs > 0 || summary.FailedOutputs > 0
+	summary.Degraded = len(summary.Reasons) > 0 || summary.WeakOutputs > 0 || summary.FailedOutputs > 0 || len(summary.HealthEvents) > 0
 	switch {
 	case summary.FailedOutputs > 0:
 		summary.Status = "failed"
@@ -613,8 +653,17 @@ func reviewRouteQualityStatusLine(obs *ReviewRouteQualitySummary) string {
 	if obs.FailedOutputs > 0 {
 		parts = append(parts, fmt.Sprintf("failed=%d", obs.FailedOutputs))
 	}
+	if obs.MalformedOutputs > 0 {
+		parts = append(parts, fmt.Sprintf("malformed=%d", obs.MalformedOutputs))
+	}
+	if obs.RetryCount > 0 {
+		parts = append(parts, fmt.Sprintf("retries=%d", obs.RetryCount))
+	}
 	if len(obs.DegradedRoutes) > 0 {
 		parts = append(parts, "routes="+strings.Join(limitStrings(obs.DegradedRoutes, 3), ","))
+	}
+	if len(obs.FailureClasses) > 0 {
+		parts = append(parts, "failures="+strings.Join(limitStrings(obs.FailureClasses, 4), ","))
 	}
 	if len(obs.Reasons) > 0 {
 		parts = append(parts, "reason="+compactPromptSection(strings.Join(obs.Reasons, " | "), 120))
