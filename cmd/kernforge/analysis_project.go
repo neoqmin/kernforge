@@ -285,32 +285,42 @@ type ProjectEdge struct {
 }
 
 type AnalysisShard struct {
-	ID                           string               `json:"id"`
-	Name                         string               `json:"name"`
-	Type                         string               `json:"type,omitempty"`
-	ParentShardID                string               `json:"parent_shard_id,omitempty"`
-	EvidenceRequestID            string               `json:"evidence_request_id,omitempty"`
-	CoverageGapID                string               `json:"coverage_gap_id,omitempty"`
-	RefinementStage              int                  `json:"refinement_stage,omitempty"`
-	Objective                    string               `json:"objective,omitempty"`
-	RequiredEvidence             []string             `json:"required_evidence,omitempty"`
-	SuccessCriteria              []string             `json:"success_criteria,omitempty"`
-	PrimaryFiles                 []string             `json:"primary_files"`
-	PrimarySymbols               []string             `json:"primary_symbols,omitempty"`
-	ReferenceFiles               []string             `json:"reference_files,omitempty"`
-	EstimatedFiles               int                  `json:"estimated_files"`
-	EstimatedLines               int                  `json:"estimated_lines"`
-	Fingerprint                  string               `json:"fingerprint,omitempty"`
-	PrimaryFingerprint           string               `json:"primary_fingerprint,omitempty"`
-	ReferenceFingerprint         string               `json:"reference_fingerprint,omitempty"`
-	PrimarySemanticFingerprint   string               `json:"primary_semantic_fingerprint,omitempty"`
-	ReferenceSemanticFingerprint string               `json:"reference_semantic_fingerprint,omitempty"`
-	CacheStatus                  string               `json:"cache_status,omitempty"`
-	InvalidationReason           string               `json:"invalidation_reason,omitempty"`
-	InvalidationClass            string               `json:"invalidation_class,omitempty"`
-	InvalidationSignals          []string             `json:"invalidation_signals,omitempty"`
-	InvalidationDiff             []string             `json:"invalidation_diff,omitempty"`
-	InvalidationChanges          []InvalidationChange `json:"invalidation_changes,omitempty"`
+	ID                           string                     `json:"id"`
+	Name                         string                     `json:"name"`
+	Type                         string                     `json:"type,omitempty"`
+	ParentShardID                string                     `json:"parent_shard_id,omitempty"`
+	EvidenceRequestID            string                     `json:"evidence_request_id,omitempty"`
+	CoverageGapID                string                     `json:"coverage_gap_id,omitempty"`
+	RefinementStage              int                        `json:"refinement_stage,omitempty"`
+	Objective                    string                     `json:"objective,omitempty"`
+	RequiredEvidence             []string                   `json:"required_evidence,omitempty"`
+	SuccessCriteria              []string                   `json:"success_criteria,omitempty"`
+	PrimaryFiles                 []string                   `json:"primary_files"`
+	PrimarySymbols               []string                   `json:"primary_symbols,omitempty"`
+	ReferenceFiles               []string                   `json:"reference_files,omitempty"`
+	SeedSymbols                  []string                   `json:"seed_symbols,omitempty"`
+	RequiredPacketIDs            []string                   `json:"required_packet_ids,omitempty"`
+	GraphNeighborhood            *AnalysisGraphNeighborhood `json:"graph_neighborhood,omitempty"`
+	MissingEvidenceClasses       []string                   `json:"missing_evidence_classes,omitempty"`
+	GraphFingerprint             string                     `json:"graph_fingerprint,omitempty"`
+	SymbolFingerprint            string                     `json:"symbol_fingerprint,omitempty"`
+	EdgeFingerprint              string                     `json:"edge_fingerprint,omitempty"`
+	BuildContextFingerprint      string                     `json:"build_context_fingerprint,omitempty"`
+	OverlayFingerprint           string                     `json:"overlay_fingerprint,omitempty"`
+	DerivedGraphFingerprint      string                     `json:"derived_graph_fingerprint,omitempty"`
+	EstimatedFiles               int                        `json:"estimated_files"`
+	EstimatedLines               int                        `json:"estimated_lines"`
+	Fingerprint                  string                     `json:"fingerprint,omitempty"`
+	PrimaryFingerprint           string                     `json:"primary_fingerprint,omitempty"`
+	ReferenceFingerprint         string                     `json:"reference_fingerprint,omitempty"`
+	PrimarySemanticFingerprint   string                     `json:"primary_semantic_fingerprint,omitempty"`
+	ReferenceSemanticFingerprint string                     `json:"reference_semantic_fingerprint,omitempty"`
+	CacheStatus                  string                     `json:"cache_status,omitempty"`
+	InvalidationReason           string                     `json:"invalidation_reason,omitempty"`
+	InvalidationClass            string                     `json:"invalidation_class,omitempty"`
+	InvalidationSignals          []string                   `json:"invalidation_signals,omitempty"`
+	InvalidationDiff             []string                   `json:"invalidation_diff,omitempty"`
+	InvalidationChanges          []InvalidationChange       `json:"invalidation_changes,omitempty"`
 }
 
 type InvalidationChange struct {
@@ -688,30 +698,36 @@ type ReviewDecision struct {
 }
 
 type ProjectAnalysisRun struct {
-	Summary          ProjectAnalysisSummary        `json:"summary"`
-	Preflight        AnalysisPreflight             `json:"preflight,omitempty"`
-	Snapshot         ProjectSnapshot               `json:"snapshot"`
-	Shards           []AnalysisShard               `json:"shards"`
-	Reports          []WorkerReport                `json:"reports"`
-	Reviews          []ReviewDecision              `json:"reviews"`
-	CoverageLedger   AnalysisCoverageLedger        `json:"coverage_ledger,omitempty"`
-	StructuralIndex  StructuralIndex               `json:"structural_index,omitempty"`
-	EvidencePackets  []EvidencePacket              `json:"evidence_packets,omitempty"`
-	PacketCoverage   AnalysisPacketCoverageMetrics `json:"packet_coverage,omitempty"`
-	ModeScorecard    AnalysisModeScorecard         `json:"mode_scorecard,omitempty"`
-	FinalDocument    string                        `json:"final_document"`
-	ConductorProfile string                        `json:"conductor_profile,omitempty"`
-	WorkerProfile    string                        `json:"worker_profile,omitempty"`
-	ReviewerProfile  string                        `json:"reviewer_profile,omitempty"`
-	RootCause        RootCauseInvestigation        `json:"root_cause,omitempty"`
-	KnowledgePack    KnowledgePack                 `json:"knowledge_pack,omitempty"`
-	SemanticIndex    SemanticIndex                 `json:"semantic_index,omitempty"`
-	SemanticIndexV2  SemanticIndexV2               `json:"semantic_index_v2,omitempty"`
-	UnrealGraph      UnrealSemanticGraph           `json:"unreal_graph,omitempty"`
-	VectorCorpus     VectorCorpus                  `json:"vector_corpus,omitempty"`
-	VectorIngestion  VectorIngestionManifest       `json:"vector_ingestion,omitempty"`
-	DebugEvents      []string                      `json:"debug_events,omitempty"`
-	ShardDocuments   map[string]string             `json:"shard_documents,omitempty"`
+	Summary           ProjectAnalysisSummary        `json:"summary"`
+	Preflight         AnalysisPreflight             `json:"preflight,omitempty"`
+	Snapshot          ProjectSnapshot               `json:"snapshot"`
+	Shards            []AnalysisShard               `json:"shards"`
+	Reports           []WorkerReport                `json:"reports"`
+	Reviews           []ReviewDecision              `json:"reviews"`
+	CoverageLedger    AnalysisCoverageLedger        `json:"coverage_ledger,omitempty"`
+	StructuralIndex   StructuralIndex               `json:"structural_index,omitempty"`
+	EvidencePackets   []EvidencePacket              `json:"evidence_packets,omitempty"`
+	PacketCoverage    AnalysisPacketCoverageMetrics `json:"packet_coverage,omitempty"`
+	ModeScorecard     AnalysisModeScorecard         `json:"mode_scorecard,omitempty"`
+	FinalDocument     string                        `json:"final_document"`
+	ConductorProfile  string                        `json:"conductor_profile,omitempty"`
+	WorkerProfile     string                        `json:"worker_profile,omitempty"`
+	ReviewerProfile   string                        `json:"reviewer_profile,omitempty"`
+	RootCause         RootCauseInvestigation        `json:"root_cause,omitempty"`
+	KnowledgePack     KnowledgePack                 `json:"knowledge_pack,omitempty"`
+	SemanticIndex     SemanticIndex                 `json:"semantic_index,omitempty"`
+	SemanticIndexV2   SemanticIndexV2               `json:"semantic_index_v2,omitempty"`
+	UnrealGraph       UnrealSemanticGraph           `json:"unreal_graph,omitempty"`
+	GraphShards       AnalysisGraphShardArtifact    `json:"graph_shards,omitempty"`
+	GraphReuse        AnalysisGraphReuseReport      `json:"graph_reuse,omitempty"`
+	EvidenceGraph     AnalysisEvidenceGraph         `json:"evidence_graph,omitempty"`
+	ClaimVerification ClaimVerificationReport       `json:"claim_verification,omitempty"`
+	UnsupportedClaims []UnsupportedClaim            `json:"unsupported_claims,omitempty"`
+	SecurityOverlay   SecurityOverlaySummary        `json:"security_overlay,omitempty"`
+	VectorCorpus      VectorCorpus                  `json:"vector_corpus,omitempty"`
+	VectorIngestion   VectorIngestionManifest       `json:"vector_ingestion,omitempty"`
+	DebugEvents       []string                      `json:"debug_events,omitempty"`
+	ShardDocuments    map[string]string             `json:"shard_documents,omitempty"`
 }
 
 const (
@@ -3035,6 +3051,10 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	}
 	snapshot.ArchitectureFacts = buildArchitectureFactPack(snapshot, a.cachedSemanticIndexV2, a.cachedUnrealGraph, goal)
 	run.Snapshot = snapshot
+	run.UnrealGraph = a.cachedUnrealGraph
+	run.SemanticIndexV2 = a.cachedSemanticIndexV2
+	run.SecurityOverlay = buildSecurityAntiCheatOverlay(snapshot, a.cachedSemanticIndexV2)
+	run.EvidenceGraph = buildAnalysisEvidenceGraph(snapshot, a.cachedSemanticIndexV2, a.cachedUnrealGraph, run.SecurityOverlay, nil)
 
 	agentCount := a.estimateAgentCount(snapshot)
 	targetShards := a.estimateShardCount(snapshot, agentCount)
@@ -3058,6 +3078,8 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		a.debug(fmt.Sprintf("loaded map baseline: run_id=%s artifact=%s docs_manifest=%s", baseline.RunID, baseline.ArtifactPath, baseline.DocsManifestPath))
 	}
 	shards = annotateAnalysisShards(snapshot, shards, goal)
+	shards = enrichAnalysisShardsWithGraph(snapshot, a.cachedSemanticIndexV2, run.EvidenceGraph, run.SecurityOverlay, shards)
+	run.GraphShards = buildAnalysisGraphShardArtifact(snapshot, a.cachedSemanticIndexV2, shards)
 	if agentCount > len(shards) {
 		agentCount = len(shards)
 	}
@@ -3199,6 +3221,29 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		run.Snapshot = snapshot
 		a.debug(fmt.Sprintf("root-cause join completed: joined_candidates=%d", len(joined)))
 	}
+	run.Shards = shards
+	run.Reports = reports
+	run.Reviews = reviews
+	run.CoverageLedger = normalizeAnalysisCoverageLedger(run.Snapshot.CoverageLedger)
+	run.Snapshot.CoverageLedger = run.CoverageLedger
+	run.StructuralIndex = normalizeStructuralIndex(run.Snapshot.StructuralIndex)
+	run.Snapshot.StructuralIndex = run.StructuralIndex
+	run.EvidencePackets = buildAnalysisRunEvidencePackets(run.Snapshot, run.Shards)
+	run.SecurityOverlay = buildSecurityAntiCheatOverlay(run.Snapshot, a.cachedSemanticIndexV2)
+	run.EvidenceGraph = buildAnalysisEvidenceGraph(run.Snapshot, a.cachedSemanticIndexV2, a.cachedUnrealGraph, run.SecurityOverlay, run.EvidencePackets)
+	run.Shards = enrichAnalysisShardsWithGraph(run.Snapshot, a.cachedSemanticIndexV2, run.EvidenceGraph, run.SecurityOverlay, run.Shards)
+	shards = run.Shards
+	run.GraphShards = buildAnalysisGraphShardArtifact(run.Snapshot, a.cachedSemanticIndexV2, run.Shards)
+	run.GraphReuse = buildAnalysisGraphReuseReport(previousRun, run.Shards)
+	run.PacketCoverage = computeAnalysisPacketCoverage(run.Reports, run.EvidencePackets)
+	run.StructuralIndex.PacketCoverage = run.PacketCoverage
+	run.Snapshot.StructuralIndex = run.StructuralIndex
+	claimReport := verifyAnalysisClaims(run.Snapshot, run)
+	applyClaimVerificationToReports(&run, claimReport)
+	reports = run.Reports
+	run.PacketCoverage = computeAnalysisPacketCoverage(run.Reports, run.EvidencePackets)
+	run.StructuralIndex.PacketCoverage = run.PacketCoverage
+	run.Snapshot.StructuralIndex = run.StructuralIndex
 	approvalRatio := 0.0
 	if run.Summary.TotalShards > 0 {
 		approvalRatio = float64(run.Summary.ApprovedShards) / float64(run.Summary.TotalShards)
@@ -3228,6 +3273,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		}
 		a.debug(fmt.Sprintf("analysis completed with review issues: provider_failures=%d quality_issues=%d", run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues))
 	}
+	document = appendClaimVerificationFinalSections(document, run.ClaimVerification, run.SecurityOverlay)
 	run.FinalDocument = document
 	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
 	run.CoverageLedger = normalizeAnalysisCoverageLedger(run.Snapshot.CoverageLedger)
@@ -6073,6 +6119,52 @@ func projectNameForFile(path string, byDir map[string]string) string {
 }
 
 func (a *projectAnalyzer) planShards(snapshot ProjectSnapshot, desiredShards int) []AnalysisShard {
+	if rootFiles, ok := snapshot.FilesByDirectory[""]; ok && len(rootFiles) >= 12 {
+		rootSubShards := a.planRootSubsystemShards(snapshot, rootFiles)
+		if len(rootSubShards) >= 2 {
+			otherShards := a.planNonRootDirectoryShards(snapshot)
+			shards := make([]AnalysisShard, 0, len(rootSubShards)+len(otherShards))
+			for _, shard := range rootSubShards {
+				shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
+				a.finalizeShard(snapshot, &shard, 10)
+				shards = append(shards, shard)
+			}
+			for _, shard := range otherShards {
+				shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
+				a.finalizeShard(snapshot, &shard, 10)
+				shards = append(shards, shard)
+			}
+			return shards
+		}
+	}
+
+	if graphShards := buildGraphShardPlan(snapshot, a.cachedSemanticIndexV2, snapshot.AnalysisMode, desiredShards); len(graphShards) > 0 {
+		shards := make([]AnalysisShard, 0, len(graphShards))
+		for _, shard := range graphShards {
+			shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
+			a.finalizeShard(snapshot, &shard, 12)
+			shards = append(shards, shard)
+		}
+		if len(shards) > 0 {
+			maxTotalShards := a.analysisCfg.MaxTotalShards
+			if maxTotalShards <= 0 {
+				maxTotalShards = analysisMaxInt(desiredShards, 1)
+			}
+			if len(shards) > maxTotalShards {
+				shards = mergeSemanticShardsByPriority(shards, maxTotalShards, snapshot.AnalysisMode)
+			}
+			sort.Slice(shards, func(i int, j int) bool {
+				leftPriority := semanticShardPriority(strings.TrimPrefix(shards[i].Name, "graph_"), snapshot.AnalysisMode)
+				rightPriority := semanticShardPriority(strings.TrimPrefix(shards[j].Name, "graph_"), snapshot.AnalysisMode)
+				if leftPriority == rightPriority {
+					return shards[i].ID < shards[j].ID
+				}
+				return leftPriority < rightPriority
+			})
+			return shards
+		}
+	}
+
 	if rootFiles, ok := snapshot.FilesByDirectory[""]; ok && len(rootFiles) >= 12 {
 		rootSubShards := a.planRootSubsystemShards(snapshot, rootFiles)
 		if len(rootSubShards) >= 2 {
@@ -10511,6 +10603,12 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	modeScorecardJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_mode_scorecard.json")
 	coverageLedgerJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_coverage_ledger.json")
 	evidencePacketsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_evidence_packets.json")
+	graphShardsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_graph_shards.json")
+	graphReuseJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_graph_reuse.json")
+	evidenceGraphJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_evidence_graph.json")
+	claimVerificationJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_claim_verification.json")
+	unsupportedClaimsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_unsupported_claims.json")
+	securityOverlayJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_security_overlay.json")
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
 	architectureFactsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_architecture_facts.json")
@@ -10599,6 +10697,48 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 		return "", err
 	}
 	if err := os.WriteFile(evidencePacketsJSONPath, evidencePacketData, 0o644); err != nil {
+		return "", err
+	}
+	graphShardsData, err := json.MarshalIndent(run.GraphShards, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(graphShardsJSONPath, graphShardsData, 0o644); err != nil {
+		return "", err
+	}
+	graphReuseData, err := json.MarshalIndent(run.GraphReuse, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(graphReuseJSONPath, graphReuseData, 0o644); err != nil {
+		return "", err
+	}
+	evidenceGraphData, err := json.MarshalIndent(run.EvidenceGraph, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(evidenceGraphJSONPath, evidenceGraphData, 0o644); err != nil {
+		return "", err
+	}
+	claimVerificationData, err := json.MarshalIndent(run.ClaimVerification, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(claimVerificationJSONPath, claimVerificationData, 0o644); err != nil {
+		return "", err
+	}
+	unsupportedClaimsData, err := json.MarshalIndent(run.UnsupportedClaims, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(unsupportedClaimsJSONPath, unsupportedClaimsData, 0o644); err != nil {
+		return "", err
+	}
+	securityOverlayData, err := json.MarshalIndent(run.SecurityOverlay, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(securityOverlayJSONPath, securityOverlayData, 0o644); err != nil {
 		return "", err
 	}
 	hasLegacySemanticIndex := len(run.SemanticIndex.Files) > 0 || len(run.SemanticIndex.Symbols) > 0 || len(run.SemanticIndex.BuildEdges) > 0
@@ -10790,6 +10930,24 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "evidence_packets.json"), evidencePacketData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "graph_shards.json"), graphShardsData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "graph_reuse.json"), graphReuseData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "evidence_graph.json"), evidenceGraphData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "claim_verification.json"), claimVerificationData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "unsupported_claims.json"), unsupportedClaimsData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "security_overlay.json"), securityOverlayData, 0o644); err != nil {
 			return "", err
 		}
 		if writeStructuralIndexArtifact {
@@ -11001,6 +11159,7 @@ func (a *projectAnalyzer) computeShardFingerprint(snapshot ProjectSnapshot, shar
 	hash := sha256.New()
 	fmt.Fprintf(hash, "primary:%s\nreference:%s\n", shard.PrimaryFingerprint, shard.ReferenceFingerprint)
 	fmt.Fprintf(hash, "primary_semantic:%s\nreference_semantic:%s\n", shard.PrimarySemanticFingerprint, shard.ReferenceSemanticFingerprint)
+	fmt.Fprintf(hash, "graph:%s\nsymbol:%s\nedge:%s\nbuild:%s\noverlay:%s\n", shard.GraphFingerprint, shard.SymbolFingerprint, shard.EdgeFingerprint, shard.BuildContextFingerprint, shard.OverlayFingerprint)
 	fmt.Fprintf(hash, "worker:%s\nreviewer:%s\n", a.workerModel(), a.reviewerModel())
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -11807,6 +11966,9 @@ func (a *projectAnalyzer) tryReuseShard(previousRun *ProjectAnalysisRun, shard A
 	}
 	if previousShard.PrimarySemanticFingerprint != shard.PrimarySemanticFingerprint {
 		return WorkerReport{}, ReviewDecision{}, "semantic_primary_changed", false
+	}
+	if change := compareSymbolIncrementalState(previousShard, shard); strings.TrimSpace(change.Kind) != "" {
+		return WorkerReport{}, ReviewDecision{}, change.Kind, false
 	}
 	for _, ref := range shard.ReferenceFiles {
 		if _, changed := reuseState.changedPrimaryFiles[ref]; changed {
@@ -13432,6 +13594,9 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	if focus := buildSemanticShardFocus(snapshot, shard); strings.TrimSpace(focus) != "" {
 		fmt.Fprintf(&b, "Semantic focus:\n%s\n\n", focus)
 	}
+	if graphFocus := renderGraphNeighborhoodForPrompt(shard, 14); strings.TrimSpace(graphFocus) != "" {
+		fmt.Fprintf(&b, "%s\n\n", graphFocus)
+	}
 	if factPack := renderArchitectureFactPackForPrompt(snapshot.ArchitectureFacts, shard, 4200); strings.TrimSpace(factPack) != "" {
 		b.WriteString(factPack)
 		b.WriteString("\n\n")
@@ -13459,6 +13624,7 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- claims must contain the important facts, inferences, risks, and unknowns as source-anchored, falsifiable claim objects.\n")
 	b.WriteString("- Each claim must include source_anchors from the assigned files, evidence_packet_ids from the Evidence packets section, confidence, disproves_when, and verification_hint.\n")
 	b.WriteString("- A high-confidence claim must cite at least one evidence_packet_id; otherwise downgrade it to medium or low and name the missing evidence in unknowns.\n")
+	b.WriteString("- Required evidence packets are mandatory citation inputs; do not replace a required packet with a broad file prefix or a context-truncated fallback.\n")
 	b.WriteString("- key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.\n")
 	b.WriteString("- If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.\n")
 	b.WriteString("- entry_points should name files/functions when visible.\n")
@@ -13842,6 +14008,9 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	}
 	if focus := buildSemanticShardFocus(snapshot, shard); strings.TrimSpace(focus) != "" {
 		fmt.Fprintf(&b, "Semantic focus:\n%s\n", focus)
+	}
+	if graphFocus := renderGraphNeighborhoodForPrompt(shard, 10); strings.TrimSpace(graphFocus) != "" {
+		fmt.Fprintf(&b, "%s\n", graphFocus)
 	}
 	if factPack := renderArchitectureFactPackForPrompt(snapshot.ArchitectureFacts, shard, 3600); strings.TrimSpace(factPack) != "" {
 		fmt.Fprintf(&b, "Review against this fact pack:\n%s\n", factPack)
@@ -14430,14 +14599,15 @@ func limitAnalysisClaimsForPrompt(items []AnalysisClaim, limit int) []AnalysisCl
 	out := make([]AnalysisClaim, 0, len(items))
 	for _, item := range items {
 		out = append(out, AnalysisClaim{
-			ID:               trimPromptString(item.ID, 80),
-			Kind:             trimPromptString(item.Kind, 80),
-			Claim:            trimPromptString(item.Claim, analysisSynthesisPromptMaxStringRunes),
-			SourceAnchors:    limitTrimmedStrings(item.SourceAnchors, 4, 240),
-			Confidence:       trimPromptString(item.Confidence, 80),
-			DependsOn:        limitTrimmedStrings(item.DependsOn, 3, 160),
-			DisprovesWhen:    trimPromptString(item.DisprovesWhen, 260),
-			VerificationHint: trimPromptString(item.VerificationHint, 260),
+			ID:                trimPromptString(item.ID, 80),
+			Kind:              trimPromptString(item.Kind, 80),
+			Claim:             trimPromptString(item.Claim, analysisSynthesisPromptMaxStringRunes),
+			SourceAnchors:     limitTrimmedStrings(item.SourceAnchors, 4, 240),
+			EvidencePacketIDs: limitTrimmedStrings(item.EvidencePacketIDs, 4, 120),
+			Confidence:        trimPromptString(item.Confidence, 80),
+			DependsOn:         limitTrimmedStrings(item.DependsOn, 3, 160),
+			DisprovesWhen:     trimPromptString(item.DisprovesWhen, 260),
+			VerificationHint:  trimPromptString(item.VerificationHint, 260),
 		})
 	}
 	return out

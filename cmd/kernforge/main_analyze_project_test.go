@@ -215,7 +215,8 @@ func TestRenderAnalysisProjectHandoffGuidesNextCommands(t *testing.T) {
 		"Analysis handoff:",
 		"Provider failures: 1",
 		"Review quality issues: 2",
-		"Continue: /analyze-dashboard",
+		"Continue: /analyze-dashboard latest",
+		"Refresh docs: /docs-refresh",
 		"Fuzz next: /fuzz-campaign run",
 		"Target drilldown: /fuzz-func ParsePacket",
 		"Verify next: /verify",
@@ -235,7 +236,8 @@ func TestRenderAnalysisProjectHandoffSuggestsDocsRefreshWhenManifestMissing(t *t
 	out := renderAnalysisProjectHandoff(buildAnalysisProjectHandoff(run, AnalysisDocsManifest{}, false))
 	for _, needle := range []string{
 		"Analysis handoff:",
-		"Continue: /analyze-dashboard",
+		"Continue: /analyze-dashboard latest",
+		"Refresh docs: /docs-refresh",
 		"Repair: /docs-refresh",
 	} {
 		if !strings.Contains(out, needle) {

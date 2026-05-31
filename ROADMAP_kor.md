@@ -263,8 +263,8 @@ Kernforge가 차별화해야 할 방향:
 
 현재 구현 상태:
 1. 완료: analysis run에서 deterministic documentation writer가 실행된다.
-2. 완료: `.kernforge/analysis/latest/docs`에 `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, `OPERATIONS_RUNBOOK.md`, `INDEX.md`가 생성된다.
-3. 완료: `.kernforge/analysis/latest/docs_manifest.json`, `docs_index.md`, `run.json`, `snapshot.json`, `architecture_facts.json`, `dashboard.html`이 생성된다.
+2. 완료: `.kernforge/analysis/latest/docs`에 `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `EVIDENCE_GRAPH.md`, `SECURITY_OVERLAY.md`, `UNSUPPORTED_CLAIMS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, `OPERATIONS_RUNBOOK.md`, `INDEX.md`가 생성된다.
+3. 완료: `.kernforge/analysis/latest/docs_manifest.json`, `docs_index.md`, `run.json`, `snapshot.json`, `architecture_facts.json`, `graph_shards.json`, `graph_reuse.json`, `evidence_graph.json`, `claim_verification.json`, `unsupported_claims.json`, `security_overlay.json`, `dashboard.html`이 생성된다.
 4. 완료: 문서와 섹션에 source anchor, confidence, stale/invalidation marker, reuse target이 표시된다.
 5. 완료: `/analyze-project --docs`, `/analyze-project --path <dir>`, `/docs-refresh`, `/analyze-project --mode surface`, `/analyze-dashboard`가 help와 completion까지 포함해 노출된다.
 6. 완료: generated docs의 `FUZZ_TARGETS.md` catalog를 `/fuzz-func` target ranking이 재사용한다.
@@ -280,6 +280,10 @@ Kernforge가 차별화해야 할 방향:
 16. 완료: deterministic `architecture_facts.json`을 생성해 worker/reviewer/synthesis, generated docs, cached structure QA, answer evaluator가 같은 source-derived 사실 집합을 공유한다.
 17. 완료: `.kernforge/analysis/latest` persistence는 기존 latest mirror를 교체한 뒤 새 run 산출물을 쓰므로 반복 분석 중 stale 파일이 retrieval에 남지 않는다.
 18. 완료: local model analysis에서는 명시 shard 제한이 없으면 provider/model/token/timeout 신호로 shard 크기를 자동 조절하고, 최종 timeout 또는 5xx/overload 계열 실패 후에는 더 작은 shard로 한 번 자동 재실행한다.
+19. 완료: Phase 5 graph-guided shard planner가 startup, IOCTL, callback, handle/memory, RPC, asset/config, build-context, generated-artifact community를 우선 분리하고, required/supporting/ambiguous/gap evidence packet contract를 worker prompt와 docs에 연결한다.
+20. 완료: Phase 5 symbol-level incremental reuse가 file, symbol, edge, build-context, overlay, derived graph fingerprint를 shard cache decision과 graph reuse artifact에 반영한다.
+21. 완료: Phase 6 deterministic claim verifier가 model-review-skipped run에서도 실행되고, unsupported high-confidence claim을 downgrade/blocking으로 분리해 `UNSUPPORTED_CLAIMS.md`와 final report section에 남긴다.
+22. 완료: Phase 6 security/anti-cheat overlay가 Windows driver/IOCTL/callback/handle/memory/RPC/telemetry와 Unreal RPC/replication/asset/config/integrity surface를 docs/dashboard/final report에 연결한다.
 
 현재 남은 핵심 과제:
 1. 완료: generated docs dashboard를 정적 document portal 수준으로 확장한다.

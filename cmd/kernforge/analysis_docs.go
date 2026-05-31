@@ -106,6 +106,9 @@ func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 		"COVERAGE_LEDGER.md":          buildAnalysisCoverageLedgerDoc(run),
 		"STRUCTURAL_INDEX.md":         buildAnalysisStructuralIndexDoc(run),
 		"EVIDENCE_PACKETS.md":         buildAnalysisEvidencePacketsDoc(run),
+		"EVIDENCE_GRAPH.md":           buildAnalysisEvidenceGraphDoc(run),
+		"SECURITY_OVERLAY.md":         buildAnalysisSecurityOverlayDoc(run),
+		"UNSUPPORTED_CLAIMS.md":       buildAnalysisUnsupportedClaimsDoc(run),
 		"VERIFICATION_MATRIX.md":      buildAnalysisVerificationMatrixDoc(run),
 		"FUZZ_TARGETS.md":             buildAnalysisFuzzTargetsDoc(run),
 		"OPERATIONS_RUNBOOK.md":       buildAnalysisOperationsRunbookDoc(run),
@@ -135,6 +138,9 @@ func analysisGeneratedDocNames() []string {
 		"COVERAGE_LEDGER.md",
 		"STRUCTURAL_INDEX.md",
 		"EVIDENCE_PACKETS.md",
+		"EVIDENCE_GRAPH.md",
+		"SECURITY_OVERLAY.md",
+		"UNSUPPORTED_CLAIMS.md",
 		"VERIFICATION_MATRIX.md",
 		"FUZZ_TARGETS.md",
 		"OPERATIONS_RUNBOOK.md",
@@ -287,6 +293,12 @@ func buildAnalysisDocsIndex(run ProjectAnalysisRun, docs map[string]string) stri
 	if run.KnowledgePack.AnalysisExecution.ReusedShards > 0 || run.KnowledgePack.AnalysisExecution.MissedShards > 0 {
 		fmt.Fprintf(&b, "- Reused shards: %d\n", run.KnowledgePack.AnalysisExecution.ReusedShards)
 		fmt.Fprintf(&b, "- Recomputed shards: %d\n", run.KnowledgePack.AnalysisExecution.MissedShards)
+	}
+	if run.ClaimVerification.TotalClaims > 0 {
+		fmt.Fprintf(&b, "- Claim verifier: %s (blocking=%d unsupported_high=%d)\n", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount)
+	}
+	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
+		fmt.Fprintf(&b, "- Security overlay: nodes=%d edges=%d surfaces=%s\n", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount, strings.Join(limitStrings(run.SecurityOverlay.Metrics.Surfaces, 8), ", "))
 	}
 	return b.String()
 }
@@ -624,19 +636,22 @@ func buildAnalysisEvidencePacketsDoc(run ProjectAnalysisRun) string {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "\n## Packet Index\n\n")
-	fmt.Fprintf(&b, "| Packet | Shard | Kind | Source | Method | Confidence |\n")
-	fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- |\n")
+	fmt.Fprintf(&b, "| Packet | Shard | Category | Kind | Source | Method | Evidence Class | Graph Edges | Confidence |\n")
+	fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, packet := range limitEvidencePackets(run.EvidencePackets, 120) {
 		source := packet.Path
 		if packet.StartLine > 0 {
 			source = fmt.Sprintf("%s:%d-%d", packet.Path, packet.StartLine, packet.EndLine)
 		}
-		fmt.Fprintf(&b, "| `%s` | `%s` | %s | `%s` | %s | %s |\n",
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | `%s` | %s | %s | %s | %s |\n",
 			strings.ReplaceAll(packet.ID, "|", "/"),
 			strings.ReplaceAll(packet.ShardID, "|", "/"),
+			strings.ReplaceAll(firstNonBlankAnalysisString(packet.Category, "supporting"), "|", "/"),
 			strings.ReplaceAll(packet.Kind, "|", "/"),
 			strings.ReplaceAll(source, "|", "/"),
 			strings.ReplaceAll(packet.ExtractionMethod, "|", "/"),
+			strings.ReplaceAll(packet.EvidenceClass, "|", "/"),
+			strings.ReplaceAll(strings.Join(limitStrings(packet.GraphEdgeIDs, 4), ", "), "|", "/"),
 			strings.ReplaceAll(firstNonBlankAnalysisString(packet.Confidence, "medium"), "|", "/"),
 		)
 	}
@@ -1246,6 +1261,15 @@ func analysisDocsSourceArtifacts(run ProjectAnalysisRun) []string {
 	if len(run.EvidencePackets) > 0 {
 		items = append(items, "evidence_packets")
 	}
+	if len(run.EvidenceGraph.Nodes) > 0 || len(run.EvidenceGraph.Edges) > 0 {
+		items = append(items, "evidence_graph", "graph_shards", "graph_reuse")
+	}
+	if run.ClaimVerification.TotalClaims > 0 || len(run.UnsupportedClaims) > 0 {
+		items = append(items, "claim_verification", "unsupported_claims")
+	}
+	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
+		items = append(items, "security_overlay")
+	}
 	if hasStructuralIndexData(run.StructuralIndex) {
 		items = append(items, "structural_index")
 	}
@@ -1387,6 +1411,12 @@ func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 		return analysisStructuralIndexSourceAnchors(run)
 	case "EVIDENCE_PACKETS.md":
 		return analysisEvidencePacketSourceAnchors(run)
+	case "EVIDENCE_GRAPH.md":
+		return analysisEvidenceGraphSourceAnchors(run)
+	case "SECURITY_OVERLAY.md":
+		return analysisSecurityOverlaySourceAnchors(run)
+	case "UNSUPPORTED_CLAIMS.md":
+		return analysisUnsupportedClaimSourceAnchors(run)
 	case "VERIFICATION_MATRIX.md":
 		return analysisUniqueStrings(append(run.KnowledgePack.HighRiskFiles, run.KnowledgePack.AnalysisExecution.TopChangeExamples...))
 	case "FUZZ_TARGETS.md":
@@ -1404,6 +1434,12 @@ func analysisDocConfidence(run ProjectAnalysisRun, name string) string {
 		return "low"
 	}
 	if name == "BUILD_AND_ARTIFACTS.md" && len(run.Snapshot.BuildContexts) == 0 && len(run.Snapshot.CompileCommands) == 0 {
+		return "medium"
+	}
+	if name == "UNSUPPORTED_CLAIMS.md" && run.ClaimVerification.BlockingCount > 0 {
+		return "low"
+	}
+	if name == "SECURITY_OVERLAY.md" && run.SecurityOverlay.Metrics.MissingValidationCandidates > 0 {
 		return "medium"
 	}
 	return confidence
@@ -1489,7 +1525,7 @@ func analysisGraphSourceAnchors(run ProjectAnalysisRun) []string {
 }
 
 func analysisDocsReuseTargets() []string {
-	return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery"}
+	return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery", "graph_shards", "security_overlay"}
 }
 
 func analysisDocReuseTargets(name string) []string {
@@ -1502,8 +1538,10 @@ func analysisDocReuseTargets(name string) []string {
 		return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery"}
 	case "VERIFICATION_MATRIX.md":
 		return []string{"verification_planner", "evidence"}
-	case "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md":
+	case "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md", "EVIDENCE_GRAPH.md", "UNSUPPORTED_CLAIMS.md":
 		return []string{"analysis_context", "evidence", "verification_planner"}
+	case "SECURITY_OVERLAY.md":
+		return []string{"analysis_context", "evidence", "verification_planner", "fuzz_target_discovery"}
 	case "FUZZ_TARGETS.md":
 		return []string{"fuzz_target_discovery", "verification_planner"}
 	default:
@@ -1537,6 +1575,12 @@ func analysisDocQueryIntents(name string) []string {
 		return []string{"deep_map", "impact", "verification"}
 	case "EVIDENCE_PACKETS.md":
 		return []string{"deep_map", "flow_trace", "security_surface", "verification"}
+	case "EVIDENCE_GRAPH.md":
+		return []string{"deep_map", "flow_trace", "impact", "security_surface", "verification"}
+	case "SECURITY_OVERLAY.md":
+		return []string{"security_surface", "verification", "fuzz_target_discovery"}
+	case "UNSUPPORTED_CLAIMS.md":
+		return []string{"verification", "impact", "security_surface"}
 	case "VERIFICATION_MATRIX.md":
 		return []string{"verification", "impact", "security_surface"}
 	case "FUZZ_TARGETS.md":
@@ -1556,7 +1600,7 @@ func analysisDocPriority(name string) int {
 		return 9
 	case "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
 		return 8
-	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md":
+	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "SECURITY_OVERLAY.md", "UNSUPPORTED_CLAIMS.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md", "EVIDENCE_GRAPH.md":
 		return 7
 	case "FOLDER_MAP.md", "API_AND_ENTRYPOINTS.md", "FUZZ_TARGETS.md":
 		return 6
@@ -1755,6 +1799,23 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 			{"evidence.packet_index", "Packet Index"},
 			{"evidence.claim_packet_coverage", "Claim Packet Coverage"},
 		},
+		"EVIDENCE_GRAPH.md": {
+			{"evidence_graph.summary", "Graph Summary"},
+			{"evidence_graph.graph_shards", "Graph Shards"},
+			{"evidence_graph.incremental_reuse", "Incremental Reuse"},
+		},
+		"SECURITY_OVERLAY.md": {
+			{"security_overlay.summary", "Summary"},
+			{"security_overlay.nodes", "Overlay Nodes"},
+			{"security_overlay.edges", "Overlay Edges"},
+			{"security_overlay.follow_up", "Follow-Up"},
+		},
+		"UNSUPPORTED_CLAIMS.md": {
+			{"claims.verification_summary", "Verification Summary"},
+			{"claims.unsupported", "Unsupported Or Downgraded Claims"},
+			{"claims.verified_facts", "Verified Facts"},
+			{"claims.follow_through", "Verification Follow-Through"},
+		},
 		"VERIFICATION_MATRIX.md": {
 			{"verification.matrix", "Verification Matrix"},
 			{"verification.change_classes", "Recent Change Classes"},
@@ -1945,6 +2006,12 @@ func analysisDocTitle(name string) string {
 		return "Structural Index"
 	case "EVIDENCE_PACKETS.md":
 		return "Evidence Packets"
+	case "EVIDENCE_GRAPH.md":
+		return "Evidence Graph"
+	case "SECURITY_OVERLAY.md":
+		return "Security Anti-Cheat Overlay"
+	case "UNSUPPORTED_CLAIMS.md":
+		return "Unsupported Claims"
 	case "VERIFICATION_MATRIX.md":
 		return "Verification Matrix"
 	case "FUZZ_TARGETS.md":
@@ -1988,6 +2055,12 @@ func analysisDocPurpose(name string) string {
 		return "Tree-sitter/fallback parser coverage, symbol anchors, references, diagnostics, and packet coverage"
 	case "EVIDENCE_PACKETS.md":
 		return "symbol-aware source slices used by worker claims and deterministic claim evidence coverage"
+	case "EVIDENCE_GRAPH.md":
+		return "graph-guided shard neighborhoods, required packet selection, and symbol-level reuse fingerprints"
+	case "SECURITY_OVERLAY.md":
+		return "deterministic Windows driver, RPC, telemetry, Unreal authority, asset/config, and anti-cheat boundary overlay"
+	case "UNSUPPORTED_CLAIMS.md":
+		return "deterministic claim verifier results, unsupported claims, downgrades, blocking issues, and follow-through"
 	case "VERIFICATION_MATRIX.md":
 		return "required and optional verification by change area"
 	case "FUZZ_TARGETS.md":

@@ -21,7 +21,8 @@ func buildAnalysisProjectHandoff(run ProjectAnalysisRun, manifest AnalysisDocsMa
 	plan := analysisProjectHandoffPlan{
 		Title: "Open the dashboard first, then let Kernforge carry the reusable docs into fuzzing or verification.",
 		Commands: []analysisProjectHandoffCommand{
-			{Label: "Continue", Command: "/analyze-dashboard"},
+			{Label: "Continue", Command: "/analyze-dashboard latest"},
+			{Label: "Refresh docs", Command: "/docs-refresh"},
 		},
 	}
 	if runID := strings.TrimSpace(run.Summary.RunID); runID != "" {
@@ -53,6 +54,13 @@ func buildAnalysisProjectHandoff(run ProjectAnalysisRun, manifest AnalysisDocsMa
 	if len(manifest.VerificationMatrix) > 0 {
 		plan.Details = append(plan.Details, fmt.Sprintf("Verification: %d matrix item(s) can guide /verify planning.", len(manifest.VerificationMatrix)))
 		plan.Commands = append(plan.Commands, analysisProjectHandoffCommand{Label: "Verify next", Command: "/verify"})
+	}
+	if len(run.SecurityOverlay.Edges) > 0 || run.SecurityOverlay.Metrics.MissingValidationCandidates > 0 {
+		plan.Details = append(plan.Details, fmt.Sprintf("Security overlay: %d edge(s), missing validation candidates=%d.", len(run.SecurityOverlay.Edges), run.SecurityOverlay.Metrics.MissingValidationCandidates))
+		plan.Commands = append(plan.Commands, analysisProjectHandoffCommand{Label: "Simulate surface", Command: "/simulate stealth-surface"})
+		if len(manifest.FuzzTargets) == 0 {
+			plan.Commands = append(plan.Commands, analysisProjectHandoffCommand{Label: "Fuzz next", Command: "/fuzz-campaign run"})
+		}
 	}
 	return normalizeAnalysisProjectHandoffPlan(plan)
 }
