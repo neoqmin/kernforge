@@ -91,7 +91,10 @@ func selectRelevantV2BuildContexts(index SemanticIndexV2, query string, mode str
 			strings.ToLower(strings.TrimSpace(item.Target)),
 			strings.ToLower(strings.TrimSpace(item.Module)),
 			strings.ToLower(strings.TrimSpace(item.Compiler)),
+			strings.ToLower(strings.TrimSpace(item.SourceAdapter)),
+			strings.ToLower(strings.TrimSpace(item.Confidence)),
 			strings.ToLower(strings.Join(item.Files, " ")),
+			strings.ToLower(strings.Join(item.IncludePaths, " ")),
 			strings.ToLower(strings.Join(item.Defines, " ")),
 		}
 		score := analysisV2BaseScore(haystacks, loweredQuery, queryTokens, queryRefs)

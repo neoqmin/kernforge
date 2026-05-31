@@ -1639,6 +1639,9 @@ int GuardDispatch() { if (ValidateRequest()) { DeviceIoControl(0, 0, 0, 0, 0, 0,
 	if command.File != "Source/GuardRuntime/Private/IoctlDispatch.cpp" {
 		t.Fatalf("unexpected compile command file: %+v", command)
 	}
+	if command.SourceAdapter != "compile_commands" || command.Confidence != "high" || command.BuildContextID == "" {
+		t.Fatalf("expected compile command adapter/confidence/context, got %+v", command)
+	}
 	if !containsString(snapshot.CompileCommands[0].Defines, "GUARD_BUILD") {
 		t.Fatalf("expected define extraction, got %+v", command)
 	}
@@ -1654,6 +1657,187 @@ int GuardDispatch() { if (ValidateRequest()) { DeviceIoControl(0, 0, 0, 0, 0, 0,
 	}
 	if !foundContext {
 		t.Fatalf("expected compile build context, got %+v", snapshot.BuildContexts)
+	}
+}
+
+func TestScanProjectBuildAlignmentCapturesMSBuildHints(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+
+	mustWrite("App/App.vcxproj", `<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="Shared.props" />
+  <ItemGroup>
+    <ClCompile Include="src/main.cpp" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>include;$(ProjectDir)generated;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>APP_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ForcedIncludeFiles>include/pch.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>`)
+	mustWrite("App/Shared.props", `<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>shared_include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>SHARED_BUILD;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>`)
+	mustWrite("App/src/main.cpp", `#include "App.h"
+int main()
+{
+    return 0;
+}
+`)
+	mustWrite("App/include/App.h", "#pragma once\n")
+	mustWrite("App/include/pch.h", "#pragma once\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	var ctx BuildContextRecord
+	for _, candidate := range snapshot.BuildContexts {
+		if candidate.Kind == "msbuild_project" && candidate.Source == "App/App.vcxproj" {
+			ctx = candidate
+			break
+		}
+	}
+	if ctx.ID == "" {
+		t.Fatalf("expected msbuild project context, got %+v", snapshot.BuildContexts)
+	}
+	if ctx.SourceAdapter != "msbuild" || ctx.Confidence != "high" {
+		t.Fatalf("expected msbuild adapter/confidence, got %+v", ctx)
+	}
+	for _, want := range []string{"App/src/main.cpp"} {
+		if !containsString(ctx.Files, want) {
+			t.Fatalf("expected msbuild file %s, got %+v", want, ctx.Files)
+		}
+	}
+	for _, want := range []string{"App/include", "App/generated", "App/shared_include"} {
+		if !containsString(ctx.IncludePaths, want) {
+			t.Fatalf("expected include path %s, got %+v", want, ctx.IncludePaths)
+		}
+	}
+	for _, want := range []string{"APP_BUILD", "SHARED_BUILD"} {
+		if !containsString(ctx.Defines, want) {
+			t.Fatalf("expected define %s, got %+v", want, ctx.Defines)
+		}
+	}
+	if !containsString(ctx.ForceIncludes, "App/include/pch.h") {
+		t.Fatalf("expected forced include, got %+v", ctx.ForceIncludes)
+	}
+}
+
+func TestBuildAwareIncludeResolutionPrefersCompileContextOverBasenameFallback(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+
+	mustWrite("src/main.cpp", `#include "Config.h"
+int main()
+{
+    return CONFIG_VALUE;
+}
+`)
+	mustWrite("include/Config.h", "#pragma once\n#define CONFIG_VALUE 1\n")
+	mustWrite("other/Config.h", "#pragma once\n#define CONFIG_VALUE 2\n")
+	mustWrite("native/cmake-build-debug/compile_commands.json", `[
+  {
+    "directory": "`+filepath.ToSlash(root)+`",
+    "file": "src/main.cpp",
+    "arguments": ["clang++", "-I", "include", "-c", "src/main.cpp"]
+  }
+]`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	file := snapshot.FilesByPath["src/main.cpp"]
+	if !reflect.DeepEqual(file.Imports, []string{"include/Config.h"}) {
+		t.Fatalf("expected build-aware include resolution to select include/Config.h, got %+v", file.Imports)
+	}
+	resolution, ok := importResolutionForTarget(snapshot, "src/main.cpp", "include/Config.h")
+	if !ok {
+		t.Fatalf("expected import resolution record, got %+v", snapshot.ImportResolutions)
+	}
+	if resolution.SourceAdapter != "compile_commands" || resolution.Confidence != "high" || resolution.Reason != "build_context_include" || resolution.BuildContextID == "" {
+		t.Fatalf("expected high-confidence compile context resolution, got %+v", resolution)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+	foundReference := false
+	for _, ref := range index.References {
+		if ref.SourceFile == "src/main.cpp" && ref.TargetPath == "include/Config.h" && ref.SourceAdapter == "compile_commands" && ref.BuildContextID != "" {
+			foundReference = true
+			break
+		}
+	}
+	if !foundReference {
+		t.Fatalf("expected v2 file import reference metadata, got %+v", index.References)
+	}
+}
+
+func TestAmbiguousIncludeFallbackRecordsLowConfidenceDiagnostic(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+
+	mustWrite("src/main.cpp", `#include "Config.h"
+int main()
+{
+    return 0;
+}
+`)
+	mustWrite("include/Config.h", "#pragma once\n")
+	mustWrite("other/Config.h", "#pragma once\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	file := snapshot.FilesByPath["src/main.cpp"]
+	if len(file.Imports) != 2 {
+		t.Fatalf("expected ambiguous fallback to retain both candidates, got %+v", file.Imports)
+	}
+	foundResolution := false
+	for _, record := range snapshot.ImportResolutions {
+		if record.SourceFile == "src/main.cpp" && record.RawImport == "Config.h" && record.Confidence == "low" && record.Reason == "ambiguous_include_fallback" {
+			foundResolution = true
+			break
+		}
+	}
+	if !foundResolution {
+		t.Fatalf("expected low-confidence ambiguous import resolution, got %+v", snapshot.ImportResolutions)
+	}
+	foundDiagnostic := false
+	for _, diagnostic := range snapshot.BuildDiagnostics {
+		if diagnostic.Path == "src/main.cpp" && diagnostic.Reason == "ambiguous_include_fallback" && diagnostic.Severity == "warning" {
+			foundDiagnostic = true
+			break
+		}
+	}
+	if !foundDiagnostic {
+		t.Fatalf("expected ambiguous include diagnostic, got %+v", snapshot.BuildDiagnostics)
 	}
 }
 
@@ -2342,6 +2526,57 @@ func TestEvidencePacketsIncludeLateCStyleFunction(t *testing.T) {
 	prompt := buildWorkerPrompt(snapshot, shard, "map driver ioctl flow", "")
 	if !strings.Contains(prompt, "PACKET shard-ioctl-packet-") || !strings.Contains(prompt, "IoValidateCommand") {
 		t.Fatalf("expected worker prompt to include late evidence packet\n%s", prompt)
+	}
+}
+
+func TestEvidencePacketsIncludeBuildContextTags(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Private/IoctlDispatch.cpp", `int GuardDispatch()
+{
+    return 0;
+}
+`)
+	mustWrite("native/cmake-build-debug/compile_commands.json", `[
+  {
+    "directory": "`+filepath.ToSlash(root)+`",
+    "file": "Source/GuardRuntime/Private/IoctlDispatch.cpp",
+    "arguments": ["clang++", "-I", "Source/GuardRuntime/Public", "-c", "Source/GuardRuntime/Private/IoctlDispatch.cpp"]
+  }
+]`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shard := AnalysisShard{
+		ID:           "shard-guard",
+		Name:         "security_ioctl",
+		PrimaryFiles: []string{"Source/GuardRuntime/Private/IoctlDispatch.cpp"},
+	}
+	packets := buildEvidencePacketsForShard(snapshot, shard, 4)
+	if len(packets) == 0 {
+		t.Fatalf("expected evidence packets")
+	}
+	found := false
+	for _, packet := range packets {
+		tags := strings.Join(packet.Tags, " ")
+		if strings.Contains(tags, "build_context:buildctx:compile:module:GuardRuntime") &&
+			strings.Contains(tags, "source_adapter:compile_commands") &&
+			strings.Contains(tags, "build_confidence:high") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected build-context evidence packet tags, got %+v", packets)
 	}
 }
 
@@ -6711,6 +6946,76 @@ func TestBuildSemanticIndexIncludesFilesSymbolsAndBuildEdges(t *testing.T) {
 	}
 }
 
+func TestUnrealGraphIncludesBuildContextAndGeneratedHeaderEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:        "C:\\repo",
+		GeneratedAt: time.Now(),
+		FilesByPath: map[string]ScannedFile{
+			"Source/Game/Public/GameMode.h": {
+				Path:      "Source/Game/Public/GameMode.h",
+				Directory: "Source/Game/Public",
+				Extension: ".h",
+			},
+		},
+		UnrealModules: []UnrealModule{
+			{
+				Name: "Game",
+				Path: "Source/Game/Game.Build.cs",
+			},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{
+				Name:      "AGameMode",
+				Kind:      "UCLASS",
+				BaseClass: "AGameModeBase",
+				Module:    "Game",
+				File:      "Source/Game/Public/GameMode.h",
+			},
+		},
+		BuildContexts: []BuildContextRecord{
+			{
+				ID:            "buildctx:module:Game",
+				Name:          "Game",
+				Kind:          "unreal_module",
+				Module:        "Game",
+				Files:         []string{"Source/Game/Game.Build.cs", "Source/Game/Public/GameMode.h"},
+				Source:        "Source/Game/Game.Build.cs",
+				SourceAdapter: "unreal_build_cs",
+				Confidence:    "high",
+			},
+		},
+	}
+
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	if !testUnrealGraphNodeContains(graph.Nodes, "buildctx:module:Game", "build_context") {
+		t.Fatalf("expected build context node, got %+v", graph.Nodes)
+	}
+	if !testUnrealGraphEdgeContains(graph.Edges, "buildctx:module:Game", "module:Game", "builds") {
+		t.Fatalf("expected build context to module edge, got %+v", graph.Edges)
+	}
+	if !testUnrealGraphNodeContains(graph.Nodes, "generated_header:GameMode.generated.h", "generated_header") {
+		t.Fatalf("expected generated header node, got %+v", graph.Nodes)
+	}
+	if !testUnrealGraphEdgeContains(graph.Edges, "type:AGameMode", "generated_header:GameMode.generated.h", "uht_generates") {
+		t.Fatalf("expected UHT generated header edge, got %+v", graph.Edges)
+	}
+
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+	foundGeneratedEdge := false
+	for _, edge := range index.GeneratedCodeEdges {
+		if edge.SourceFile == "Source/Game/Public/GameMode.h" &&
+			edge.TargetID == "generated_header:GameMode.generated.h" &&
+			edge.SourceAdapter == "unreal_uht_heuristic" &&
+			edge.Confidence == "medium" {
+			foundGeneratedEdge = true
+			break
+		}
+	}
+	if !foundGeneratedEdge {
+		t.Fatalf("expected generated code edge metadata, got %+v", index.GeneratedCodeEdges)
+	}
+}
+
 func TestBuildSemanticIndexV2IncludesOccurrencesAndOverlayEdges(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:           "C:\\repo",
@@ -7394,6 +7699,24 @@ func testCallEdgeContains(edges []CallEdge, source string, target string, typ st
 func testSymbolContains(symbols []SymbolRecord, name string, kind string) bool {
 	for _, symbol := range symbols {
 		if strings.Contains(symbol.Name, name) && symbol.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func testUnrealGraphNodeContains(nodes []UnrealSemanticNode, id string, kind string) bool {
+	for _, node := range nodes {
+		if node.ID == id && node.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func testUnrealGraphEdgeContains(edges []UnrealSemanticEdge, source string, target string, typ string) bool {
+	for _, edge := range edges {
+		if edge.Source == source && edge.Target == target && edge.Type == typ {
 			return true
 		}
 	}

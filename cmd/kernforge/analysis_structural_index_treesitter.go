@@ -59,7 +59,7 @@ func (treeSitterStructuralIndexAdapter) Extract(snapshot ProjectSnapshot, file S
 	}
 	root := tree.RootNode()
 	treeSitterCollectSymbols(snapshot, file, text, root, "", "", &out)
-	out.References = append(out.References, structuralFileImportReferences(file)...)
+	out.References = append(out.References, structuralFileImportReferences(snapshot, file)...)
 	if root.HasError() {
 		out.Diagnostics = append(out.Diagnostics, StructuralIndexDiagnostic{
 			Path:     file.Path,

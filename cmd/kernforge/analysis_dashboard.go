@@ -1525,6 +1525,7 @@ func analysisDashboardEvidenceMemoryRows(run ProjectAnalysisRun, docsHref string
 		analysisDashboardDrilldownRow("analysis docs evidence", manifestPath, "/evidence-search kind:analysis_docs"),
 		analysisDashboardDrilldownRow("coverage ledger", docsHref+"/COVERAGE_LEDGER.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("structural index", docsHref+"/STRUCTURAL_INDEX.md", "/analyze-dashboard latest"),
+		analysisDashboardDrilldownRow("build context", docsHref+"/BUILD_AND_ARTIFACTS.md", "/analyze-dashboard build"),
 		analysisDashboardDrilldownRow("evidence packets", docsHref+"/EVIDENCE_PACKETS.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("project memory", docsHref+"/INDEX.md", "/mem-search analyze-project"),
 		analysisDashboardDrilldownRow("verification matrix", docsHref+"/VERIFICATION_MATRIX.md", "/verify"),
@@ -2178,11 +2179,26 @@ func analysisDashboardBuildRows(contexts []BuildContextRecord, commands []Compil
 		if ctx.Compiler != "" {
 			coverage += ", " + ctx.Compiler
 		}
+		if ctx.SourceAdapter != "" {
+			coverage += ", " + ctx.SourceAdapter
+		}
+		if ctx.Confidence != "" {
+			coverage += ", " + ctx.Confidence
+		}
+		if len(ctx.Diagnostics) > 0 {
+			coverage += fmt.Sprintf(", %d diagnostic(s)", len(ctx.Diagnostics))
+		}
 		rows = append(rows, fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%s</td></tr>`, htmlEscape(valueOrDefault(ctx.Kind, "context")), htmlEscape(valueOrDefault(ctx.Name, ctx.ID)), htmlEscape(coverage)))
 	}
 	for _, cmd := range commands {
 		name := valueOrDefault(cmd.File, cmd.Output)
 		coverage := valueOrDefault(cmd.Compiler, cmd.Source)
+		if cmd.SourceAdapter != "" {
+			coverage += ", " + cmd.SourceAdapter
+		}
+		if cmd.Confidence != "" {
+			coverage += ", " + cmd.Confidence
+		}
 		rows = append(rows, fmt.Sprintf(`<tr><td>compile command</td><td>%s</td><td>%s</td></tr>`, htmlEscape(name), htmlEscape(coverage)))
 	}
 	return strings.Join(rows, "")

@@ -308,6 +308,23 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 			addSecurityShardSignalsForPath(item.Path, &signals)
 		}
 	}
+	for _, ctx := range snapshot.BuildContexts {
+		if strings.TrimSpace(ctx.Source) != "" {
+			signals.BuildPaths[ctx.Source] = struct{}{}
+		}
+		for _, path := range ctx.Files {
+			if strings.TrimSpace(path) == "" {
+				continue
+			}
+			if strings.TrimSpace(ctx.Module) != "" || strings.TrimSpace(ctx.Target) != "" || strings.TrimSpace(ctx.Project) != "" {
+				signals.BuildPaths[path] = struct{}{}
+			}
+			if containsAny(strings.ToLower(strings.Join([]string{ctx.Name, ctx.Module, ctx.Project, path}, " ")), "anti", "cheat", "guard", "integrity", "tamper", "scan", "memory", "telemetry") {
+				signals.SecurityPaths[path] = struct{}{}
+				addSecurityShardSignalsForPath(path, &signals)
+			}
+		}
+	}
 	for _, item := range snapshot.UnrealTypes {
 		lowerRole := strings.ToLower(item.GameplayRole)
 		lowerName := strings.ToLower(item.Name)

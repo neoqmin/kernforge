@@ -47,17 +47,20 @@ func buildSemanticShardFocus(snapshot ProjectSnapshot, shard AnalysisShard) stri
 	lines := []string{}
 	switch {
 	case strings.HasPrefix(shard.Name, "startup"):
+		lines = append(lines, promptBuildContextLines(snapshot, fileSet, 6, "Relevant build contexts")...)
 		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
 		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 6, "Relevant typed project edges")...)
 		if strings.TrimSpace(snapshot.PrimaryStartup) != "" {
 			lines = append(lines, fmt.Sprintf("- Primary startup candidate: %s", snapshot.PrimaryStartup))
 		}
 	case strings.HasPrefix(shard.Name, "build_graph"):
+		lines = append(lines, promptBuildContextLines(snapshot, fileSet, 10, "Build context ownership")...)
 		lines = append(lines, buildPromptList("Unreal projects", collectPromptProjectLines(snapshot.UnrealProjects, fileSet))...)
 		lines = append(lines, buildPromptList("Unreal plugins", collectPromptPluginLines(snapshot.UnrealPlugins, fileSet))...)
 		lines = append(lines, buildPromptList("Unreal targets", collectPromptTargetLines(snapshot.UnrealTargets, fileSet))...)
 		lines = append(lines, buildPromptList("Unreal modules", collectPromptModuleLines(snapshot.UnrealModules, fileSet))...)
 	case strings.HasPrefix(shard.Name, "security_driver"):
+		lines = append(lines, promptBuildContextLines(snapshot, fileSet, 4, "Relevant build contexts")...)
 		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "Driver-oriented project edges")...)
 		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
 		lines = append(lines, buildPromptList("Security-oriented gameplay systems", collectPromptSystemLines(snapshot.UnrealSystems, fileSet))...)
@@ -197,6 +200,43 @@ func promptProjectEdgeLines(edges []ProjectEdge, fileSet map[string]struct{}, li
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("- %s -> %s [%s, confidence=%s]", edge.Source, edge.Target, edge.Type, edge.Confidence))
+		if len(lines) >= limit {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return append([]string{header + ":"}, lines...)
+}
+
+func promptBuildContextLines(snapshot ProjectSnapshot, fileSet map[string]struct{}, limit int, header string) []string {
+	lines := []string{}
+	for _, ctx := range snapshot.BuildContexts {
+		touches := buildContextTouchesFiles(ctx, fileSet)
+		if !touches && strings.TrimSpace(ctx.Source) != "" {
+			_, touches = fileSet[ctx.Source]
+		}
+		if !touches {
+			continue
+		}
+		line := fmt.Sprintf("- %s [%s]", firstNonBlankAnalysisString(ctx.Name, ctx.ID), firstNonBlankAnalysisString(ctx.Kind, "build_context"))
+		if strings.TrimSpace(ctx.Module) != "" {
+			line += " module=" + strings.TrimSpace(ctx.Module)
+		}
+		if strings.TrimSpace(ctx.Project) != "" {
+			line += " project=" + strings.TrimSpace(ctx.Project)
+		}
+		if len(ctx.IncludePaths) > 0 {
+			line += " includes=" + strings.Join(limitStrings(ctx.IncludePaths, 3), ",")
+		}
+		if strings.TrimSpace(ctx.SourceAdapter) != "" {
+			line += " adapter=" + strings.TrimSpace(ctx.SourceAdapter)
+		}
+		if strings.TrimSpace(ctx.Confidence) != "" {
+			line += " confidence=" + strings.TrimSpace(ctx.Confidence)
+		}
+		lines = append(lines, line)
 		if len(lines) >= limit {
 			break
 		}

@@ -271,7 +271,7 @@ func (heuristicStructuralIndexAdapter) Extract(snapshot ProjectSnapshot, file Sc
 		out.Diagnostic = "unsupported structural language"
 		return out, nil
 	}
-	out.References = append(out.References, structuralFileImportReferences(file)...)
+	out.References = append(out.References, structuralFileImportReferences(snapshot, file)...)
 	if len(out.Symbols) == 0 && len(out.References) == 0 {
 		out.Status = "fallback_empty"
 		out.Diagnostic = "fallback parser found no symbols or references"
@@ -292,6 +292,7 @@ func structuralIndexFileRecord(snapshot ProjectSnapshot, file ScannedFile) FileR
 	if module := unrealModuleForFile(snapshot, file.Path); strings.TrimSpace(module) != "" {
 		moduleHints = append(moduleHints, module)
 	}
+	buildAdapter, buildConfidence := buildContextMetadataForFile(snapshot, file.Path)
 	return FileRecord{
 		Path:            file.Path,
 		Directory:       file.Directory,
@@ -304,6 +305,8 @@ func structuralIndexFileRecord(snapshot ProjectSnapshot, file ScannedFile) FileR
 		Tags:            analysisUniqueStrings(tags),
 		ModuleHints:     analysisUniqueStrings(moduleHints),
 		BuildContextIDs: buildContextIDsForFile(snapshot, file.Path),
+		SourceAdapter:   buildAdapter,
+		Confidence:      buildConfidence,
 	}
 }
 
@@ -451,15 +454,21 @@ func extractCStyleMacroSymbols(file ScannedFile, text string) []SymbolRecord {
 	return out
 }
 
-func structuralFileImportReferences(file ScannedFile) []ReferenceRecord {
+func structuralFileImportReferences(snapshot ProjectSnapshot, file ScannedFile) []ReferenceRecord {
 	out := []ReferenceRecord{}
 	for _, imported := range analysisUniqueStrings(file.Imports) {
-		out = append(out, ReferenceRecord{
+		record := ReferenceRecord{
 			SourceFile: file.Path,
 			TargetPath: imported,
 			Type:       "file_import",
 			Evidence:   []string{file.Path},
-		})
+		}
+		if resolution, ok := importResolutionForTarget(snapshot, file.Path, imported); ok {
+			record.BuildContextID = resolution.BuildContextID
+			record.SourceAdapter = resolution.SourceAdapter
+			record.Confidence = resolution.Confidence
+		}
+		out = append(out, record)
 	}
 	return out
 }
@@ -543,6 +552,9 @@ func addStructuralReference(index *StructuralIndex, ref ReferenceRecord, seen ma
 	ref.TargetID = strings.TrimSpace(ref.TargetID)
 	ref.TargetPath = filepath.ToSlash(strings.TrimSpace(ref.TargetPath))
 	ref.Type = strings.TrimSpace(ref.Type)
+	ref.BuildContextID = strings.TrimSpace(ref.BuildContextID)
+	ref.SourceAdapter = strings.TrimSpace(ref.SourceAdapter)
+	ref.Confidence = strings.TrimSpace(ref.Confidence)
 	if ref.Type == "" {
 		return
 	}
@@ -559,6 +571,9 @@ func addStructuralCallEdge(index *StructuralIndex, edge CallEdge, seen map[strin
 	edge.SourceID = strings.TrimSpace(edge.SourceID)
 	edge.TargetID = strings.TrimSpace(edge.TargetID)
 	edge.Type = strings.TrimSpace(edge.Type)
+	edge.BuildContextID = strings.TrimSpace(edge.BuildContextID)
+	edge.SourceAdapter = strings.TrimSpace(edge.SourceAdapter)
+	edge.Confidence = strings.TrimSpace(edge.Confidence)
 	if edge.SourceID == "" || edge.TargetID == "" || edge.Type == "" {
 		return
 	}

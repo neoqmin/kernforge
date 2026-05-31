@@ -164,6 +164,7 @@ func evidencePacketFromAnchor(snapshot ProjectSnapshot, shard AnalysisShard, anc
 		return EvidencePacket{}, false
 	}
 	tags := append([]string(nil), anchor.Symbol.Tags...)
+	tags = append(tags, evidencePacketBuildContextTags(snapshot, anchor.Symbol.File)...)
 	if truncated {
 		tags = append(tags, "truncated")
 	}
@@ -225,6 +226,7 @@ func fallbackEvidencePacketForFile(snapshot ProjectSnapshot, shard AnalysisShard
 		return EvidencePacket{}, false
 	}
 	tags := []string{"file_excerpt"}
+	tags = append(tags, evidencePacketBuildContextTags(snapshot, path)...)
 	if file.IsEntrypoint {
 		tags = append(tags, "entrypoint")
 	}
@@ -247,6 +249,25 @@ func fallbackEvidencePacketForFile(snapshot ProjectSnapshot, shard AnalysisShard
 	}
 	packet.ContentHash = hashAnalysisText(packet.Text)
 	return packet, true
+}
+
+func evidencePacketBuildContextTags(snapshot ProjectSnapshot, path string) []string {
+	tags := []string{}
+	for _, ctxID := range buildContextIDsForFile(snapshot, path) {
+		if strings.TrimSpace(ctxID) == "" {
+			continue
+		}
+		tags = append(tags, "build_context:"+strings.TrimSpace(ctxID))
+	}
+	if adapter, confidence := buildContextMetadataForFile(snapshot, path); strings.TrimSpace(adapter) != "" || strings.TrimSpace(confidence) != "" {
+		if strings.TrimSpace(adapter) != "" {
+			tags = append(tags, "source_adapter:"+strings.TrimSpace(adapter))
+		}
+		if strings.TrimSpace(confidence) != "" {
+			tags = append(tags, "build_confidence:"+strings.TrimSpace(confidence))
+		}
+	}
+	return analysisUniqueStrings(tags)
 }
 
 func readEvidenceLineRange(snapshot ProjectSnapshot, path string, startLine int, endLine int, maxLines int) (string, int, int, bool, bool) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -505,6 +506,93 @@ func buildUnrealSemanticGraph(snapshot ProjectSnapshot, goal string, runID strin
 		}
 	}
 
+	for _, ctx := range snapshot.BuildContexts {
+		ctxID := strings.TrimSpace(ctx.ID)
+		if ctxID == "" {
+			continue
+		}
+		attrs := map[string]string{
+			"build_context_id": strings.TrimSpace(ctx.ID),
+			"kind":             strings.TrimSpace(ctx.Kind),
+			"source_adapter":   strings.TrimSpace(ctx.SourceAdapter),
+			"confidence":       strings.TrimSpace(ctx.Confidence),
+			"directory":        strings.TrimSpace(ctx.Directory),
+			"project":          strings.TrimSpace(ctx.Project),
+			"target":           strings.TrimSpace(ctx.Target),
+			"module":           strings.TrimSpace(ctx.Module),
+			"plugin":           strings.TrimSpace(ctx.Plugin),
+		}
+		addNode(UnrealSemanticNode{
+			ID:         ctxID,
+			Kind:       "build_context",
+			Name:       firstNonBlankAnalysisString(ctx.Name, ctxID),
+			Module:     ctx.Module,
+			File:       ctx.Source,
+			Attributes: attrs,
+		})
+		if strings.TrimSpace(ctx.Module) != "" {
+			moduleID := "module:" + strings.TrimSpace(ctx.Module)
+			addNode(UnrealSemanticNode{ID: moduleID, Kind: "module", Name: ctx.Module, Module: ctx.Module})
+			addEdge(UnrealSemanticEdge{Source: ctxID, Target: moduleID, Type: "builds", Attributes: attrs})
+		}
+		if strings.TrimSpace(ctx.Target) != "" {
+			targetID := "target:" + strings.TrimSpace(ctx.Target)
+			addNode(UnrealSemanticNode{ID: targetID, Kind: "target", Name: ctx.Target})
+			addEdge(UnrealSemanticEdge{Source: targetID, Target: ctxID, Type: "owns_build_context", Attributes: attrs})
+		}
+		if strings.TrimSpace(ctx.Project) != "" {
+			projectID := "project:" + strings.TrimSpace(ctx.Project)
+			addNode(UnrealSemanticNode{ID: projectID, Kind: "project", Name: ctx.Project})
+			addEdge(UnrealSemanticEdge{Source: projectID, Target: ctxID, Type: "owns_build_context", Attributes: attrs})
+		}
+		for _, path := range analysisUniqueStrings(ctx.Files) {
+			if !unrealGraphShouldIncludeBuildFile(snapshot, path) {
+				continue
+			}
+			sourceID := "source:" + filepath.ToSlash(strings.TrimSpace(path))
+			addNode(UnrealSemanticNode{
+				ID:     sourceID,
+				Kind:   "source_file",
+				Name:   filepath.Base(path),
+				Module: unrealModuleForFile(snapshot, path),
+				File:   path,
+			})
+			addEdge(UnrealSemanticEdge{Source: ctxID, Target: sourceID, Type: "contains_source", Attributes: attrs})
+		}
+	}
+
+	for _, item := range snapshot.UnrealTypes {
+		lowerExt := strings.ToLower(filepath.Ext(item.File))
+		if lowerExt != ".h" && lowerExt != ".hpp" {
+			continue
+		}
+		base := strings.TrimSuffix(filepath.Base(item.File), lowerExt)
+		if strings.TrimSpace(base) == "" {
+			continue
+		}
+		targetID := "generated_header:" + base + ".generated.h"
+		addNode(UnrealSemanticNode{
+			ID:     targetID,
+			Kind:   "generated_header",
+			Name:   base + ".generated.h",
+			Module: item.Module,
+			Attributes: map[string]string{
+				"source_file": item.File,
+				"tool":        "uht",
+				"confidence":  "medium",
+			},
+		})
+		addEdge(UnrealSemanticEdge{
+			Source: "type:" + item.Name,
+			Target: targetID,
+			Type:   "uht_generates",
+			Attributes: map[string]string{
+				"source_file": item.File,
+				"confidence":  "medium",
+			},
+		})
+	}
+
 	sort.Slice(graph.Nodes, func(i int, j int) bool {
 		return graph.Nodes[i].ID < graph.Nodes[j].ID
 	})
@@ -518,4 +606,28 @@ func buildUnrealSemanticGraph(snapshot ProjectSnapshot, goal string, runID strin
 		return graph.Edges[i].Source < graph.Edges[j].Source
 	})
 	return graph
+}
+
+func unrealGraphShouldIncludeBuildFile(snapshot ProjectSnapshot, path string) bool {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".uproject") ||
+		strings.HasSuffix(lower, ".uplugin") ||
+		strings.HasSuffix(lower, ".build.cs") ||
+		strings.HasSuffix(lower, ".target.cs") ||
+		strings.Contains(lower, "/config/") {
+		return true
+	}
+	if strings.TrimSpace(unrealModuleForFile(snapshot, path)) != "" {
+		return true
+	}
+	for _, item := range snapshot.UnrealTypes {
+		if strings.EqualFold(item.File, path) {
+			return true
+		}
+	}
+	return false
 }
