@@ -78,6 +78,17 @@ type ScannedFile struct {
 	ImportanceReasons []string `json:"importance_reasons,omitempty"`
 }
 
+type ImportResolutionRecord struct {
+	SourceFile     string `json:"source_file"`
+	RawImport      string `json:"raw_import"`
+	TargetPath     string `json:"target_path,omitempty"`
+	Language       string `json:"language,omitempty"`
+	BuildContextID string `json:"build_context_id,omitempty"`
+	SourceAdapter  string `json:"source_adapter,omitempty"`
+	Confidence     string `json:"confidence,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+}
+
 type ProjectSnapshot struct {
 	Root                string                     `json:"root"`
 	ModulePath          string                     `json:"module_path,omitempty"`
@@ -102,6 +113,8 @@ type ProjectSnapshot struct {
 	UnrealSettings      []UnrealProjectSetting     `json:"unreal_settings,omitempty"`
 	CompileCommands     []CompilationCommandRecord `json:"compile_commands,omitempty"`
 	BuildContexts       []BuildContextRecord       `json:"build_contexts,omitempty"`
+	BuildDiagnostics    []BuildContextDiagnostic   `json:"build_diagnostics,omitempty"`
+	ImportResolutions   []ImportResolutionRecord   `json:"import_resolutions,omitempty"`
 	PrimaryUnrealModule string                     `json:"primary_unreal_module,omitempty"`
 	AnalysisLenses      []AnalysisLens             `json:"analysis_lenses,omitempty"`
 	ProjectTypes        []string                   `json:"project_types,omitempty"`
@@ -3365,10 +3378,10 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 	sort.Slice(snapshot.Files, func(i int, j int) bool {
 		return snapshot.Files[i].Path < snapshot.Files[j].Path
 	})
-	a.resolveImports(&snapshot)
 	a.enrichSolutionMetadata(&snapshot)
 	a.enrichUnrealMetadata(&snapshot)
 	enrichBuildAlignment(&snapshot)
+	a.resolveImports(&snapshot)
 	sort.Strings(snapshot.Directories)
 	sort.Strings(snapshot.ManifestFiles)
 	sort.Strings(snapshot.EntrypointFiles)
@@ -5567,14 +5580,22 @@ func buildProjectEdges(snapshot ProjectSnapshot) []ProjectEdge {
 			}
 			edgeType := "dependency_edge"
 			confidence := "high"
+			attrs := map[string]string{
+				"source_dir": snapshot.FilesByPath[source].Directory,
+				"target_dir": targetFile.Directory,
+			}
 			if isExternalLikePath(strings.ToLower(target)) {
 				edgeType = "external_edge"
 				confidence = "medium"
 			}
-			add(source, target, edgeType, confidence, source, map[string]string{
-				"source_dir": snapshot.FilesByPath[source].Directory,
-				"target_dir": targetFile.Directory,
-			})
+			if resolution, ok := importResolutionForTarget(snapshot, source, target); ok {
+				confidence = firstNonBlankAnalysisString(resolution.Confidence, confidence)
+				attrs["source_adapter"] = resolution.SourceAdapter
+				attrs["build_context_id"] = resolution.BuildContextID
+				attrs["reason"] = resolution.Reason
+				attrs["raw_import"] = resolution.RawImport
+			}
+			add(source, target, edgeType, confidence, source, attrs)
 		}
 	}
 	for _, edge := range snapshot.RuntimeEdges {
@@ -10909,6 +10930,49 @@ func (a *projectAnalyzer) relatedFiles(snapshot ProjectSnapshot, primaryFiles []
 			score[dep] += 2
 		}
 	}
+	for _, ctx := range snapshot.BuildContexts {
+		touchesPrimary := false
+		for _, path := range ctx.Files {
+			if _, ok := primary[path]; ok {
+				touchesPrimary = true
+				break
+			}
+		}
+		if !touchesPrimary {
+			continue
+		}
+		for _, path := range ctx.Files {
+			if _, ok := primary[path]; ok {
+				continue
+			}
+			if _, ok := snapshot.FilesByPath[path]; !ok {
+				continue
+			}
+			score[path] += 2
+		}
+		if strings.TrimSpace(ctx.Source) != "" {
+			if _, ok := primary[ctx.Source]; !ok {
+				if _, ok := snapshot.FilesByPath[ctx.Source]; ok {
+					score[ctx.Source] += 2
+				}
+			}
+		}
+	}
+	for _, edge := range snapshot.ProjectEdges {
+		if edge.Attributes == nil || strings.TrimSpace(edge.Attributes["build_context_id"]) == "" {
+			continue
+		}
+		if _, ok := primary[edge.Source]; ok {
+			if _, exists := primary[edge.Target]; !exists {
+				score[edge.Target] += 2
+			}
+		}
+		if _, ok := primary[edge.Target]; ok {
+			if _, exists := primary[edge.Source]; !exists {
+				score[edge.Source] += 1
+			}
+		}
+	}
 	type item struct {
 		Path  string
 		Score int
@@ -12505,9 +12569,12 @@ func trimPromptBullets(lines []string) []string {
 func (a *projectAnalyzer) resolveImports(snapshot *ProjectSnapshot) {
 	snapshot.ImportGraph = map[string][]string{}
 	snapshot.ReverseImportGraph = map[string][]string{}
+	snapshot.ImportResolutions = nil
+	diagnostics := []BuildContextDiagnostic{}
 	updatedFiles := make([]ScannedFile, 0, len(snapshot.Files))
 	for _, file := range snapshot.Files {
-		resolved := a.resolveFileImports(*snapshot, file)
+		records := a.resolveFileImportRecords(*snapshot, file)
+		resolved := importResolutionTargets(records)
 		file.Imports = resolved
 		updatedFiles = append(updatedFiles, file)
 		snapshot.FilesByPath[file.Path] = file
@@ -12515,47 +12582,86 @@ func (a *projectAnalyzer) resolveImports(snapshot *ProjectSnapshot) {
 		for _, dep := range resolved {
 			snapshot.ReverseImportGraph[dep] = append(snapshot.ReverseImportGraph[dep], file.Path)
 		}
+		snapshot.ImportResolutions = append(snapshot.ImportResolutions, records...)
+		for _, record := range records {
+			if importResolutionIsAmbiguous(record) {
+				diagnostics = append(diagnostics, importResolutionDiagnostic(record))
+			}
+		}
 	}
 	snapshot.Files = updatedFiles
 	snapshot.FilesByDirectory = map[string][]ScannedFile{}
 	for _, file := range snapshot.Files {
 		snapshot.FilesByDirectory[file.Directory] = append(snapshot.FilesByDirectory[file.Directory], file)
 	}
+	sort.Slice(snapshot.ImportResolutions, func(i int, j int) bool {
+		left := snapshot.ImportResolutions[i]
+		right := snapshot.ImportResolutions[j]
+		if left.SourceFile == right.SourceFile {
+			if left.RawImport == right.RawImport {
+				if left.TargetPath == right.TargetPath {
+					return left.Reason < right.Reason
+				}
+				return left.TargetPath < right.TargetPath
+			}
+			return left.RawImport < right.RawImport
+		}
+		return left.SourceFile < right.SourceFile
+	})
+	snapshot.BuildDiagnostics = normalizeBuildContextDiagnostics(append(snapshot.BuildDiagnostics, diagnostics...))
 }
 
 func (a *projectAnalyzer) resolveFileImports(snapshot ProjectSnapshot, file ScannedFile) []string {
-	resolved := []string{}
+	return importResolutionTargets(a.resolveFileImportRecords(snapshot, file))
+}
+
+func (a *projectAnalyzer) resolveFileImportRecords(snapshot ProjectSnapshot, file ScannedFile) []ImportResolutionRecord {
+	records := []ImportResolutionRecord{}
 	seen := map[string]struct{}{}
 	for _, raw := range file.RawImports {
-		for _, candidate := range a.resolveImportCandidate(snapshot, file, raw) {
-			if candidate == file.Path {
+		for _, record := range a.resolveImportCandidateRecords(snapshot, file, raw) {
+			record = normalizeImportResolutionRecord(snapshot, file, raw, record)
+			if record.TargetPath == "" || record.TargetPath == file.Path {
 				continue
 			}
-			if _, ok := seen[candidate]; ok {
+			key := strings.ToLower(record.RawImport + "|" + record.TargetPath + "|" + record.BuildContextID + "|" + record.Reason)
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			seen[candidate] = struct{}{}
-			resolved = append(resolved, candidate)
+			seen[key] = struct{}{}
+			records = append(records, record)
 		}
 	}
-	sort.Strings(resolved)
-	return resolved
+	sort.Slice(records, func(i int, j int) bool {
+		if records[i].TargetPath == records[j].TargetPath {
+			if records[i].BuildContextID == records[j].BuildContextID {
+				return records[i].Reason < records[j].Reason
+			}
+			return records[i].BuildContextID < records[j].BuildContextID
+		}
+		return records[i].TargetPath < records[j].TargetPath
+	})
+	return records
 }
 
 func (a *projectAnalyzer) resolveImportCandidate(snapshot ProjectSnapshot, file ScannedFile, raw string) []string {
+	return importResolutionTargets(a.resolveImportCandidateRecords(snapshot, file, raw))
+}
+
+func (a *projectAnalyzer) resolveImportCandidateRecords(snapshot ProjectSnapshot, file ScannedFile, raw string) []ImportResolutionRecord {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
 	}
 	switch file.Extension {
 	case ".go":
-		return a.resolveGoImportCandidate(snapshot, raw)
+		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveGoImportCandidate(snapshot, raw), "language_import", "high", "go_import")
 	case ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp":
-		return a.resolveCStyleImportCandidate(snapshot, file, raw)
+		return a.resolveCStyleImportCandidateRecords(snapshot, file, raw)
 	case ".js", ".jsx", ".ts", ".tsx":
-		return a.resolveJSImportCandidate(snapshot, file, raw)
+		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveJSImportCandidate(snapshot, file, raw), "language_import", "medium", "js_import")
 	default:
-		return a.resolveGenericImportCandidate(snapshot, file, raw)
+		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveGenericImportCandidate(snapshot, file, raw), "heuristic_import", "medium", "generic_import")
 	}
 }
 
@@ -12584,6 +12690,13 @@ func (a *projectAnalyzer) resolveGoImportCandidate(snapshot ProjectSnapshot, raw
 }
 
 func (a *projectAnalyzer) resolveCStyleImportCandidate(snapshot ProjectSnapshot, file ScannedFile, raw string) []string {
+	return importResolutionTargets(a.resolveCStyleImportCandidateRecords(snapshot, file, raw))
+}
+
+func (a *projectAnalyzer) resolveCStyleImportCandidateRecords(snapshot ProjectSnapshot, file ScannedFile, raw string) []ImportResolutionRecord {
+	if records := a.resolveBuildAwareCStyleImportRecords(snapshot, file, raw); len(records) > 0 {
+		return records
+	}
 	out := []string{}
 	if strings.HasPrefix(raw, ".") || strings.HasPrefix(raw, "/") {
 		out = append(out, resolveRelativeImport(snapshot, file, raw)...)
@@ -12603,7 +12716,12 @@ func (a *projectAnalyzer) resolveCStyleImportCandidate(snapshot ProjectSnapshot,
 			out = append(out, path)
 		}
 	}
-	return analysisUniqueStrings(out)
+	out = analysisUniqueStrings(out)
+	if len(out) <= 1 {
+		return importResolutionRecordsFromTargets(snapshot, file, raw, out, "heuristic_basename", "medium", "basename_fallback")
+	}
+	records := importResolutionRecordsFromTargets(snapshot, file, raw, out, "heuristic_basename", "low", "ambiguous_include_fallback")
+	return records
 }
 
 func (a *projectAnalyzer) resolveJSImportCandidate(snapshot ProjectSnapshot, file ScannedFile, raw string) []string {
@@ -12640,6 +12758,295 @@ func (a *projectAnalyzer) resolveGenericImportCandidate(snapshot ProjectSnapshot
 		}
 	}
 	return analysisUniqueStrings(out)
+}
+
+func (a *projectAnalyzer) resolveBuildAwareCStyleImportRecords(snapshot ProjectSnapshot, file ScannedFile, raw string) []ImportResolutionRecord {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	type includeRoot struct {
+		Directory      string
+		BuildContextID string
+		SourceAdapter  string
+		Confidence     string
+		Reason         string
+	}
+	roots := []includeRoot{}
+	addRoot := func(root includeRoot) {
+		root.Directory = filepath.ToSlash(strings.TrimSpace(root.Directory))
+		root.BuildContextID = strings.TrimSpace(root.BuildContextID)
+		root.SourceAdapter = strings.TrimSpace(root.SourceAdapter)
+		root.Confidence = strings.TrimSpace(root.Confidence)
+		root.Reason = strings.TrimSpace(root.Reason)
+		if root.Directory == "." {
+			root.Directory = ""
+		}
+		for _, existing := range roots {
+			if strings.EqualFold(existing.Directory, root.Directory) &&
+				strings.EqualFold(existing.BuildContextID, root.BuildContextID) &&
+				strings.EqualFold(existing.Reason, root.Reason) {
+				return
+			}
+		}
+		roots = append(roots, root)
+	}
+	addRoot(includeRoot{
+		Directory:     file.Directory,
+		SourceAdapter: "source_relative",
+		Confidence:    "high",
+		Reason:        "source_relative_include",
+	})
+	contexts := buildContextsForFile(snapshot, file.Path)
+	for _, ctx := range contexts {
+		for _, includePath := range ctx.IncludePaths {
+			normalized := normalizeBuildIncludeDirectory(snapshot.Root, ctx.Directory, includePath)
+			if strings.TrimSpace(normalized) == "" {
+				continue
+			}
+			addRoot(includeRoot{
+				Directory:      normalized,
+				BuildContextID: ctx.ID,
+				SourceAdapter:  firstNonBlankAnalysisString(ctx.SourceAdapter, "build_context"),
+				Confidence:     firstNonBlankAnalysisString(ctx.Confidence, "medium"),
+				Reason:         "build_context_include",
+			})
+		}
+	}
+
+	records := []ImportResolutionRecord{}
+	for _, root := range roots {
+		targets := resolveIncludeFromSearchDirectory(snapshot, root.Directory, raw)
+		if len(targets) == 0 {
+			continue
+		}
+		for _, target := range targets {
+			records = append(records, ImportResolutionRecord{
+				SourceFile:     file.Path,
+				RawImport:      raw,
+				TargetPath:     target,
+				Language:       analysisLanguageForExtension(file.Extension),
+				BuildContextID: root.BuildContextID,
+				SourceAdapter:  root.SourceAdapter,
+				Confidence:     root.Confidence,
+				Reason:         root.Reason,
+			})
+		}
+		if len(records) > 0 && root.Reason == "source_relative_include" {
+			break
+		}
+	}
+	records = collapseImportResolutionRecords(records)
+	targets := importResolutionTargets(records)
+	if len(targets) <= 1 {
+		return records
+	}
+	for index := range records {
+		records[index].Confidence = "low"
+		records[index].Reason = "ambiguous_build_context_include"
+		if strings.TrimSpace(records[index].SourceAdapter) == "" {
+			records[index].SourceAdapter = "build_context"
+		}
+	}
+	return records
+}
+
+func resolveIncludeFromSearchDirectory(snapshot ProjectSnapshot, directory string, raw string) []string {
+	directory = strings.Trim(strings.TrimSpace(filepath.ToSlash(directory)), "/")
+	raw = strings.Trim(strings.TrimSpace(filepath.ToSlash(raw)), "\"<>")
+	if raw == "" {
+		return nil
+	}
+	candidate := filepath.ToSlash(filepath.Clean(filepath.Join(filepath.FromSlash(directory), filepath.FromSlash(raw))))
+	if directory == "" {
+		candidate = filepath.ToSlash(filepath.Clean(filepath.FromSlash(raw)))
+	}
+	if strings.HasPrefix(candidate, "../") || candidate == ".." {
+		return nil
+	}
+	if _, ok := snapshot.FilesByPath[candidate]; ok {
+		return []string{candidate}
+	}
+	headerExts := []string{".h", ".hh", ".hpp", ".hxx", ".inl", ".ipp"}
+	return resolvePathWithExtensions(snapshot, candidate, headerExts)
+}
+
+func normalizeBuildIncludeDirectory(root string, contextDirectory string, includePath string) string {
+	includePath = strings.Trim(strings.TrimSpace(includePath), "\"")
+	if includePath == "" || strings.Contains(includePath, "$(") || strings.Contains(includePath, "%(") {
+		return ""
+	}
+	includePath = strings.ReplaceAll(includePath, "\\", string(filepath.Separator))
+	var abs string
+	if filepath.IsAbs(includePath) {
+		abs = includePath
+	} else {
+		base := filepath.FromSlash(strings.TrimSpace(contextDirectory))
+		if base == "" || base == "." {
+			base = ""
+		}
+		abs = filepath.Join(root, base, includePath)
+	}
+	rel := filepath.ToSlash(relOrAbs(root, filepath.Clean(abs)))
+	if rel == "." {
+		return ""
+	}
+	if strings.HasPrefix(rel, "../") || rel == ".." {
+		return ""
+	}
+	return rel
+}
+
+func buildContextsForFile(snapshot ProjectSnapshot, path string) []BuildContextRecord {
+	ids := map[string]struct{}{}
+	for _, id := range buildContextIDsForFile(snapshot, path) {
+		ids[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
+	}
+	out := []BuildContextRecord{}
+	for _, ctx := range snapshot.BuildContexts {
+		if _, ok := ids[strings.ToLower(strings.TrimSpace(ctx.ID))]; ok {
+			out = append(out, ctx)
+		}
+	}
+	sort.SliceStable(out, func(i int, j int) bool {
+		if out[i].Kind == out[j].Kind {
+			return out[i].ID < out[j].ID
+		}
+		return buildContextKindPriority(out[i].Kind) < buildContextKindPriority(out[j].Kind)
+	})
+	return out
+}
+
+func buildContextKindPriority(kind string) int {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "compile_command":
+		return 0
+	case "msbuild_project":
+		return 1
+	case "unreal_module":
+		return 2
+	case "unreal_target":
+		return 3
+	case "solution_project":
+		return 4
+	default:
+		return 10
+	}
+}
+
+func importResolutionRecordsFromTargets(snapshot ProjectSnapshot, file ScannedFile, raw string, targets []string, adapter string, confidence string, reason string) []ImportResolutionRecord {
+	records := []ImportResolutionRecord{}
+	for _, target := range analysisUniqueStrings(targets) {
+		target = strings.TrimSpace(filepath.ToSlash(target))
+		if target == "" {
+			continue
+		}
+		records = append(records, normalizeImportResolutionRecord(snapshot, file, raw, ImportResolutionRecord{
+			TargetPath:    target,
+			SourceAdapter: adapter,
+			Confidence:    confidence,
+			Reason:        reason,
+		}))
+	}
+	return records
+}
+
+func normalizeImportResolutionRecord(snapshot ProjectSnapshot, file ScannedFile, raw string, record ImportResolutionRecord) ImportResolutionRecord {
+	record.SourceFile = firstNonBlankAnalysisString(record.SourceFile, file.Path)
+	record.RawImport = firstNonBlankAnalysisString(record.RawImport, strings.TrimSpace(raw))
+	record.TargetPath = filepath.ToSlash(strings.TrimSpace(record.TargetPath))
+	record.Language = firstNonBlankAnalysisString(record.Language, analysisLanguageForExtension(file.Extension))
+	record.BuildContextID = strings.TrimSpace(record.BuildContextID)
+	record.SourceAdapter = strings.TrimSpace(record.SourceAdapter)
+	record.Confidence = firstNonBlankAnalysisString(record.Confidence, "medium")
+	record.Reason = firstNonBlankAnalysisString(record.Reason, "resolved_import")
+	if record.BuildContextID == "" && strings.HasPrefix(record.SourceAdapter, "build") {
+		record.BuildContextID = firstSliceValue(buildContextIDsForFile(snapshot, file.Path))
+	}
+	return record
+}
+
+func collapseImportResolutionRecords(records []ImportResolutionRecord) []ImportResolutionRecord {
+	out := []ImportResolutionRecord{}
+	seen := map[string]int{}
+	for _, record := range records {
+		record.TargetPath = filepath.ToSlash(strings.TrimSpace(record.TargetPath))
+		if record.TargetPath == "" {
+			continue
+		}
+		key := strings.ToLower(record.TargetPath)
+		index, ok := seen[key]
+		if !ok {
+			seen[key] = len(out)
+			out = append(out, record)
+			continue
+		}
+		existing := out[index]
+		existing.BuildContextID = firstNonBlankAnalysisString(existing.BuildContextID, record.BuildContextID)
+		existing.SourceAdapter = firstNonBlankAnalysisString(existing.SourceAdapter, record.SourceAdapter)
+		existing.Confidence = strongestAnalysisConfidence(existing.Confidence, record.Confidence)
+		if existing.Reason != "source_relative_include" {
+			existing.Reason = firstNonBlankAnalysisString(record.Reason, existing.Reason)
+		}
+		out[index] = existing
+	}
+	return out
+}
+
+func importResolutionTargets(records []ImportResolutionRecord) []string {
+	out := []string{}
+	for _, record := range records {
+		if strings.TrimSpace(record.TargetPath) == "" {
+			continue
+		}
+		out = append(out, filepath.ToSlash(strings.TrimSpace(record.TargetPath)))
+	}
+	out = analysisUniqueStrings(out)
+	sort.Strings(out)
+	return out
+}
+
+func importResolutionForTarget(snapshot ProjectSnapshot, source string, target string) (ImportResolutionRecord, bool) {
+	source = filepath.ToSlash(strings.TrimSpace(source))
+	target = filepath.ToSlash(strings.TrimSpace(target))
+	best := ImportResolutionRecord{}
+	found := false
+	for _, record := range snapshot.ImportResolutions {
+		if !strings.EqualFold(record.SourceFile, source) || !strings.EqualFold(record.TargetPath, target) {
+			continue
+		}
+		if !found || runtimeEdgeConfidenceRank(record.Confidence) > runtimeEdgeConfidenceRank(best.Confidence) {
+			best = record
+			found = true
+		}
+	}
+	return best, found
+}
+
+func importResolutionIsAmbiguous(record ImportResolutionRecord) bool {
+	reason := strings.ToLower(strings.TrimSpace(record.Reason))
+	return strings.Contains(reason, "ambiguous") || strings.EqualFold(strings.TrimSpace(record.Confidence), "low")
+}
+
+func importResolutionDiagnostic(record ImportResolutionRecord) BuildContextDiagnostic {
+	target := firstNonBlankAnalysisString(record.TargetPath, "unresolved")
+	return BuildContextDiagnostic{
+		Path:     record.SourceFile,
+		Adapter:  firstNonBlankAnalysisString(record.SourceAdapter, "include_resolver"),
+		Severity: "warning",
+		Reason:   firstNonBlankAnalysisString(record.Reason, "ambiguous_include"),
+		Detail:   fmt.Sprintf("include %q matched %s", record.RawImport, target),
+	}
+}
+
+func buildContextMetadataForFile(snapshot ProjectSnapshot, path string) (string, string) {
+	adapter := ""
+	confidence := ""
+	for _, ctx := range buildContextsForFile(snapshot, path) {
+		adapter = firstNonBlankAnalysisString(adapter, ctx.SourceAdapter)
+		confidence = strongestAnalysisConfidence(confidence, ctx.Confidence)
+	}
+	return adapter, confidence
 }
 
 func resolveRelativeImport(snapshot ProjectSnapshot, file ScannedFile, raw string) []string {

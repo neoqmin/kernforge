@@ -77,6 +77,12 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		if len(item.Tags) > 0 {
 			line += " tags=" + strings.Join(limitStrings(item.Tags, 3), ",")
 		}
+		if strings.TrimSpace(item.SourceAdapter) != "" {
+			line += " adapter=" + strings.TrimSpace(item.SourceAdapter)
+		}
+		if strings.TrimSpace(item.Confidence) != "" {
+			line += " confidence=" + strings.TrimSpace(item.Confidence)
+		}
 		b.WriteString(line + "\n")
 	}
 	for _, item := range hits.BuildContexts {
@@ -92,6 +98,12 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		}
 		if strings.TrimSpace(item.Compiler) != "" {
 			line += " compiler=" + strings.TrimSpace(item.Compiler)
+		}
+		if strings.TrimSpace(item.SourceAdapter) != "" {
+			line += " adapter=" + strings.TrimSpace(item.SourceAdapter)
+		}
+		if strings.TrimSpace(item.Confidence) != "" {
+			line += " confidence=" + strings.TrimSpace(item.Confidence)
 		}
 		b.WriteString(line + "\n")
 	}
@@ -135,6 +147,12 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		if len(item.Evidence) > 0 {
 			line += " evidence=" + strings.Join(limitStrings(item.Evidence, 2), ", ")
 		}
+		if strings.TrimSpace(item.BuildContextID) != "" {
+			line += " ctx=" + semanticIndexV2EntityDisplay(nameByID, item.BuildContextID)
+		}
+		if strings.TrimSpace(item.Confidence) != "" {
+			line += " confidence=" + strings.TrimSpace(item.Confidence)
+		}
 		b.WriteString(line + "\n")
 	}
 	for _, item := range hits.Inheritance {
@@ -152,6 +170,12 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		if len(item.Evidence) > 0 {
 			line += " evidence=" + strings.Join(limitStrings(item.Evidence, 2), ", ")
 		}
+		if strings.TrimSpace(item.BuildContextID) != "" {
+			line += " ctx=" + semanticIndexV2EntityDisplay(nameByID, item.BuildContextID)
+		}
+		if strings.TrimSpace(item.Confidence) != "" {
+			line += " confidence=" + strings.TrimSpace(item.Confidence)
+		}
 		b.WriteString(line + "\n")
 	}
 	for _, item := range hits.References {
@@ -162,6 +186,12 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		)
 		if len(item.Evidence) > 0 {
 			line += " evidence=" + strings.Join(limitStrings(item.Evidence, 2), ", ")
+		}
+		if strings.TrimSpace(item.BuildContextID) != "" {
+			line += " ctx=" + semanticIndexV2EntityDisplay(nameByID, item.BuildContextID)
+		}
+		if strings.TrimSpace(item.Confidence) != "" {
+			line += " confidence=" + strings.TrimSpace(item.Confidence)
 		}
 		b.WriteString(line + "\n")
 	}
@@ -301,6 +331,8 @@ func selectRelevantV2Files(index SemanticIndexV2, query string, mode string, lim
 			strings.ToLower(strings.Join(item.Tags, " ")),
 			strings.ToLower(strings.Join(item.ModuleHints, " ")),
 			strings.ToLower(strings.Join(item.BuildContextIDs, " ")),
+			strings.ToLower(strings.TrimSpace(item.SourceAdapter)),
+			strings.ToLower(strings.TrimSpace(item.Confidence)),
 		}
 		score := analysisV2BaseScore(haystacks, loweredQuery, queryTokens, queryRefs)
 		score += analysisMinInt(item.ImportanceScore/20, 4)
@@ -397,6 +429,9 @@ func selectRelevantV2CallEdges(index SemanticIndexV2, query string, mode string,
 			strings.ToLower(strings.TrimSpace(item.SourceID)),
 			strings.ToLower(strings.TrimSpace(item.TargetID)),
 			strings.ToLower(strings.TrimSpace(item.Type)),
+			strings.ToLower(strings.TrimSpace(item.BuildContextID)),
+			strings.ToLower(strings.TrimSpace(item.SourceAdapter)),
+			strings.ToLower(strings.TrimSpace(item.Confidence)),
 			strings.ToLower(strings.Join(item.Evidence, " ")),
 		}
 		score := analysisV2BaseScore(haystacks, loweredQuery, queryTokens, queryRefs)
@@ -581,6 +616,9 @@ func selectRelevantV2References(index SemanticIndexV2, query string, mode string
 			strings.ToLower(strings.TrimSpace(item.TargetID)),
 			strings.ToLower(strings.TrimSpace(item.TargetPath)),
 			strings.ToLower(strings.TrimSpace(item.Type)),
+			strings.ToLower(strings.TrimSpace(item.BuildContextID)),
+			strings.ToLower(strings.TrimSpace(item.SourceAdapter)),
+			strings.ToLower(strings.TrimSpace(item.Confidence)),
 			strings.ToLower(strings.Join(item.Evidence, " ")),
 		}
 		score := analysisV2BaseScore(haystacks, loweredQuery, queryTokens, queryRefs)

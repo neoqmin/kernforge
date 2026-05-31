@@ -449,8 +449,17 @@ func buildAnalysisBuildArtifactsDoc(run ProjectAnalysisRun) string {
 			if strings.TrimSpace(ctx.Name) != "" {
 				fmt.Fprintf(&b, " name=%s", ctx.Name)
 			}
+			if strings.TrimSpace(ctx.SourceAdapter) != "" {
+				fmt.Fprintf(&b, " adapter=%s", ctx.SourceAdapter)
+			}
+			if strings.TrimSpace(ctx.Confidence) != "" {
+				fmt.Fprintf(&b, " confidence=%s", ctx.Confidence)
+			}
 			if strings.TrimSpace(ctx.Module) != "" {
 				fmt.Fprintf(&b, " module=%s", ctx.Module)
+			}
+			if len(ctx.IncludePaths) > 0 {
+				fmt.Fprintf(&b, " include_dirs=%d", len(ctx.IncludePaths))
 			}
 			if len(ctx.Files) > 0 {
 				fmt.Fprintf(&b, " files=%d", len(ctx.Files))
@@ -463,6 +472,50 @@ func buildAnalysisBuildArtifactsDoc(run ProjectAnalysisRun) string {
 		for _, cmd := range limitCompileCommands(run.Snapshot.CompileCommands, 20) {
 			fmt.Fprintf(&b, "- `%s` compiler=%s source=%s\n", cmd.File, firstNonBlankAnalysisString(cmd.Compiler, "unknown"), firstNonBlankAnalysisString(cmd.Source, "compile_commands"))
 		}
+	}
+	if len(run.Snapshot.BuildDiagnostics) > 0 {
+		fmt.Fprintf(&b, "\n## Build Diagnostics\n\n")
+		fmt.Fprintf(&b, "| Severity | Adapter | Path | Reason | Detail |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- |\n")
+		for _, diagnostic := range limitBuildDiagnostics(run.Snapshot.BuildDiagnostics, 40) {
+			fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s |\n",
+				strings.ReplaceAll(diagnostic.Severity, "|", "/"),
+				strings.ReplaceAll(diagnostic.Adapter, "|", "/"),
+				strings.ReplaceAll(diagnostic.Path, "|", "/"),
+				strings.ReplaceAll(diagnostic.Reason, "|", "/"),
+				strings.ReplaceAll(diagnostic.Detail, "|", "/"),
+			)
+		}
+	}
+	if len(run.Snapshot.ImportResolutions) > 0 {
+		fmt.Fprintf(&b, "\n## Include Resolution\n\n")
+		fmt.Fprintf(&b, "| Source | Import | Target | Adapter | Confidence | Reason |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- |\n")
+		for _, record := range limitImportResolutionRecords(run.Snapshot.ImportResolutions, 60) {
+			fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %s | %s | %s |\n",
+				strings.ReplaceAll(record.SourceFile, "|", "/"),
+				strings.ReplaceAll(record.RawImport, "|", "/"),
+				strings.ReplaceAll(record.TargetPath, "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(record.SourceAdapter, "unknown"), "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(record.Confidence, "medium"), "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(record.Reason, "resolved"), "|", "/"),
+			)
+		}
+	}
+	if len(run.SemanticIndexV2.GeneratedCodeEdges) > 0 {
+		fmt.Fprintf(&b, "\n## Generated Code Relations\n\n")
+		for _, edge := range limitGeneratedCodeEdges(run.SemanticIndexV2.GeneratedCodeEdges, 40) {
+			fmt.Fprintf(&b, "- `%s` -> `%s` (%s", edge.SourceFile, edge.TargetID, edge.Type)
+			if strings.TrimSpace(edge.Confidence) != "" {
+				fmt.Fprintf(&b, ", confidence=%s", edge.Confidence)
+			}
+			fmt.Fprintf(&b, ")\n")
+		}
+	}
+	if len(run.UnrealGraph.Nodes) > 0 || len(run.UnrealGraph.Edges) > 0 {
+		fmt.Fprintf(&b, "\n## Unreal Graph Coverage\n\n")
+		fmt.Fprintf(&b, "- Nodes: %d\n", len(run.UnrealGraph.Nodes))
+		fmt.Fprintf(&b, "- Edges: %d\n", len(run.UnrealGraph.Edges))
 	}
 	return b.String()
 }
@@ -1327,7 +1380,7 @@ func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 	case "API_AND_ENTRYPOINTS.md":
 		return analysisUniqueStrings(append(run.Snapshot.EntrypointFiles, symbolFiles(analysisEntrypointSymbols(run))...))
 	case "BUILD_AND_ARTIFACTS.md":
-		return analysisUniqueStrings(append(run.Snapshot.ManifestFiles, compileCommandFiles(run.Snapshot.CompileCommands)...))
+		return analysisUniqueStrings(append(append(run.Snapshot.ManifestFiles, compileCommandFiles(run.Snapshot.CompileCommands)...), buildArtifactSourceAnchors(run)...))
 	case "COVERAGE_LEDGER.md":
 		return analysisCoverageLedgerSourceAnchors(run)
 	case "STRUCTURAL_INDEX.md":
@@ -1681,6 +1734,10 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 		"BUILD_AND_ARTIFACTS.md": {
 			{"build.contexts", "Build Contexts"},
 			{"build.compile_commands", "Compile Command Coverage"},
+			{"build.diagnostics", "Build Diagnostics"},
+			{"build.include_resolution", "Include Resolution"},
+			{"build.generated_code", "Generated Code Relations"},
+			{"build.unreal_graph_coverage", "Unreal Graph Coverage"},
 		},
 		"COVERAGE_LEDGER.md": {
 			{"coverage.scan_summary", "Scan Summary"},
@@ -1797,6 +1854,24 @@ func compileCommandFiles(commands []CompilationCommandRecord) []string {
 		items = append(items, command.File)
 	}
 	return items
+}
+
+func buildArtifactSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, ctx := range run.Snapshot.BuildContexts {
+		items = append(items, ctx.Source)
+		items = append(items, limitStrings(ctx.Files, 20)...)
+	}
+	for _, record := range limitImportResolutionRecords(run.Snapshot.ImportResolutions, 80) {
+		items = append(items, record.SourceFile, record.TargetPath)
+	}
+	for _, diagnostic := range limitBuildDiagnostics(run.Snapshot.BuildDiagnostics, 40) {
+		items = append(items, diagnostic.Path)
+	}
+	for _, edge := range limitGeneratedCodeEdges(run.SemanticIndexV2.GeneratedCodeEdges, 40) {
+		items = append(items, edge.SourceFile)
+	}
+	return analysisUniqueStrings(items)
 }
 
 func analysisCoverageLedgerSourceAnchors(run ProjectAnalysisRun) []string {
@@ -1983,6 +2058,26 @@ func limitCompileCommands(items []CompilationCommandRecord, limit int) []Compila
 		return append([]CompilationCommandRecord(nil), items...)
 	}
 	return append([]CompilationCommandRecord(nil), items[:limit]...)
+}
+
+func limitBuildDiagnostics(items []BuildContextDiagnostic, limit int) []BuildContextDiagnostic {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]BuildContextDiagnostic(nil), items...)
+	}
+	return append([]BuildContextDiagnostic(nil), items[:limit]...)
+}
+
+func limitImportResolutionRecords(items []ImportResolutionRecord, limit int) []ImportResolutionRecord {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]ImportResolutionRecord(nil), items...)
+	}
+	return append([]ImportResolutionRecord(nil), items[:limit]...)
 }
 
 func limitUnrealNetworkSurfaces(items []UnrealNetworkSurface, limit int) []UnrealNetworkSurface {
