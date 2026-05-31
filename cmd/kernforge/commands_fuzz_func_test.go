@@ -1766,6 +1766,7 @@ func TestRenderFunctionFuzzRunExplainsDriverEntryPlanningResult(t *testing.T) {
 func TestRenderFunctionFuzzRunHighlightsCategoryHeadersWhenColorEnabled(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "1")
 
 	run := FunctionFuzzRun{
 		ID:               "fuzz-color",

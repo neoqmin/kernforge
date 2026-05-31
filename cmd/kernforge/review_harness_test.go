@@ -11244,7 +11244,10 @@ func TestReviewCommandWithContextCancelsActiveModelRun(t *testing.T) {
 
 	select {
 	case <-provider.started:
-	case <-time.After(2 * time.Second):
+	case err := <-done:
+		cancel()
+		t.Fatalf("review command returned before model call started: %v", err)
+	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatalf("review model call did not start")
 	}
