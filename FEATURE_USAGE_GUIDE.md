@@ -374,6 +374,9 @@ Purpose:
 8. In local-provider or explicitly route-limited setups, cap shared worker/reviewer model routes through the global scheduler to reduce provider saturation and low-confidence placeholder cascades.
 9. Let Kernforge adapt shard size for local models when shard limits are not configured, then automatically retry once with smaller shards when a final timeout or 5xx/overload-style provider error still stops the run.
 10. Show live execution progress with worker slot count, shard waves, completed/failed shard totals, cache/review state, and model wait events labeled by analysis stage and shard.
+11. Prefer graph-guided shard communities for startup, IOCTL, callback, handle/memory, RPC, asset/config, build-context, and generated-artifact evidence before falling back to directory chunks.
+12. Run the deterministic claim verifier on every run so high-confidence claims require valid packet, source, line, symbol, graph, and security-boundary evidence.
+13. Publish a security/anti-cheat overlay for Windows driver and Unreal authority/config surfaces alongside the final report, docs, and dashboard.
 
 Useful commands:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -422,12 +425,16 @@ Additional artifacts now produced by project analysis:
 5. `knowledge pack`: human-readable architecture digest and subsystem summaries.
 6. `vector corpus`: embedding-ready project, subsystem, and shard documents.
 7. `vector ingest exports`: staging files for pgvector, SQLite, and Qdrant pipelines.
+8. `graph_shards`, `graph_reuse`, and `evidence_graph`: graph communities, symbol-level reuse fingerprints, and evidence edges used by worker prompts.
+9. `claim_verification` and `unsupported_claims`: deterministic verifier results, downgraded claims, blocking issues, and follow-through commands.
+10. `security_overlay`: Windows/driver/IOCTL/callback/handle/memory/RPC/telemetry plus Unreal RPC/replication/asset/config/integrity boundary nodes and edges.
 
 What materially changed for large and Unreal-heavy workspaces:
 1. A semantic shard planner now prioritizes `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, and `unreal_gameplay`.
 2. Worker and reviewer prompts now carry shard-specific semantic focus and review checklists.
-3. Incremental reuse now considers semantic fingerprints instead of relying only on file hashes.
-4. Build alignment now promotes `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, and `compile_commands.json` into reusable build-context records.
+3. Graph-guided planning separates security and runtime communities such as `security_driver`, `security_ioctl`, `callback_registration`, `security_handles`, `security_memory`, `security_rpc`, `asset_config`, `build_context`, and `generated_artifact`.
+4. Incremental reuse now considers semantic and graph fingerprints instead of relying only on file hashes.
+5. Build alignment now promotes `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, and `compile_commands.json` into reusable build-context records.
 5. Source anchors now lift Go, C++, and C# functions into symbol records with line ranges, call edges, build ownership edges, and security overlays.
 6. `trace`, `impact`, and `security` retrieval now expand graph neighborhoods instead of relying only on keyword hits, and they persist `build_context_v2` plus `path_v2` evidence.
 7. The C++ anchor parser now covers template out-of-line methods, operators, `requires`, `decltype(auto)`, API-macro-wrapped scopes, and friend functions.

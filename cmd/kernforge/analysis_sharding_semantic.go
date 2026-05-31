@@ -225,12 +225,20 @@ func mergeSemanticShardsByPriority(shards []AnalysisShard, target int, mode stri
 		left := merged[0]
 		right := merged[1]
 		combined := AnalysisShard{
-			ID:             left.ID,
-			Name:           left.Name + "+" + right.Name,
-			PrimaryFiles:   analysisUniqueStrings(append(append([]string(nil), left.PrimaryFiles...), right.PrimaryFiles...)),
-			ReferenceFiles: analysisUniqueStrings(append(append([]string(nil), left.ReferenceFiles...), right.ReferenceFiles...)),
-			EstimatedFiles: left.EstimatedFiles + right.EstimatedFiles,
-			EstimatedLines: left.EstimatedLines + right.EstimatedLines,
+			ID:                     left.ID,
+			Name:                   left.Name + "+" + right.Name,
+			Type:                   firstNonBlankAnalysisString(left.Type, right.Type),
+			Objective:              firstNonBlankAnalysisString(left.Objective, right.Objective),
+			RequiredEvidence:       analysisUniqueStrings(append(append([]string(nil), left.RequiredEvidence...), right.RequiredEvidence...)),
+			SuccessCriteria:        analysisUniqueStrings(append(append([]string(nil), left.SuccessCriteria...), right.SuccessCriteria...)),
+			PrimaryFiles:           analysisUniqueStrings(append(append([]string(nil), left.PrimaryFiles...), right.PrimaryFiles...)),
+			PrimarySymbols:         analysisUniqueStrings(append(append([]string(nil), left.PrimarySymbols...), right.PrimarySymbols...)),
+			ReferenceFiles:         analysisUniqueStrings(append(append([]string(nil), left.ReferenceFiles...), right.ReferenceFiles...)),
+			SeedSymbols:            analysisUniqueStrings(append(append([]string(nil), left.SeedSymbols...), right.SeedSymbols...)),
+			RequiredPacketIDs:      analysisUniqueStrings(append(append([]string(nil), left.RequiredPacketIDs...), right.RequiredPacketIDs...)),
+			MissingEvidenceClasses: analysisUniqueStrings(append(append([]string(nil), left.MissingEvidenceClasses...), right.MissingEvidenceClasses...)),
+			EstimatedFiles:         left.EstimatedFiles + right.EstimatedFiles,
+			EstimatedLines:         left.EstimatedLines + right.EstimatedLines,
 		}
 		merged = append([]AnalysisShard{combined}, merged[2:]...)
 	}

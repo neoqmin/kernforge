@@ -94,6 +94,7 @@ func buildEvidencePacketsForShard(snapshot ProjectSnapshot, shard AnalysisShard,
 		coveredPaths[packet.Path] = struct{}{}
 	}
 	assignEvidencePacketIDs(shard, packets)
+	categorizeEvidencePacketsForShard(snapshot, shard, packets)
 	return packets
 }
 
@@ -108,6 +109,15 @@ func renderEvidencePacketsForPrompt(snapshot ProjectSnapshot, shard AnalysisShar
 	for _, packet := range packets {
 		fmt.Fprintf(&b, "PACKET %s\n", packet.ID)
 		fmt.Fprintf(&b, "- kind: %s\n", packet.Kind)
+		if strings.TrimSpace(packet.Category) != "" {
+			fmt.Fprintf(&b, "- category: %s\n", packet.Category)
+		}
+		if packet.Required {
+			b.WriteString("- required: true\n")
+		}
+		if strings.TrimSpace(packet.EvidenceClass) != "" {
+			fmt.Fprintf(&b, "- evidence_class: %s\n", packet.EvidenceClass)
+		}
 		fmt.Fprintf(&b, "- path: %s\n", packet.Path)
 		if strings.TrimSpace(packet.SymbolName) != "" {
 			fmt.Fprintf(&b, "- symbol: %s\n", packet.SymbolName)
@@ -117,6 +127,9 @@ func renderEvidencePacketsForPrompt(snapshot ProjectSnapshot, shard AnalysisShar
 		}
 		if len(packet.Tags) > 0 {
 			fmt.Fprintf(&b, "- tags: %s\n", strings.Join(packet.Tags, ", "))
+		}
+		if len(packet.GraphEdgeIDs) > 0 {
+			fmt.Fprintf(&b, "- graph_edges: %s\n", strings.Join(limitStrings(packet.GraphEdgeIDs, 6), ", "))
 		}
 		fmt.Fprintf(&b, "- confidence: %s\n", firstNonBlankAnalysisString(packet.Confidence, "medium"))
 		b.WriteString("```\n")
@@ -327,6 +340,9 @@ func evidenceAnchorScore(anchor sourceFunctionAnchor, shard AnalysisShard, prima
 		score += 120
 	} else {
 		score += 50
+	}
+	if evidenceAnchorMatchesShardSeed(anchor, shard) {
+		score += 500
 	}
 	lower := strings.ToLower(strings.Join([]string{
 		anchor.Symbol.Name,

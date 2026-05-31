@@ -1513,13 +1513,18 @@ What it does:
 - Scans the workspace into a structured snapshot
 - Splits the codebase into analysis shards
 - Uses semantic shard planning to prioritize startup, network, UI, GAS, asset/config, and integrity slices in large or Unreal-heavy workspaces
+- Uses graph-guided shard planning for startup, IOCTL, callback registration, handle/memory, RPC, asset/config, build-context, and generated-artifact communities before falling back to directory chunks
 - Uses a conductor plus multiple worker/reviewer passes
 - Prints live shard progress, including worker slot count, wave start/completion, shard completion/failure state, and stage/shard-prefixed model wait events
 - Builds a parser-backed structural index and an Unreal semantic graph
 - Builds a deterministic `architecture_facts.json` fact pack for cached deep-structure Q&A, with current-source anchors, closed top-level directory facts, driver/control-flow hints, and answer invariants
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
+- Tracks symbol, edge, build-context, security-overlay, and derived graph fingerprints so incremental reuse is scoped to the affected graph neighborhood instead of the whole project
+- Classifies evidence packets as required, supporting, ambiguous, or gap packets and exposes required packet IDs in worker prompts and preflight contracts
+- Runs a deterministic claim verifier for every analysis run, including single-model runs where model review is skipped, and downgrades or blocks unsupported high-confidence claims before final synthesis
+- Builds a security/anti-cheat overlay for Windows driver/IOCTL/callback/handle/memory/RPC/telemetry surfaces and Unreal RPC/replication/asset/config/integrity boundaries
 - Writes Markdown and JSON analysis artifacts
-- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `COVERAGE_LEDGER.md`, `STRUCTURAL_INDEX.md`, `EVIDENCE_PACKETS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
+- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `COVERAGE_LEDGER.md`, `STRUCTURAL_INDEX.md`, `EVIDENCE_PACKETS.md`, `EVIDENCE_GRAPH.md`, `SECURITY_OVERLAY.md`, `UNSUPPORTED_CLAIMS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
 - Writes a schema-versioned `docs_manifest.json`; readers treat missing `schema_version` as legacy and ignore unknown fields for additive compatibility
 - Writes `dashboard.html` so run summary, module/function structure, the assistant-facing final report, generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory follow-ups, subsystem map, security surface, fuzz target candidates, and verification matrix are visible in a browser
 - Provides an inline Markdown viewer with a full-window reader mode for long generated documents, while keeping generated-doc links inside the dashboard instead of opening separate tabs
@@ -1539,6 +1544,12 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
 - `.kernforge/analysis/<timestamp>_<goal>_coverage_ledger.json`
 - `.kernforge/analysis/<timestamp>_<goal>_evidence_packets.json`
+- `.kernforge/analysis/<timestamp>_<goal>_graph_shards.json`
+- `.kernforge/analysis/<timestamp>_<goal>_graph_reuse.json`
+- `.kernforge/analysis/<timestamp>_<goal>_evidence_graph.json`
+- `.kernforge/analysis/<timestamp>_<goal>_claim_verification.json`
+- `.kernforge/analysis/<timestamp>_<goal>_unsupported_claims.json`
+- `.kernforge/analysis/<timestamp>_<goal>_security_overlay.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index_v2.json`
 - `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
@@ -1561,6 +1572,12 @@ Typical outputs:
 - `.kernforge/analysis/latest/run.json`
 - `.kernforge/analysis/latest/coverage_ledger.json`
 - `.kernforge/analysis/latest/evidence_packets.json`
+- `.kernforge/analysis/latest/graph_shards.json`
+- `.kernforge/analysis/latest/graph_reuse.json`
+- `.kernforge/analysis/latest/evidence_graph.json`
+- `.kernforge/analysis/latest/claim_verification.json`
+- `.kernforge/analysis/latest/unsupported_claims.json`
+- `.kernforge/analysis/latest/security_overlay.json`
 - `.kernforge/analysis/latest/structural_index.json`
 - `.kernforge/analysis/latest/semantic_index.json`
 - `.kernforge/analysis/latest/structural_index_v2.json`
@@ -1574,8 +1591,8 @@ Recommended flow:
 
 1. Run `/analyze-project anti-cheat startup and integrity architecture`.
 2. Open the latest dashboard with `/analyze-dashboard`, then review the generated knowledge pack, docs, and shard outputs.
-3. Run `/analyze-performance startup` or another focus area such as `scanner`, `compression`, `upload`, `ETW`, or `memory`.
-4. Use the resulting knowledge in `/review selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
+3. Refresh or inspect durable docs with `/docs-refresh`, then check `EVIDENCE_GRAPH.md`, `SECURITY_OVERLAY.md`, and `UNSUPPORTED_CLAIMS.md` when a claim or boundary looks suspicious.
+4. Run `/verify`, `/simulate stealth-surface`, or `/fuzz-campaign run` from the handoff block when the verifier or overlay reports follow-through.
 
 ## Source-Level Function Fuzzing
 

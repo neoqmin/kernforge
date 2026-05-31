@@ -50,6 +50,9 @@ type EvidencePacket struct {
 	ID               string   `json:"id"`
 	ShardID          string   `json:"shard_id,omitempty"`
 	Kind             string   `json:"kind"`
+	Category         string   `json:"category,omitempty"`
+	Required         bool     `json:"required,omitempty"`
+	EvidenceClass    string   `json:"evidence_class,omitempty"`
 	Path             string   `json:"path"`
 	SymbolID         string   `json:"symbol_id,omitempty"`
 	SymbolName       string   `json:"symbol_name,omitempty"`
@@ -58,6 +61,7 @@ type EvidencePacket struct {
 	ExtractionMethod string   `json:"extraction_method,omitempty"`
 	Confidence       string   `json:"confidence,omitempty"`
 	ContentHash      string   `json:"content_hash,omitempty"`
+	GraphEdgeIDs     []string `json:"graph_edge_ids,omitempty"`
 	Tags             []string `json:"tags,omitempty"`
 	Text             string   `json:"text,omitempty"`
 }
@@ -76,15 +80,21 @@ type AnalysisRuntimeFeedback struct {
 }
 
 type AnalysisPreflightShard struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	Type             string   `json:"type,omitempty"`
-	Objective        string   `json:"objective,omitempty"`
-	RequiredEvidence []string `json:"required_evidence,omitempty"`
-	SuccessCriteria  []string `json:"success_criteria,omitempty"`
-	PrimaryFileCount int      `json:"primary_file_count,omitempty"`
-	ReferenceCount   int      `json:"reference_count,omitempty"`
-	EstimatedLines   int      `json:"estimated_lines,omitempty"`
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	Type                   string   `json:"type,omitempty"`
+	Objective              string   `json:"objective,omitempty"`
+	RequiredEvidence       []string `json:"required_evidence,omitempty"`
+	SuccessCriteria        []string `json:"success_criteria,omitempty"`
+	SeedSymbols            []string `json:"seed_symbols,omitempty"`
+	RequiredPacketIDs      []string `json:"required_packet_ids,omitempty"`
+	MissingEvidenceClasses []string `json:"missing_evidence_classes,omitempty"`
+	GraphFingerprint       string   `json:"graph_fingerprint,omitempty"`
+	PrimaryFileCount       int      `json:"primary_file_count,omitempty"`
+	ReferenceCount         int      `json:"reference_count,omitempty"`
+	GraphNodeCount         int      `json:"graph_node_count,omitempty"`
+	GraphEdgeCount         int      `json:"graph_edge_count,omitempty"`
+	EstimatedLines         int      `json:"estimated_lines,omitempty"`
 }
 
 type AnalysisPreflight struct {
@@ -309,22 +319,28 @@ func (a *projectAnalyzer) buildAnalysisPreflight(snapshot ProjectSnapshot, goal 
 	}
 	for _, shard := range shards {
 		preflight.ShardContracts = append(preflight.ShardContracts, AnalysisPreflightShard{
-			ID:               shard.ID,
-			Name:             shard.Name,
-			Type:             shard.Type,
-			Objective:        shard.Objective,
-			RequiredEvidence: append([]string(nil), shard.RequiredEvidence...),
-			SuccessCriteria:  append([]string(nil), shard.SuccessCriteria...),
-			PrimaryFileCount: len(shard.PrimaryFiles),
-			ReferenceCount:   len(shard.ReferenceFiles),
-			EstimatedLines:   shard.EstimatedLines,
+			ID:                     shard.ID,
+			Name:                   shard.Name,
+			Type:                   shard.Type,
+			Objective:              shard.Objective,
+			RequiredEvidence:       append([]string(nil), shard.RequiredEvidence...),
+			SuccessCriteria:        append([]string(nil), shard.SuccessCriteria...),
+			SeedSymbols:            append([]string(nil), shard.SeedSymbols...),
+			RequiredPacketIDs:      append([]string(nil), shard.RequiredPacketIDs...),
+			MissingEvidenceClasses: append([]string(nil), shard.MissingEvidenceClasses...),
+			GraphFingerprint:       shard.GraphFingerprint,
+			PrimaryFileCount:       len(shard.PrimaryFiles),
+			ReferenceCount:         len(shard.ReferenceFiles),
+			GraphNodeCount:         graphNeighborhoodNodeCount(shard),
+			GraphEdgeCount:         graphNeighborhoodEdgeCount(shard),
+			EstimatedLines:         shard.EstimatedLines,
 		})
 	}
 	return preflight
 }
 
 func analysisRequiredIndexes(snapshot ProjectSnapshot) []string {
-	indexes := []string{"scan_snapshot", "architecture_facts", "structural_index_v2", "project_edges"}
+	indexes := []string{"scan_snapshot", "architecture_facts", "structural_index_v2", "project_edges", "evidence_graph", "graph_shards", "claim_verifier", "security_overlay"}
 	if len(snapshot.RuntimeEdges) > 0 {
 		indexes = append(indexes, "runtime_edges")
 	}

@@ -1253,6 +1253,18 @@ func analysisDashboardPortalIndex(run ProjectAnalysisRun, docsHref string) []ana
 		}
 		items = append(items, analysisDashboardNewPortalItem("verification", row.ChangeArea, detail, source, docsHref+"/VERIFICATION_MATRIX.md", []string{"verification_planner", "evidence"}))
 	}
+	if run.ClaimVerification.TotalClaims > 0 {
+		detail := fmt.Sprintf("status=%s blocking=%d unsupported_high=%d", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount)
+		items = append(items, analysisDashboardNewPortalItem("claim verifier", "Deterministic Claim Verification", detail, "claim_verification.json", docsHref+"/UNSUPPORTED_CLAIMS.md", []string{"verification_planner", "evidence"}))
+	}
+	if len(run.EvidenceGraph.Nodes) > 0 || len(run.EvidenceGraph.Edges) > 0 {
+		detail := fmt.Sprintf("nodes=%d edges=%d graph_shards=%d", run.EvidenceGraph.Metrics.NodeCount, run.EvidenceGraph.Metrics.EdgeCount, len(run.GraphShards.Shards))
+		items = append(items, analysisDashboardNewPortalItem("evidence graph", "Graph-Guided Shards", detail, "evidence_graph.json", docsHref+"/EVIDENCE_GRAPH.md", []string{"analysis_context", "evidence"}))
+	}
+	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
+		detail := fmt.Sprintf("nodes=%d edges=%d surfaces=%s", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount, strings.Join(limitStrings(run.SecurityOverlay.Metrics.Surfaces, 5), ", "))
+		items = append(items, analysisDashboardNewPortalItem("security overlay", "Security Anti-Cheat Overlay", detail, "security_overlay.json", docsHref+"/SECURITY_OVERLAY.md", []string{"security_surface", "verification_planner"}))
+	}
 	for _, anchor := range analysisDashboardSourceAnchorsWithDocsHref(run, docsHref) {
 		items = append(items, analysisDashboardNewPortalItem("source anchor", anchor.Anchor, anchor.Document, anchor.Anchor, anchor.Href, []string{"analysis_context", "evidence"}))
 	}
@@ -1527,6 +1539,9 @@ func analysisDashboardEvidenceMemoryRows(run ProjectAnalysisRun, docsHref string
 		analysisDashboardDrilldownRow("structural index", docsHref+"/STRUCTURAL_INDEX.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("build context", docsHref+"/BUILD_AND_ARTIFACTS.md", "/analyze-dashboard build"),
 		analysisDashboardDrilldownRow("evidence packets", docsHref+"/EVIDENCE_PACKETS.md", "/analyze-dashboard latest"),
+		analysisDashboardDrilldownRow("evidence graph", docsHref+"/EVIDENCE_GRAPH.md", "/analyze-dashboard latest"),
+		analysisDashboardDrilldownRow(fmt.Sprintf("claim verifier %s blocking=%d unsupported_high=%d", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount), docsHref+"/UNSUPPORTED_CLAIMS.md", "/verify"),
+		analysisDashboardDrilldownRow(fmt.Sprintf("security overlay nodes=%d edges=%d", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount), docsHref+"/SECURITY_OVERLAY.md", "/simulate stealth-surface"),
 		analysisDashboardDrilldownRow("project memory", docsHref+"/INDEX.md", "/mem-search analyze-project"),
 		analysisDashboardDrilldownRow("verification matrix", docsHref+"/VERIFICATION_MATRIX.md", "/verify"),
 		analysisDashboardDrilldownRow("fuzz targets", docsHref+"/FUZZ_TARGETS.md", "/fuzz-campaign run"),
@@ -1631,6 +1646,20 @@ func analysisDashboardEdgeAttributeSummary(attrs map[string]string) string {
 func analysisDashboardTrustBoundaryEdges(run ProjectAnalysisRun) []ProjectEdge {
 	candidates := append([]ProjectEdge{}, run.Snapshot.ProjectEdges...)
 	candidates = append(candidates, run.KnowledgePack.ProjectEdges...)
+	for _, edge := range run.SecurityOverlay.Edges {
+		candidates = append(candidates, ProjectEdge{
+			Source:     edge.SourceID,
+			Target:     edge.TargetID,
+			Type:       edge.Type,
+			Confidence: firstNonBlankAnalysisString(edge.Confidence, "medium"),
+			Evidence:   append([]string(nil), edge.Evidence...),
+			Attributes: map[string]string{
+				"kind":             "security_overlay",
+				"flow":             edge.Surface,
+				"validation_state": edge.ValidationState,
+			},
+		})
+	}
 	out := []ProjectEdge{}
 	for _, edge := range analysisUniqueProjectEdges(candidates) {
 		text := strings.ToLower(strings.Join([]string{
