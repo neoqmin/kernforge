@@ -67,15 +67,8 @@ Kernforge의 source-level fuzzing은 코드를 먼저 컴파일하지 않아도 
 - [Memory-Scan 플레이북](./PLAYBOOK_memory_scan_kor.md)
 - [English Memory-Scan Playbook](./PLAYBOOK_memory_scan.md)
 
-설계 문서:
+로드맵:
 - [한국어 로드맵](./ROADMAP_kor.md)
-- [한국어 Fuzzing 및 보안 도구 Gap Analysis](./FUZZING_SECURITY_TOOLS_GAP_ANALYSIS_kor.md)
-- [한국어 Hook Engine 스펙](./HOOK_ENGINE_SPEC_kor.md)
-- [한국어 공통 Review Harness 스펙](./REVIEW_HARNESS_SPEC_kor.md)
-- [한국어 Review Harness UX/Ops 85점 설계](./REVIEW_HARNESS_UX_OPS_85_DESIGN_kor.md)
-- [한국어 Live Investigation Mode 스펙](./LIVE_INVESTIGATION_SPEC_kor.md)
-- [한국어 Adversarial Simulation 스펙](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
-- [한국어 차세대 Project Analysis 스펙](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
 가장 추천되는 실사용 흐름은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 정리되어 있습니다. 특히 `analyze-project -> investigate/simulate -> find-root-cause 또는 fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 그대로 따라가 보면 현재 Kernforge의 핵심 가치를 가장 빨리 체감할 수 있습니다.
 

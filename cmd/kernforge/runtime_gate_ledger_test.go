@@ -62,16 +62,16 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 
 func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *testing.T) {
 	root := initTestGitRepo(t)
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
-		t.Fatalf("mkdir Tavern: %v", err)
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
+		t.Fatalf("mkdir SampleGame: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte("# Bug Report\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte("# Bug Report\n"), 0o644); err != nil {
 		t.Fatalf("write BugReport.md: %v", err)
 	}
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
 		ID:           "accept-doc",
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		Mode:         "edit_code",
 	}
 	session.PatchTransactions = []PatchTransaction{{
@@ -81,7 +81,7 @@ func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *t
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -127,7 +127,7 @@ func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutReques
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -141,7 +141,7 @@ func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutReques
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -181,18 +181,18 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactSkipsStaleReviewWithoutPatchP
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
-		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 	}}
 	session.AcceptanceContract = &AcceptanceContract{
 		ID:           "accept-doc",
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		Mode:         "inspect_and_fix",
 	}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: false,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -245,12 +245,12 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *t
 	session.Messages = []Message{
 		{
 			Role: "user",
-			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		},
 		{
 			Role:  "assistant",
 			Phase: messagePhaseFinalAnswer,
-			Text:  "Tavern/BugReport.md 생성 완료",
+			Text:  "SampleGame/BugReport.md 생성 완료",
 		},
 		{
 			Role: "user",
@@ -259,14 +259,14 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *t
 	}
 	session.AcceptanceContract = &AcceptanceContract{
 		ID:           "accept-doc",
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		Mode:         "inspect_and_fix",
 	}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -311,12 +311,12 @@ func TestRuntimeGateBroaderScopeSteeringDoesNotUseDocumentArtifactBypass(t *test
 	session.Messages = []Message{
 		{
 			Role: "user",
-			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		},
 		{
 			Role:  "assistant",
 			Phase: messagePhaseFinalAnswer,
-			Text:  "Tavern/BugReport.md 생성 완료",
+			Text:  "SampleGame/BugReport.md 생성 완료",
 		},
 		{
 			Role: "user",
@@ -325,14 +325,14 @@ func TestRuntimeGateBroaderScopeSteeringDoesNotUseDocumentArtifactBypass(t *test
 	}
 	session.AcceptanceContract = &AcceptanceContract{
 		ID:           "accept-doc",
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		Mode:         "inspect_and_fix",
 	}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -385,13 +385,13 @@ func TestRuntimeGateUnknownPatchScopeOverridesDocumentArtifactBypass(t *testing.
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
-		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 	}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -400,7 +400,7 @@ func TestRuntimeGateUnknownPatchScopeOverridesDocumentArtifactBypass(t *testing.
 	}
 	session.ActivePatchTransaction = &PatchTransaction{
 		ID:     "patch-doc-unknown",
-		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		Status: patchTransactionStatusActive,
 		Warnings: []string{
 			"write_file reported a workspace mutation without changed_paths metadata, so the changed file scope is unknown.",

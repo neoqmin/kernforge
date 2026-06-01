@@ -213,7 +213,7 @@ func TestDeveloperFolderResponsibilityPrefersDriverAndHarnessRoles(t *testing.T)
 				{Path: "SampleKernelTestConsole/SampleKernelTestConsole.vcxproj", Directory: "SampleKernelTestConsole", IsManifest: true},
 			},
 			BuildContexts: []BuildContextRecord{
-				{ID: "buildctx:project:SampleKernel", Name: "SampleKernel", Kind: "wdm_driver", Directory: "SampleKernel", Project: "SampleKernel", Target: "tvk.sys", Files: []string{"SampleKernel/SampleKernel.cpp", "SampleKernel/SampleKernelCore.cpp"}},
+				{ID: "buildctx:project:SampleKernel", Name: "SampleKernel", Kind: "wdm_driver", Directory: "SampleKernel", Project: "SampleKernel", Target: "sampledrv.sys", Files: []string{"SampleKernel/SampleKernel.cpp", "SampleKernel/SampleKernelCore.cpp"}},
 				{ID: "buildctx:project:SampleKernelTestConsole", Name: "SampleKernelTestConsole", Kind: "application", Directory: "SampleKernelTestConsole", Project: "SampleKernelTestConsole", Target: "SampleKernelTestConsole.exe", Files: []string{"SampleKernelTestConsole/SampleKernelTestConsole.vcxproj", "SampleKernelTestConsole/SampleKernelManager.cpp"}},
 			},
 		},

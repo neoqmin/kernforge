@@ -98,23 +98,28 @@ type AnalysisPreflightShard struct {
 }
 
 type AnalysisPreflight struct {
-	GeneratedAt      time.Time                `json:"generated_at,omitempty"`
-	Intent           string                   `json:"intent,omitempty"`
-	RequestedMode    string                   `json:"requested_mode,omitempty"`
-	EffectiveMode    string                   `json:"effective_mode,omitempty"`
-	Scope            AnalysisGoalScope        `json:"scope,omitempty"`
-	RequiredIndexes  []string                 `json:"required_indexes,omitempty"`
-	RiskLenses       []string                 `json:"risk_lenses,omitempty"`
-	RecommendedDepth string                   `json:"recommended_depth,omitempty"`
-	EstimatedFiles   int                      `json:"estimated_files,omitempty"`
-	EstimatedLines   int                      `json:"estimated_lines,omitempty"`
-	PlannedShards    int                      `json:"planned_shards,omitempty"`
-	WorkerSlots      int                      `json:"worker_slots,omitempty"`
-	ProviderProfiles map[string]string        `json:"provider_profiles,omitempty"`
-	RuntimeFeedback  AnalysisRuntimeFeedback  `json:"runtime_feedback,omitempty"`
-	Warnings         []string                 `json:"warnings,omitempty"`
-	SuccessCriteria  []string                 `json:"success_criteria,omitempty"`
-	ShardContracts   []AnalysisPreflightShard `json:"shard_contracts,omitempty"`
+	GeneratedAt            time.Time                `json:"generated_at,omitempty"`
+	Intent                 string                   `json:"intent,omitempty"`
+	RequestedMode          string                   `json:"requested_mode,omitempty"`
+	EffectiveMode          string                   `json:"effective_mode,omitempty"`
+	RequestedRoot          string                   `json:"requested_root,omitempty"`
+	EffectiveRoot          string                   `json:"effective_root,omitempty"`
+	RepositoryRoot         string                   `json:"repository_root,omitempty"`
+	RootNarrowingReason    string                   `json:"root_narrowing_reason,omitempty"`
+	SolutionRootCandidates []string                 `json:"solution_root_candidates,omitempty"`
+	Scope                  AnalysisGoalScope        `json:"scope,omitempty"`
+	RequiredIndexes        []string                 `json:"required_indexes,omitempty"`
+	RiskLenses             []string                 `json:"risk_lenses,omitempty"`
+	RecommendedDepth       string                   `json:"recommended_depth,omitempty"`
+	EstimatedFiles         int                      `json:"estimated_files,omitempty"`
+	EstimatedLines         int                      `json:"estimated_lines,omitempty"`
+	PlannedShards          int                      `json:"planned_shards,omitempty"`
+	WorkerSlots            int                      `json:"worker_slots,omitempty"`
+	ProviderProfiles       map[string]string        `json:"provider_profiles,omitempty"`
+	RuntimeFeedback        AnalysisRuntimeFeedback  `json:"runtime_feedback,omitempty"`
+	Warnings               []string                 `json:"warnings,omitempty"`
+	SuccessCriteria        []string                 `json:"success_criteria,omitempty"`
+	ShardContracts         []AnalysisPreflightShard `json:"shard_contracts,omitempty"`
 }
 
 type AnalysisModeCriterion struct {
@@ -291,22 +296,24 @@ func (a *projectAnalyzer) applyRuntimeFeedbackToAnalysisConfig(feedback Analysis
 
 func (a *projectAnalyzer) buildAnalysisPreflight(snapshot ProjectSnapshot, goal string, requestedMode string, scope AnalysisGoalScope, shards []AnalysisShard, workerSlots int, feedback AnalysisRuntimeFeedback) AnalysisPreflight {
 	preflight := AnalysisPreflight{
-		GeneratedAt:      time.Now(),
-		Intent:           strings.TrimSpace(goal),
-		RequestedMode:    strings.TrimSpace(requestedMode),
-		EffectiveMode:    firstNonBlankAnalysisString(snapshot.AnalysisMode, defaultProjectAnalysisMode),
-		Scope:            scope,
-		RequiredIndexes:  analysisRequiredIndexes(snapshot),
-		RiskLenses:       analysisLensNames(snapshot.AnalysisLenses),
-		RecommendedDepth: analysisRecommendedDepth(snapshot, feedback),
-		EstimatedFiles:   snapshot.TotalFiles,
-		EstimatedLines:   snapshot.TotalLines,
-		PlannedShards:    len(shards),
-		WorkerSlots:      workerSlots,
-		RuntimeFeedback:  feedback,
-		Warnings:         analysisPreflightWarnings(snapshot, feedback),
-		SuccessCriteria:  analysisPreflightSuccessCriteria(snapshot.AnalysisMode),
-		ProviderProfiles: map[string]string{},
+		GeneratedAt:            time.Now(),
+		Intent:                 strings.TrimSpace(goal),
+		RequestedMode:          strings.TrimSpace(requestedMode),
+		EffectiveMode:          firstNonBlankAnalysisString(snapshot.AnalysisMode, defaultProjectAnalysisMode),
+		Scope:                  scope,
+		RequiredIndexes:        analysisRequiredIndexes(snapshot),
+		RiskLenses:             analysisLensNames(snapshot.AnalysisLenses),
+		RecommendedDepth:       analysisRecommendedDepth(snapshot, feedback),
+		EstimatedFiles:         snapshot.TotalFiles,
+		EstimatedLines:         snapshot.TotalLines,
+		PlannedShards:          len(shards),
+		WorkerSlots:            workerSlots,
+		RuntimeFeedback:        feedback,
+		Warnings:               analysisPreflightWarnings(snapshot, feedback),
+		SuccessCriteria:        analysisPreflightSuccessCriteria(snapshot.AnalysisMode),
+		ProviderProfiles:       map[string]string{},
+		EffectiveRoot:          strings.TrimSpace(snapshot.Root),
+		SolutionRootCandidates: analysisSolutionRootCandidates(snapshot),
 	}
 	if a != nil {
 		preflight.ProviderProfiles["conductor"] = strings.TrimSpace(a.cfg.Provider) + " / " + strings.TrimSpace(a.cfg.Model)
@@ -316,6 +323,23 @@ func (a *projectAnalyzer) buildAnalysisPreflight(snapshot ProjectSnapshot, goal 
 		} else {
 			preflight.ProviderProfiles["reviewer"] = describeAnalysisProfile(a.analysisCfg.ReviewerProfile, a.reviewerOrDefaultClient(), a.reviewerModel())
 		}
+		preflight.RequestedRoot = firstNonBlankString(strings.TrimSpace(a.workspace.BaseRoot), strings.TrimSpace(a.workspace.Root), strings.TrimSpace(snapshot.Root))
+		preflight.EffectiveRoot = firstNonBlankString(strings.TrimSpace(snapshot.Root), strings.TrimSpace(a.workspace.Root))
+		preflight.RepositoryRoot = analysisRepositoryRoot(preflight.RequestedRoot, preflight.EffectiveRoot)
+		preflight.RootNarrowingReason = analysisRootNarrowingReason(preflight.RequestedRoot, preflight.EffectiveRoot)
+		preflight.SolutionRootCandidates = analysisUniqueStrings(append(preflight.SolutionRootCandidates, analysisWorkspaceSolutionRootCandidates(preflight.RequestedRoot, preflight.EffectiveRoot)...))
+	} else {
+		preflight.RequestedRoot = strings.TrimSpace(snapshot.Root)
+		preflight.RepositoryRoot = analysisRepositoryRoot(preflight.RequestedRoot, preflight.EffectiveRoot)
+	}
+	if preflight.RequestedRoot == "" {
+		preflight.RequestedRoot = preflight.EffectiveRoot
+	}
+	if preflight.RepositoryRoot == "" {
+		preflight.RepositoryRoot = firstNonBlankAnalysisString(preflight.RequestedRoot, preflight.EffectiveRoot)
+	}
+	if strings.TrimSpace(preflight.RootNarrowingReason) != "" {
+		preflight.Warnings = analysisUniqueStrings(append(preflight.Warnings, preflight.RootNarrowingReason))
 	}
 	for _, shard := range shards {
 		preflight.ShardContracts = append(preflight.ShardContracts, AnalysisPreflightShard{
@@ -337,6 +361,108 @@ func (a *projectAnalyzer) buildAnalysisPreflight(snapshot ProjectSnapshot, goal 
 		})
 	}
 	return preflight
+}
+
+func applyAnalysisPreflightToSummary(summary *ProjectAnalysisSummary, preflight AnalysisPreflight) {
+	if summary == nil {
+		return
+	}
+	summary.RequestedRoot = strings.TrimSpace(preflight.RequestedRoot)
+	summary.EffectiveRoot = strings.TrimSpace(preflight.EffectiveRoot)
+	summary.RepositoryRoot = strings.TrimSpace(preflight.RepositoryRoot)
+	summary.RootNarrowingReason = strings.TrimSpace(preflight.RootNarrowingReason)
+}
+
+func analysisRepositoryRoot(candidates ...string) string {
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if root := strings.TrimSpace(findGitProjectRoot(candidate)); root != "" {
+			return root
+		}
+	}
+	return ""
+}
+
+func analysisRootNarrowingReason(requestedRoot string, effectiveRoot string) string {
+	requestedRoot = strings.TrimSpace(requestedRoot)
+	effectiveRoot = strings.TrimSpace(effectiveRoot)
+	if requestedRoot == "" || effectiveRoot == "" {
+		return ""
+	}
+	if sameAnalysisFilesystemPath(requestedRoot, effectiveRoot) {
+		return ""
+	}
+	return "A single explicit analysis path narrowed the scan root; sibling projects outside the effective root are not part of this run unless listed as references."
+}
+
+func sameAnalysisFilesystemPath(left string, right string) bool {
+	leftAbs, leftErr := filepath.Abs(left)
+	rightAbs, rightErr := filepath.Abs(right)
+	if leftErr == nil && rightErr == nil {
+		return strings.EqualFold(filepath.Clean(leftAbs), filepath.Clean(rightAbs))
+	}
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+}
+
+func analysisSolutionRootCandidates(snapshot ProjectSnapshot) []string {
+	out := []string{}
+	for _, manifest := range snapshot.ManifestFiles {
+		if strings.EqualFold(filepath.Ext(manifest), ".sln") {
+			out = append(out, filepath.ToSlash(filepath.Dir(manifest)))
+		}
+	}
+	for _, project := range snapshot.SolutionProjects {
+		dir := filepath.ToSlash(strings.TrimSpace(project.Directory))
+		if dir != "" && dir != "." {
+			out = append(out, dir)
+		}
+	}
+	for i, item := range out {
+		if item == "." {
+			out[i] = ""
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func analysisWorkspaceSolutionRootCandidates(roots ...string) []string {
+	out := []string{}
+	seenRoots := map[string]struct{}{}
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		clean := strings.ToLower(filepath.Clean(abs))
+		if _, ok := seenRoots[clean]; ok {
+			continue
+		}
+		seenRoots[clean] = struct{}{}
+		for _, pattern := range []string{"*.sln", "*/*.sln"} {
+			matches, _ := filepath.Glob(filepath.Join(abs, pattern))
+			for _, match := range matches {
+				dir := filepath.Dir(match)
+				if rel, err := filepath.Rel(abs, dir); err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+					if rel == "." {
+						out = append(out, abs)
+					} else {
+						out = append(out, filepath.Join(abs, rel))
+					}
+				}
+			}
+		}
+	}
+	for i, item := range out {
+		out[i] = filepath.ToSlash(filepath.Clean(item))
+	}
+	return analysisUniqueStrings(out)
 }
 
 func analysisRequiredIndexes(snapshot ProjectSnapshot) []string {
@@ -419,6 +545,9 @@ func annotateAnalysisShardContract(snapshot ProjectSnapshot, shard *AnalysisShar
 	if strings.TrimSpace(shard.Type) == "" {
 		shard.Type = analysisShardType(snapshot, *shard)
 	}
+	if strings.TrimSpace(shard.Namespace) == "" {
+		shard.Namespace = analysisShardNamespace(*shard)
+	}
 	if strings.TrimSpace(shard.Objective) == "" {
 		shard.Objective = analysisShardObjective(snapshot, *shard, goal)
 	}
@@ -430,6 +559,19 @@ func annotateAnalysisShardContract(snapshot ProjectSnapshot, shard *AnalysisShar
 	}
 	shard.RequiredEvidence = analysisUniqueStrings(shard.RequiredEvidence)
 	shard.SuccessCriteria = analysisUniqueStrings(shard.SuccessCriteria)
+}
+
+func analysisShardNamespace(shard AnalysisShard) string {
+	switch {
+	case strings.TrimSpace(shard.CoverageGapID) != "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(shard.ID)), "gap-"):
+		return "gap"
+	case strings.TrimSpace(shard.EvidenceRequestID) != "":
+		return "evidence_request"
+	case shard.RefinementStage > 0 || strings.TrimSpace(shard.ParentShardID) != "":
+		return "refinement"
+	default:
+		return "base"
+	}
 }
 
 func analysisShardType(snapshot ProjectSnapshot, shard AnalysisShard) string {
@@ -532,6 +674,9 @@ func analysisShardSuccessCriteria(snapshot ProjectSnapshot, shard AnalysisShard)
 }
 
 func normalizeAnalysisClaims(claims []AnalysisClaim, report WorkerReport, shard AnalysisShard) []AnalysisClaim {
+	if workerReportExcludesClaims(report) {
+		return nil
+	}
 	out := []AnalysisClaim{}
 	defaultAnchors := filterEvidence(firstNonEmpty(firstNonEmpty(report.EvidenceFiles, report.KeyFiles), shard.PrimaryFiles), shard)
 	if len(defaultAnchors) == 0 {
@@ -912,7 +1057,7 @@ func (a *projectAnalyzer) planCoverageGapShards(snapshot ProjectSnapshot, existi
 			providerFailedShards[existing[index].ID] = struct{}{}
 		}
 	}
-	nextID := len(existing) + 1
+	nextID := 1
 	maxFiles := a.analysisCfg.MaxFilesPerShard
 	if maxFiles <= 0 || maxFiles > 8 {
 		maxFiles = 8
@@ -951,9 +1096,10 @@ func (a *projectAnalyzer) planCoverageGapShards(snapshot ProjectSnapshot, existi
 			name = "gap_coverage"
 		}
 		shard := AnalysisShard{
-			ID:               fmt.Sprintf("shard-%02d", nextID),
+			ID:               fmt.Sprintf("gap-%02d", nextID),
 			Name:             name,
 			Type:             "gap_filling",
+			Namespace:        "gap",
 			CoverageGapID:    gap.ID,
 			PrimaryFiles:     paths,
 			EstimatedFiles:   len(chunk),

@@ -159,6 +159,7 @@ type ClaimVerificationReport struct {
 	GeneratedAt                    time.Time                 `json:"generated_at,omitempty"`
 	Status                         string                    `json:"status,omitempty"`
 	TotalClaims                    int                       `json:"total_claims,omitempty"`
+	RunIssues                      []ClaimVerificationIssue  `json:"run_issues,omitempty"`
 	VerifiedCount                  int                       `json:"verified_count,omitempty"`
 	InferenceCount                 int                       `json:"inference_count,omitempty"`
 	DowngradedCount                int                       `json:"downgraded_count,omitempty"`

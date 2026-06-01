@@ -280,6 +280,18 @@ func buildAnalysisDocsIndex(run ProjectAnalysisRun, docs map[string]string) stri
 		fmt.Fprintf(&b, "- [%s](./%s): %s\n", analysisDocTitle(name), name, analysisDocPurpose(name))
 	}
 	fmt.Fprintf(&b, "\n## Source State\n\n")
+	if strings.TrimSpace(run.Preflight.RequestedRoot) != "" {
+		fmt.Fprintf(&b, "- Requested root: `%s`\n", run.Preflight.RequestedRoot)
+	}
+	if strings.TrimSpace(run.Preflight.EffectiveRoot) != "" {
+		fmt.Fprintf(&b, "- Effective scanned root: `%s`\n", run.Preflight.EffectiveRoot)
+	}
+	if strings.TrimSpace(run.Preflight.RepositoryRoot) != "" {
+		fmt.Fprintf(&b, "- Repository root: `%s`\n", run.Preflight.RepositoryRoot)
+	}
+	if strings.TrimSpace(run.Preflight.RootNarrowingReason) != "" {
+		fmt.Fprintf(&b, "- Scope narrowing: %s\n", run.Preflight.RootNarrowingReason)
+	}
 	fmt.Fprintf(&b, "- Files scanned: %d\n", run.Snapshot.TotalFiles)
 	fmt.Fprintf(&b, "- Lines scanned: %d\n", run.Snapshot.TotalLines)
 	fmt.Fprintf(&b, "- Shards: %d\n", run.Summary.TotalShards)
@@ -812,6 +824,20 @@ func analysisDocsWriteHeader(b *strings.Builder, run ProjectAnalysisRun) {
 	}
 	if strings.TrimSpace(run.KnowledgePack.Root) != "" {
 		fmt.Fprintf(b, "- Workspace: `%s`\n", run.KnowledgePack.Root)
+	} else if strings.TrimSpace(run.Snapshot.Root) != "" {
+		fmt.Fprintf(b, "- Workspace: `%s`\n", run.Snapshot.Root)
+	}
+	if strings.TrimSpace(run.Preflight.RequestedRoot) != "" {
+		fmt.Fprintf(b, "- Requested root: `%s`\n", run.Preflight.RequestedRoot)
+	}
+	if strings.TrimSpace(run.Preflight.EffectiveRoot) != "" {
+		fmt.Fprintf(b, "- Effective scanned root: `%s`\n", run.Preflight.EffectiveRoot)
+	}
+	if strings.TrimSpace(run.Preflight.RepositoryRoot) != "" {
+		fmt.Fprintf(b, "- Repository root: `%s`\n", run.Preflight.RepositoryRoot)
+	}
+	if strings.TrimSpace(run.Preflight.RootNarrowingReason) != "" {
+		fmt.Fprintf(b, "- Scope narrowing: %s\n", run.Preflight.RootNarrowingReason)
 	}
 	fmt.Fprintf(b, "- Confidence: %s\n", analysisRunConfidence(run))
 	if markers := analysisRunStaleMarkers(run); len(markers) > 0 {
@@ -1359,6 +1385,10 @@ func analysisDocsGeneratedAt(run ProjectAnalysisRun) time.Time {
 
 func analysisRunConfidence(run ProjectAnalysisRun) string {
 	switch {
+	case run.ClaimVerification.BlockingCount > 0 || strings.EqualFold(run.Summary.Status, "completed_with_verifier_blockers"):
+		return "low"
+	case run.Summary.ParseFailedShards > 0 || strings.EqualFold(run.Summary.Status, "completed_with_parse_failures"):
+		return "low"
 	case run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards > 0:
 		return "medium"
 	case run.Summary.ApprovedShards == 0 && run.Summary.TotalShards > 0:

@@ -1735,7 +1735,7 @@ func inferModuleResponsibility(record DeveloperModuleRecord) string {
 	switch {
 	case containsAny(text, "testconsole", "manager", "application", ".exe"):
 		return "user-mode test harness and driver service manager"
-	case containsAny(text, "wdm_driver", "kernelmodedriver", "driver.vcxproj", "tvk.sys"):
+	case containsAny(text, "wdm_driver", "kernelmodedriver", "driver.vcxproj", ".sys"):
 		return "kernel driver build target and runtime module"
 	case containsAny(text, "driver", "kernel", "ioctl"):
 		return "driver or kernel-facing module"

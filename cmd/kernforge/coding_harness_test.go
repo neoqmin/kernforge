@@ -66,7 +66,7 @@ func TestPatchTransactionRecordsWriteFileAndFinalizes(t *testing.T) {
 }
 
 func TestCodingHarnessSourcePromptSkipsInternalReviewerFeedback(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := &Session{
 		Messages: []Message{
 			{Role: "user", Text: original},
@@ -80,7 +80,7 @@ func TestCodingHarnessSourcePromptSkipsInternalReviewerFeedback(t *testing.T) {
 }
 
 func TestCodingHarnessSourcePromptUsesFreshExternalTaskOverStaleContract(t *testing.T) {
-	stale := "Tavern/BugReport.md 보고서를 생성해"
+	stale := "SampleGame/BugReport.md 보고서를 생성해"
 	fresh := "RuntimeManager.cpp 버그를 수정해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: stale}
@@ -97,7 +97,7 @@ func TestCodingHarnessSourcePromptUsesFreshExternalTaskOverStaleContract(t *test
 }
 
 func TestCodingHarnessSourcePromptPreservesContractForControlFollowup(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
 	session.TaskState = &TaskState{Goal: original}
@@ -113,7 +113,7 @@ func TestCodingHarnessSourcePromptPreservesContractForControlFollowup(t *testing
 }
 
 func TestLatestExternalOrUserMessageTextSkipsInternalSteering(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	messages := []Message{
 		{Role: "user", Text: original},
 		{Role: "user", Text: "This is a generated document artifact turn. Do not run shell validation."},
@@ -126,12 +126,12 @@ func TestLatestExternalOrUserMessageTextSkipsInternalSteering(t *testing.T) {
 }
 
 func TestLatestExternalUserMessageTextPrefersSourceText(t *testing.T) {
-	original := "검토해서 @Tavern.cpp 보고서를 작성해"
+	original := "검토해서 @SampleGame.cpp 보고서를 작성해"
 	enriched := strings.Join([]string{
-		"검토해서 Tavern/Tavern.cpp 보고서를 작성해",
+		"검토해서 SampleGame/SampleGame.cpp 보고서를 작성해",
 		"",
 		"Attached context:",
-		"Referenced file: F:\\repo\\Tavern\\Tavern.cpp",
+		"Referenced file: F:\\repo\\SampleGame\\SampleGame.cpp",
 		"```",
 		"int main() { return 0; }",
 		"```",
@@ -295,7 +295,7 @@ func TestSessionAddMessageMarksAdditionalTurnContextInternal(t *testing.T) {
 }
 
 func TestGenericFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
 	session.TaskState = &TaskState{Goal: original}
@@ -316,7 +316,7 @@ func TestGenericFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
 }
 
 func TestKoreanFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
 	session.TaskState = &TaskState{Goal: original}
@@ -337,7 +337,7 @@ func TestKoreanFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
 }
 
 func TestControlFollowupsPreservePatchTransactionGoal(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
 	session.TaskState = &TaskState{Goal: original}
@@ -364,7 +364,7 @@ func TestControlFollowupsPreservePatchTransactionGoal(t *testing.T) {
 }
 
 func TestControlFollowupsPreservePatchTransactionGoalWithoutContract(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: original},
@@ -408,7 +408,7 @@ func TestAcceptanceContextPreservingControlRequestRecognizesKoreanFollowups(t *t
 }
 
 func TestPatchTransactionGoalUsesFreshExternalTaskOverStaleContext(t *testing.T) {
-	stale := "Tavern/BugReport.md 보고서를 생성해"
+	stale := "SampleGame/BugReport.md 보고서를 생성해"
 	fresh := "RuntimeManager.cpp 버그를 수정해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: stale}
@@ -540,13 +540,13 @@ func TestCurrentTurnPatchTransactionSurvivesContinuationWithoutContract(t *testi
 
 func TestCurrentTurnPatchTransactionDoesNotTreatBroaderDocumentSteeringAsCurrent(t *testing.T) {
 	root := t.TempDir()
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
 	session.TaskState = &TaskState{Goal: original}
 	session.Messages = []Message{
 		{Role: "user", Text: original},
-		{Role: "assistant", Text: "Tavern/BugReport.md 문서를 생성했습니다."},
+		{Role: "assistant", Text: "SampleGame/BugReport.md 문서를 생성했습니다."},
 		{Role: "user", Text: "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해"},
 	}
 	session.ActivePatchTransaction = &PatchTransaction{
@@ -557,7 +557,7 @@ func TestCurrentTurnPatchTransactionDoesNotTreatBroaderDocumentSteeringAsCurrent
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -570,7 +570,7 @@ func TestCurrentTurnPatchTransactionDoesNotTreatBroaderDocumentSteeringAsCurrent
 
 func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
 	root := t.TempDir()
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: original},
@@ -582,11 +582,11 @@ func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
 	}
 
 	agent.recordPatchTransactionFromToolMetaIfNeeded(
-		ToolCall{Name: "write_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
+		ToolCall{Name: "write_file", Arguments: `{"path":"SampleGame/BugReport.md"}`},
 		ToolExecutionResult{Meta: map[string]any{
 			"effect":            "edit",
 			"changed_workspace": true,
-			"changed_paths":     []string{"Tavern/BugReport.md"},
+			"changed_paths":     []string{"SampleGame/BugReport.md"},
 		}},
 		nil,
 	)

@@ -495,11 +495,11 @@ func TestPostChangeReviewGeneratedDocumentArtifactFingerprintTracksContent(t *te
 
 func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
-		t.Fatalf("mkdir Tavern: %v", err)
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
+		t.Fatalf("mkdir SampleGame: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(strings.Join([]string{
-		"# Tavern Bug Report",
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte(strings.Join([]string{
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -509,7 +509,7 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: documented issue.",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("write generated report: %v", err)
@@ -518,7 +518,7 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: originalRequest},
-		{Role: "assistant", Text: "Tavern/BugReport.md report generated."},
+		{Role: "assistant", Text: "SampleGame/BugReport.md report generated."},
 		{Role: "user", Text: "The report is complete as a documentation artifact."},
 	}
 	session.AcceptanceContract = &AcceptanceContract{
@@ -533,7 +533,7 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 			ToolName: "replace_in_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "replace_in_file",
 			}},
 		}},
@@ -548,7 +548,7 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 			"summary: this review should not run after document-only edits",
 			"severity: high",
 			"category: correctness",
-			"path: Tavern/BugReport.md",
+			"path: SampleGame/BugReport.md",
 			"title: should not run",
 			"evidence: generated report post-change review should be skipped from acceptance contract context",
 			"required_fix: do not call the review model",
@@ -569,7 +569,7 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 	if err != nil {
 		t.Fatalf("post-change review: %v", err)
 	}
-	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"Tavern/BugReport.md"})
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"SampleGame/BugReport.md"})
 	if !reviewed || needsRevision || feedback != "" || fingerprint != expectedFingerprint {
 		t.Fatalf("expected generated document artifact to consume deterministic quality gate from acceptance contract, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
 	}
@@ -597,11 +597,11 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 
 func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestContext(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
-		t.Fatalf("mkdir Tavern: %v", err)
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
+		t.Fatalf("mkdir SampleGame: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(strings.Join([]string{
-		"# Tavern Bug Report",
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte(strings.Join([]string{
+		"# SampleGame Bug Report",
 		"",
 		"Static review findings were written as a standalone document artifact.",
 		"",
@@ -611,16 +611,16 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: documented issue.",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("write generated report: %v", err)
 	}
 	runTestGit(t, root, "init")
-	runTestGit(t, root, "add", "Tavern/BugReport.md")
+	runTestGit(t, root, "add", "SampleGame/BugReport.md")
 	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(strings.Join([]string{
-		"# Tavern Bug Report",
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte(strings.Join([]string{
+		"# SampleGame Bug Report",
 		"",
 		"Static review findings were written as a standalone document artifact.",
 		"",
@@ -630,11 +630,11 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: documented issue.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: documented issue.",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("rewrite generated report: %v", err)
@@ -648,7 +648,7 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -663,7 +663,7 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 			ToolName: "apply_patch",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "apply_patch",
 			}},
 		}},
@@ -678,7 +678,7 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 			"summary: this review should not run after accepted document artifact state",
 			"severity: high",
 			"category: correctness",
-			"path: Tavern/BugReport.md",
+			"path: SampleGame/BugReport.md",
 			"title: should not run",
 			"evidence: accepted document artifact state should suppress model review",
 			"required_fix: do not call the review model",
@@ -699,7 +699,7 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 	if err != nil {
 		t.Fatalf("post-change review: %v", err)
 	}
-	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"Tavern/BugReport.md"})
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"SampleGame/BugReport.md"})
 	if !reviewed || needsRevision || feedback != "" || fingerprint != expectedFingerprint {
 		t.Fatalf("expected accepted document artifact state to consume deterministic quality gate, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
 	}
@@ -715,7 +715,7 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 
 func TestPostChangeReviewDoesNotTreatFreshReviewRequestAsDocumentFinalization(t *testing.T) {
 	root := t.TempDir()
-	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	reviewRequest := "RuntimeManager.cpp 코드 리뷰해줘"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
@@ -730,7 +730,7 @@ func TestPostChangeReviewDoesNotTreatFreshReviewRequestAsDocumentFinalization(t 
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -745,27 +745,27 @@ func TestPostChangeReviewDoesNotTreatFreshReviewRequestAsDocumentFinalization(t 
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
 	}}
 
-	if skipRequest := postChangeGeneratedDocumentArtifactSkipRequest(session, reviewRequest, []string{"Tavern/BugReport.md"}); skipRequest != "" {
+	if skipRequest := postChangeGeneratedDocumentArtifactSkipRequest(session, reviewRequest, []string{"SampleGame/BugReport.md"}); skipRequest != "" {
 		t.Fatalf("fresh review request must not reuse stale document artifact skip context, got %q", skipRequest)
 	}
 }
 
 func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t *testing.T) {
 	root := t.TempDir()
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.AcceptanceContract = &AcceptanceContract{
 		ID:           "accept-doc-report",
 		SourcePrompt: request,
 		RequiredArtifacts: []string{
-			"Tavern/BugReport.md",
+			"SampleGame/BugReport.md",
 		},
 	}
 	session.PatchTransactions = []PatchTransaction{{
@@ -776,7 +776,7 @@ func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -808,7 +808,7 @@ func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t
 	if !strings.Contains(feedback, "Required artifact is missing") {
 		t.Fatalf("expected missing artifact blocker, got %q", feedback)
 	}
-	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"Tavern/BugReport.md"})
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"SampleGame/BugReport.md"})
 	if fingerprint != expectedFingerprint {
 		t.Fatalf("expected stable deterministic fingerprint, got %q", fingerprint)
 	}
@@ -1019,7 +1019,7 @@ func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/TavernWorker/EngineBase.cpp",
+		"- File: SampleGame/SampleGameWorker/EngineBase.cpp",
 		"- Impact: documented issue.",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("write active generated report: %v", err)
@@ -1049,7 +1049,7 @@ func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *
 			ToolName: "apply_patch",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/TavernWorker/EngineBase.cpp",
+				Path:      "SampleGame/SampleGameWorker/EngineBase.cpp",
 				Operation: "modify",
 			}},
 		}},
@@ -1064,7 +1064,7 @@ func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *
 			"summary: stale code transaction should not trigger post-change review",
 			"severity: high",
 			"category: correctness",
-			"path: Tavern/TavernWorker/EngineBase.cpp",
+			"path: SampleGame/SampleGameWorker/EngineBase.cpp",
 			"title: should not run",
 			"evidence: active document transaction must dominate archived code transaction",
 			"required_fix: do not call the review model",
@@ -4926,7 +4926,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportFromAcceptanceContractAfterFee
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: originalRequest},
-		{Role: "assistant", Text: "Tavern/BugReport.md report generated."},
+		{Role: "assistant", Text: "SampleGame/BugReport.md report generated."},
 		{Role: "user", Text: "The report is complete as a documentation artifact."},
 	}
 	session.AcceptanceContract = &AcceptanceContract{
@@ -4941,7 +4941,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportFromAcceptanceContractAfterFee
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -4953,7 +4953,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportFromAcceptanceContractAfterFee
 			"summary: this response should not be requested for generated document artifacts",
 			"severity: high",
 			"category: correctness",
-			"path: Tavern/BugReport.md",
+			"path: SampleGame/BugReport.md",
 			"title: should not run",
 			"evidence: pre-write gate should be skipped from acceptance contract context",
 			"required_fix: do not call the review model",
@@ -4972,9 +4972,9 @@ func TestReviewProposedEditSkipsGeneratedBugReportFromAcceptanceContractAfterFee
 	}
 
 	err := agent.reviewProposedEdit(context.Background(), EditPreview{
-		Title:     "Update Tavern/BugReport.md",
+		Title:     "Update SampleGame/BugReport.md",
 		Preview:   "- old overview\n+ new overview\n",
-		Paths:     []string{"Tavern/BugReport.md"},
+		Paths:     []string{"SampleGame/BugReport.md"},
 		Operation: "replace_in_file",
 	})
 	if err != nil {
@@ -5015,7 +5015,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportWhenPreviewPathsArePolluted(t 
 			"summary: this response should not be requested for generated document artifacts",
 			"severity: high",
 			"category: correctness",
-			"path: Tavern/BugReport.md",
+			"path: SampleGame/BugReport.md",
 			"title: should not run",
 			"evidence: current edit paths should come from the preview body",
 			"required_fix: do not call the review model",
@@ -5030,17 +5030,17 @@ func TestReviewProposedEditSkipsGeneratedBugReportWhenPreviewPathsArePolluted(t 
 	}
 
 	err := agent.reviewProposedEdit(context.Background(), EditPreview{
-		Title: "Write Tavern/BugReport.md",
+		Title: "Write SampleGame/BugReport.md",
 		Preview: strings.Join([]string{
-			"Preview for Tavern/BugReport.md",
-			"--- before/Tavern/BugReport.md",
-			"+++ after/Tavern/BugReport.md",
+			"Preview for SampleGame/BugReport.md",
+			"--- before/SampleGame/BugReport.md",
+			"+++ after/SampleGame/BugReport.md",
 			"+   1 | # Bug Report",
 			"+   2 | BUG-001: sample finding",
 		}, "\n"),
 		Paths: []string{
-			"Tavern/BugReport.md",
-			"Tavern/TavernWorker/EngineBase.cpp",
+			"SampleGame/BugReport.md",
+			"SampleGame/SampleGameWorker/EngineBase.cpp",
 			"kernforge/",
 		},
 		Operation: "write_file",
@@ -5072,7 +5072,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportWhenPreviewPathsMissingButDiff
 			"summary: this response should not be requested for generated document artifacts",
 			"severity: high",
 			"category: correctness",
-			"path: Tavern/BugReport.md",
+			"path: SampleGame/BugReport.md",
 			"title: should not run",
 			"evidence: preview text names the markdown artifact",
 			"required_fix: do not call the review model",
@@ -5088,7 +5088,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportWhenPreviewPathsMissingButDiff
 
 	err := agent.reviewProposedEdit(context.Background(), EditPreview{
 		Title:     "Write generated report",
-		Preview:   "*** Add File: Tavern/BugReport.md\n+# Bug Report\n+- BUG-001: sample finding\n",
+		Preview:   "*** Add File: SampleGame/BugReport.md\n+# Bug Report\n+- BUG-001: sample finding\n",
 		Operation: "write_file",
 	})
 	if err != nil {
@@ -5651,7 +5651,7 @@ func TestPreWriteReviewBlocksLowActionableCorrectnessWarningWithSoftWording(t *t
 			Severity:    reviewSeverityLow,
 			Category:    "correctness",
 			Title:       "SafeArrayGetElement HRESULT remains unchecked",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Symbol:      "WMIQuery::Query",
 			Evidence:    "The proposed diff still appends the element after SafeArrayGetElement without checking the HRESULT.",
 			Impact:      "A failed element read can append a stale zero value.",
@@ -5699,7 +5699,7 @@ func TestPreWriteReviewDoesNotBlockLowOptionalHardeningWarning(t *testing.T) {
 			Source:      "model",
 			Severity:    reviewSeverityLow,
 			Category:    "stability",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Symbol:      "WMIQuery::Query",
 			Title:       "VARIANT resources could leak on std::bad_alloc",
 			Evidence:    "This is a rare exception-safety hardening path and is not directly introduced by the proposed diff.",
@@ -5721,7 +5721,7 @@ func TestPreWriteReviewDoesNotBlockLowPreExistingWarningEvenIfModelMarksBlocking
 			Source:      "model",
 			Severity:    reviewSeverityLow,
 			Category:    "stability",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Symbol:      "WMIQuery::Query",
 			Title:       "VT_BSTR branch has a pre-existing null bstrVal guard gap",
 			Evidence:    "This issue is pre-existing and not directly introduced by the proposed diff.",
@@ -5750,7 +5750,7 @@ func TestPreWriteReviewDoesNotBlockLowTypeIntentMaintainabilityWarning(t *testin
 			Source:      "model",
 			Severity:    reviewSeverityLow,
 			Category:    "maintainability",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Symbol:      "WMIQuery::Query",
 			Title:       "VT_I4 SafeArray element buffer type intent is unclear",
 			Evidence:    "Windows int and LONG are both 4 bytes here; this is a future porting and static analysis clarity issue.",
@@ -5775,7 +5775,7 @@ func TestPreWriteReviewDoesNotBlockKoreanTypeIntentMaintainabilityWarningFromLog
 			Source:      "model",
 			Severity:    reviewSeverityLow,
 			Category:    "maintainability",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Symbol:      "WMIQuery::Query",
 			Title:       "VT_I4 SafeArray 요소 수신 버퍼가 LONG이 아닌 int 로 선언되어 타입 의도가 흐려짐",
 			Evidence:    "Windows에서 sizeof(int) == sizeof(LONG) == 4 이므로 동작은 정상이지만 향후 32비트 외 플랫폼 포팅이나 정적 분석기 경고에서 혼동될 수 있다.",
@@ -5955,7 +5955,7 @@ func TestPreWriteReviewMetaFindingDoesNotBlockGateOrRepairPlan(t *testing.T) {
 			Source:      "model",
 			Severity:    reviewSeverityHigh,
 			Category:    "false_positive",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Title:       "1차 초안 RF-001 finding의 severity:high는 이미 해결된 항목이므로 info로 하향 권장",
 			Evidence:    "The review finding is already resolved by VARIANT variant{}; this is review metadata rather than a production code defect.",
 			RequiredFix: "Downgrade the review finding severity to info; no production code change is required.",
@@ -6002,7 +6002,7 @@ func TestPreWriteRepairPlanExcludesReviewerRouteFailureWhenCodeFindingExists(t *
 				Source:      "model",
 				Severity:    reviewSeverityHigh,
 				Category:    "correctness",
-				Path:        "Tavern/Common/WMIQuery.cpp",
+				Path:        "SampleGame/Common/WMIQuery.cpp",
 				Title:       "SafeArrayGetElement return value remains unchecked",
 				Evidence:    "The proposed diff still appends element without checking SafeArrayGetElement.",
 				RequiredFix: "Check SafeArrayGetElement HRESULT before appending the value.",
@@ -6165,7 +6165,7 @@ func TestPreWriteProgressFindingsPreferCodeBlockersOverRouteAndMetaNoise(t *test
 				Source:      "model",
 				Severity:    reviewSeverityMedium,
 				Category:    "correctness",
-				Path:        "Tavern/Common/WMIQuery.cpp",
+				Path:        "SampleGame/Common/WMIQuery.cpp",
 				Title:       "SafeArrayGetElement HRESULT remains unchecked",
 				RequiredFix: "Check the HRESULT before appending.",
 				BlocksGate:  true,
@@ -6187,7 +6187,7 @@ func TestPreWriteRepairFingerprintIgnoresReviewerRenumbering(t *testing.T) {
 		ReviewerRole: "main_model",
 		Severity:     reviewSeverityHigh,
 		Category:     "correctness",
-		Path:         "Tavern/Common/WMIQuery.cpp",
+		Path:         "SampleGame/Common/WMIQuery.cpp",
 		Symbol:       "WMIQuery::Query",
 		Title:        "SafeArrayGetElement return value is not checked",
 		RequiredFix:  "Check SafeArrayGetElement HRESULT before appending the integer.",
@@ -6198,7 +6198,7 @@ func TestPreWriteRepairFingerprintIgnoresReviewerRenumbering(t *testing.T) {
 		ReviewerRole: "reviewer_model",
 		Severity:     reviewSeverityMedium,
 		Category:     "correctness",
-		Path:         "Tavern/Common/WMIQuery.cpp",
+		Path:         "SampleGame/Common/WMIQuery.cpp",
 		Symbol:       "WMIQuery::Query",
 		Title:        "SafeArrayGetElement return value is not checked",
 		RequiredFix:  "Check SafeArrayGetElement HRESULT before appending the integer.",
@@ -10947,7 +10947,7 @@ func TestApprovedWarningsRecommendRepairWhenActionable(t *testing.T) {
 			Severity:    reviewSeverityMedium,
 			Category:    "stability",
 			Title:       "Handle leak on failure path",
-			Path:        "TaverDartManager.cpp",
+			Path:        "SampleGameDartManager.cpp",
 			Evidence:    "CreateEvent can succeed before a later failure.",
 			Impact:      "Repeated failures can leak handles.",
 			RequiredFix: "Close acquired handles on every failure path.",

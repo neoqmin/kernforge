@@ -728,7 +728,7 @@ func sampleDriverProjectStructureQARun() ProjectAnalysisRun {
 		Kind:      "wdm_driver",
 		Directory: "SampleKernel",
 		Project:   "SampleKernel",
-		Target:    "tvk.sys",
+		Target:    "sampledrv.sys",
 		Files: []string{
 			"SampleKernel/SampleKernel.cpp",
 			"SampleKernel/SampleKernelCore.cpp",

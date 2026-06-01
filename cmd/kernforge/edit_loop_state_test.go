@@ -155,18 +155,18 @@ func TestCurrentTurnActiveEditLoopKeepsContinuationContext(t *testing.T) {
 }
 
 func TestCurrentTurnActiveEditLoopRejectsBroaderDocumentSteering(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: original},
-		{Role: "assistant", Text: "Tavern/BugReport.md 문서를 생성했습니다."},
+		{Role: "assistant", Text: "SampleGame/BugReport.md 문서를 생성했습니다."},
 		{Role: "user", Text: "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해"},
 	}
 	session.ActiveEditLoop = &EditLoopState{
 		ID:           "edit-loop-doc",
 		Goal:         original,
 		Status:       editLoopStatusActive,
-		ChangedPaths: []string{"Tavern/BugReport.md"},
+		ChangedPaths: []string{"SampleGame/BugReport.md"},
 	}
 
 	if currentTurnActiveEditLoop(session) != nil {

@@ -56,12 +56,15 @@ func buildSecurityAntiCheatOverlay(snapshot ProjectSnapshot, index SemanticIndex
 		if strings.TrimSpace(edge.Surface) != "" {
 			surfaces = append(surfaces, edge.Surface)
 		}
-		if strings.EqualFold(edge.ValidationState, "missing_candidate") {
+		if strings.EqualFold(edge.ValidationState, "missing_candidate") || strings.EqualFold(edge.Type, "missing_validation_candidate") {
 			overlay.Metrics.MissingValidationCandidates++
 			overlay.Metrics.BlockingIssueCount++
 		}
 	}
 	for _, file := range snapshot.Files {
+		if !securityOverlayFileIsRuntimeSource(file.Path) {
+			continue
+		}
 		text := securityOverlayFileCorpus(snapshot, file.Path)
 		pathCorpus := strings.ToLower(file.Path + "\n" + text)
 		hasIOCTL := containsAny(pathCorpus, "deviceiocontrol", "irp_mj_device_control", "ioctl", "ctl_code", "io_control_code")
@@ -365,6 +368,15 @@ func buildSecurityAntiCheatOverlay(snapshot ProjectSnapshot, index SemanticIndex
 	})
 	overlay.FollowUp = securityOverlayFollowUp(overlay)
 	return overlay
+}
+
+func securityOverlayFileIsRuntimeSource(path string) bool {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
+	case ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inl", ".go", ".cs", ".rs", ".mm", ".m":
+		return true
+	default:
+		return false
+	}
 }
 
 func securityOverlayPrivilegedSinkNode(addNode func(SecurityOverlayNode) string, path string, text string, surface string) string {

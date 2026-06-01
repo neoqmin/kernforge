@@ -945,7 +945,7 @@ if (markdownDocs && markdownDocs.length > 0) {
 		htmlEscape(labels.Mode),
 		htmlEscape(valueOrDefault(run.Summary.Mode, run.Snapshot.AnalysisMode)),
 		htmlEscape(labels.Workspace),
-		htmlEscape(valueOrDefault(run.Snapshot.Root, run.KnowledgePack.Root)),
+		htmlEscape(analysisDashboardRootSummary(run)),
 		htmlEscape(labels.Completed),
 		htmlEscape(completedAt.Format(time.RFC3339)),
 		htmlEscape(labels.Files),
@@ -1207,6 +1207,26 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 	}
 }
 
+func analysisDashboardRootSummary(run ProjectAnalysisRun) string {
+	effective := firstNonBlankString(run.Preflight.EffectiveRoot, run.Summary.EffectiveRoot, run.Snapshot.Root, run.KnowledgePack.Root)
+	requested := firstNonBlankString(run.Preflight.RequestedRoot, run.Summary.RequestedRoot)
+	repository := firstNonBlankString(run.Preflight.RepositoryRoot, run.Summary.RepositoryRoot)
+	parts := []string{}
+	if strings.TrimSpace(effective) != "" {
+		parts = append(parts, "effective="+effective)
+	}
+	if strings.TrimSpace(requested) != "" && !sameAnalysisFilesystemPath(requested, effective) {
+		parts = append(parts, "requested="+requested)
+	}
+	if strings.TrimSpace(repository) != "" && !sameAnalysisFilesystemPath(repository, effective) {
+		parts = append(parts, "repo="+repository)
+	}
+	if len(parts) == 0 {
+		return valueOrDefault(effective, "unknown")
+	}
+	return strings.Join(parts, " | ")
+}
+
 func analysisDashboardInlinePortalItems(items []analysisDashboardPortalItem) []analysisDashboardPortalItem {
 	const inlineLimit = 1200
 	if len(items) <= inlineLimit {
@@ -1264,6 +1284,10 @@ func analysisDashboardPortalIndex(run ProjectAnalysisRun, docsHref string) []ana
 	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
 		detail := fmt.Sprintf("nodes=%d edges=%d surfaces=%s", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount, strings.Join(limitStrings(run.SecurityOverlay.Metrics.Surfaces, 5), ", "))
 		items = append(items, analysisDashboardNewPortalItem("security overlay", "Security Anti-Cheat Overlay", detail, "security_overlay.json", docsHref+"/SECURITY_OVERLAY.md", []string{"security_surface", "verification_planner"}))
+	}
+	if strings.TrimSpace(run.Preflight.EffectiveRoot) != "" || strings.TrimSpace(run.Preflight.RootNarrowingReason) != "" {
+		detail := firstNonBlankAnalysisString(run.Preflight.RootNarrowingReason, analysisDashboardRootSummary(run))
+		items = append(items, analysisDashboardNewPortalItem("scope", "Analysis Scope Disclosure", detail, "analysis_preflight.json", docsHref+"/INDEX.md", []string{"analysis_context", "evidence"}))
 	}
 	for _, anchor := range analysisDashboardSourceAnchorsWithDocsHref(run, docsHref) {
 		items = append(items, analysisDashboardNewPortalItem("source anchor", anchor.Anchor, anchor.Document, anchor.Anchor, anchor.Href, []string{"analysis_context", "evidence"}))

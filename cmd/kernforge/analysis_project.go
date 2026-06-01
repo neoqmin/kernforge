@@ -50,6 +50,10 @@ type ProjectAnalysisSummary struct {
 	Goal                     string    `json:"goal"`
 	Mode                     string    `json:"mode,omitempty"`
 	Status                   string    `json:"status"`
+	RequestedRoot            string    `json:"requested_root,omitempty"`
+	EffectiveRoot            string    `json:"effective_root,omitempty"`
+	RepositoryRoot           string    `json:"repository_root,omitempty"`
+	RootNarrowingReason      string    `json:"root_narrowing_reason,omitempty"`
 	AgentCount               int       `json:"agent_count"`
 	OutputPath               string    `json:"output_path"`
 	StartedAt                time.Time `json:"started_at"`
@@ -62,6 +66,9 @@ type ProjectAnalysisSummary struct {
 	RefinedShards            int       `json:"refined_shards,omitempty"`
 	EvidenceShards           int       `json:"evidence_shards,omitempty"`
 	GapShards                int       `json:"gap_shards,omitempty"`
+	ParseFailedShards        int       `json:"parse_failed_shards,omitempty"`
+	ProviderFailedShards     int       `json:"provider_failed_shards,omitempty"`
+	VerifierBlockingIssues   int       `json:"verifier_blocking_issues,omitempty"`
 	TotalShards              int       `json:"total_shards"`
 }
 
@@ -288,6 +295,7 @@ type AnalysisShard struct {
 	ID                           string                     `json:"id"`
 	Name                         string                     `json:"name"`
 	Type                         string                     `json:"type,omitempty"`
+	Namespace                    string                     `json:"namespace,omitempty"`
 	ParentShardID                string                     `json:"parent_shard_id,omitempty"`
 	EvidenceRequestID            string                     `json:"evidence_request_id,omitempty"`
 	CoverageGapID                string                     `json:"coverage_gap_id,omitempty"`
@@ -335,6 +343,8 @@ type InvalidationChange struct {
 
 type WorkerReport struct {
 	ShardID             string               `json:"shard_id"`
+	Status              string               `json:"status,omitempty"`
+	FailureReason       string               `json:"failure_reason,omitempty"`
 	Title               string               `json:"title"`
 	ScopeSummary        string               `json:"scope_summary"`
 	Responsibilities    []string             `json:"responsibilities"`
@@ -676,6 +686,7 @@ type KnowledgePack struct {
 }
 
 type ReviewDecision struct {
+	ShardID                    string                     `json:"shard_id,omitempty"`
 	Status                     string                     `json:"status"`
 	Issues                     []string                   `json:"issues,omitempty"`
 	RevisionPrompt             string                     `json:"revision_prompt,omitempty"`
@@ -761,6 +772,98 @@ func summarizeReviewDecisions(summary *ProjectAnalysisSummary, reviews []ReviewD
 		}
 	}
 	summary.ReviewFailures = summary.ReviewProviderFailures + summary.ReviewQualityIssues
+}
+
+func summarizeWorkerReportStatuses(summary *ProjectAnalysisSummary, reports []WorkerReport) {
+	if summary == nil {
+		return
+	}
+	summary.ParseFailedShards = 0
+	summary.ProviderFailedShards = 0
+	for _, report := range reports {
+		switch normalizeWorkerReportStatus(report.Status) {
+		case "parse_failed":
+			summary.ParseFailedShards++
+		case "provider_failed", "failed":
+			summary.ProviderFailedShards++
+		}
+	}
+}
+
+func analysisRunStatusNotice(run ProjectAnalysisRun) string {
+	items := []string{}
+	if run.ClaimVerification.BlockingCount > 0 {
+		items = append(items, fmt.Sprintf("Deterministic claim verifier recorded %d blocking issue(s); treat unsupported high-confidence claims as rejected until rerun or manually verified.", run.ClaimVerification.BlockingCount))
+	}
+	if run.Summary.ParseFailedShards > 0 {
+		items = append(items, fmt.Sprintf("%d shard(s) returned non-JSON output; their raw output is preserved but excluded from verified facts.", run.Summary.ParseFailedShards))
+	}
+	if run.Summary.ProviderFailedShards > 0 {
+		items = append(items, fmt.Sprintf("%d shard(s) failed at the worker provider layer and were excluded from verified facts.", run.Summary.ProviderFailedShards))
+	}
+	if run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards > 0 {
+		items = append(items, "No dedicated model reviewer approved the shard reports; deterministic checks ran, but the synthesis is not reviewer-approved.")
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Analysis Confidence Notice\n\n")
+	for _, item := range analysisUniqueStrings(items) {
+		fmt.Fprintf(&b, "- %s\n", item)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func analysisRunScopeDisclosureSection(run ProjectAnalysisRun) string {
+	requested := firstNonBlankAnalysisString(run.Preflight.RequestedRoot, run.Summary.RequestedRoot)
+	effective := firstNonBlankString(run.Preflight.EffectiveRoot, run.Summary.EffectiveRoot, run.Snapshot.Root)
+	repository := firstNonBlankString(run.Preflight.RepositoryRoot, run.Summary.RepositoryRoot)
+	reason := firstNonBlankString(run.Preflight.RootNarrowingReason, run.Summary.RootNarrowingReason)
+	if strings.TrimSpace(requested+effective+repository+reason) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Analysis Scope Disclosure\n\n")
+	if strings.TrimSpace(requested) != "" {
+		fmt.Fprintf(&b, "- Requested/root workspace: `%s`\n", requested)
+	}
+	if strings.TrimSpace(effective) != "" {
+		fmt.Fprintf(&b, "- Effective scanned root: `%s`\n", effective)
+	}
+	if strings.TrimSpace(repository) != "" {
+		fmt.Fprintf(&b, "- Repository root: `%s`\n", repository)
+	}
+	if strings.TrimSpace(reason) != "" {
+		fmt.Fprintf(&b, "- Scope narrowing: %s\n", reason)
+	}
+	if len(run.Preflight.Scope.DirectoryPrefixes) > 0 {
+		fmt.Fprintf(&b, "- Scoped directories: `%s`\n", strings.Join(run.Preflight.Scope.DirectoryPrefixes, "`, `"))
+	}
+	if len(run.Preflight.SolutionRootCandidates) > 0 {
+		fmt.Fprintf(&b, "- Solution root candidates: `%s`\n", strings.Join(limitStrings(run.Preflight.SolutionRootCandidates, 8), "`, `"))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func addAnalysisScopeDisclosureToDocument(document string, scopeNotice string) string {
+	document = strings.TrimSpace(document)
+	scopeNotice = strings.TrimSpace(scopeNotice)
+	if scopeNotice == "" {
+		return document
+	}
+	const draftHeading = "# Draft Analysis"
+	if strings.HasPrefix(document, draftHeading) {
+		rest := strings.TrimSpace(strings.TrimPrefix(document, draftHeading))
+		if rest == "" {
+			return draftHeading + "\n\n" + scopeNotice
+		}
+		return draftHeading + "\n\n" + scopeNotice + "\n\n" + rest
+	}
+	if document == "" {
+		return scopeNotice
+	}
+	return scopeNotice + "\n\n" + document
 }
 
 func filterRootCauseReportsByReview(snapshot ProjectSnapshot, reports []WorkerReport, reviews []ReviewDecision) []WorkerReport {
@@ -3091,6 +3194,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.Summary.TotalShards = len(shards)
 	run.Shards = shards
 	run.Preflight = a.buildAnalysisPreflight(snapshot, goal, mode, scope, shards, agentCount, runtimeFeedback)
+	applyAnalysisPreflightToSummary(&run.Summary, run.Preflight)
 	a.status(fmt.Sprintf("Analysis preflight ready: mode=%s shards=%d workers=%d depth=%s.", run.Preflight.EffectiveMode, len(shards), agentCount, run.Preflight.RecommendedDepth))
 	a.debug(fmt.Sprintf("analysis preflight prepared: mode=%s shards=%d warnings=%d runtime_errors=%d", run.Preflight.EffectiveMode, len(shards), len(run.Preflight.Warnings), run.Preflight.RuntimeFeedback.RecentProviderErrors))
 
@@ -3197,6 +3301,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.Reviews = reviews
 	run.Summary.TotalShards = len(shards)
 	summarizeReviewDecisions(&run.Summary, run.Reviews)
+	summarizeWorkerReportStatuses(&run.Summary, run.Reports)
 	if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
 		a.status("Deep-verifying reviewer-approved root-cause candidates...")
 		deepVerifications := a.deepVerifyRootCauseCandidates(ctx, snapshot, shards, reports, reviews, goal)
@@ -3241,6 +3346,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	claimReport := verifyAnalysisClaims(run.Snapshot, run)
 	applyClaimVerificationToReports(&run, claimReport)
 	reports = run.Reports
+	run.Summary.VerifierBlockingIssues = run.ClaimVerification.BlockingCount
 	run.PacketCoverage = computeAnalysisPacketCoverage(run.Reports, run.EvidencePackets)
 	run.StructuralIndex.PacketCoverage = run.PacketCoverage
 	run.Snapshot.StructuralIndex = run.StructuralIndex
@@ -3255,7 +3361,14 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if err != nil {
 		return run, err
 	}
-	if run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards == 0 {
+	statusNotice := analysisRunStatusNotice(run)
+	if run.ClaimVerification.BlockingCount > 0 {
+		run.Summary.Status = "completed_with_verifier_blockers"
+		a.debug(fmt.Sprintf("analysis completed with verifier blockers: blocking=%d unsupported_high=%d", run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount))
+	} else if run.Summary.ParseFailedShards > 0 {
+		run.Summary.Status = "completed_with_parse_failures"
+		a.debug(fmt.Sprintf("analysis completed with parse failures: parse_failed=%d", run.Summary.ParseFailedShards))
+	} else if run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards == 0 {
 		draftNotice := "# Draft Analysis\n\nNo shard report was approved by the reviewer. The generated analysis should be treated as low confidence and rerun after fixing worker/reviewer issues."
 		if details := renderAnalysisReviewIssueDetailsForReviews(run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues, run.Reviews); strings.TrimSpace(details) != "" {
 			draftNotice += "\n\n" + details
@@ -3272,6 +3385,12 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 			document = banner + "\n\n" + document
 		}
 		a.debug(fmt.Sprintf("analysis completed with review issues: provider_failures=%d quality_issues=%d", run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues))
+	}
+	if strings.TrimSpace(statusNotice) != "" {
+		document = statusNotice + "\n\n" + document
+	}
+	if scopeNotice := analysisRunScopeDisclosureSection(run); strings.TrimSpace(scopeNotice) != "" {
+		document = addAnalysisScopeDisclosureToDocument(document, scopeNotice)
 	}
 	document = appendClaimVerificationFinalSections(document, run.ClaimVerification, run.SecurityOverlay)
 	run.FinalDocument = document
@@ -6672,6 +6791,7 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			if attempt < a.analysisCfg.MaxRevisionRounds {
 				lastReport = report
 				lastReview = ReviewDecision{
+					ShardID:        shard.ID,
 					Status:         "needs_revision",
 					Issues:         lintIssues,
 					RevisionPrompt: buildRootCauseWorkerLintRevisionPrompt(lintIssues),
@@ -6695,6 +6815,9 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			failed := softFailReviewDecision(shard, report, err)
 			a.debug(fmt.Sprintf("reviewer soft-failed: shard=%s status=%s", shard.Name, failed.Status))
 			return report, failed, shard, nil
+		}
+		if strings.TrimSpace(review.ShardID) == "" {
+			review.ShardID = shard.ID
 		}
 		a.debug(fmt.Sprintf("reviewer done: shard=%s attempt=%d status=%s issues=%d", shard.Name, attempt+1, review.Status, len(review.Issues)))
 		lastReport = report
@@ -6729,6 +6852,7 @@ func (a *projectAnalyzer) shouldSkipModelReviewerForMode(mode string) bool {
 
 func skippedModelReviewDecision(shard AnalysisShard, report WorkerReport) ReviewDecision {
 	return ReviewDecision{
+		ShardID:             shard.ID,
 		Status:              "model_review_skipped",
 		ClaimCoverageStatus: "model_review_skipped_single_model",
 		Issues:              []string{"Dedicated model reviewer is not configured; deterministic claim checks were applied but this shard is not reviewer-approved."},
@@ -14836,22 +14960,14 @@ func analysisPromptExcerpt(text string, limit int) string {
 func fallbackWorkerReport(shard AnalysisShard, raw string) WorkerReport {
 	return WorkerReport{
 		ShardID:       shard.ID,
+		Status:        "parse_failed",
+		FailureReason: "worker_non_json_output",
 		Title:         shard.Name,
-		ScopeSummary:  "Worker returned non-JSON output.",
+		ScopeSummary:  "Worker returned non-JSON output; no structured facts from this shard were accepted.",
 		EvidenceFiles: append([]string(nil), shard.PrimaryFiles...),
-		Claims: []AnalysisClaim{
-			{
-				ID:               "claim-01",
-				Kind:             "parse_failure",
-				Claim:            "Worker returned non-JSON output, so this shard has no reliable structured claims.",
-				SourceAnchors:    append([]string(nil), shard.PrimaryFiles...),
-				Confidence:       "high",
-				DisprovesWhen:    "A later worker run returns valid structured JSON for this shard.",
-				VerificationHint: "Inspect raw output in the JSON artifact and rerun the shard.",
-			},
-		},
-		Unknowns: []string{"Worker output was not valid JSON and was excluded from synthesis; raw output is preserved in the JSON artifact."},
-		Raw:      strings.TrimSpace(raw),
+		Claims:        nil,
+		Unknowns:      []string{"Worker output was not valid JSON and was excluded from synthesis; raw output is preserved in the JSON artifact."},
+		Raw:           strings.TrimSpace(raw),
 	}
 }
 
@@ -15150,6 +15266,8 @@ func firstJSONObject(text string) (string, bool) {
 }
 
 func normalizeWorkerReport(report *WorkerReport, shard AnalysisShard) {
+	report.Status = normalizeWorkerReportStatus(report.Status)
+	report.FailureReason = strings.TrimSpace(report.FailureReason)
 	if strings.TrimSpace(report.Title) == "" {
 		report.Title = shard.Name
 	}
@@ -15177,7 +15295,31 @@ func normalizeWorkerReport(report *WorkerReport, shard AnalysisShard) {
 			report.KeyFiles = report.KeyFiles[:8]
 		}
 	}
-	report.Claims = normalizeAnalysisClaims(report.Claims, *report, shard)
+	if workerReportExcludesClaims(*report) {
+		report.Claims = nil
+	} else {
+		report.Claims = normalizeAnalysisClaims(report.Claims, *report, shard)
+	}
+}
+
+func normalizeWorkerReportStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "ok", "success":
+		return "completed"
+	case "completed", "parse_failed", "provider_failed", "failed":
+		return strings.ToLower(strings.TrimSpace(status))
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func workerReportExcludesClaims(report WorkerReport) bool {
+	switch strings.ToLower(strings.TrimSpace(report.Status)) {
+	case "parse_failed", "provider_failed", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeRootCauseCandidates(candidates []RootCauseCandidate, shard AnalysisShard) []RootCauseCandidate {
@@ -15268,6 +15410,7 @@ func softFailReviewDecision(shard AnalysisShard, report WorkerReport, err error)
 		issues = append(issues, "The overall analysis continued using the worker report, but this shard should be treated as needing manual verification.")
 	}
 	return ReviewDecision{
+		ShardID:             shard.ID,
 		Status:              "review_failed",
 		Issues:              issues,
 		RevisionPrompt:      "",
@@ -15288,9 +15431,11 @@ func softFailWorkerReport(shard AnalysisShard, err error) WorkerReport {
 	}
 	summary := "Worker provider request failed after retry, so this shard was preserved as a low-confidence placeholder instead of aborting the full analysis run."
 	return WorkerReport{
-		ShardID:      shard.ID,
-		Title:        title,
-		ScopeSummary: summary,
+		ShardID:       shard.ID,
+		Status:        "provider_failed",
+		FailureReason: summarizeAnalysisProviderFailure(err.Error()),
+		Title:         title,
+		ScopeSummary:  summary,
 		Responsibilities: []string{
 			"Provider request failed before this shard could be analyzed.",
 		},
@@ -15302,18 +15447,8 @@ func softFailWorkerReport(shard AnalysisShard, err error) WorkerReport {
 		},
 		KeyFiles:      limitStrings(shard.PrimaryFiles, 12),
 		EvidenceFiles: limitStrings(shard.PrimaryFiles, 12),
-		Claims: []AnalysisClaim{
-			{
-				ID:               "claim-01",
-				Kind:             "provider_failure",
-				Claim:            "Worker provider failed before this shard could be analyzed.",
-				SourceAnchors:    limitStrings(shard.PrimaryFiles, 12),
-				Confidence:       "high",
-				DisprovesWhen:    "A later worker run completes successfully for this shard.",
-				VerificationHint: "Rerun the shard after provider pressure recovers.",
-			},
-		},
-		EntryPoints: []string{},
+		Claims:        nil,
+		EntryPoints:   []string{},
 		InternalFlow: []string{
 			"Not analyzed because the worker provider request failed.",
 		},
@@ -15340,6 +15475,7 @@ func softFailWorkerReviewDecision(shard AnalysisShard, err error) ReviewDecision
 		issues = append(issues, "The failed shard is external-dependency scoped, so the main project map may still be partially useful.")
 	}
 	return ReviewDecision{
+		ShardID:             shard.ID,
 		Status:              "review_failed",
 		Issues:              issues,
 		RevisionPrompt:      "",

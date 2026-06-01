@@ -99,7 +99,7 @@ func TestLookupToolsRecoverFromOwnerEditMismatchWithAbsoluteWorkspacePath(t *tes
 		wrapSentinel := wrapSentinel
 		t.Run(fmt.Sprintf("wrapSentinel=%v", wrapSentinel), func(t *testing.T) {
 			root := t.TempDir()
-			sourceDir := filepath.Join(root, "Tavern", "Tavern")
+			sourceDir := filepath.Join(root, "SampleGame", "SampleGame")
 			if err := os.MkdirAll(sourceDir, 0o755); err != nil {
 				t.Fatalf("MkdirAll sourceDir: %v", err)
 			}
@@ -314,12 +314,12 @@ func TestLookupToolsRecoverAcrossWorkspaceRootsAfterOwnerMismatch(t *testing.T) 
 	if err := os.MkdirAll(current, 0o755); err != nil {
 		t.Fatalf("MkdirAll current: %v", err)
 	}
-	sourceDir := filepath.Join(root, "Tavern")
+	sourceDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll sourceDir: %v", err)
 	}
 	sourceFile := filepath.Join(sourceDir, "BugReport.md")
-	if err := os.WriteFile(sourceFile, []byte("# Tavern bug report\nBUG-001\n"), 0o644); err != nil {
+	if err := os.WriteFile(sourceFile, []byte("# SampleGame bug report\nBUG-001\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile sourceFile: %v", err)
 	}
 
@@ -340,7 +340,7 @@ func TestLookupToolsRecoverAcrossWorkspaceRootsAfterOwnerMismatch(t *testing.T) 
 
 	readTool := NewReadFileTool(ws)
 	readResult, err := readTool.ExecuteDetailed(context.Background(), map[string]any{
-		"path":          "Tavern/BugReport.md",
+		"path":          "SampleGame/BugReport.md",
 		"owner_node_id": "plan-01",
 	})
 	if err != nil {
@@ -352,7 +352,7 @@ func TestLookupToolsRecoverAcrossWorkspaceRootsAfterOwnerMismatch(t *testing.T) 
 
 	listTool := NewListFilesTool(ws)
 	listResult, err := listTool.ExecuteDetailed(context.Background(), map[string]any{
-		"path":          "Tavern",
+		"path":          "SampleGame",
 		"owner_node_id": "plan-01",
 	})
 	if err != nil {
@@ -365,7 +365,7 @@ func TestLookupToolsRecoverAcrossWorkspaceRootsAfterOwnerMismatch(t *testing.T) 
 	grepTool := NewGrepTool(ws)
 	grepResult, err := grepTool.ExecuteDetailed(context.Background(), map[string]any{
 		"pattern":       "BUG-001",
-		"path":          "Tavern",
+		"path":          "SampleGame",
 		"owner_node_id": "plan-01",
 	})
 	if err != nil {
@@ -395,11 +395,11 @@ func TestResolveLookupPathFallsBackAcrossWorkspaceRootsWithoutOwner(t *testing.T
 	if err := os.MkdirAll(active, 0o755); err != nil {
 		t.Fatalf("MkdirAll active: %v", err)
 	}
-	sourceDir := filepath.Join(root, "Tavern")
+	sourceDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll sourceDir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sourceDir, "BugReport.md"), []byte("# Tavern bug report\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sourceDir, "BugReport.md"), []byte("# SampleGame bug report\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile BugReport: %v", err)
 	}
 
@@ -415,11 +415,11 @@ func TestResolveLookupPathFallsBackAcrossWorkspaceRootsWithoutOwner(t *testing.T
 		return ws.resolveEditFallback(req)
 	}
 
-	route, err := ws.ResolveLookupPath("Tavern/BugReport.md", "")
+	route, err := ws.ResolveLookupPath("SampleGame/BugReport.md", "")
 	if err != nil {
 		t.Fatalf("lookup should fall back to base workspace without owner_node_id: %v", err)
 	}
-	if !sameFilePath(route.AbsolutePath, filepath.Join(root, "Tavern", "BugReport.md")) {
+	if !sameFilePath(route.AbsolutePath, filepath.Join(root, "SampleGame", "BugReport.md")) {
 		t.Fatalf("expected base workspace file, got %#v", route)
 	}
 	if !sameFilePath(route.DisplayRoot, root) {
@@ -995,7 +995,7 @@ func TestListFilesToolFallsBackToBaseRootWhenRelativePathMissingInCurrentDirecto
 
 func TestListFilesToolReturnsFilePathWhenTargetIsFile(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "Tavern.cpp")
+	target := filepath.Join(root, "SampleGame.cpp")
 	if err := os.WriteFile(target, []byte("int main() { return 0; }\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1005,12 +1005,12 @@ func TestListFilesToolReturnsFilePathWhenTargetIsFile(t *testing.T) {
 		Root:     root,
 	})
 	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
-		"path": "Tavern.cpp",
+		"path": "SampleGame.cpp",
 	})
 	if err != nil {
 		t.Fatalf("ExecuteDetailed: %v", err)
 	}
-	if strings.TrimSpace(result.DisplayText) != "Tavern.cpp" {
+	if strings.TrimSpace(result.DisplayText) != "SampleGame.cpp" {
 		t.Fatalf("expected single file listing, got %q", result.DisplayText)
 	}
 	if toolMetaString(result.Meta, "path_type") != "file" {
@@ -1023,11 +1023,11 @@ func TestListFilesToolReturnsFilePathWhenTargetIsFile(t *testing.T) {
 
 func TestListFilesToolMissingPathReportsCandidates(t *testing.T) {
 	root := t.TempDir()
-	sourceDir := filepath.Join(root, "Tavern", "Tavern")
+	sourceDir := filepath.Join(root, "SampleGame", "SampleGame")
 	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(sourceDir, "Tavern.cpp"), []byte("int main() {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(sourceDir, "SampleGame.cpp"), []byte("int main() {}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1036,15 +1036,15 @@ func TestListFilesToolMissingPathReportsCandidates(t *testing.T) {
 		Root:     root,
 	})
 	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
-		"path": "Tavern.cpp",
+		"path": "SampleGame.cpp",
 	})
 	if err == nil {
 		t.Fatalf("expected missing path error")
 	}
-	if !strings.Contains(result.DisplayText, "list_files target does not exist: Tavern.cpp") {
+	if !strings.Contains(result.DisplayText, "list_files target does not exist: SampleGame.cpp") {
 		t.Fatalf("expected missing path diagnostic, got %q", result.DisplayText)
 	}
-	if !strings.Contains(result.DisplayText, "Tavern/Tavern/Tavern.cpp") {
+	if !strings.Contains(result.DisplayText, "SampleGame/SampleGame/SampleGame.cpp") {
 		t.Fatalf("expected same-basename candidate, got %q", result.DisplayText)
 	}
 	if toolMetaString(result.Meta, "path_type") != "missing" {
@@ -1054,7 +1054,7 @@ func TestListFilesToolMissingPathReportsCandidates(t *testing.T) {
 		t.Fatalf("expected missing_path error_kind, got %#v", result.Meta)
 	}
 	candidates := toolMetaStringSlice(result.Meta, "candidate_paths")
-	if len(candidates) != 1 || candidates[0] != "Tavern/Tavern/Tavern.cpp" {
+	if len(candidates) != 1 || candidates[0] != "SampleGame/SampleGame/SampleGame.cpp" {
 		t.Fatalf("expected candidate_paths metadata, got %#v", result.Meta)
 	}
 }
@@ -1106,7 +1106,7 @@ func TestListFilesToolReportsTruncationAndClampsInvalidMaxEntries(t *testing.T) 
 
 func TestGrepToolMissingPathReportsCandidates(t *testing.T) {
 	root := t.TempDir()
-	reportDir := filepath.Join(root, "Tavern")
+	reportDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -1128,11 +1128,11 @@ func TestGrepToolMissingPathReportsCandidates(t *testing.T) {
 	if !strings.Contains(result.DisplayText, "grep target does not exist: BugReport.md") {
 		t.Fatalf("expected missing path diagnostic, got %q", result.DisplayText)
 	}
-	if !strings.Contains(result.DisplayText, "Tavern/BugReport.md") {
+	if !strings.Contains(result.DisplayText, "SampleGame/BugReport.md") {
 		t.Fatalf("expected same-basename candidate, got %q", result.DisplayText)
 	}
 	candidates := toolMetaStringSlice(result.Meta, "candidate_paths")
-	if len(candidates) != 1 || candidates[0] != "Tavern/BugReport.md" {
+	if len(candidates) != 1 || candidates[0] != "SampleGame/BugReport.md" {
 		t.Fatalf("expected candidate_paths metadata, got %#v", result.Meta)
 	}
 	if toolMetaString(result.Meta, "error_kind") != "missing_path" {

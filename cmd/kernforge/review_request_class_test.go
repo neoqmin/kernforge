@@ -256,13 +256,13 @@ func TestReviewOnlyModeReplyIsFindingsFirstAndReadOnly(t *testing.T) {
 func TestDocumentArtifactRuntimeGateExposesAcceptedLifecycleWithoutReviewBlocker(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
-	contract := buildAcceptanceContract("write Tavern/BugReport.md as a bug report document", TurnIntentEditCode, false, true, false)
+	contract := buildAcceptanceContract("write SampleGame/BugReport.md as a bug report document", TurnIntentEditCode, false, true, false)
 	session.AcceptanceContract = &contract
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Size:         256,
 				ContentChars: 256,
@@ -299,21 +299,21 @@ func TestDocumentArtifactRuntimeGateExposesAcceptedLifecycleWithoutReviewBlocker
 
 func TestDocumentArtifactQualityFailureBlocksFinalAnswer(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte("TODO\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte("TODO\n"), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
-	contract := buildAcceptanceContract("write Tavern/BugReport.md as a report about kernel bug handling", TurnIntentEditCode, false, true, false)
+	contract := buildAcceptanceContract("write SampleGame/BugReport.md as a report about kernel bug handling", TurnIntentEditCode, false, true, false)
 	session.AcceptanceContract = &contract
 	agent := &Agent{
 		Config:    DefaultConfig(root),
 		Workspace: Workspace{BaseRoot: root, Root: root},
 		Session:   session,
 	}
-	report := agent.buildCodingHarnessReport("Saved `Tavern/BugReport.md`. Verification was not run because this is a document artifact.", true, true)
+	report := agent.buildCodingHarnessReport("Saved `SampleGame/BugReport.md`. Verification was not run because this is a document artifact.", true, true)
 	if !codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
 		t.Fatalf("expected artifact-quality blocker, got %#v", report.ArtifactQuality)
 	}

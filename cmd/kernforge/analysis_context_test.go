@@ -32,9 +32,9 @@ func TestBaseUserQueryTextStripsInjectedExecutionContext(t *testing.T) {
 				"RuntimeManager.cpp 버그를 수정해",
 				"",
 				"Activated skills for this request:",
-				"### tavern-anticheat",
-				"Source: C:\\skills\\tavern-anticheat\\SKILL.md",
-				"Use Tavern-specific anti-cheat guidance.",
+				"### samplegame-anticheat",
+				"Source: C:\\skills\\samplegame-anticheat\\SKILL.md",
+				"Use SampleGame-specific anti-cheat guidance.",
 			}, "\n"),
 		},
 		{

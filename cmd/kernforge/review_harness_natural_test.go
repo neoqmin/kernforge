@@ -927,7 +927,7 @@ func TestReviewRepairFollowUpWithExplicitRFIDScopesRepairGuidance(t *testing.T) 
 	session.LastReviewRun = &ReviewRun{
 		ID:        "review-1",
 		Trigger:   reviewBeforeFixTrigger,
-		Objective: "@Tavern/TavernMaster/TaverDartManager.cpp CreateDartProcess 함수에 버그가 있는지 검토해줘",
+		Objective: "@SampleGame/SampleGameMaster/SampleGameDartManager.cpp CreateDartProcess 함수에 버그가 있는지 검토해줘",
 		Target:    reviewTargetChange,
 		Gate: GateDecision{
 			Verdict:          reviewVerdictNeedsRevision,

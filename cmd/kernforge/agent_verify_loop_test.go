@@ -1290,7 +1290,7 @@ func TestAgentBlocksBroadListFilesAfterPreFixReviewFindings(t *testing.T) {
 					ToolCalls: []ToolCall{{
 						ID:        "call-list",
 						Name:      "list_files",
-						Arguments: `{"path":"Tavern/Common"}`,
+						Arguments: `{"path":"SampleGame/Common"}`,
 					}},
 				},
 			},
@@ -1298,7 +1298,7 @@ func TestAgentBlocksBroadListFilesAfterPreFixReviewFindings(t *testing.T) {
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "user", Text: "@SampleGame/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
 	session.LastReviewRun = focusedPreFixRepairRun()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	agent := &Agent{
@@ -1348,7 +1348,7 @@ func TestAgentBlocksBroadGrepAfterPreFixReviewFindings(t *testing.T) {
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "user", Text: "@SampleGame/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
 	session.LastReviewRun = focusedPreFixRepairRun()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	agent := &Agent{
@@ -1384,19 +1384,19 @@ func TestAgentBlocksRepeatedReadFileAfterPreFixReviewFindings(t *testing.T) {
 				ToolCall{
 					ID:        "call-read-1",
 					Name:      "read_file",
-					Arguments: `{"path":"Tavern/Common/WMIQuery.cpp"}`,
+					Arguments: `{"path":"SampleGame/Common/WMIQuery.cpp"}`,
 				},
 				ToolCall{
 					ID:        "call-read-2",
 					Name:      "read_file",
-					Arguments: `{"path":"Tavern/Common/WMIQuery.cpp"}`,
+					Arguments: `{"path":"SampleGame/Common/WMIQuery.cpp"}`,
 				},
 			),
 			{Message: Message{Role: "assistant", Text: "stopped after repeated read guard"}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "user", Text: "@SampleGame/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
 	session.LastReviewRun = focusedPreFixRepairRun()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	agent := &Agent{
@@ -1431,7 +1431,7 @@ func TestAgentForcesPatchAfterPreFixReviewInspectionBudget(t *testing.T) {
 		calls = append(calls, ToolCall{
 			ID:        fmt.Sprintf("call-read-%d", i+1),
 			Name:      "read_file",
-			Arguments: fmt.Sprintf(`{"path":"Tavern/Common/Context%d.cpp"}`, i+1),
+			Arguments: fmt.Sprintf(`{"path":"SampleGame/Common/Context%d.cpp"}`, i+1),
 		})
 	}
 	provider := &scriptedProviderClient{
@@ -1441,7 +1441,7 @@ func TestAgentForcesPatchAfterPreFixReviewInspectionBudget(t *testing.T) {
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
-	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
+	session.AddMessage(Message{Role: "user", Text: "@SampleGame/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해"})
 	session.LastReviewRun = focusedPreFixRepairRun()
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	agent := &Agent{
@@ -1475,16 +1475,16 @@ func TestAgentForcesPatchAfterPreFixReviewInspectionBudget(t *testing.T) {
 func focusedPreFixRepairRun() *ReviewRun {
 	return &ReviewRun{
 		Trigger:   reviewBeforeFixTrigger,
-		Objective: "@Tavern/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해",
+		Objective: "@SampleGame/Common/WMIQuery.cpp 코드를 검토하고 버그를 수정해",
 		RequestAnalysis: ReviewRequestAnalysis{
 			ScopeDiscovery: ReviewScopeDiscovery{
-				CandidateFiles: []string{"Tavern/Common/WMIQuery.cpp"},
+				CandidateFiles: []string{"SampleGame/Common/WMIQuery.cpp"},
 				ScopeWidth:     "focused",
 				Confidence:     0.86,
 			},
 		},
 		Evidence: ReviewEvidencePack{
-			ChangedPaths: []string{"Tavern/Common/WMIQuery.cpp"},
+			ChangedPaths: []string{"SampleGame/Common/WMIQuery.cpp"},
 		},
 		Gate: GateDecision{
 			Verdict:          reviewVerdictNeedsRevision,
@@ -1494,7 +1494,7 @@ func focusedPreFixRepairRun() *ReviewRun {
 			ID:          "RF-001",
 			Severity:    reviewSeverityHigh,
 			Category:    "correctness",
-			Path:        "Tavern/Common/WMIQuery.cpp",
+			Path:        "SampleGame/Common/WMIQuery.cpp",
 			Title:       "SAFEARRAY type guard is too broad",
 			RequiredFix: "Use an exact VARTYPE comparison and keep the patch focused on WMIQuery.cpp.",
 			BlocksGate:  true,
@@ -3945,8 +3945,8 @@ func TestSanitizeAssistantMessageTextKeepsSubstantiveKoreanToolPlan(t *testing.T
 
 func TestSanitizeAssistantMessageTextRemovesFinalLookingToolSummary(t *testing.T) {
 	cases := []string{
-		"작업 완료\n\nTavern/BugReport.md 문서가 완성되었습니다. 총 27개 버그를 기록했고 더 이상 변경은 필요 없습니다.",
-		"Final Answer\n\nThe bug report has been completed and saved to Tavern/BugReport.md.",
+		"작업 완료\n\nSampleGame/BugReport.md 문서가 완성되었습니다. 총 27개 버그를 기록했고 더 이상 변경은 필요 없습니다.",
+		"Final Answer\n\nThe bug report has been completed and saved to SampleGame/BugReport.md.",
 	}
 
 	for _, text := range cases {
@@ -4164,14 +4164,14 @@ func TestAgentFinalizesFinalLookingReplyWhenProviderEndTurnFalse(t *testing.T) {
 
 func TestAgentFinalizesSavedReportSummaryWhenProviderEndTurnFalse(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportContent := strings.Join([]string{
-		"# Tavern BugReport Report Status",
+		"# SampleGame BugReport Report Status",
 		"",
-		"This Tavern BugReport report status document records the current saved report state.",
+		"This SampleGame BugReport report status document records the current saved report state.",
 		"It includes detailed bug findings, impact analysis, and suggested fixes for each bug.",
 		"BUG-001 documents a representative correctness issue with impact analysis and a fix recommendation.",
 		"BUG-002 documents a representative stability issue with impact analysis and a fix recommendation.",
@@ -4182,7 +4182,7 @@ func TestAgentFinalizesSavedReportSummaryWhenProviderEndTurnFalse(t *testing.T) 
 		t.Fatalf("WriteFile: %v", err)
 	}
 	endTurnFalse := false
-	finalReply := "The full report with detailed descriptions, impact analysis, and suggested fixes for each bug is saved in `Tavern/BugReport.md`."
+	finalReply := "The full report with detailed descriptions, impact analysis, and suggested fixes for each bug is saved in `SampleGame/BugReport.md`."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			{
@@ -4204,7 +4204,7 @@ func TestAgentFinalizesSavedReportSummaryWhenProviderEndTurnFalse(t *testing.T) 
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "Tavern/BugReport.md report status")
+	reply, err := agent.Reply(context.Background(), "SampleGame/BugReport.md report status")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -4220,7 +4220,7 @@ func TestAgentFinalizesSavedReportSummaryWhenProviderEndTurnFalse(t *testing.T) 
 }
 
 func TestAssistantTextLooksLikeCompletionSummaryForSavedReport(t *testing.T) {
-	text := "The full report with detailed descriptions, impact analysis, and suggested fixes for each bug is saved in `Tavern/BugReport.md`."
+	text := "The full report with detailed descriptions, impact analysis, and suggested fixes for each bug is saved in `SampleGame/BugReport.md`."
 	if !assistantTextLooksLikeCompletionSummary(text) {
 		t.Fatalf("expected saved report wording to be treated as a completion summary")
 	}
@@ -6808,7 +6808,7 @@ func TestAgentBlocksDocumentReadBeforeParentListing(t *testing.T) {
 }
 
 func TestDocumentReadBlockPreservesDocumentAuthoringContinuation(t *testing.T) {
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
 	session.TaskState = &TaskState{Goal: original}
@@ -6820,9 +6820,9 @@ func TestDocumentReadBlockPreservesDocumentAuthoringContinuation(t *testing.T) {
 
 	block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls([]ToolCall{{
 		Name:      "read_file",
-		Arguments: `{"path":"Tavern/BugReport.md"}`,
+		Arguments: `{"path":"SampleGame/BugReport.md"}`,
 	}}, session)
-	if !block || targetPath != "Tavern/BugReport.md" || parentPath != "Tavern" {
+	if !block || targetPath != "SampleGame/BugReport.md" || parentPath != "SampleGame" {
 		t.Fatalf("expected continuation document authoring to block unconfirmed document read, block=%t target=%q parent=%q", block, targetPath, parentPath)
 	}
 
@@ -6838,10 +6838,10 @@ func TestDocumentReadBlockPreservesDocumentAuthoringContinuation(t *testing.T) {
 
 func TestAgentBlocksDocumentReadWhenParentListedButTargetMissing(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "Other.md"), []byte("# Other\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "Other.md"), []byte("# Other\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
@@ -6849,12 +6849,12 @@ func TestAgentBlocksDocumentReadWhenParentListedButTargetMissing(t *testing.T) {
 	ws := Workspace{BaseRoot: root, Root: root}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("list_files", map[string]any{"path": "Tavern"}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("list_files", map[string]any{"path": "SampleGame"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 			toolCallResponse("write_file", map[string]any{
-				"path": "Tavern/BugReport.md",
+				"path": "SampleGame/BugReport.md",
 				"content": strings.Join([]string{
-					"# Tavern Bug Report",
+					"# SampleGame Bug Report",
 					"",
 					"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 					"",
@@ -6864,11 +6864,11 @@ func TestAgentBlocksDocumentReadWhenParentListedButTargetMissing(t *testing.T) {
 					"| Total | 1 |",
 					"",
 					"## BUG-001",
-					"- File: Tavern/Tavern/RuntimeManager.cpp",
+					"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 					"- Impact: crash risk.",
 				}, "\n"),
 			}),
-			{Message: Message{Role: "assistant", Text: "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."}},
+			{Message: Message{Role: "assistant", Text: "SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."}},
 		},
 	}
 	agent := &Agent{
@@ -6880,11 +6880,11 @@ func TestAgentBlocksDocumentReadWhenParentListedButTargetMissing(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
 	if len(provider.requests) != 4 {
@@ -11022,7 +11022,7 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValidation(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
 		"",
@@ -11033,11 +11033,11 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	mainProvider := &scriptedProviderClient{
@@ -11045,18 +11045,18 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "1. Inspect source files\n2. Write Tavern/BugReport.md\n3. Summarize the document artifact",
+					Text: "1. Inspect source files\n2. Write SampleGame/BugReport.md\n3. Summarize the document artifact",
 				},
 				StopReason: "stop",
 			},
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -11078,11 +11078,11 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected final document summary, got %q", reply)
 	}
 	if len(mainProvider.requests) != 3 {
@@ -11091,7 +11091,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 	if session.ActivePatchTransaction != nil {
 		t.Fatalf("expected document patch transaction to finalize, got %#v", session.ActivePatchTransaction)
 	}
-	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].ChangedPaths()[0] != "Tavern/BugReport.md" {
+	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].ChangedPaths()[0] != "SampleGame/BugReport.md" {
 		t.Fatalf("expected archived document patch transaction, got %#v", session.PatchTransactions)
 	}
 }
@@ -11099,7 +11099,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
 		"",
@@ -11110,24 +11110,24 @@ func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *te
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	mainProvider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
 					Text: strings.Join([]string{
-						"The `Tavern/BugReport.md` document has been fully created and verified.",
+						"The `SampleGame/BugReport.md` document has been fully created and verified.",
 						"",
 						"27 documented bugs were found.",
 						"",
@@ -11144,7 +11144,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *te
 				},
 				StopReason: "stop",
 			},
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 		},
 	}
 	reviewer := &scriptedProviderClient{
@@ -11180,7 +11180,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *te
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected final document summary, got %q", reply)
 	}
 	if strings.Contains(reply, "27 documented bugs") {
@@ -11200,7 +11200,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesWhenRequestOmitsOutputPath(t *te
 func TestAgentGeneratedDocumentArtifactFinalizesDespiteProviderEndTurnFalse(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -11210,25 +11210,25 @@ func TestAgentGeneratedDocumentArtifactFinalizesDespiteProviderEndTurnFalse(t *t
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	endTurnFalse := false
 	mainProvider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				EndTurn:    &endTurnFalse,
 				StopReason: "stop",
 			},
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -11250,7 +11250,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesDespiteProviderEndTurnFalse(t *t
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "검증은 실행하지 않았습니다") {
 		t.Fatalf("expected generated document final reply, got %q", reply)
 	}
 	if len(mainProvider.requests) != 2 {
@@ -11264,7 +11264,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesDespiteProviderEndTurnFalse(t *t
 func TestAgentBlocksGeneratedDocumentPostWriteShellValidationWhenRequestOmitsOutputPath(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
 		"",
@@ -11275,21 +11275,21 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationWhenRequestOmitsOut
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	shellTool := &staticTool{name: "run_shell", output: "shell should not run"}
 	mainProvider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
-			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing Tavern/BugReport.md for final validation"}),
+			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing SampleGame/BugReport.md for final validation"}),
 			{
 				Message: Message{
 					Role: "assistant",
@@ -11321,7 +11321,7 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationWhenRequestOmitsOut
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
 	}
 	if shellTool.calls != 0 {
@@ -11338,7 +11338,7 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationWhenRequestOmitsOut
 func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -11348,19 +11348,19 @@ func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -11399,7 +11399,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure
 		},
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -11419,7 +11419,7 @@ func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure
 func TestAgentGeneratedDocumentArtifactSynthesizesFinalBeforePostCompletionTools(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
 		"",
@@ -11430,23 +11430,23 @@ func TestAgentGeneratedDocumentArtifactSynthesizesFinalBeforePostCompletionTools
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "The bug report document has been created at `Tavern/BugReport.md` with detailed findings and suggested fixes.",
+					Text: "The bug report document has been created at `SampleGame/BugReport.md` with detailed findings and suggested fixes.",
 				},
 				StopReason: "stop",
 			},
@@ -11475,11 +11475,11 @@ func TestAgentGeneratedDocumentArtifactSynthesizesFinalBeforePostCompletionTools
 		},
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected generated document final reply, got %q", reply)
 	}
 	if !replyMentionsVerificationNotRun(reply) {
@@ -11498,7 +11498,7 @@ func TestAgentGeneratedDocumentArtifactSynthesizesFinalBeforePostCompletionTools
 func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -11508,10 +11508,10 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
-	reportDir := filepath.Join(root, "Tavern")
+	reportDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -11519,8 +11519,8 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
-	reply := "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
+	reply := "SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: request},
@@ -11535,7 +11535,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -11560,7 +11560,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 	lastFingerprint := ""
 	revisionCount := 0
 	exhaustedNudge := false
-	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(context.Background(), request, "Tavern/BugReport.md 문서 산출물이 완료되었습니다. 빌드/테스트 검증은 실행하지 않았습니다.", &lastFingerprint, &revisionCount, &exhaustedNudge)
+	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(context.Background(), request, "SampleGame/BugReport.md 문서 산출물이 완료되었습니다. 빌드/테스트 검증은 실행하지 않았습니다.", &lastFingerprint, &revisionCount, &exhaustedNudge)
 	if err != nil {
 		t.Fatalf("runAutomaticPostChangeReviewGate: %v", err)
 	}
@@ -11612,7 +11612,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
 		t.Fatalf("git config name: %v", err)
 	}
-	reportDir := filepath.Join(root, "Tavern")
+	reportDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -11620,14 +11620,14 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 	if err := os.WriteFile(reportPath, []byte("# Initial Report\n\nPlaceholder before generated artifact.\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile initial report: %v", err)
 	}
-	if _, err := runGitCommand(ctx, root, "add", "Tavern/BugReport.md"); err != nil {
+	if _, err := runGitCommand(ctx, root, "add", "SampleGame/BugReport.md"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
 	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
 		t.Fatalf("git commit: %v", err)
 	}
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -11637,15 +11637,15 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
 		t.Fatalf("WriteFile report: %v", err)
 	}
 
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
-	reply := "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
+	reply := "SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
 	session := NewSession(root, "scripted", "model", "", "default")
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session.AcceptanceContract = &contract
@@ -11693,7 +11693,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 	if !finalized {
 		t.Fatalf("expected accepted generated document artifact to finalize instead of reopening model turns, reply=%q report=%#v", finalReply, session.LastCodingHarnessReport)
 	}
-	if !strings.Contains(finalReply, "Tavern/BugReport.md") {
+	if !strings.Contains(finalReply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected generated document final reply, got %q", finalReply)
 	}
 	if session.ActivePatchTransaction != nil {
@@ -11704,7 +11704,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclosureRepair(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -11714,23 +11714,23 @@ func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclos
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.LastVerification = &VerificationReport{
 		Trigger:   "automatic",
 		Workspace: root,
 		ChangedPaths: []string{
-			"Tavern/BugReport.md",
+			"SampleGame/BugReport.md",
 		},
 		Steps: []VerificationStep{{
 			Label:   "configured verification",
@@ -11745,7 +11745,7 @@ func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclos
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -11761,7 +11761,7 @@ func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclos
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	initialReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다."
+	initialReply := "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다."
 	report := agent.buildCodingHarnessReport(initialReply, false, true)
 	if report.Approved {
 		t.Fatalf("expected missing skipped-verification disclosure to block the initial report, got %#v", report)
@@ -11782,7 +11782,7 @@ func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclos
 func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithoutReviewerLoop(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -11792,19 +11792,19 @@ func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithou
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -11820,7 +11820,7 @@ func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithou
 			StopReason: "stop",
 		}},
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -11851,7 +11851,7 @@ func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithou
 		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
 			_ = ctx
 			return VerificationReport{
-				ChangedPaths: []string{"Tavern/BugReport.md"},
+				ChangedPaths: []string{"SampleGame/BugReport.md"},
 				Steps: []VerificationStep{{
 					Label:   "configured verification",
 					Command: "configured verification callback",
@@ -11865,7 +11865,7 @@ func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithou
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final reply with skipped verification disclosure, got %q", reply)
 	}
 	if len(provider.requests) != 2 {
@@ -11879,7 +11879,7 @@ func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithou
 func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
 		"",
@@ -11890,23 +11890,23 @@ func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	provider := &streamingScriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -11930,11 +11930,11 @@ func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T
 		EmitAssistantDelta: func(text string) { emitted.WriteString(text) },
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected final document summary, got %q", reply)
 	}
 	if emitted.String() != "" {
@@ -11953,7 +11953,7 @@ func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T
 
 func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testing.T) {
 	root := t.TempDir()
-	reportDir := filepath.Join(root, "Tavern")
+	reportDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -11964,10 +11964,10 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 
 	patch := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Update File: Tavern/BugReport.md",
+		"*** Update File: SampleGame/BugReport.md",
 		"@@",
 		"-# Draft",
-		"+# Tavern Bug Report",
+		"+# SampleGame Bug Report",
 		"+",
 		"+소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"+",
@@ -11977,7 +11977,7 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 		"+| Total | 1 |",
 		"+",
 		"+## BUG-001",
-		"+- File: Tavern/Tavern/RuntimeManager.cpp",
+		"+- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"+- Impact: crash risk.",
 		"*** End Patch",
 	}, "\n")
@@ -11987,7 +11987,7 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -12022,11 +12022,11 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 		},
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "검증은 실행하지 않았습니다") {
 		t.Fatalf("expected generated document final answer with verification disclosure, got %q", reply)
 	}
 	if len(provider.requests) != 2 {
@@ -12039,7 +12039,7 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 		t.Fatalf("expected final candidate delta to stay hidden until accepted, got %q", emittedDelta.String())
 	}
 	for _, text := range emittedAssistant {
-		if strings.Contains(text, "Tavern/BugReport.md 문서를 생성") {
+		if strings.Contains(text, "SampleGame/BugReport.md 문서를 생성") {
 			t.Fatalf("final candidate was emitted before acceptance: %q", text)
 		}
 	}
@@ -12051,7 +12051,7 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 	if session.ActivePatchTransaction != nil {
 		t.Fatalf("expected apply_patch document transaction to finalize, got %#v", session.ActivePatchTransaction)
 	}
-	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].ChangedPaths()[0] != "Tavern/BugReport.md" {
+	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].ChangedPaths()[0] != "SampleGame/BugReport.md" {
 		t.Fatalf("expected archived document patch transaction, got %#v", session.PatchTransactions)
 	}
 }
@@ -12059,7 +12059,7 @@ func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testin
 func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *testing.T) {
 	root := t.TempDir()
 	reportLines := []string{
-		"# Tavern Client Bug Report",
+		"# SampleGame Client Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 총 26개 버그를 문서화했습니다.",
 		"",
@@ -12075,7 +12075,7 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 	for i := 1; i <= 26; i++ {
 		reportLines = append(reportLines,
 			fmt.Sprintf("## BUG-%03d", i),
-			"- File: Tavern/Tavern/RuntimeManager.cpp",
+			"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 			"- Impact: documented issue.",
 			"",
 		)
@@ -12083,7 +12083,7 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 	provider := &streamingScriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": strings.Join(reportLines, "\n"),
 			}),
 			{
@@ -12107,8 +12107,8 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 				},
 				StopReason: "stop",
 			},
-			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing Tavern/BugReport.md for final validation"}),
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing SampleGame/BugReport.md for final validation"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 			{
 				Message: Message{
 					Role: "assistant",
@@ -12127,7 +12127,7 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 			StopReason: "stop",
 		}},
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session.AcceptanceContract = &contract
@@ -12169,7 +12169,7 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final answer, got %q with %d provider requests and messages %#v", reply, len(provider.requests), session.Messages)
 	}
 	if strings.Contains(reply, "27") {
@@ -12196,19 +12196,19 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 
 func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	reportContent := strings.Join([]string{
-		"# Tavern Client Bug Report",
+		"# SampleGame Client Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"총 2개 버그를 문서화했습니다.",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: documented issue.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: documented issue.",
 	}, "\n")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
@@ -12218,7 +12218,7 @@ func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
 		SourcePrompt: request,
@@ -12234,7 +12234,7 @@ func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Size:         int64(len(reportContent)),
 				ContentChars: len([]rune(reportContent)),
@@ -12250,7 +12250,7 @@ func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write",
 			}},
 		}},
@@ -12289,7 +12289,7 @@ func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final answer, got %q", reply)
 	}
 	if strings.Contains(reply, "fallback") {
@@ -12306,7 +12306,7 @@ func TestAgentFinalizesGeneratedDocumentBeforeWebResearchChurn(t *testing.T) {
 func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.T) {
 	root := t.TempDir()
 	badReport := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 3개 버그를 문서로 생성했습니다.",
 		"",
@@ -12317,16 +12317,16 @@ func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.
 		"| Total | 3 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime risk.",
 	}, "\n")
 	repairPatch := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Update File: Tavern/BugReport.md",
+		"*** Update File: SampleGame/BugReport.md",
 		"@@",
 		"-소스코드 검토 결과 총 3개 버그를 문서로 생성했습니다.",
 		"+소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
@@ -12338,13 +12338,13 @@ func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.
 	provider := &streamingScriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": badReport,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -12387,7 +12387,7 @@ func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.
 			StopReason: "stop",
 		}},
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	store := NewSessionStore(filepath.Join(root, "sessions"))
@@ -12417,7 +12417,7 @@ func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final answer, got %q", reply)
 	}
 	if strings.Contains(reply, "3 documented bugs") || strings.Contains(reply, "총 3개") {
@@ -12442,7 +12442,7 @@ func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.
 func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -12452,15 +12452,15 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	endTurnFalse := false
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
+	finalReply := "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -12493,7 +12493,7 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -12517,7 +12517,7 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 func TestAgentGeneratedDocumentIgnoresEndTurnFalseCommentaryPhaseAfterArtifactWrite(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -12527,15 +12527,15 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseCommentaryPhaseAfterArtifactWr
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	endTurnFalse := false
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
+	finalReply := "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -12569,7 +12569,7 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseCommentaryPhaseAfterArtifactWr
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -12590,7 +12590,7 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseCommentaryPhaseAfterArtifactWr
 func TestAgentGeneratedDocumentSkippedVerificationCompletesSelfDrivingState(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -12600,14 +12600,14 @@ func TestAgentGeneratedDocumentSkippedVerificationCompletesSelfDrivingState(t *t
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
+	finalReply := "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -12645,7 +12645,7 @@ func TestAgentGeneratedDocumentSkippedVerificationCompletesSelfDrivingState(t *t
 		},
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -12692,7 +12692,7 @@ func TestAgentGeneratedDocumentExplicitVerificationRequirementKeepsPendingState(
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -12701,7 +12701,7 @@ func TestAgentGeneratedDocumentExplicitVerificationRequirementKeepsPendingState(
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:        "Tavern/BugReport.md",
+				Path:        "SampleGame/BugReport.md",
 				Kind:        "document",
 				Substantive: true,
 			}},
@@ -12720,7 +12720,7 @@ func TestAgentGeneratedDocumentExplicitVerificationRequirementKeepsPendingState(
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	agent.finalizeTaskStateOnAcceptedFinalAnswer("Tavern/BugReport.md 생성 완료. 검증은 실행하지 않았습니다.", true)
+	agent.finalizeTaskStateOnAcceptedFinalAnswer("SampleGame/BugReport.md 생성 완료. 검증은 실행하지 않았습니다.", true)
 	if session.TaskState.Phase != "recovery" {
 		t.Fatalf("expected explicit verification requirement to keep task in recovery, got %#v", session.TaskState)
 	}
@@ -12731,7 +12731,7 @@ func TestAgentGeneratedDocumentExplicitVerificationRequirementKeepsPendingState(
 
 func TestAgentPreservesAcceptanceContextForInternalGoalPrompt(t *testing.T) {
 	root := t.TempDir()
-	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	contract := buildAcceptanceContract(original, TurnIntentEditCode, false, true, false)
 	session.AcceptanceContract = &contract
@@ -12739,7 +12739,7 @@ func TestAgentPreservesAcceptanceContextForInternalGoalPrompt(t *testing.T) {
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 2048,
@@ -12775,7 +12775,7 @@ func TestAgentPreservesAcceptanceContextForInternalGoalPrompt(t *testing.T) {
 func TestAgentBlocksGeneratedDocumentPostWriteShellValidationAfterHarnessFeedback(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -12786,35 +12786,35 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationAfterHarnessFeedbac
 		"| Total | 3 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 	}, "\n")
 	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
 	shellTool := &staticTool{name: "run_shell", output: "shell validation executed"}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": badReportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
-			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing Tavern/BugReport.md for final validation"}),
+			toolCallResponse("run_shell", map[string]any{"command": "echo Reviewing SampleGame/BugReport.md for final validation"}),
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": goodReportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -12835,7 +12835,7 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationAfterHarnessFeedbac
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -12856,7 +12856,7 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationAfterHarnessFeedbac
 func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: true}
 	session.PatchTransactions = []PatchTransaction{{
@@ -12866,7 +12866,7 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -12877,18 +12877,18 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 	}
 
 	for _, call := range []ToolCall{
-		{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
-		{Name: "list_files", Arguments: `{"path":"Tavern"}`},
-		{Name: "grep", Arguments: `{"path":"Tavern/BugReport.md","pattern":"BUG-"}`},
+		{Name: "read_file", Arguments: `{"path":"SampleGame/BugReport.md"}`},
+		{Name: "list_files", Arguments: `{"path":"SampleGame"}`},
+		{Name: "grep", Arguments: `{"path":"SampleGame/BugReport.md","pattern":"BUG-"}`},
 	} {
 		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
 			t.Fatalf("expected approved generated document artifact to block post-completion tool call %#v", call)
 		}
 	}
 	for _, call := range []ToolCall{
-		{Name: "write_file", Arguments: `{"path":"Tavern/BugReport.md","content":"# report"}`},
-		{Name: "replace_in_file", Arguments: `{"path":"Tavern/BugReport.md","old":"before","new":"after"}`},
-		{Name: "apply_patch", Arguments: `{"patch":"*** Begin Patch\n*** Update File: Tavern/BugReport.md\n@@\n-before\n+after\n*** End Patch\n"}`},
+		{Name: "write_file", Arguments: `{"path":"SampleGame/BugReport.md","content":"# report"}`},
+		{Name: "replace_in_file", Arguments: `{"path":"SampleGame/BugReport.md","old":"before","new":"after"}`},
+		{Name: "apply_patch", Arguments: `{"patch":"*** Begin Patch\n*** Update File: SampleGame/BugReport.md\n@@\n-before\n+after\n*** End Patch\n"}`},
 	} {
 		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
 			t.Fatalf("approved generated document artifact should block post-completion edit churn: %#v", call)
@@ -12901,13 +12901,13 @@ func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) 
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
-		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 256,
@@ -12921,7 +12921,7 @@ func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) 
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -12940,7 +12940,7 @@ func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) 
 	if !agent.changesAreGeneratedDocumentArtifactsForTurn(genericFollowup) {
 		t.Fatalf("accepted document-artifact harness should outlive generic final-answer follow-up prompts")
 	}
-	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(genericFollowup, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(genericFollowup, []ToolCall{{Name: "read_file", Arguments: `{"path":"SampleGame/BugReport.md"}`}}) {
 		t.Fatalf("accepted document-artifact harness should block post-completion inspection churn")
 	}
 	plan := agent.buildTurnToolExposurePlan(nil, genericFollowup, false, false, false, false, false, false)
@@ -12959,13 +12959,13 @@ func TestAgentClearsGeneratedDocumentFinalOnlyForBroaderScopeSteering(t *testing
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
-		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 256,
@@ -12975,12 +12975,12 @@ func TestAgentClearsGeneratedDocumentFinalOnlyForBroaderScopeSteering(t *testing
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
 		Status: patchTransactionStatusCommitted,
-		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 		Entries: []PatchTransactionEntry{{
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -13016,7 +13016,7 @@ func TestAgentClearsGeneratedDocumentFinalOnlyForBroaderScopeSteering(t *testing
 func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13027,27 +13027,27 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: len(reportContent),
@@ -13061,7 +13061,7 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -13069,7 +13069,7 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 	readTool := &staticTool{name: "read_file", output: "read should not run"}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 			{
 				Message: Message{
 					Role: "assistant",
@@ -13095,7 +13095,7 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
 	}
 	if readTool.calls != 0 {
@@ -13115,7 +13115,7 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13125,24 +13125,24 @@ func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: len(reportContent),
@@ -13156,7 +13156,7 @@ func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -13164,7 +13164,7 @@ func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 	readTool := &staticTool{name: "read_file", output: "read should not run"}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 			{
 				Message: Message{
 					Role: "assistant",
@@ -13190,7 +13190,7 @@ func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
 	}
 	if len(provider.requests) != 1 {
@@ -13209,7 +13209,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 	if err := os.WriteFile(filepath.Join(root, "worker_target.txt"), []byte("AntiTamperGuard evidence is present here.\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.TaskState = &TaskState{
@@ -13229,7 +13229,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -13244,7 +13244,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -13253,7 +13253,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 		replies: []ChatResponse{{
 			Message: Message{
 				Role: "assistant",
-				Text: "Tavern/BugReport.md 문서 산출물이 완료되었습니다. 빌드/테스트 검증은 실행하지 않았습니다.",
+				Text: "SampleGame/BugReport.md 문서 산출물이 완료되었습니다. 빌드/테스트 검증은 실행하지 않았습니다.",
 			},
 			StopReason: "stop",
 		}},
@@ -13275,7 +13275,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected generated document final reply, got %q", reply)
 	}
 	if len(provider.requests) != 1 {
@@ -13423,7 +13423,7 @@ func TestAgentBlocksModelRequestedHiddenDispatchOnlyTool(t *testing.T) {
 
 func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarnessApproval(t *testing.T) {
 	root := t.TempDir()
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.TaskState = &TaskState{
@@ -13438,7 +13438,7 @@ func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarne
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -13451,7 +13451,7 @@ func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarne
 	if !agent.shouldSuppressInteractiveWorkersForTurn(request) {
 		t.Fatalf("expected generated document write to suppress automatic interactive workers before harness approval")
 	}
-	if agent.shouldSuppressInteractiveWorkersForTurn("Tavern/BugReport.md 검증해") {
+	if agent.shouldSuppressInteractiveWorkersForTurn("SampleGame/BugReport.md 검증해") {
 		t.Fatalf("explicit local verification requests should remain allowed to run tools and workers")
 	}
 }
@@ -13459,7 +13459,7 @@ func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarne
 func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13470,32 +13470,32 @@ func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *te
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	readTool := &staticTool{name: "read_file", output: "read should not run"}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
 				},
 				StopReason: "stop",
 			},
-			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			toolCallResponse("read_file", map[string]any{"path": "SampleGame/BugReport.md"}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -13516,7 +13516,7 @@ func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *te
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -13537,7 +13537,7 @@ func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *te
 func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13548,25 +13548,25 @@ func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	readTool := &staticTool{name: "read_file", output: "read should not run"}
-	readArgs, _ := json.Marshal(map[string]any{"path": "Tavern/BugReport.md"})
+	readArgs, _ := json.Marshal(map[string]any{"path": "SampleGame/BugReport.md"})
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 					ToolCalls: []ToolCall{{
 						ID:        "call-read-after-final",
 						Name:      "read_file",
@@ -13599,11 +13599,11 @@ func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected generated document final reply, got %q", reply)
 	}
 	if readTool.calls != 0 {
@@ -13623,7 +13623,7 @@ func TestAgentFinalizesGeneratedDocumentPreambleWithToolCalls(t *testing.T) {
 func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHarnessReport(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13634,18 +13634,18 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHa
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	shellTool := &staticTool{name: "run_shell", output: "should not run"}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -13654,7 +13654,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHa
 					ToolCalls: []ToolCall{{
 						ID:        "call-shell-before-harness",
 						Name:      "run_shell",
-						Arguments: `{"command":"echo Reviewing Tavern/BugReport.md for final validation"}`,
+						Arguments: `{"command":"echo Reviewing SampleGame/BugReport.md for final validation"}`,
 					}},
 				},
 				StopReason: "tool_calls",
@@ -13683,11 +13683,11 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHa
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized document-artifact final reply, got %q", reply)
 	}
 	if shellTool.calls != 0 {
@@ -13707,7 +13707,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenValidationToolArrivesBeforeHa
 func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHarnessReport(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13718,11 +13718,11 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHa
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	readTool := &staticTool{name: "read_file", output: "read should not run"}
@@ -13730,7 +13730,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHa
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -13740,12 +13740,12 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHa
 						{
 							ID:        "call-read-before-harness",
 							Name:      "read_file",
-							Arguments: `{"path":"Tavern/BugReport.md"}`,
+							Arguments: `{"path":"SampleGame/BugReport.md"}`,
 						},
 						{
 							ID:        "call-list-before-harness",
 							Name:      "list_files",
-							Arguments: `{"path":"Tavern"}`,
+							Arguments: `{"path":"SampleGame"}`,
 						},
 					},
 				},
@@ -13775,11 +13775,11 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHa
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized document-artifact final reply, got %q", reply)
 	}
 	if readTool.calls != 0 || listTool.calls != 0 {
@@ -13800,7 +13800,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenInspectionToolsArriveBeforeHa
 func TestAgentSynthesizesGeneratedDocumentFinalWhenPlanToolArrivesBeforeHarnessReport(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -13810,14 +13810,14 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenPlanToolArrivesBeforeHarnessR
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	planTool := &staticTool{name: "update_plan", output: "plan should not run"}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -13855,11 +13855,11 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenPlanToolArrivesBeforeHarnessR
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized document-artifact final reply, got %q", reply)
 	}
 	if planTool.calls != 0 {
@@ -13876,7 +13876,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenPlanToolArrivesBeforeHarnessR
 func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -13886,12 +13886,12 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	patch := strings.Join([]string{
 		"*** Begin Patch",
-		"*** Update File: Tavern/BugReport.md",
+		"*** Update File: SampleGame/BugReport.md",
 		"@@",
 		"-소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"+소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
@@ -13904,7 +13904,7 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 		"+- Impact: crash risk.",
 		"+",
 		"+## BUG-002",
-		"+- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"+- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"+- Impact: resource lifetime bug.",
 		"*** End Patch",
 	}, "\n")
@@ -13912,13 +13912,13 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 					ToolCalls: []ToolCall{{
 						ID:        "call-patch-after-final-looking-preamble",
 						Name:      "apply_patch",
@@ -13930,7 +13930,7 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -13951,7 +13951,7 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -13961,7 +13961,7 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 	if len(provider.requests) != 3 {
 		t.Fatalf("expected apply_patch preamble to execute before final answer, got %d requests", len(provider.requests))
 	}
-	content, err := os.ReadFile(filepath.Join(root, "Tavern", "BugReport.md"))
+	content, err := os.ReadFile(filepath.Join(root, "SampleGame", "BugReport.md"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -13976,7 +13976,7 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 func TestAgentExecutesGeneratedDocumentReplaceInFileAfterFinalLookingPreamble(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
 		"",
@@ -13987,28 +13987,28 @@ func TestAgentExecutesGeneratedDocumentReplaceInFileAfterFinalLookingPreamble(t 
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: needs detail.",
 	}, "\n")
 	replaceArgs, _ := json.Marshal(map[string]any{
-		"path":    "Tavern/BugReport.md",
+		"path":    "SampleGame/BugReport.md",
 		"search":  "- Impact: needs detail.",
 		"replace": "- Impact: resource lifetime bug.",
 	})
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 					ToolCalls: []ToolCall{{
 						ID:        "call-replace-after-final-looking-preamble",
 						Name:      "replace_in_file",
@@ -14020,7 +14020,7 @@ func TestAgentExecutesGeneratedDocumentReplaceInFileAfterFinalLookingPreamble(t 
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -14041,7 +14041,7 @@ func TestAgentExecutesGeneratedDocumentReplaceInFileAfterFinalLookingPreamble(t 
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -14051,7 +14051,7 @@ func TestAgentExecutesGeneratedDocumentReplaceInFileAfterFinalLookingPreamble(t 
 	if len(provider.requests) != 3 {
 		t.Fatalf("expected replace_in_file preamble to execute before final answer, got %d requests", len(provider.requests))
 	}
-	content, err := os.ReadFile(filepath.Join(root, "Tavern", "BugReport.md"))
+	content, err := os.ReadFile(filepath.Join(root, "SampleGame", "BugReport.md"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -14072,7 +14072,7 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14086,7 +14086,7 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -14096,13 +14096,13 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	if !agent.shouldFinalizeGeneratedDocumentArtifactReply(request, "Tavern/BugReport.md 생성 완료", false) {
+	if !agent.shouldFinalizeGeneratedDocumentArtifactReply(request, "SampleGame/BugReport.md 생성 완료", false) {
 		t.Fatalf("expected approved document artifact harness to allow finalization without original request context")
 	}
 	for _, call := range []ToolCall{
 		{Name: "run_shell", Arguments: `{"command":"echo validate"}`},
-		{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
-		{Name: "list_files", Arguments: `{"path":"Tavern"}`},
+		{Name: "read_file", Arguments: `{"path":"SampleGame/BugReport.md"}`},
+		{Name: "list_files", Arguments: `{"path":"SampleGame"}`},
 	} {
 		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
 			t.Fatalf("expected approved document artifact harness to block post-completion call %#v", call)
@@ -14116,11 +14116,11 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 	}
 	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{
 		Name:      "replace_in_file",
-		Arguments: `{"path":"Tavern/BugReport.md","old":"before","new":"after"}`,
+		Arguments: `{"path":"SampleGame/BugReport.md","old":"before","new":"after"}`,
 	}}) {
 		t.Fatalf("document artifact finalization should classify post-completion replace_in_file as churn")
 	}
-	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+	if agent.shouldReviewInteractiveFinalAnswer("SampleGame/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected approved document artifact harness to skip interactive final-answer review")
 	}
 }
@@ -14129,10 +14129,10 @@ func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *test
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}
 	session.TaskState = &TaskState{
-		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}
 	session.Messages = []Message{{
 		Role: "user",
@@ -14141,7 +14141,7 @@ func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *test
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14163,7 +14163,7 @@ func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *test
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "apply_patch",
 			}},
 		}},
@@ -14191,10 +14191,10 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}
 	session.TaskState = &TaskState{
-		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}
 	session.Messages = []Message{{
 		Role: "user",
@@ -14203,7 +14203,7 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14237,7 +14237,7 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	}
 	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("", []ToolCall{{
 		Name:      "run_shell",
-		Arguments: `{"command":"echo Reviewing Tavern/BugReport.md for final validation"}`,
+		Arguments: `{"command":"echo Reviewing SampleGame/BugReport.md for final validation"}`,
 	}}) {
 		t.Fatalf("expected accepted document artifact quality to block post-completion validation without patch paths")
 	}
@@ -14263,7 +14263,7 @@ func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRe
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14278,7 +14278,7 @@ func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRe
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "apply_patch",
 			}},
 		}},
@@ -14306,7 +14306,7 @@ func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRe
 	}
 	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("Please provide the final answer now.", []ToolCall{{
 		Name:      "read_file",
-		Arguments: `{"path":"Tavern/BugReport.md"}`,
+		Arguments: `{"path":"SampleGame/BugReport.md"}`,
 	}}) {
 		t.Fatalf("expected accepted document artifact state to block post-completion inspection churn")
 	}
@@ -14315,7 +14315,7 @@ func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRe
 func TestAgentSynthesizesGeneratedDocumentFinalWhenReplyOmitsArtifactPath(t *testing.T) {
 	root := t.TempDir()
 	reportLines := []string{
-		"# Tavern Client Bug Report",
+		"# SampleGame Client Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 총 26개 버그를 문서화했습니다.",
 		"",
@@ -14331,20 +14331,20 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenReplyOmitsArtifactPath(t *tes
 	for i := 1; i <= 26; i++ {
 		reportLines = append(reportLines,
 			fmt.Sprintf("## BUG-%03d", i),
-			"- File: Tavern/Tavern/RuntimeManager.cpp",
+			"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 			"- Impact: documented issue.",
 			"",
 		)
 	}
 	reportContent := strings.Join(reportLines, "\n")
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
 		SourcePrompt: request,
@@ -14355,7 +14355,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenReplyOmitsArtifactPath(t *tes
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				ContentChars: len([]rune(reportContent)),
 				Substantive:  true,
@@ -14398,7 +14398,7 @@ func TestAgentSynthesizesGeneratedDocumentFinalWhenReplyOmitsArtifactPath(t *tes
 	if strings.Contains(reply, "27 documented bugs") {
 		t.Fatalf("expected inconsistent bug-count reply to be replaced, got %q", reply)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") {
+	if !strings.Contains(reply, "SampleGame/BugReport.md") {
 		t.Fatalf("expected synthesized reply to retain the artifact path, got %q", reply)
 	}
 	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
@@ -14425,12 +14425,12 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 	session.Messages = []Message{
 		{
 			Role: "user",
-			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 		},
 		{
 			Role:  "assistant",
 			Phase: messagePhaseFinalAnswer,
-			Text:  "Tavern/BugReport.md 생성 완료",
+			Text:  "SampleGame/BugReport.md 생성 완료",
 		},
 		{
 			Role: "user",
@@ -14441,7 +14441,7 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14450,13 +14450,13 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 	}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
-		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 		Status: patchTransactionStatusCommitted,
 		Entries: []PatchTransactionEntry{{
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -14498,7 +14498,7 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 
 func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(t *testing.T) {
 	root := t.TempDir()
-	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
 		SourcePrompt: originalRequest,
@@ -14515,14 +14515,14 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(
 		{
 			Role:  "assistant",
 			Phase: messagePhaseFinalAnswer,
-			Text:  "Tavern/BugReport.md 문서 산출물이 완료되었습니다.",
+			Text:  "SampleGame/BugReport.md 문서 산출물이 완료되었습니다.",
 		},
 	}
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14537,7 +14537,7 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -14582,10 +14582,10 @@ func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}
 	session.TaskState = &TaskState{
-		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}
 	session.Messages = []Message{{
 		Role: "user",
@@ -14601,7 +14601,7 @@ func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "apply_patch",
 			}},
 		}},
@@ -14614,7 +14614,7 @@ func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *
 	if !agent.changesAreGeneratedDocumentArtifactsForTurn("") {
 		t.Fatalf("expected approved doc-only patch transaction to be treated as generated document artifact")
 	}
-	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+	if agent.shouldReviewInteractiveFinalAnswer("SampleGame/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected approved doc-only artifact to skip interactive final-answer reviewer")
 	}
 }
@@ -14656,7 +14656,7 @@ func TestAgentDoesNotTreatApprovedMixedArtifactHarnessAsGeneratedDocumentOnly(t 
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 4096,
@@ -14671,7 +14671,7 @@ func TestAgentDoesNotTreatApprovedMixedArtifactHarnessAsGeneratedDocumentOnly(t 
 			Status: "success",
 			Paths: []PatchPathChange{
 				{
-					Path:      "Tavern/BugReport.md",
+					Path:      "SampleGame/BugReport.md",
 					Operation: "write_file",
 				},
 				{
@@ -14686,10 +14686,10 @@ func TestAgentDoesNotTreatApprovedMixedArtifactHarnessAsGeneratedDocumentOnly(t 
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	if agent.shouldFinalizeGeneratedDocumentArtifactReply(request, "Tavern/BugReport.md 생성 완료", false) {
+	if agent.shouldFinalizeGeneratedDocumentArtifactReply(request, "SampleGame/BugReport.md 생성 완료", false) {
 		t.Fatalf("expected mixed code/doc changes not to use document-only finalization")
 	}
-	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "read_file", Arguments: `{"path":"SampleGame/BugReport.md"}`}}) {
 		t.Fatalf("expected mixed code/doc changes not to block normal follow-up tools as document-only churn")
 	}
 }
@@ -14697,7 +14697,7 @@ func TestAgentDoesNotTreatApprovedMixedArtifactHarnessAsGeneratedDocumentOnly(t 
 func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	session.Messages = []Message{{Role: "user", Text: request}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: false}
 	session.PatchTransactions = []PatchTransaction{{
@@ -14707,7 +14707,7 @@ func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -14717,7 +14717,7 @@ func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "read_file", Arguments: `{"path":"SampleGame/BugReport.md"}`}}) {
 		t.Fatalf("expected document inspection to remain available before artifact quality approval")
 	}
 	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "run_shell", Arguments: `{"command":"echo validate"}`}}) {
@@ -14728,7 +14728,7 @@ func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *
 func TestAgentRoutesGeneratedDocumentCommentaryReplyThroughArtifactHarness(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -14739,35 +14739,35 @@ func TestAgentRoutesGeneratedDocumentCommentaryReplyThroughArtifactHarness(t *te
 		"| Total | 3 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 	}, "\n")
 	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": badReportContent,
 			}),
 			{
 				Message: Message{
 					Role:  "assistant",
 					Phase: messagePhaseCommentary,
-					Text:  "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+					Text:  "SampleGame/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": goodReportContent,
 			}),
 			{
 				Message: Message{
 					Role:  "assistant",
 					Phase: messagePhaseCommentary,
-					Text:  "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text:  "SampleGame/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -14788,7 +14788,7 @@ func TestAgentRoutesGeneratedDocumentCommentaryReplyThroughArtifactHarness(t *te
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -15029,7 +15029,7 @@ func TestAgentBuffersFinalAnswerDeltaAfterMetadataOnlyEdit(t *testing.T) {
 func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -15040,37 +15040,37 @@ func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *t
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 		"- Impact: resource lifetime bug.",
 	}, "\n")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
 				},
 				StopReason: "stop",
 			},
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
 				},
 				StopReason: "stop",
 			},
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -15092,7 +15092,7 @@ func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *t
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -15110,7 +15110,7 @@ func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *t
 func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -15121,40 +15121,40 @@ func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
 		"| Total | 3 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 	}, "\n")
 	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": badReportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 검토했고 총 3개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 검토했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": goodReportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					Text: "SampleGame/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -15176,7 +15176,7 @@ func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -15194,7 +15194,7 @@ func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
 func TestAgentDropsRejectedFinalAnswerCandidateFromNextTurnHistory(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -15205,18 +15205,18 @@ func TestAgentDropsRejectedFinalAnswerCandidateFromNextTurnHistory(t *testing.T)
 		"| Total | 3 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 	}, "\n")
 	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
-	rejectedReply := "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다."
-	acceptedReply := "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
+	rejectedReply := "SampleGame/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다."
+	acceptedReply := "SampleGame/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": badReportContent,
 			}),
 			{
@@ -15227,7 +15227,7 @@ func TestAgentDropsRejectedFinalAnswerCandidateFromNextTurnHistory(t *testing.T)
 				StopReason: "stop",
 			},
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": goodReportContent,
 			}),
 			{
@@ -15255,7 +15255,7 @@ func TestAgentDropsRejectedFinalAnswerCandidateFromNextTurnHistory(t *testing.T)
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -15640,7 +15640,7 @@ func TestAgentContinuesPostEditFutureVerificationEndTurnFalse(t *testing.T) {
 func TestAgentContinuesGeneratedDocumentInProgressEndTurnFalseAfterArtifactWrite(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
 		"",
@@ -15650,16 +15650,16 @@ func TestAgentContinuesGeneratedDocumentInProgressEndTurnFalseAfterArtifactWrite
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
 	endTurnFalse := false
 	inProgress := "Still checking the generated artifact."
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
+	finalReply := "SampleGame/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": reportContent,
 			}),
 			{
@@ -15694,7 +15694,7 @@ func TestAgentContinuesGeneratedDocumentInProgressEndTurnFalseAfterArtifactWrite
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -15801,7 +15801,7 @@ func TestAssistantMessagePhaseForModelResponsePreservesOnlyCommentary(t *testing
 func TestAgentStopsGeneratedDocumentArtifactOnPersistentHarnessBlocker(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
 		"",
@@ -15812,35 +15812,35 @@ func TestAgentStopsGeneratedDocumentArtifactOnPersistentHarnessBlocker(t *testin
 		"| Total | 3 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- File: SampleGame/SampleGame/RuntimeManager.cpp",
 		"",
 		"## BUG-002",
-		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- File: SampleGame/SampleGame/SampleGameWorkerManager.cpp",
 	}, "\n")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
-				"path":    "Tavern/BugReport.md",
+				"path":    "SampleGame/BugReport.md",
 				"content": badReportContent,
 			}),
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 검토했고 총 3개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 검토했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "Tavern/BugReport.md 문서를 최종 확인했고 총 3개 버그를 기록했습니다.",
+					Text: "SampleGame/BugReport.md 문서를 최종 확인했고 총 3개 버그를 기록했습니다.",
 				},
 				StopReason: "stop",
 			},
@@ -15862,7 +15862,7 @@ func TestAgentStopsGeneratedDocumentArtifactOnPersistentHarnessBlocker(t *testin
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -15893,7 +15893,7 @@ func TestAgentDoesNotBufferAssistantDeltaForArchivedPatchTransaction(t *testing.
 			ID:     "patch-old-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -16286,7 +16286,7 @@ func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *t
 	session.TaskState = &TaskState{Goal: "create generated report"}
 	session.AcceptanceContract = &AcceptanceContract{
 		ID:           "accept-doc",
-		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해",
 		Mode:         "edit_code",
 	}
 	session.PatchTransactions = []PatchTransaction{{
@@ -16296,7 +16296,7 @@ func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *t
 			ID:     "patch-doc-001",
 			Status: "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -16306,7 +16306,7 @@ func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *t
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+	if agent.shouldReviewInteractiveFinalAnswer("SampleGame/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected generated document artifact final answer to skip reviewer")
 	}
 }
@@ -16314,22 +16314,22 @@ func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *t
 func TestAgentFinalizesGeneratedDocumentArtifactFromGitChangedPathFallback(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")
-	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "README.md"), []byte("seed\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "README.md"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatalf("write seed: %v", err)
 	}
-	runTestGit(t, root, "add", "Tavern/README.md")
+	runTestGit(t, root, "add", "SampleGame/README.md")
 	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "seed")
-	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte("# Tavern Bug Report\n\n## BUG-001\n- File: Tavern/Tavern.cpp\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte("# SampleGame Bug Report\n\n## BUG-001\n- File: SampleGame/SampleGame.cpp\n"), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
 
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
-		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
 	}}
 	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: true}
 	agent := &Agent{
@@ -16337,10 +16337,10 @@ func TestAgentFinalizesGeneratedDocumentArtifactFromGitChangedPathFallback(t *te
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	if !agent.shouldFinalizeGeneratedDocumentArtifactReply(session.Messages[0].Text, "Tavern/BugReport.md 생성 완료", false) {
+	if !agent.shouldFinalizeGeneratedDocumentArtifactReply(session.Messages[0].Text, "SampleGame/BugReport.md 생성 완료", false) {
 		t.Fatalf("expected generated document finalization to use git changed-path fallback when patch transaction paths are unavailable")
 	}
-	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+	if agent.shouldReviewInteractiveFinalAnswer("SampleGame/BugReport.md 생성 완료", true, false) {
 		t.Fatalf("expected generated document artifact final answer to skip reviewer from git changed-path fallback")
 	}
 }

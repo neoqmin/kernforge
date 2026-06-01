@@ -334,17 +334,17 @@ func TestAutomaticVerificationSkipsGitFallbackForDocumentOnlyPatchTransaction(t 
 	sess := &Session{
 		Messages: []Message{{
 			Role: "user",
-			Text: "Tavern/BugReport.md를 작성해",
+			Text: "SampleGame/BugReport.md를 작성해",
 		}},
 		PatchTransactions: []PatchTransaction{{
 			ID:     "patch-doc",
-			Goal:   "Tavern/BugReport.md를 작성해",
+			Goal:   "SampleGame/BugReport.md를 작성해",
 			Status: patchTransactionStatusCommitted,
 			Entries: []PatchTransactionEntry{{
 				ToolName: "write_file",
 				Status:   "success",
 				Paths: []PatchPathChange{{
-					Path:      "Tavern/BugReport.md",
+					Path:      "SampleGame/BugReport.md",
 					Operation: "write_file",
 				}},
 			}},
@@ -393,7 +393,7 @@ func TestAutomaticVerificationIgnoresArchivedPatchFromPreviousTurn(t *testing.T)
 		Messages: []Message{
 			{
 				Role: "user",
-				Text: "Tavern/BugReport.md를 작성해",
+				Text: "SampleGame/BugReport.md를 작성해",
 			},
 			{
 				Role:  "assistant",
@@ -407,13 +407,13 @@ func TestAutomaticVerificationIgnoresArchivedPatchFromPreviousTurn(t *testing.T)
 		},
 		PatchTransactions: []PatchTransaction{{
 			ID:     "patch-doc-old",
-			Goal:   "Tavern/BugReport.md를 작성해",
+			Goal:   "SampleGame/BugReport.md를 작성해",
 			Status: patchTransactionStatusCommitted,
 			Entries: []PatchTransactionEntry{{
 				ToolName: "write_file",
 				Status:   "success",
 				Paths: []PatchPathChange{{
-					Path:      "Tavern/BugReport.md",
+					Path:      "SampleGame/BugReport.md",
 					Operation: "write_file",
 				}},
 			}},
@@ -424,7 +424,7 @@ func TestAutomaticVerificationIgnoresArchivedPatchFromPreviousTurn(t *testing.T)
 	if !containsString(changed, "drivers/KernelDriver.cpp") {
 		t.Fatalf("expected stale archived document patch to be ignored in favor of current dirty code, got %#v", changed)
 	}
-	if containsString(changed, "Tavern/BugReport.md") {
+	if containsString(changed, "SampleGame/BugReport.md") {
 		t.Fatalf("automatic verification should not include previous-turn document patch, got %#v", changed)
 	}
 }
@@ -445,14 +445,14 @@ func TestAutomaticVerificationPrefersActiveDocumentPatchOverArchivedCodePatch(t 
 	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
 		t.Fatalf("git config user.name: %v", err)
 	}
-	sourcePath := filepath.Join(root, "Tavern", "TavernWorker", "EngineBase.cpp")
+	sourcePath := filepath.Join(root, "SampleGame", "SampleGameWorker", "EngineBase.cpp")
 	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
 		t.Fatalf("mkdir source: %v", err)
 	}
 	if err := os.WriteFile(sourcePath, []byte("int before;\n"), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
-	if _, err := runGitCommand(ctx, root, "add", "Tavern/TavernWorker/EngineBase.cpp"); err != nil {
+	if _, err := runGitCommand(ctx, root, "add", "SampleGame/SampleGameWorker/EngineBase.cpp"); err != nil {
 		t.Fatalf("git add: %v", err)
 	}
 	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
@@ -482,7 +482,7 @@ func TestAutomaticVerificationPrefersActiveDocumentPatchOverArchivedCodePatch(t 
 				ToolName: "apply_patch",
 				Status:   "success",
 				Paths: []PatchPathChange{{
-					Path:      "Tavern/TavernWorker/EngineBase.cpp",
+					Path:      "SampleGame/SampleGameWorker/EngineBase.cpp",
 					Operation: "modify",
 				}},
 			}},

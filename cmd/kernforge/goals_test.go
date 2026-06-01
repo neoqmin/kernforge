@@ -331,18 +331,18 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 			prompts = append(prompts, prompt)
 			switch {
 			case strings.Contains(prompt, "Autonomous goal iteration"):
-				reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+				reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 				if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 					t.Fatalf("mkdir report dir: %v", err)
 				}
-				if err := os.WriteFile(reportPath, []byte("# Tavern Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"), 0o644); err != nil {
+				if err := os.WriteFile(reportPath, []byte("# SampleGame Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"), 0o644); err != nil {
 					t.Fatalf("write report: %v", err)
 				}
 				session.LastCodingHarnessReport = &CodingHarnessReport{
 					Approved: true,
 					ArtifactQuality: ArtifactQualityReport{
 						Artifacts: []ArtifactQualityCheck{{
-							Path:         "Tavern/BugReport.md",
+							Path:         "SampleGame/BugReport.md",
 							Kind:         "file",
 							Size:         58,
 							ContentChars: 58,
@@ -351,7 +351,7 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 						}},
 					},
 				}
-				return "Tavern/BugReport.md 문서 산출물이 완료되었습니다.", nil
+				return "SampleGame/BugReport.md 문서 산출물이 완료되었습니다.", nil
 			case strings.Contains(prompt, "Autonomous goal independent review pass"):
 				t.Fatalf("document artifact gate should skip goal review model prompt:\n%s", prompt)
 			case strings.Contains(prompt, "Final semantic goal review"):
@@ -413,11 +413,11 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 			prompts = append(prompts, prompt)
 			switch {
 			case strings.Contains(prompt, "Autonomous goal iteration"):
-				reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+				reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 				if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 					t.Fatalf("mkdir report dir: %v", err)
 				}
-				content := "# Tavern Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"
+				content := "# SampleGame Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"
 				if err := os.WriteFile(reportPath, []byte(content), 0o644); err != nil {
 					t.Fatalf("write report: %v", err)
 				}
@@ -425,7 +425,7 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 					Approved: true,
 					ArtifactQuality: ArtifactQualityReport{
 						Artifacts: []ArtifactQualityCheck{{
-							Path:         "Tavern/BugReport.md",
+							Path:         "SampleGame/BugReport.md",
 							Kind:         "file",
 							Size:         int64(len(content)),
 							ContentChars: len(content),
@@ -434,7 +434,7 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 						}},
 					},
 				}
-				return "Tavern/BugReport.md 문서 산출물이 완료되었습니다.", nil
+				return "SampleGame/BugReport.md 문서 산출물이 완료되었습니다.", nil
 			case strings.Contains(prompt, "Autonomous goal independent review pass"):
 				t.Fatalf("preexisting dirty file should not force goal review for document artifact:\n%s", prompt)
 			case strings.Contains(prompt, "Final semantic goal review"):
@@ -1245,11 +1245,11 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 	if err != nil {
 		t.Fatalf("checkpoint: %v", err)
 	}
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("mkdir report dir: %v", err)
 	}
-	content := "# Tavern Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"
+	content := "# SampleGame Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"
 	if err := os.WriteFile(reportPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
@@ -1257,7 +1257,7 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 		Approved: true,
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "file",
 				Size:         int64(len(content)),
 				ContentChars: len(content),

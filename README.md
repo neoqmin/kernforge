@@ -67,15 +67,8 @@ Playbooks:
 - [Memory-Scan Playbook](./PLAYBOOK_memory_scan.md)
 - [한국어 Memory-Scan 플레이북](./PLAYBOOK_memory_scan_kor.md)
 
-Specs And Roadmap:
+Roadmap:
 - [Korean Roadmap](./ROADMAP_kor.md)
-- [Korean Fuzzing And Security Tools Gap Analysis](./FUZZING_SECURITY_TOOLS_GAP_ANALYSIS_kor.md)
-- [Korean Hook Engine Spec](./HOOK_ENGINE_SPEC_kor.md)
-- [Korean Common Review Harness Spec](./REVIEW_HARNESS_SPEC_kor.md)
-- [Korean Review Harness UX/Ops 85 Design](./REVIEW_HARNESS_UX_OPS_85_DESIGN_kor.md)
-- [Korean Live Investigation Mode Spec](./LIVE_INVESTIGATION_SPEC_kor.md)
-- [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
-- [Korean Next-Gen Project Analysis Spec](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
 The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `analyze-project -> investigate/simulate -> find-root-cause or fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
 

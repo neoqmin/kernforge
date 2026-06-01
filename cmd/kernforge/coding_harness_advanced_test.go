@@ -26,7 +26,7 @@ func TestArtifactQualityTargetsIgnoreArchivedPatchFromPreviousTurn(t *testing.T)
 	session.Messages = []Message{
 		{
 			Role: "user",
-			Text: "Tavern/BugReport.md를 작성해",
+			Text: "SampleGame/BugReport.md를 작성해",
 		},
 		{
 			Role:  "assistant",
@@ -40,14 +40,14 @@ func TestArtifactQualityTargetsIgnoreArchivedPatchFromPreviousTurn(t *testing.T)
 	}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc-old",
-		Goal:   "Tavern/BugReport.md를 작성해",
+		Goal:   "SampleGame/BugReport.md를 작성해",
 		Status: patchTransactionStatusCommitted,
 		Entries: []PatchTransactionEntry{{
 			ID:       "patch-doc-old-001",
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -121,12 +121,12 @@ func TestArtifactQualityBlocksPlaceholderReport(t *testing.T) {
 
 func TestArtifactQualityWarnsSourceReviewReportWithoutSourceEvidence(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportText := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
 		"",
@@ -138,13 +138,13 @@ func TestArtifactQualityWarnsSourceReviewReportWithoutSourceEvidence(t *testing.
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern.cpp",
+		"- File: SampleGame.cpp",
 		"- Impact: documented issue.",
 	}, "\n")
 	if err := os.WriteFile(reportPath, []byte(reportText), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
@@ -157,7 +157,7 @@ func TestArtifactQualityWarnsSourceReviewReportWithoutSourceEvidence(t *testing.
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -167,7 +167,7 @@ func TestArtifactQualityWarnsSourceReviewReportWithoutSourceEvidence(t *testing.
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 1 bug. Deterministic artifact-quality checks found no blocking document-content issues. Verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
+	report := agent.buildCodingHarnessReport("Created SampleGame/BugReport.md with 1 bug. Deterministic artifact-quality checks found no blocking document-content issues. Verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected missing source evidence to warn without blocking document finalization: %s", report.BlockingFeedback())
 	}
@@ -179,12 +179,12 @@ func TestArtifactQualityWarnsSourceReviewReportWithoutSourceEvidence(t *testing.
 
 func TestArtifactQualityRecordsSourceEvidenceForSourceReviewReport(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportText := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
 		"",
@@ -196,13 +196,13 @@ func TestArtifactQualityRecordsSourceEvidenceForSourceReviewReport(t *testing.T)
 		"| Total | 1 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern/Tavern.cpp",
+		"- File: SampleGame/SampleGame.cpp",
 		"- Impact: documented issue.",
 	}, "\n")
 	if err := os.WriteFile(reportPath, []byte(reportText), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
@@ -212,16 +212,16 @@ func TestArtifactQualityRecordsSourceEvidenceForSourceReviewReport(t *testing.T)
 			Role:     "tool",
 			ToolName: "read_file",
 			Text:     "report excerpt",
-			ToolMeta: map[string]any{"path": "Tavern/BugReport.md"},
+			ToolMeta: map[string]any{"path": "SampleGame/BugReport.md"},
 		},
 		Message{
 			Role:     "tool",
 			ToolName: "list_files",
-			Text:     "Tavern/BugReport.md",
+			Text:     "SampleGame/BugReport.md",
 			ToolMeta: map[string]any{"path": ".kernforge/reviews"},
 		},
 	)
-	addArtifactQualitySourceEvidence(session, "Tavern/Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame/SampleGame.cpp")
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
 		Status: patchTransactionStatusCommitted,
@@ -230,7 +230,7 @@ func TestArtifactQualityRecordsSourceEvidenceForSourceReviewReport(t *testing.T)
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -240,11 +240,11 @@ func TestArtifactQualityRecordsSourceEvidenceForSourceReviewReport(t *testing.T)
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 1 bug. Deterministic artifact-quality checks found no blocking document-content issues. Verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
+	report := agent.buildCodingHarnessReport("Created SampleGame/BugReport.md with 1 bug. Deterministic artifact-quality checks found no blocking document-content issues. Verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected source evidence to satisfy artifact quality: %s", report.BlockingFeedback())
 	}
-	if got := strings.Join(report.ArtifactQuality.SourceEvidence, "\n"); got != "read_file:Tavern/Tavern.cpp" {
+	if got := strings.Join(report.ArtifactQuality.SourceEvidence, "\n"); got != "read_file:SampleGame/SampleGame.cpp" {
 		t.Fatalf("expected only non-artifact source evidence, got %q", got)
 	}
 }
@@ -279,12 +279,12 @@ func TestArtifactQualityAllowsPathOnlyArtifactRequest(t *testing.T) {
 
 func TestArtifactQualityBlocksBugReportCountMismatch(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportText := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"총 3개 버그를 문서화했습니다.",
 		"",
@@ -295,18 +295,18 @@ func TestArtifactQualityBlocksBugReportCountMismatch(t *testing.T) {
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern.cpp",
+		"- File: SampleGame.cpp",
 		"",
 		"## BUG-002",
 		"- File: RuntimeManager.cpp",
 		"",
 		"## BUG-003",
-		"- File: TavernWorkerManager.cpp",
+		"- File: SampleGameWorkerManager.cpp",
 	}, "\n")
 	if err := os.WriteFile(reportPath, []byte(reportText), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
+	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
 	session.PatchTransactions = []PatchTransaction{{
@@ -317,18 +317,18 @@ func TestArtifactQualityBlocksBugReportCountMismatch(t *testing.T) {
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
 	}}
-	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame.cpp")
 	agent := &Agent{
 		Session:   session,
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 3 bugs.", false, false)
+	report := agent.buildCodingHarnessReport("Created SampleGame/BugReport.md with 3 bugs.", false, false)
 	if report.Approved {
 		t.Fatalf("expected inconsistent bug report counts to block approval: %#v", report.ArtifactQuality)
 	}
@@ -345,12 +345,12 @@ func TestArtifactQualityBlocksBugReportCountMismatch(t *testing.T) {
 
 func TestArtifactQualityBlocksBugReportDocumentedClaimAndAbbreviatedSeverityListMismatch(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportLines := []string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"- **27 documented bugs**",
 		"",
@@ -373,7 +373,7 @@ func TestArtifactQualityBlocksBugReportDocumentedClaimAndAbbreviatedSeverityList
 	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
+	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
 	session.PatchTransactions = []PatchTransaction{{
@@ -384,18 +384,18 @@ func TestArtifactQualityBlocksBugReportDocumentedClaimAndAbbreviatedSeverityList
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
 	}}
-	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame.cpp")
 	agent := &Agent{
 		Session:   session,
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 27 documented bugs.", false, false)
+	report := agent.buildCodingHarnessReport("Created SampleGame/BugReport.md with 27 documented bugs.", false, false)
 	if report.Approved {
 		t.Fatalf("expected inconsistent documented bug report counts to block approval: %#v", report.ArtifactQuality)
 	}
@@ -477,12 +477,12 @@ func TestArtifactQualityAllowsSeveritySummaryBugIDRanges(t *testing.T) {
 
 func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportText := strings.Join([]string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
 		"",
@@ -494,7 +494,7 @@ func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) 
 		"| Total | 2 |",
 		"",
 		"## BUG-001",
-		"- File: Tavern.cpp",
+		"- File: SampleGame.cpp",
 		"- Impact: crash risk.",
 		"",
 		"## BUG-002",
@@ -504,7 +504,7 @@ func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) 
 	if err := os.WriteFile(reportPath, []byte(reportText), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
+	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
 	session.PatchTransactions = []PatchTransaction{{
@@ -515,18 +515,18 @@ func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) 
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
 	}}
-	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame.cpp")
 	agent := &Agent{
 		Session:   session,
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 2 bugs. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
+	report := agent.buildCodingHarnessReport("Created SampleGame/BugReport.md with 2 bugs. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected bug ID list table to pass without count-column false positive: %s", report.BlockingFeedback())
 	}
@@ -534,12 +534,12 @@ func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) 
 
 func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportLines := []string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
 		"",
@@ -565,12 +565,12 @@ func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
 	session.Messages = []Message{{Role: "user", Text: request}}
-	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame.cpp")
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
 		Status: patchTransactionStatusCommitted,
@@ -579,7 +579,7 @@ func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -590,7 +590,7 @@ func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 	}
 
 	reply := strings.Join([]string{
-		"The report documents 27 documented bugs in Tavern/BugReport.md.",
+		"The report documents 27 documented bugs in SampleGame/BugReport.md.",
 		"",
 		"| Severity | Count |",
 		"|----------|-------|",
@@ -619,12 +619,12 @@ func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 
 func TestGeneratedDocumentFinalAnswerBugRangeMismatchIsAnswerOnly(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportLines := []string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
 		"",
@@ -643,12 +643,12 @@ func TestGeneratedDocumentFinalAnswerBugRangeMismatchIsAnswerOnly(t *testing.T) 
 	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
 	session.Messages = []Message{{Role: "user", Text: request}}
-	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame.cpp")
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
 		Status: patchTransactionStatusCommitted,
@@ -657,7 +657,7 @@ func TestGeneratedDocumentFinalAnswerBugRangeMismatchIsAnswerOnly(t *testing.T) 
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -668,7 +668,7 @@ func TestGeneratedDocumentFinalAnswerBugRangeMismatchIsAnswerOnly(t *testing.T) 
 	}
 
 	reply := strings.Join([]string{
-		"The report documents 26 documented bugs in Tavern/BugReport.md.",
+		"The report documents 26 documented bugs in SampleGame/BugReport.md.",
 		"Covered range: BUG-001 through BUG-027.",
 		"",
 		"Build/test verification was not run because this is a documentation-only artifact.",
@@ -690,12 +690,12 @@ func TestGeneratedDocumentFinalAnswerBugRangeMismatchIsAnswerOnly(t *testing.T) 
 
 func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing.T) {
 	root := t.TempDir()
-	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportLines := []string{
-		"# Tavern Bug Report",
+		"# SampleGame Bug Report",
 		"",
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
 		"",
@@ -718,12 +718,12 @@ func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing
 	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.AcceptanceContract = &contract
 	session.Messages = []Message{{Role: "user", Text: request}}
-	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	addArtifactQualitySourceEvidence(session, "SampleGame.cpp")
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
 		Status: patchTransactionStatusCommitted,
@@ -732,7 +732,7 @@ func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -743,7 +743,7 @@ func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing
 	}
 
 	reply := strings.Join([]string{
-		"The report is complete in Tavern/BugReport.md.",
+		"The report is complete in SampleGame/BugReport.md.",
 		"",
 		"Critical: 4 (BUG-001, 002, 003, 020, 024)",
 		"Total: 5 bugs",
@@ -767,7 +767,7 @@ func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing
 
 func TestGeneratedDocumentFinalAnswerTopLevelAnswerOnlyBlockerSynthesizes(t *testing.T) {
 	root := t.TempDir()
-	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 문서로 생성해"
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{Role: "user", Text: request}}
 	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
@@ -780,7 +780,7 @@ func TestGeneratedDocumentFinalAnswerTopLevelAnswerOnlyBlockerSynthesizes(t *tes
 			ToolName: "write_file",
 			Status:   "success",
 			Paths: []PatchPathChange{{
-				Path:      "Tavern/BugReport.md",
+				Path:      "SampleGame/BugReport.md",
 				Operation: "write_file",
 			}},
 		}},
@@ -798,7 +798,7 @@ func TestGeneratedDocumentFinalAnswerTopLevelAnswerOnlyBlockerSynthesizes(t *tes
 		}},
 		ArtifactQuality: ArtifactQualityReport{
 			Artifacts: []ArtifactQualityCheck{{
-				Path:         "Tavern/BugReport.md",
+				Path:         "SampleGame/BugReport.md",
 				Kind:         "document",
 				Substantive:  true,
 				ContentChars: 512,

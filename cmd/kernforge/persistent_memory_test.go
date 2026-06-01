@@ -323,7 +323,7 @@ func TestAgentReplySuppressesContinuityMemoryForFreshDocumentArtifactTask(t *tes
 		Summary:    "Request: 각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해\n\nOutcome: wrote a stale BugReport.md summary.",
 		Importance: PersistentMemoryHigh,
 		Trust:      PersistentMemoryConfirmed,
-		Files:      []string{"Tavern/BugReport.md"},
+		Files:      []string{"SampleGame/BugReport.md"},
 	}); err != nil {
 		t.Fatalf("seed memory: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestAgentReplySuppressesContinuityMemoryForFreshDocumentArtifactTask(t *tes
 		},
 	}
 
-	_, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	_, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestAgentReplyKeepsExplicitMemoryForDocumentArtifactTask(t *testing.T) {
 		Summary:    "Request: 각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해\n\nOutcome: wrote a BugReport.md summary.",
 		Importance: PersistentMemoryHigh,
 		Trust:      PersistentMemoryConfirmed,
-		Files:      []string{"Tavern/BugReport.md"},
+		Files:      []string{"SampleGame/BugReport.md"},
 	}); err != nil {
 		t.Fatalf("seed memory: %v", err)
 	}

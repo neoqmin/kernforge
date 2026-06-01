@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,17 +18,74 @@ func verifyAnalysisClaims(snapshot ProjectSnapshot, run ProjectAnalysisRun) Clai
 		FollowThrough: []string{},
 	}
 	packetByID := map[string]EvidencePacket{}
+	duplicatePacketIDs := map[string]struct{}{}
 	for _, packet := range run.EvidencePackets {
-		packetByID[strings.ToLower(strings.TrimSpace(packet.ID))] = packet
+		key := strings.ToLower(strings.TrimSpace(packet.ID))
+		if key == "" {
+			continue
+		}
+		if _, ok := packetByID[key]; ok {
+			duplicatePacketIDs[key] = struct{}{}
+			continue
+		}
+		packetByID[key] = packet
 	}
 	shardByID := map[string]AnalysisShard{}
+	ambiguousShardIDs := map[string]struct{}{}
 	for _, shard := range run.Shards {
-		shardByID[shard.ID] = shard
+		key := strings.TrimSpace(shard.ID)
+		if key == "" {
+			continue
+		}
+		if _, ok := shardByID[key]; ok {
+			ambiguousShardIDs[key] = struct{}{}
+			continue
+		}
+		shardByID[key] = shard
+	}
+	for packetID := range duplicatePacketIDs {
+		report.RunIssues = append(report.RunIssues, ClaimVerificationIssue{
+			Code:     "duplicate_packet_id",
+			Severity: "blocking",
+			Message:  "Evidence packet id appears more than once; verifier kept the first packet and refused to silently overwrite it.",
+			Evidence: []string{packetID},
+		})
+	}
+	for shardID := range ambiguousShardIDs {
+		report.RunIssues = append(report.RunIssues, ClaimVerificationIssue{
+			Code:     "duplicate_shard_id",
+			Severity: "blocking",
+			Message:  "Shard id appears more than once; verifier kept the first shard scope and marks claims from this id as ambiguous.",
+			Evidence: []string{shardID},
+		})
+	}
+	reportShardCounts := map[string]int{}
+	for _, worker := range run.Reports {
+		key := strings.TrimSpace(worker.ShardID)
+		if key == "" {
+			continue
+		}
+		reportShardCounts[key]++
+	}
+	for shardID, count := range reportShardCounts {
+		if count <= 1 {
+			continue
+		}
+		report.RunIssues = append(report.RunIssues, ClaimVerificationIssue{
+			Code:     "duplicate_report_shard_id",
+			Severity: "blocking",
+			Message:  "More than one worker report targets the same shard id; verifier processes both reports but records the identity collision before persistence.",
+			Evidence: []string{shardID, fmt.Sprintf("reports=%d", count)},
+		})
 	}
 	for _, worker := range run.Reports {
+		if workerReportExcludesClaims(worker) {
+			continue
+		}
 		shard := shardByID[worker.ShardID]
+		_, ambiguousScope := ambiguousShardIDs[worker.ShardID]
 		for _, claim := range worker.Claims {
-			result := verifySingleAnalysisClaim(snapshot, run, shard, worker, claim, packetByID)
+			result := verifySingleAnalysisClaim(snapshot, run, shard, worker, claim, packetByID, ambiguousScope)
 			report.TotalClaims++
 			report.Results = append(report.Results, result)
 			switch result.Status {
@@ -64,6 +123,11 @@ func verifyAnalysisClaims(snapshot ProjectSnapshot, run ProjectAnalysisRun) Clai
 			}
 		}
 	}
+	for _, issue := range report.RunIssues {
+		if strings.EqualFold(issue.Severity, "blocking") {
+			report.BlockingCount++
+		}
+	}
 	if report.BlockingCount > 0 {
 		report.Status = "blocking"
 	} else if report.UnsupportedCount+report.DowngradedCount+report.InferenceCount > 0 {
@@ -73,7 +137,7 @@ func verifyAnalysisClaims(snapshot ProjectSnapshot, run ProjectAnalysisRun) Clai
 	return report
 }
 
-func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun, shard AnalysisShard, worker WorkerReport, claim AnalysisClaim, packetByID map[string]EvidencePacket) ClaimVerificationResult {
+func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun, shard AnalysisShard, worker WorkerReport, claim AnalysisClaim, packetByID map[string]EvidencePacket, ambiguousScope bool) ClaimVerificationResult {
 	originalConfidence := normalizeAnalysisClaimConfidence(claim.Confidence)
 	result := ClaimVerificationResult{
 		ShardID:            firstNonBlankAnalysisString(worker.ShardID, shard.ID),
@@ -87,6 +151,14 @@ func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun,
 		SourceAnchors:      analysisUniqueStrings(claim.SourceAnchors),
 	}
 	validPackets := []EvidencePacket{}
+	if ambiguousScope {
+		result.Issues = append(result.Issues, ClaimVerificationIssue{
+			Code:     "duplicate_shard_id",
+			Severity: "blocking",
+			Message:  "Claim belongs to a duplicate shard id, so packet/source scope checks are ambiguous and the claim cannot be promoted.",
+			Evidence: []string{result.ShardID},
+		})
+	}
 	for _, packetID := range claim.EvidencePacketIDs {
 		packetID = strings.TrimSpace(packetID)
 		if packetID == "" {
@@ -110,7 +182,7 @@ func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun,
 				Evidence: []string{packet.ID, packet.ShardID, result.ShardID},
 			})
 		}
-		if !packetPathInShardScope(packet.Path, shard) {
+		if !ambiguousScope && !packetPathInShardScope(packet.Path, shard) {
 			result.Issues = append(result.Issues, ClaimVerificationIssue{
 				Code:     "packet_source_scope_mismatch",
 				Severity: "blocking",
@@ -137,7 +209,7 @@ func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun,
 			Message:  "Claim references packet ids, but none are valid for this shard.",
 		})
 	}
-	result.Issues = append(result.Issues, verifyClaimSourceAnchors(claim, validPackets, shard, run.SemanticIndexV2)...)
+	result.Issues = append(result.Issues, verifyClaimSourceAnchors(claim, validPackets, shard, run.SemanticIndexV2, ambiguousScope)...)
 	result.Issues = append(result.Issues, verifyClaimSymbolAnchors(claim, validPackets, run.SemanticIndexV2)...)
 	graphEdgeIDs, graphIssues := verifyClaimGraphEdges(claim, validPackets, run.EvidenceGraph)
 	result.GraphEdgeIDs = analysisUniqueStrings(append(result.GraphEdgeIDs, graphEdgeIDs...))
@@ -150,7 +222,7 @@ func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun,
 	return result
 }
 
-func verifyClaimSourceAnchors(claim AnalysisClaim, packets []EvidencePacket, shard AnalysisShard, index SemanticIndexV2) []ClaimVerificationIssue {
+func verifyClaimSourceAnchors(claim AnalysisClaim, packets []EvidencePacket, shard AnalysisShard, index SemanticIndexV2, skipScope bool) []ClaimVerificationIssue {
 	_ = index
 	issues := []ClaimVerificationIssue{}
 	if len(claim.SourceAnchors) == 0 {
@@ -165,7 +237,7 @@ func verifyClaimSourceAnchors(claim AnalysisClaim, packets []EvidencePacket, sha
 		if !ok || path == "" {
 			continue
 		}
-		if !packetPathInShardScope(path, shard) {
+		if !skipScope && !packetPathInShardScope(path, shard) {
 			issues = append(issues, ClaimVerificationIssue{
 				Code:     "source_scope_mismatch",
 				Severity: "blocking",
@@ -310,7 +382,64 @@ func verifyClaimFactPackConflicts(snapshot ProjectSnapshot, claim AnalysisClaim)
 			Message:  "Claim conflicts with deterministic Unreal project facts.",
 		})
 	}
+	if claimAssertsMmGetSystemRoutineAddressOnly(text) && snapshotContainsExportTableParser(snapshot) {
+		issues = append(issues, ClaimVerificationIssue{
+			Code:     "windows_driver_fact_conflict",
+			Severity: "blocking",
+			Message:  "Claim says Windows kernel exports are resolved only through MmGetSystemRoutineAddress, but scanned source contains deterministic export-table parsing evidence.",
+			Evidence: []string{"GetExportFunctionAddress", "IMAGE_EXPORT_DIRECTORY"},
+		})
+	}
 	return issues
+}
+
+func claimAssertsMmGetSystemRoutineAddressOnly(text string) bool {
+	if !strings.Contains(text, "mmgetsystemroutineaddress") {
+		return false
+	}
+	if containsAny(text, "not mmgetsystemroutineaddress", "does not use mmgetsystemroutineaddress", "without mmgetsystemroutineaddress") {
+		return false
+	}
+	if containsAny(text, "export table", "getexportfunctionaddress", "image_export_directory") {
+		return false
+	}
+	return containsAny(text,
+		"via mmgetsystemroutineaddress",
+		"using mmgetsystemroutineaddress",
+		"uses mmgetsystemroutineaddress",
+		"through mmgetsystemroutineaddress",
+		"only mmgetsystemroutineaddress",
+		"purely mmgetsystemroutineaddress",
+		"resolved by mmgetsystemroutineaddress",
+	)
+}
+
+func snapshotContainsExportTableParser(snapshot ProjectSnapshot) bool {
+	for _, file := range snapshot.Files {
+		lowerPath := strings.ToLower(filepath.ToSlash(file.Path))
+		if !strings.HasSuffix(lowerPath, ".c") &&
+			!strings.HasSuffix(lowerPath, ".cc") &&
+			!strings.HasSuffix(lowerPath, ".cpp") &&
+			!strings.HasSuffix(lowerPath, ".cxx") &&
+			!strings.HasSuffix(lowerPath, ".h") &&
+			!strings.HasSuffix(lowerPath, ".hpp") {
+			continue
+		}
+		sourcePath := filepath.FromSlash(file.Path)
+		if !filepath.IsAbs(sourcePath) {
+			sourcePath = filepath.Join(snapshot.Root, sourcePath)
+		}
+		data, err := os.ReadFile(sourcePath)
+		if err != nil {
+			continue
+		}
+		corpus := strings.ToLower(string(data))
+		if strings.Contains(corpus, "getexportfunctionaddress") &&
+			containsAny(corpus, "image_export_directory", "addressoffunctions", "addressofnames", "export directory") {
+			return true
+		}
+	}
+	return false
 }
 
 func verifyClaimSecurityOverlay(claim AnalysisClaim, packets []EvidencePacket, overlay SecurityOverlaySummary) []ClaimVerificationIssue {
@@ -389,6 +518,13 @@ func appendClaimVerificationFinalSections(document string, report ClaimVerificat
 		b.WriteString("\n\n")
 	}
 	b.WriteString("## Verified Facts\n\n")
+	if len(report.RunIssues) > 0 {
+		b.WriteString("Run-level verifier issues:\n")
+		for _, issue := range limitClaimVerificationIssues(report.RunIssues, 8) {
+			fmt.Fprintf(&b, "- [%s] %s: %s\n", issue.Severity, issue.Code, issue.Message)
+		}
+		b.WriteString("\n")
+	}
 	if len(report.VerifiedClaims) == 0 {
 		b.WriteString("- No high-confidence verified claim objects were produced by the deterministic verifier.\n")
 	} else {
@@ -607,6 +743,13 @@ func claimVerificationResultsByStatus(results []ClaimVerificationResult, status 
 }
 
 func limitClaimVerificationResults(items []ClaimVerificationResult, limit int) []ClaimVerificationResult {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitClaimVerificationIssues(items []ClaimVerificationIssue, limit int) []ClaimVerificationIssue {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}

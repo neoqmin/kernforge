@@ -543,6 +543,287 @@ func TestPersistRunWritesPhase56Artifacts(t *testing.T) {
 	}
 }
 
+func TestCoverageGapShardsUseGapNamespaceAndUniqueIDs(t *testing.T) {
+	root := t.TempDir()
+	writePhase56TestFile(t, root, "driver/a.cpp", "int A() { return 0; }\n")
+	writePhase56TestFile(t, root, "driver/b.cpp", "int B() { return 0; }\n")
+	snapshot := phase56Snapshot(root, []ScannedFile{
+		{Path: "driver/a.cpp", Directory: "driver", Extension: ".cpp", LineCount: 1, ImportanceScore: 100},
+		{Path: "driver/b.cpp", Directory: "driver", Extension: ".cpp", LineCount: 1, ImportanceScore: 90},
+	})
+	analyzer := &projectAnalyzer{analysisCfg: defaultProjectAnalysisConfig(root)}
+	existing := []AnalysisShard{
+		{ID: "shard-17", Name: "security_ioctl_refined_01", PrimaryFiles: []string{"driver/a.cpp"}},
+		{ID: "shard-18", Name: "security_ioctl_refined_02", PrimaryFiles: []string{"driver/b.cpp"}},
+	}
+	scorecard := AnalysisModeScorecard{
+		CoverageGaps: []AnalysisCoverageGap{{
+			ID:               "gap-missing-evidence",
+			Kind:             "missing_evidence",
+			Severity:         "high",
+			ShardID:          "shard-17",
+			ShardName:        "security_ioctl_refined_01",
+			Reason:           "Need packet-backed source evidence.",
+			TargetFiles:      []string{"driver/a.cpp"},
+			RequiredEvidence: []string{"source-grounded claims"},
+		}},
+	}
+	gaps := analyzer.planCoverageGapShards(snapshot, existing, nil, nil, scorecard, 3)
+	if len(gaps) != 1 {
+		t.Fatalf("expected one gap shard, got %#v", gaps)
+	}
+	if gaps[0].ID != "gap-01" || gaps[0].Namespace != "gap" {
+		t.Fatalf("expected gap namespace id, got %#v", gaps[0])
+	}
+	for _, shard := range existing {
+		if shard.ID == gaps[0].ID {
+			t.Fatalf("gap shard reused existing id %q", gaps[0].ID)
+		}
+	}
+}
+
+func TestParseFailedWorkerReportDoesNotProduceClaims(t *testing.T) {
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "security_ioctl",
+		PrimaryFiles: []string{"driver/ioctl.cpp"},
+	}
+	report := fallbackWorkerReport(shard, "not json")
+	normalizeWorkerReport(&report, shard)
+	if report.Status != "parse_failed" {
+		t.Fatalf("expected parse_failed status, got %#v", report)
+	}
+	if len(report.Claims) != 0 {
+		t.Fatalf("parse failed report must not produce claims: %#v", report.Claims)
+	}
+	run := ProjectAnalysisRun{
+		Shards: []AnalysisShard{shard},
+		Reports: []WorkerReport{{
+			ShardID: "shard-01",
+			Status:  "parse_failed",
+			Claims: []AnalysisClaim{{
+				ID:         "claim-bad",
+				Kind:       "parse_failure",
+				Claim:      "Synthetic parse failure claim should be ignored.",
+				Confidence: "high",
+			}},
+		}},
+	}
+	verification := verifyAnalysisClaims(ProjectSnapshot{}, run)
+	if verification.TotalClaims != 0 || verification.BlockingCount != 0 {
+		t.Fatalf("parse failed reports should be excluded from claim verification: %#v", verification)
+	}
+}
+
+func TestClaimVerifierDuplicateShardIDDoesNotOverwriteScope(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Shards: []AnalysisShard{
+			{ID: "shard-01", Name: "first", PrimaryFiles: []string{"a.cpp"}},
+			{ID: "shard-01", Name: "second", PrimaryFiles: []string{"b.cpp"}},
+		},
+		EvidencePackets: []EvidencePacket{{
+			ID:        "shard-01-packet-01",
+			ShardID:   "shard-01",
+			Path:      "b.cpp",
+			StartLine: 1,
+			EndLine:   5,
+		}},
+		Reports: []WorkerReport{{
+			ShardID: "shard-01",
+			Claims: []AnalysisClaim{{
+				ID:                "claim-1",
+				Kind:              "fact",
+				Claim:             "B owns the runtime branch.",
+				SourceAnchors:     []string{"b.cpp:2"},
+				EvidencePacketIDs: []string{"shard-01-packet-01"},
+				Confidence:        "high",
+			}},
+		}},
+	}
+	report := verifyAnalysisClaims(ProjectSnapshot{}, run)
+	if len(report.RunIssues) == 0 || report.RunIssues[0].Code != "duplicate_shard_id" {
+		t.Fatalf("expected duplicate shard id run issue, got %#v", report.RunIssues)
+	}
+	for _, result := range report.Results {
+		for _, issue := range result.Issues {
+			if issue.Code == "packet_source_scope_mismatch" || issue.Code == "source_scope_mismatch" {
+				t.Fatalf("duplicate shard id should not cascade into scope mismatch noise: %#v", result.Issues)
+			}
+		}
+	}
+}
+
+func TestClaimVerifierDuplicateReportShardIDIsRunIssue(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Shards: []AnalysisShard{
+			{ID: "shard-01", Name: "owner", PrimaryFiles: []string{"a.cpp"}},
+		},
+		EvidencePackets: []EvidencePacket{{
+			ID:        "packet-01",
+			ShardID:   "shard-01",
+			Path:      "a.cpp",
+			StartLine: 1,
+			EndLine:   5,
+		}},
+		Reports: []WorkerReport{
+			{
+				ShardID: "shard-01",
+				Claims: []AnalysisClaim{{
+					ID:                "claim-1",
+					Kind:              "fact",
+					Claim:             "A owns the first path.",
+					SourceAnchors:     []string{"a.cpp:2"},
+					EvidencePacketIDs: []string{"packet-01"},
+					Confidence:        "medium",
+				}},
+			},
+			{
+				ShardID: "shard-01",
+				Claims: []AnalysisClaim{{
+					ID:                "claim-2",
+					Kind:              "fact",
+					Claim:             "A owns the second path.",
+					SourceAnchors:     []string{"a.cpp:3"},
+					EvidencePacketIDs: []string{"packet-01"},
+					Confidence:        "medium",
+				}},
+			},
+		},
+	}
+	report := verifyAnalysisClaims(ProjectSnapshot{}, run)
+	found := false
+	for _, issue := range report.RunIssues {
+		if issue.Code == "duplicate_report_shard_id" {
+			found = true
+		}
+	}
+	if !found || report.BlockingCount == 0 {
+		t.Fatalf("expected duplicate report shard id blocker, got %#v", report.RunIssues)
+	}
+}
+
+func TestClaimVerifierDetectsWindowsExportParserContradiction(t *testing.T) {
+	root := t.TempDir()
+	writePhase56TestFile(t, root, "driver/KernelAPI.cpp", strings.Join([]string{
+		"void *GetExportFunctionAddress()",
+		"{",
+		"    IMAGE_EXPORT_DIRECTORY *exports = nullptr;",
+		"    auto names = exports->AddressOfNames;",
+		"    return names;",
+		"}",
+	}, "\n"))
+	snapshot := phase56Snapshot(root, []ScannedFile{
+		{Path: "driver/KernelAPI.cpp", Directory: "driver", Extension: ".cpp", LineCount: 6, ImportanceScore: 100},
+	})
+	run := ProjectAnalysisRun{
+		Shards: []AnalysisShard{{
+			ID:           "shard-01",
+			Name:         "kernel_api",
+			PrimaryFiles: []string{"driver/KernelAPI.cpp"},
+		}},
+		EvidencePackets: []EvidencePacket{{
+			ID:        "shard-01-packet-01",
+			ShardID:   "shard-01",
+			Path:      "driver/KernelAPI.cpp",
+			StartLine: 1,
+			EndLine:   6,
+		}},
+		Reports: []WorkerReport{{
+			ShardID: "shard-01",
+			Claims: []AnalysisClaim{{
+				ID:                "claim-1",
+				Kind:              "fact",
+				Claim:             "Kernel exports are resolved using MmGetSystemRoutineAddress.",
+				SourceAnchors:     []string{"driver/KernelAPI.cpp:1"},
+				EvidencePacketIDs: []string{"shard-01-packet-01"},
+				Confidence:        "high",
+			}},
+		}},
+	}
+	report := verifyAnalysisClaims(snapshot, run)
+	found := false
+	for _, issue := range report.Results[0].Issues {
+		if issue.Code == "windows_driver_fact_conflict" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected Windows export parser contradiction, got %#v", report.Results[0].Issues)
+	}
+}
+
+func TestSecurityOverlaySkipsConfigOnlyMissingValidationCandidate(t *testing.T) {
+	root := t.TempDir()
+	writePhase56TestFile(t, root, "SampleGameKernel/SampleGameKernel.vmp", "ioctl kernel scan ZwReadVirtualMemory")
+	writePhase56TestFile(t, root, "SampleGameKernel/Device.cpp", strings.Join([]string{
+		"NTSTATUS DeviceControl()",
+		"{",
+		"    ULONG code = IRP_MJ_DEVICE_CONTROL;",
+		"    return MmCopyVirtualMemory();",
+		"}",
+	}, "\n"))
+	snapshot := phase56Snapshot(root, []ScannedFile{
+		{Path: "SampleGameKernel/SampleGameKernel.vmp", Directory: "SampleGameKernel", Extension: ".vmp", LineCount: 1, ImportanceScore: 100},
+		{Path: "SampleGameKernel/Device.cpp", Directory: "SampleGameKernel", Extension: ".cpp", LineCount: 5, ImportanceScore: 100},
+	})
+	overlay := buildSecurityAntiCheatOverlay(snapshot, SemanticIndexV2{})
+	configEvidence := false
+	missingEdges := 0
+	for _, edge := range overlay.Edges {
+		if edge.Type == "missing_validation_candidate" {
+			missingEdges++
+			for _, evidence := range edge.Evidence {
+				if strings.Contains(evidence, ".vmp") {
+					configEvidence = true
+				}
+			}
+		}
+	}
+	if configEvidence {
+		t.Fatalf("config-only VMP evidence must not become a runtime missing-validation edge: %#v", overlay.Edges)
+	}
+	if overlay.Metrics.MissingValidationCandidates != missingEdges {
+		t.Fatalf("missing validation metric mismatch: metric=%d edges=%d", overlay.Metrics.MissingValidationCandidates, missingEdges)
+	}
+}
+
+func TestAnalysisPreflightDisclosesRequestedEffectiveAndRepositoryRoots(t *testing.T) {
+	base := t.TempDir()
+	effective := filepath.Join(base, "SampleGameKernel")
+	if err := os.MkdirAll(effective, 0o755); err != nil {
+		t.Fatalf("mkdir effective: %v", err)
+	}
+	writePhase56TestFile(t, base, "SampleGame.sln", "Microsoft Visual Studio Solution File")
+	snapshot := phase56Snapshot(effective, []ScannedFile{
+		{Path: "Driver.cpp", Directory: "", Extension: ".cpp", LineCount: 1, ImportanceScore: 100},
+	})
+	analyzer := &projectAnalyzer{
+		workspace:   Workspace{BaseRoot: base, Root: effective},
+		analysisCfg: defaultProjectAnalysisConfig(effective),
+	}
+	preflight := analyzer.buildAnalysisPreflight(snapshot, "map SampleGameWorker project structure", "map", AnalysisGoalScope{}, nil, 1, AnalysisRuntimeFeedback{})
+	if !sameAnalysisFilesystemPath(preflight.RequestedRoot, base) || !sameAnalysisFilesystemPath(preflight.EffectiveRoot, effective) {
+		t.Fatalf("expected requested/effective roots to be disclosed, got %#v", preflight)
+	}
+	if strings.TrimSpace(preflight.RootNarrowingReason) == "" {
+		t.Fatalf("expected root narrowing reason")
+	}
+	run := ProjectAnalysisRun{
+		Summary:   ProjectAnalysisSummary{RunID: "run", Goal: "map SampleGameWorker project structure", Mode: "map", Status: "completed"},
+		Preflight: preflight,
+		Snapshot:  snapshot,
+	}
+	applyAnalysisPreflightToSummary(&run.Summary, preflight)
+	index := buildAnalysisDocsIndex(run, map[string]string{"FINAL_REPORT.md": "# Final"})
+	if !strings.Contains(index, "Requested root") || !strings.Contains(index, "Effective scanned root") || !strings.Contains(index, "Scope narrowing") {
+		t.Fatalf("docs index should disclose root scope, got:\n%s", index)
+	}
+	dashboard := buildAnalysisDashboardHTML(run, "docs")
+	if !strings.Contains(dashboard, "effective=") || !strings.Contains(dashboard, "requested=") {
+		t.Fatalf("dashboard should disclose requested/effective root, got excerpt:\n%s", dashboard[:analysisMinInt(len(dashboard), 800)])
+	}
+}
+
 func phase56Snapshot(root string, files []ScannedFile) ProjectSnapshot {
 	snapshot := ProjectSnapshot{
 		Root:             root,
