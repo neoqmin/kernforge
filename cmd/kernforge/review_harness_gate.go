@@ -491,18 +491,22 @@ func mergeReviewFindings(findings []ReviewFinding) ([]ReviewFinding, ReviewMerge
 		finding.Normalize()
 		key := reviewFindingKey(finding)
 		if prior, ok := seen[key]; ok {
-			mergeDuplicateReviewFinding(&merged[prior], finding, &result)
-			if subjectKey := reviewFindingDuplicateSubjectKey(merged[prior]); subjectKey != "" {
-				seenSubject[subjectKey] = prior
+			if !reviewFindingsHaveDistinctSpecificRepairContract(merged[prior], finding) {
+				mergeDuplicateReviewFinding(&merged[prior], finding, &result)
+				if subjectKey := reviewFindingDuplicateSubjectKey(merged[prior]); subjectKey != "" {
+					seenSubject[subjectKey] = prior
+				}
+				continue
 			}
-			continue
 		}
 		subjectKey := reviewFindingDuplicateSubjectKey(finding)
 		if subjectKey != "" {
 			if prior, ok := seenSubject[subjectKey]; ok {
-				mergeDuplicateReviewFinding(&merged[prior], finding, &result)
-				seen[key] = prior
-				continue
+				if !reviewFindingsHaveDistinctSpecificRepairContract(merged[prior], finding) {
+					mergeDuplicateReviewFinding(&merged[prior], finding, &result)
+					seen[key] = prior
+					continue
+				}
 			}
 		}
 		if prior, ok := reviewFindDuplicateByTokenOverlap(merged, finding); ok {
@@ -548,6 +552,9 @@ func reviewFindingsHaveDuplicateTokenSubject(left ReviewFinding, right ReviewFin
 		!strings.EqualFold(strings.TrimSpace(left.Category), strings.TrimSpace(right.Category)) {
 		return false
 	}
+	if reviewFindingsHaveDistinctSpecificRepairContract(left, right) {
+		return false
+	}
 	leftTokens := reviewFindingTokenSet(left)
 	rightTokens := reviewFindingTokenSet(right)
 	overlap := 0
@@ -560,6 +567,88 @@ func reviewFindingsHaveDuplicateTokenSubject(left ReviewFinding, right ReviewFin
 		}
 	}
 	return false
+}
+
+func reviewFindingsHaveDistinctSpecificRepairContract(left ReviewFinding, right ReviewFinding) bool {
+	leftSignals := reviewFindingSpecificRepairSignals(left)
+	rightSignals := reviewFindingSpecificRepairSignals(right)
+	if len(leftSignals) == 0 || len(rightSignals) == 0 {
+		return false
+	}
+	leftOnly := false
+	for signal := range leftSignals {
+		if !rightSignals[signal] {
+			leftOnly = true
+			break
+		}
+	}
+	rightOnly := false
+	for signal := range rightSignals {
+		if !leftSignals[signal] {
+			rightOnly = true
+			break
+		}
+	}
+	return leftOnly || rightOnly
+}
+
+func reviewFindingSpecificRepairSignals(finding ReviewFinding) map[string]bool {
+	text := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+		finding.RawExcerpt,
+	}, " "))
+	signals := map[string]bool{}
+	writableCommandLine := containsAny(text,
+		"const wchar",
+		"read-only",
+		"read only",
+		"readonly",
+		"writable buffer",
+		"(pwstr)",
+		"읽기 전용",
+		"수정 가능한 버퍼",
+		"const 버퍼",
+	)
+	if !writableCommandLine &&
+		strings.Contains(text, "c_str") &&
+		!strings.Contains(text, "lpapplicationname") &&
+		containsAny(text, "pwstr", "cast", "캐스팅", "second argument", "두 번째 인수") {
+		writableCommandLine = true
+	}
+	if writableCommandLine {
+		signals["writable_command_line_buffer"] = true
+	}
+	if containsAny(text,
+		"lpapplicationname",
+		"unquoted",
+		"quoted command",
+		"program files",
+		"path parsing",
+		"modulebasepath",
+		"target_exe_name",
+		"child_process_name",
+		"따옴표",
+		"경로 파싱",
+		"경로를 잘못 파싱",
+	) {
+		signals["application_name_or_quoted_path"] = true
+	}
+	if containsAny(text,
+		"hprocess",
+		"hthread",
+		"process_information",
+		"handle leak",
+		"closehandle",
+		"핸들 누수",
+		"핸들을 닫",
+	) {
+		signals["process_information_handle_cleanup"] = true
+	}
+	return signals
 }
 
 func reviewFindingTokenSet(finding ReviewFinding) map[string]bool {
@@ -1323,7 +1412,7 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		return false
 	}
 	if reviewRunLooksReadOnlyAnalysis(run) {
-		return false
+		return reviewReadOnlyFindingBlocksGate(run, finding)
 	}
 	if strings.EqualFold(finding.Category, "evidence_gap") {
 		return false
@@ -1358,6 +1447,42 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		}
 	}
 	return false
+}
+
+func reviewReadOnlyFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
+	finding.Normalize()
+	if strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "test_gap") &&
+		!reviewFindingLooksImplementationRepairDespiteGapCategory(finding) {
+		return false
+	}
+	if reviewFindingLooksAdvisoryStyleCategory(finding) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "performance") ||
+		strings.EqualFold(finding.Category, "documentation") {
+		return false
+	}
+	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityHigh) {
+		return false
+	}
+	if !reviewFindingLooksActionableForRepairGate(finding) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "security") ||
+		strings.EqualFold(finding.Category, "bypass_surface") ||
+		strings.EqualFold(finding.Category, "credential_leak") {
+		return true
+	}
+	for _, pack := range run.PolicyPacks {
+		if strings.EqualFold(pack, "windows_kernel_driver") ||
+			strings.EqualFold(pack, "anti_cheat_telemetry") {
+			return true
+		}
+	}
+	return true
 }
 
 func reviewHasOnlyEvidenceBlockers(findings []ReviewFinding, ids []string) bool {

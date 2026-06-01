@@ -8,8 +8,8 @@
 
 The first five capabilities to understand are:
 
-- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
-- `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, request class, classification confidence and ambiguity warnings, lifecycle phase, route mode and route quality, typed state transitions, action envelopes, approval ledgers, capability manifests, freshness, next commands, repair guidance, read-only review mode, document-artifact gates, and write-isolated edit proposals. Natural-language review and edit requests now get runtime-enforced Codex-grade handling: simple reviews stay read-only and findings-first, ambiguous mixed requests choose the safest lifecycle with an explanation, document-artifact requests use artifact-quality gates instead of irrelevant code-review loops, single-model runs execute or explicitly record a separate second-pass review phase, optional cross-review findings are persisted in an actionable triage ledger, and final answers are corrected before display when they omit changed files, review result, validation result, artifact quality, limitations, or remaining risk.
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, coverage ledger, evidence packets, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
+- `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, request class, classification confidence and ambiguity warnings, lifecycle phase, route mode and route quality, typed state transitions, action envelopes, approval ledgers, capability manifests, freshness, next commands, repair guidance, read-only review mode, document-artifact gates, and write-isolated edit proposals. Natural-language review and edit requests now get runtime-enforced Codex-grade handling: simple reviews stay read-only and findings-first, ambiguous mixed requests choose the safest lifecycle with an explanation, document-artifact requests use artifact-quality gates instead of irrelevant code-review loops, single-model runs execute or explicitly record a separate second-pass review phase, optional cross-review findings are persisted in an actionable triage ledger, and final answers are corrected before display when they omit changed files, review result, validation result, artifact quality, limitations, or remaining risk. The default terminal experience is compact-first: verdict, counts, key findings, report path, and a single next command come first, while detailed lifecycle and route diagnostics stay in `/progress-display stream` and artifacts.
 - Fuzzing starts with `/fuzz-func` source-level triage and continues through `/fuzz-campaign` for campaign manifests, corpus/crash/coverage artifacts, sanitizer or verifier evidence, and verification gate lifecycle management.
 - `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
 - `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
@@ -99,7 +99,7 @@ Its current differentiators are:
 
 ## What It Currently Supports
 
-- Multi-agent project analysis with reusable knowledge packs, a performance lens, operational docs, and an HTML dashboard
+- Multi-agent project analysis with reusable knowledge packs, symbol-aware evidence packets, scan coverage ledgers, a performance lens, operational docs, and an HTML dashboard
 - Symptom-driven `/find-root-cause` plus built-in `/root-cause-patterns` knowledge packs
 - Pre-final coding harnesses for acceptance, artifact quality, scenario replay, subagent evidence, test impact, and background job state
 - Evidence-backed apply/verify/retry edit-loop ledger that carries worker edits, patch evidence, background verification bundles, retry decisions, final review, and remaining risk into the final answer
@@ -145,6 +145,10 @@ Its current differentiators are:
 - During execution, the transcript shows shard waves, completed/failed shard counts, cache/review state, and model progress lines labeled with the active analysis stage and shard, for example `worker runtime: ...` or `reviewer security_rpc: ...`.
 - Each run writes `analysis_preflight.json`, which records the inferred intent, effective mode, scope, required indexes, provider/runtime feedback, shard contracts, and success criteria before worker execution starts.
 - Each shard now carries a contract (`type`, `objective`, `required_evidence`, and `success_criteria`), and worker reports include source-anchored `claims` so reviewer and synthesis steps can distinguish direct facts, inferences, risks, and unknowns.
+- Worker prompts now receive symbol-aware evidence packets instead of only file prefixes. Claims are expected to cite `evidence_packet_ids`; high-confidence claims without packet support are downgraded or left as unknowns instead of being promoted as direct facts.
+- Each run writes `coverage_ledger.json` and `evidence_packets.json`, mirrored under `latest/`, so skipped large/binary/unreadable files and the exact source slices used by workers remain auditable.
+- Each run writes a Phase 2 `structural_index.json` with parser coverage, fallback diagnostics, symbol/reference/call-edge candidates, and packet coverage metrics; Tree-sitter is an optional cgo/tagged adapter while default Windows builds keep the heuristic fallback parser.
+- When no dedicated reviewer profile is configured, non-root-cause runs are marked as `model_review_skipped` instead of counting those shards as reviewer-approved.
 - After worker/reviewer passes, `mode_scorecard.json` records mode-specific coverage, claim/evidence support, review approval, and any deterministic coverage gaps. When useful, Kernforge runs a bounded gap-filling shard pass before final synthesis.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
@@ -158,9 +162,9 @@ Its current differentiators are:
 - `trace`, `impact`, and `security` retrieval now expand graph neighborhoods and emit `build_context_v2` plus `path_v2` evidence
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
-- In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
+- In addition to a knowledge pack, the pipeline now emits a parser-backed `structural_index.json`, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
 - The pipeline also emits `architecture_facts.json`, a deterministic fact pack with top-level directory facts, domain hints, source anchors, registration/dispatch flow facts, boundary facts, and invariants used by cached architecture Q&A
-- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report and generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report, generated docs, source anchors, coverage ledger, structural index health, evidence packet index, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
 - The dashboard includes an inline Markdown viewer and full-window reader mode so long outputs such as `FINAL_REPORT.md` can be read without leaving the dashboard
 - Explicit language requests such as "write the report in English" override the detected conversation language for analysis worker and synthesis prompts, and live progress truncation is UTF-8 safe
 - Before the final handoff, Kernforge prints a highlighted `Analysis artifacts:` block with the report, JSON, dashboard, docs, and manifest paths so users do not need to scroll back through a long run
@@ -254,10 +258,13 @@ Its current differentiators are:
 - `/status` now defaults to a compact operator card: request class, classification confidence and ambiguity, current lifecycle phase, route mode, reviewer route quality, review/repair/document/verification/final-answer gates, second-pass state, cross-review triage counts, blockers by class, remaining obligations, and the next recommended command.
 - Use `/status detail` for evidence-heavy output. Detail mode expands the lifecycle timeline across `classified_request`, `collecting_context`, `pre_write_review`, `applying_change`, `post_change_review`, `single_model_second_pass`, `cross_review_triage`, `artifact_quality_gate`, `verification`, `final_answer_contract`, `blocked`, and `completed`, with status, reason, evidence reference, and the next safe action when applicable.
 - Operator progress lines are phase-aware. Long waits identify whether Kernforge is waiting on the primary model, cross reviewer, local tool, verification command, or final-answer correction, and repeated status spam is suppressed.
+- Review progress in the default `compact` mode hides repeated full 1->6 flow explanations and shows action lines such as `review 1/6 scope`, `main ... done`, `cross ... done`, `gate ...`, and `next ...`. `/progress-display stream` keeps detailed phase, lifecycle, waiting target, and next-transition diagnostics in the transcript.
+- Compact final review output is result-first. It shows verdict and blocker/warning/note counts before severity-grouped findings, report path, and one next recommended command. Duplicate terminal next commands are collapsed by command string, while Markdown, JSON, MCP, and runtime ledgers retain the full next-command records.
 - Blocked states are rendered blocker-first. Primary blockers are grouped as `code_repair_blocker`, `reviewer_route_problem`, `evidence_gap`, `verification_gap`, `document_artifact_quality`, `final_answer_contract`, or `user_decision_required`, and each blocker carries why it blocks, what was checked, what can safely happen next, and the command to run.
 - MCP review/status responses keep backward-compatible fields and add operator-card fields: `lifecycle_timeline`, `compact_status`, `blocker_summary`, `route_quality`, `final_answer_contract_status`, and `next_recommended_command`. These surfaces do not dump raw model output.
 - Review quality gates retry provider-specific omission patterns, downgrade weak or incomplete high-severity model findings to evidence-gap warnings, and require path or symbol plus evidence, impact, and required fix before a model finding can block the gate. When the reviewer supplies a line anchor through `path: file:line` or `line: n`, Kernforge preserves it as structured finding metadata instead of leaving it buried in prose. `test_gap` remains non-blocking only for pure test/verification work; if a reviewer mislabels a production-code repair as `test_gap` but the `required_fix` is an implementation change, the repair plan still keeps it as an actionable obligation.
 - Pre-fix review findings are summarized visibly before patch/write tools run, so the transcript shows which RF items drove the repair.
+- When the user names a specific RF id, for example `fix RF-004`, repair handoff carries only that item through `RepairFindings` and pre-fix obligations. Unlisted RFs are not intentionally fixed or reported as resolved; if the selected RF cannot be separated from another RF, Kernforge asks for a user decision before broadening scope.
 - Local code repair blocks web/search/browser MCP tools unless the user explicitly asks for external research.
 - Before a final answer, the coding harness and `/completion-audit` check the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, open tasks, verification, background job state, and required completion facts
 - The final-answer reviewer receives the edit-loop ledger plus a typed outcome contract and expects one coherent summary of what changed, what review/self-review found, what verified or was not run, and what risk remains. For edit and local-review lifecycles, missing changed-file, review, validation, or remaining-risk disclosure is corrected internally before the answer is exposed.
@@ -323,7 +330,7 @@ Its current differentiators are:
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
 - Thinking elapsed time is rebased at phase boundaries and stale runaway timer displays are clamped at the 2-hour mark
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
-- `progress_display` controls in-flight visibility and defaults to `stream` so long-running work leaves an auditable progress transcript. Change it from the REPL with `/progress-display auto|compact|stream`; `/progress_display ...` is accepted as an alias for users copying the config key. `auto` preserves important tool/model/route and project-analysis progress as transcript ledger lines, `compact` keeps them in the footer, and `stream` writes every progress update persistently
+- `progress_display` controls in-flight visibility and defaults to `compact` so routine review and coding work stays readable. Change it from the REPL with `/progress-display auto|compact|stream`; `/progress_display ...` is accepted as an alias for users copying the config key. `compact` keeps progress in the footer with short operator lines, `auto` preserves important durable events without repeating verbose review flow text, and `stream` writes every progress update persistently for detailed debugging
 - Provider, tool, and command failures are mirrored to `.kernforge/logs/errors.jsonl` as capped JSONL; Kernforge keeps that file at or below 100 MB so retry-only provider failures remain debuggable after the UI has moved on
 - OpenAI-compatible and OpenAI Codex streaming providers surface tool-call construction events, so the REPL can show when the model is preparing a tool and when the arguments are ready
 - Progress-only model streams keep the same incomplete-stream fallback behavior as normal assistant streams; if a streamed OpenAI-compatible response is empty or incomplete, the retry is forced back through the non-stream path instead of re-entering streaming only because progress events are enabled
@@ -743,7 +750,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
   "shell": "powershell",
   "request_timeout_seconds": 1200,
   "shell_timeout_seconds": 900,
-  "progress_display": "stream",
+  "progress_display": "compact",
   "max_tokens": 8192,
   "model_routes": {
     "enabled": true,
@@ -797,7 +804,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
 | `request_timeout_seconds` | Per-request model timeout in seconds |
-| `progress_display` | Runtime progress style. Default `stream` writes every progress update into the transcript for long-run debugging; `auto` keeps durable tool/model/project-analysis ledger lines while high-frequency shell output stays in the footer; `compact` keeps progress transient |
+| `progress_display` | Runtime progress style. Default `compact` keeps routine progress transient and review output action-oriented; `auto` keeps durable tool/model/project-analysis events while avoiding repeated verbose review flow text; `stream` writes every progress update into the transcript for long-run debugging |
 | `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers default to serial execution, while cloud/API routes follow the configured provider or route limit. |
 | `max_tool_iterations` | Max tool loop count per request. `0` or any non-positive value means unlimited, and the default is `0` |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
@@ -1222,6 +1229,8 @@ Explain the structure of this repository
 /docs-refresh
 /analyze-performance [focus]
 /review plan <task>
+/review-soak --mode scripted
+/review-soak --mode real-provider --turns <N> --timeout <duration>
 /new-feature <task>
 /specialists
 /worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
@@ -1240,11 +1249,12 @@ Explain the structure of this repository
 - `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and optional task-owner model override set. Changing those route models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
 - `/model cross-review` is the single supported path for the optional `cross` review route. `design`, `security`, `false_positive`, `regression`, `test`, and `final_gate` are review lenses selected by the planner, not model routes.
+- `/review-soak --mode scripted` writes `.kernforge/soak/<timestamp>/` artifacts that exercise `document_artifact`, `review_only`, `implementation`, `modify_then_review`, `fix_from_review`, `analysis`, and `mixed_flow` across single-model and cross-model routes. `/review-soak --mode real-provider` only runs when `KERNFORGE_REAL_PROVIDER_SOAK=1` and uses `KERNFORGE_REAL_PROVIDER`, `KERNFORGE_REAL_MODEL`, `KERNFORGE_REAL_BASE_URL`, and `KERNFORGE_REAL_API_KEY`; missing config writes an explicit skipped report instead of failing the suite.
 - `/hooks` also prints the compact runtime gate summary, so hook/policy inspection and `/status` use the same freshness and next-command vocabulary.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped optional model override to one task owner profile.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.
-- `/progress-display` shows or saves the runtime progress mode; `/progress_display` is accepted as the same command. The default is `stream` for a fully persistent progress transcript. Use `auto` for durable tool/model ledger lines with transient noisy output, or `compact` for footer-only progress.
+- `/progress-display` shows or saves the runtime progress mode; `/progress_display` is accepted as the same command. The default is `compact` for a quieter Codex CLI-like operator view. Use `auto` for durable tool/model ledger lines without repeated verbose review flow text, or `stream` for a fully persistent progress transcript.
 - `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is kept only as hidden parser compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to regenerate docs from the latest run.
 
 ### Canceling And History
@@ -1503,13 +1513,18 @@ What it does:
 - Scans the workspace into a structured snapshot
 - Splits the codebase into analysis shards
 - Uses semantic shard planning to prioritize startup, network, UI, GAS, asset/config, and integrity slices in large or Unreal-heavy workspaces
+- Uses graph-guided shard planning for startup, IOCTL, callback registration, handle/memory, RPC, asset/config, build-context, and generated-artifact communities before falling back to directory chunks
 - Uses a conductor plus multiple worker/reviewer passes
 - Prints live shard progress, including worker slot count, wave start/completion, shard completion/failure state, and stage/shard-prefixed model wait events
-- Builds a structural index and an Unreal semantic graph
+- Builds a parser-backed structural index and an Unreal semantic graph
 - Builds a deterministic `architecture_facts.json` fact pack for cached deep-structure Q&A, with current-source anchors, closed top-level directory facts, driver/control-flow hints, and answer invariants
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
+- Tracks symbol, edge, build-context, security-overlay, and derived graph fingerprints so incremental reuse is scoped to the affected graph neighborhood instead of the whole project
+- Classifies evidence packets as required, supporting, ambiguous, or gap packets and exposes required packet IDs in worker prompts and preflight contracts
+- Runs a deterministic claim verifier for every analysis run, including single-model runs where model review is skipped, and downgrades or blocks unsupported high-confidence claims before final synthesis
+- Builds a security/anti-cheat overlay for Windows driver/IOCTL/callback/handle/memory/RPC/telemetry surfaces and Unreal RPC/replication/asset/config/integrity boundaries
 - Writes Markdown and JSON analysis artifacts
-- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
+- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `COVERAGE_LEDGER.md`, `STRUCTURAL_INDEX.md`, `EVIDENCE_PACKETS.md`, `EVIDENCE_GRAPH.md`, `SECURITY_OVERLAY.md`, `UNSUPPORTED_CLAIMS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
 - Writes a schema-versioned `docs_manifest.json`; readers treat missing `schema_version` as legacy and ignore unknown fields for additive compatibility
 - Writes `dashboard.html` so run summary, module/function structure, the assistant-facing final report, generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory follow-ups, subsystem map, security surface, fuzz target candidates, and verification matrix are visible in a browser
 - Provides an inline Markdown viewer with a full-window reader mode for long generated documents, while keeping generated-doc links inside the dashboard instead of opening separate tabs
@@ -1527,6 +1542,14 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>.md`
 - `.kernforge/analysis/<timestamp>_<goal>.json`
 - `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
+- `.kernforge/analysis/<timestamp>_<goal>_coverage_ledger.json`
+- `.kernforge/analysis/<timestamp>_<goal>_evidence_packets.json`
+- `.kernforge/analysis/<timestamp>_<goal>_graph_shards.json`
+- `.kernforge/analysis/<timestamp>_<goal>_graph_reuse.json`
+- `.kernforge/analysis/<timestamp>_<goal>_evidence_graph.json`
+- `.kernforge/analysis/<timestamp>_<goal>_claim_verification.json`
+- `.kernforge/analysis/<timestamp>_<goal>_unsupported_claims.json`
+- `.kernforge/analysis/<timestamp>_<goal>_security_overlay.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index_v2.json`
 - `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
@@ -1547,6 +1570,17 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>_dashboard.html`
 - `.kernforge/analysis/latest/`
 - `.kernforge/analysis/latest/run.json`
+- `.kernforge/analysis/latest/coverage_ledger.json`
+- `.kernforge/analysis/latest/evidence_packets.json`
+- `.kernforge/analysis/latest/graph_shards.json`
+- `.kernforge/analysis/latest/graph_reuse.json`
+- `.kernforge/analysis/latest/evidence_graph.json`
+- `.kernforge/analysis/latest/claim_verification.json`
+- `.kernforge/analysis/latest/unsupported_claims.json`
+- `.kernforge/analysis/latest/security_overlay.json`
+- `.kernforge/analysis/latest/structural_index.json`
+- `.kernforge/analysis/latest/semantic_index.json`
+- `.kernforge/analysis/latest/structural_index_v2.json`
 - `.kernforge/analysis/latest/architecture_facts.json`
 - `.kernforge/analysis/latest/docs/`
 - `.kernforge/analysis/latest/docs_index.md`
@@ -1557,8 +1591,8 @@ Recommended flow:
 
 1. Run `/analyze-project anti-cheat startup and integrity architecture`.
 2. Open the latest dashboard with `/analyze-dashboard`, then review the generated knowledge pack, docs, and shard outputs.
-3. Run `/analyze-performance startup` or another focus area such as `scanner`, `compression`, `upload`, `ETW`, or `memory`.
-4. Use the resulting knowledge in `/review selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
+3. Refresh or inspect durable docs with `/docs-refresh`, then check `EVIDENCE_GRAPH.md`, `SECURITY_OVERLAY.md`, and `UNSUPPORTED_CLAIMS.md` when a claim or boundary looks suspicious.
+4. Run `/verify`, `/simulate stealth-surface`, or `/fuzz-campaign run` from the handoff block when the verifier or overlay reports follow-through.
 
 ## Source-Level Function Fuzzing
 

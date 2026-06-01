@@ -67,6 +67,20 @@ func TestStatusKVAlignedKeepsLongKeysInColumnLayout(t *testing.T) {
 	}
 }
 
+func TestColorsEnabledRespectsNoColorAndForceColor(t *testing.T) {
+	t.Setenv("TERM", "")
+	t.Setenv("FORCE_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
+	if !colorsEnabled() {
+		t.Fatalf("expected FORCE_COLOR to enable color")
+	}
+
+	t.Setenv("NO_COLOR", "1")
+	if colorsEnabled() {
+		t.Fatalf("expected NO_COLOR to override FORCE_COLOR")
+	}
+}
+
 func TestCompactThinkingStatusDoesNotSplitKoreanUTF8(t *testing.T) {
 	status := "worker root: deepseek / deepseek-v4-pro 모델 응답 대기 중 (1m20s)"
 	got := compactThinkingStatus(Config{AutoLocale: boolPtr(false)}, status)

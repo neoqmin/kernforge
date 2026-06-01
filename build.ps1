@@ -124,8 +124,16 @@ $resourceWriterType = Get-ResourceWriterType
 $baselineVersion = Get-BaselineVersion
 $nextParts = Increment-Version (Parse-VersionParts $baselineVersion)
 $nextVersion = Format-Version $nextParts
+$gitCommit = ""
+try {
+	$gitCommit = (& git -C $root rev-parse --short=12 HEAD 2>$null).Trim()
+}
+catch {
+	$gitCommit = ""
+}
+$buildTime = (Get-Date).ToUniversalTime().ToString("o")
 
-& go build -buildvcs=false -ldflags "-X main.appVersion=$nextVersion" -o $outputPath ./cmd/kernforge
+& go build -buildvcs=false -ldflags "-X main.appVersion=$nextVersion -X main.appCommit=$gitCommit -X main.appBuildTime=$buildTime" -o $outputPath ./cmd/kernforge
 if ($LASTEXITCODE -ne 0) {
 	throw "go build failed with exit code $LASTEXITCODE"
 }
@@ -149,8 +157,10 @@ catch [System.Reflection.TargetInvocationException] {
 
 $state = [pscustomobject]@{
 	current_version = $nextVersion
+	commit          = $gitCommit
+	build_time      = $buildTime
 	updated_at      = (Get-Date).ToString("o")
 }
 $state | ConvertTo-Json | Set-Content -Path $statePath -Encoding UTF8
 
-Write-Host "Built kernforge.exe with PE version $nextVersion"
+Write-Host "Built kernforge.exe with PE version $nextVersion commit $gitCommit"

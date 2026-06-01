@@ -3470,26 +3470,14 @@ func (rt *runtimeState) rememberCurrentProfileWhenEmpty() error {
 func (rt *runtimeState) renderProfileList() {
 	fmt.Fprintln(rt.writer, rt.ui.section("Profiles"))
 	if current, ok := rt.currentProfile(); ok {
-		fmt.Fprintln(rt.writer, rt.ui.infoLine("Current profile: "+current.Name))
-		meta := []string{current.Provider, current.Model}
-		if current.BaseURL != "" {
-			meta = append(meta, current.BaseURL)
-		}
-		if current.Pinned {
-			meta = append(meta, "pinned")
-		}
-		fmt.Fprintln(rt.writer, rt.ui.dim(strings.Join(meta, " | ")))
-		rt.renderStoredProfileRoleModels(current, "  ")
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("Current profile: "+profileCurrentSummary(current)))
 		fmt.Fprintln(rt.writer)
 	}
 	for i, profile := range rt.cfg.Profiles {
 		label := fmt.Sprintf("%2d. %s", i+1, profile.Name)
-		meta := []string{}
+		meta := profileListMeta(profile)
 		if profile.Pinned {
 			meta = append(meta, "pinned")
-		}
-		if profile.BaseURL != "" {
-			meta = append(meta, profile.BaseURL)
 		}
 		if rt.session != nil &&
 			strings.EqualFold(profile.Provider, rt.session.Provider) &&
@@ -3512,23 +3500,23 @@ func (rt *runtimeState) renderProfileList() {
 func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent string) {
 	roles := profile.RoleModels
 	if roles == nil {
-		roles = &ProfileRoleModels{}
-	}
-	rt.renderStoredProfileRoleLine(indent, "analysis_worker", roles.AnalysisWorker, "not configured; follows profile main model")
-	if roles.AnalysisReviewer != nil {
-		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", roles.AnalysisReviewer, "")
-	} else if roles.AnalysisWorker != nil {
-		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV("analysis_reviewer", "not configured; non-root-cause review skipped"))
-	} else {
-		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", nil, "not configured; non-root-cause review skipped")
-	}
-	if len(roles.Specialists) == 0 {
 		return
 	}
-	for _, specialist := range roles.Specialists {
-		if strings.TrimSpace(specialist.Name) == "" {
-			continue
-		}
+	hasWorker := profileRoleLineHasRoute(roles.AnalysisWorker)
+	hasReviewer := profileRoleLineHasRoute(roles.AnalysisReviewer)
+	visibleSpecialists := profileVisibleSpecialistRoleModels(roles.Specialists)
+	if !hasWorker && !hasReviewer && len(visibleSpecialists) == 0 {
+		return
+	}
+	if hasWorker {
+		rt.renderStoredProfileRoleLine(indent, "analysis_worker", roles.AnalysisWorker, "")
+	}
+	if hasReviewer {
+		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", roles.AnalysisReviewer, "")
+	} else if hasWorker {
+		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV("analysis_reviewer", "not configured; non-root-cause review skipped"))
+	}
+	for _, specialist := range visibleSpecialists {
 		label := "owner:" + specialist.Name
 		value := formatProviderModelEffortLabel(specialist.Provider, specialist.Model, specialist.ReasoningEffort)
 		if strings.TrimSpace(specialist.BaseURL) != "" {
@@ -3538,8 +3526,75 @@ func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent st
 	}
 }
 
+func profileCurrentSummary(profile Profile) string {
+	route := profileRouteSummary(profile)
+	if profileNameMatchesRouteName(profile) {
+		return route
+	}
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		return route
+	}
+	return name + " -> " + route
+}
+
+func profileListMeta(profile Profile) []string {
+	if !profileNameMatchesRouteName(profile) {
+		return []string{profileRouteSummary(profile)}
+	}
+	meta := []string{}
+	if providerSupportsReasoningEffort(profile.Provider) {
+		meta = append(meta, "effort="+reasoningEffortDisplay(profile.ReasoningEffort))
+	}
+	if strings.TrimSpace(profile.BaseURL) != "" {
+		meta = append(meta, strings.TrimSpace(profile.BaseURL))
+	}
+	return meta
+}
+
+func profileNameMatchesRouteName(profile Profile) bool {
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		return false
+	}
+	if strings.EqualFold(name, profileName(profile.Provider, profile.Model)) {
+		return true
+	}
+	legacyName := strings.TrimSpace(profile.Provider) + " / " + strings.TrimSpace(profile.Model)
+	return strings.EqualFold(name, legacyName)
+}
+
+func profileRouteSummary(profile Profile) string {
+	value := formatProviderModelEffortLabel(profile.Provider, profile.Model, profile.ReasoningEffort)
+	if strings.TrimSpace(profile.BaseURL) != "" {
+		value += " | " + strings.TrimSpace(profile.BaseURL)
+	}
+	return value
+}
+
+func profileRoleLineHasRoute(profile *Profile) bool {
+	return profile != nil && strings.TrimSpace(profile.Provider) != "" && strings.TrimSpace(profile.Model) != ""
+}
+
+func profileVisibleSpecialistRoleModels(profiles []SpecialistSubagentProfile) []SpecialistSubagentProfile {
+	out := []SpecialistSubagentProfile{}
+	for _, profile := range profiles {
+		if strings.TrimSpace(profile.Name) == "" {
+			continue
+		}
+		if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+			continue
+		}
+		out = append(out, profile)
+	}
+	return out
+}
+
 func (rt *runtimeState) renderStoredProfileRoleLine(indent string, role string, profile *Profile, fallback string) {
 	if profile == nil || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		if strings.TrimSpace(fallback) == "" {
+			return
+		}
 		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV(role, fallback))
 		return
 	}
@@ -6642,6 +6697,13 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "review":
 		err := rt.runWithRequestCancelWatcher(context.Background(), func(ctx context.Context) error {
 			return rt.handleReviewCommandWithContext(ctx, cmd.Args)
+		})
+		if err != nil {
+			return false, err
+		}
+	case "review-soak":
+		err := rt.runWithRequestCancelWatcher(context.Background(), func(ctx context.Context) error {
+			return rt.handleReviewSoakCommandWithContext(ctx, cmd.Args)
 		})
 		if err != nil {
 			return false, err

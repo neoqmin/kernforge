@@ -27,8 +27,15 @@ func colorsEnabled() bool {
 	if strings.TrimSpace(os.Getenv("NO_COLOR")) != "" {
 		return false
 	}
+	forceColor := strings.TrimSpace(os.Getenv("FORCE_COLOR"))
+	if forceColor != "" && forceColor != "0" {
+		return true
+	}
 	term := strings.TrimSpace(os.Getenv("TERM"))
 	if strings.EqualFold(term, "dumb") {
+		return false
+	}
+	if info, err := os.Stdout.Stat(); err == nil && info.Mode()&os.ModeCharDevice == 0 {
 		return false
 	}
 	return true

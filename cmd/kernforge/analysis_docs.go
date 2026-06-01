@@ -103,6 +103,12 @@ func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 		"SECURITY_SURFACE.md":         buildAnalysisSecuritySurfaceDoc(run),
 		"API_AND_ENTRYPOINTS.md":      buildAnalysisAPIEntrypointsDoc(run),
 		"BUILD_AND_ARTIFACTS.md":      buildAnalysisBuildArtifactsDoc(run),
+		"COVERAGE_LEDGER.md":          buildAnalysisCoverageLedgerDoc(run),
+		"STRUCTURAL_INDEX.md":         buildAnalysisStructuralIndexDoc(run),
+		"EVIDENCE_PACKETS.md":         buildAnalysisEvidencePacketsDoc(run),
+		"EVIDENCE_GRAPH.md":           buildAnalysisEvidenceGraphDoc(run),
+		"SECURITY_OVERLAY.md":         buildAnalysisSecurityOverlayDoc(run),
+		"UNSUPPORTED_CLAIMS.md":       buildAnalysisUnsupportedClaimsDoc(run),
 		"VERIFICATION_MATRIX.md":      buildAnalysisVerificationMatrixDoc(run),
 		"FUZZ_TARGETS.md":             buildAnalysisFuzzTargetsDoc(run),
 		"OPERATIONS_RUNBOOK.md":       buildAnalysisOperationsRunbookDoc(run),
@@ -129,6 +135,12 @@ func analysisGeneratedDocNames() []string {
 		"SECURITY_SURFACE.md",
 		"API_AND_ENTRYPOINTS.md",
 		"BUILD_AND_ARTIFACTS.md",
+		"COVERAGE_LEDGER.md",
+		"STRUCTURAL_INDEX.md",
+		"EVIDENCE_PACKETS.md",
+		"EVIDENCE_GRAPH.md",
+		"SECURITY_OVERLAY.md",
+		"UNSUPPORTED_CLAIMS.md",
 		"VERIFICATION_MATRIX.md",
 		"FUZZ_TARGETS.md",
 		"OPERATIONS_RUNBOOK.md",
@@ -272,9 +284,21 @@ func buildAnalysisDocsIndex(run ProjectAnalysisRun, docs map[string]string) stri
 	fmt.Fprintf(&b, "- Lines scanned: %d\n", run.Snapshot.TotalLines)
 	fmt.Fprintf(&b, "- Shards: %d\n", run.Summary.TotalShards)
 	fmt.Fprintf(&b, "- Approved shards: %d\n", run.Summary.ApprovedShards)
+	if run.Summary.ModelReviewSkippedShards > 0 {
+		fmt.Fprintf(&b, "- Model-review skipped shards: %d\n", run.Summary.ModelReviewSkippedShards)
+	}
+	if run.CoverageLedger.SkippedFileCount > 0 {
+		fmt.Fprintf(&b, "- Skipped files in coverage ledger: %d\n", run.CoverageLedger.SkippedFileCount)
+	}
 	if run.KnowledgePack.AnalysisExecution.ReusedShards > 0 || run.KnowledgePack.AnalysisExecution.MissedShards > 0 {
 		fmt.Fprintf(&b, "- Reused shards: %d\n", run.KnowledgePack.AnalysisExecution.ReusedShards)
 		fmt.Fprintf(&b, "- Recomputed shards: %d\n", run.KnowledgePack.AnalysisExecution.MissedShards)
+	}
+	if run.ClaimVerification.TotalClaims > 0 {
+		fmt.Fprintf(&b, "- Claim verifier: %s (blocking=%d unsupported_high=%d)\n", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount)
+	}
+	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
+		fmt.Fprintf(&b, "- Security overlay: nodes=%d edges=%d surfaces=%s\n", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount, strings.Join(limitStrings(run.SecurityOverlay.Metrics.Surfaces, 8), ", "))
 	}
 	return b.String()
 }
@@ -437,8 +461,17 @@ func buildAnalysisBuildArtifactsDoc(run ProjectAnalysisRun) string {
 			if strings.TrimSpace(ctx.Name) != "" {
 				fmt.Fprintf(&b, " name=%s", ctx.Name)
 			}
+			if strings.TrimSpace(ctx.SourceAdapter) != "" {
+				fmt.Fprintf(&b, " adapter=%s", ctx.SourceAdapter)
+			}
+			if strings.TrimSpace(ctx.Confidence) != "" {
+				fmt.Fprintf(&b, " confidence=%s", ctx.Confidence)
+			}
 			if strings.TrimSpace(ctx.Module) != "" {
 				fmt.Fprintf(&b, " module=%s", ctx.Module)
+			}
+			if len(ctx.IncludePaths) > 0 {
+				fmt.Fprintf(&b, " include_dirs=%d", len(ctx.IncludePaths))
 			}
 			if len(ctx.Files) > 0 {
 				fmt.Fprintf(&b, " files=%d", len(ctx.Files))
@@ -451,6 +484,188 @@ func buildAnalysisBuildArtifactsDoc(run ProjectAnalysisRun) string {
 		for _, cmd := range limitCompileCommands(run.Snapshot.CompileCommands, 20) {
 			fmt.Fprintf(&b, "- `%s` compiler=%s source=%s\n", cmd.File, firstNonBlankAnalysisString(cmd.Compiler, "unknown"), firstNonBlankAnalysisString(cmd.Source, "compile_commands"))
 		}
+	}
+	if len(run.Snapshot.BuildDiagnostics) > 0 {
+		fmt.Fprintf(&b, "\n## Build Diagnostics\n\n")
+		fmt.Fprintf(&b, "| Severity | Adapter | Path | Reason | Detail |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- |\n")
+		for _, diagnostic := range limitBuildDiagnostics(run.Snapshot.BuildDiagnostics, 40) {
+			fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s |\n",
+				strings.ReplaceAll(diagnostic.Severity, "|", "/"),
+				strings.ReplaceAll(diagnostic.Adapter, "|", "/"),
+				strings.ReplaceAll(diagnostic.Path, "|", "/"),
+				strings.ReplaceAll(diagnostic.Reason, "|", "/"),
+				strings.ReplaceAll(diagnostic.Detail, "|", "/"),
+			)
+		}
+	}
+	if len(run.Snapshot.ImportResolutions) > 0 {
+		fmt.Fprintf(&b, "\n## Include Resolution\n\n")
+		fmt.Fprintf(&b, "| Source | Import | Target | Adapter | Confidence | Reason |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- |\n")
+		for _, record := range limitImportResolutionRecords(run.Snapshot.ImportResolutions, 60) {
+			fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %s | %s | %s |\n",
+				strings.ReplaceAll(record.SourceFile, "|", "/"),
+				strings.ReplaceAll(record.RawImport, "|", "/"),
+				strings.ReplaceAll(record.TargetPath, "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(record.SourceAdapter, "unknown"), "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(record.Confidence, "medium"), "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(record.Reason, "resolved"), "|", "/"),
+			)
+		}
+	}
+	if len(run.SemanticIndexV2.GeneratedCodeEdges) > 0 {
+		fmt.Fprintf(&b, "\n## Generated Code Relations\n\n")
+		for _, edge := range limitGeneratedCodeEdges(run.SemanticIndexV2.GeneratedCodeEdges, 40) {
+			fmt.Fprintf(&b, "- `%s` -> `%s` (%s", edge.SourceFile, edge.TargetID, edge.Type)
+			if strings.TrimSpace(edge.Confidence) != "" {
+				fmt.Fprintf(&b, ", confidence=%s", edge.Confidence)
+			}
+			fmt.Fprintf(&b, ")\n")
+		}
+	}
+	if len(run.UnrealGraph.Nodes) > 0 || len(run.UnrealGraph.Edges) > 0 {
+		fmt.Fprintf(&b, "\n## Unreal Graph Coverage\n\n")
+		fmt.Fprintf(&b, "- Nodes: %d\n", len(run.UnrealGraph.Nodes))
+		fmt.Fprintf(&b, "- Edges: %d\n", len(run.UnrealGraph.Edges))
+	}
+	return b.String()
+}
+
+func buildAnalysisCoverageLedgerDoc(run ProjectAnalysisRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Coverage Ledger\n\n")
+	analysisDocsWriteHeader(&b, run)
+	analysisDocsWriteDocMetadata(&b, run, "COVERAGE_LEDGER.md")
+	ledger := normalizeAnalysisCoverageLedger(run.CoverageLedger)
+	if ledger.IncludedFiles == 0 && run.Snapshot.TotalFiles > 0 {
+		ledger.IncludedFiles = run.Snapshot.TotalFiles
+	}
+	fmt.Fprintf(&b, "\n## Scan Summary\n\n")
+	fmt.Fprintf(&b, "- Visited files: %d\n", ledger.VisitedFiles)
+	fmt.Fprintf(&b, "- Included files: %d\n", ledger.IncludedFiles)
+	fmt.Fprintf(&b, "- Included lines: %d\n", run.Snapshot.TotalLines)
+	fmt.Fprintf(&b, "- Skipped files: %d\n", ledger.SkippedFileCount)
+	fmt.Fprintf(&b, "- Skipped bytes: %d\n", ledger.SkippedBytes)
+	fmt.Fprintf(&b, "- Max file bytes: %d\n", ledger.MaxFileBytes)
+	fmt.Fprintf(&b, "- Excluded dirs: %d\n", ledger.ExcludedDirs)
+	fmt.Fprintf(&b, "\n## Skip Reasons\n\n")
+	fmt.Fprintf(&b, "| Reason | Count |\n")
+	fmt.Fprintf(&b, "| --- | ---: |\n")
+	for _, row := range analysisCoverageLedgerReasonRows(ledger) {
+		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
+	}
+	if len(ledger.SkippedFiles) > 0 {
+		fmt.Fprintf(&b, "\n## Skipped Files\n\n")
+		fmt.Fprintf(&b, "| Reason | Size | Path | Detail |\n")
+		fmt.Fprintf(&b, "| --- | ---: | --- | --- |\n")
+		for _, item := range limitSkippedFiles(ledger.SkippedFiles, 80) {
+			fmt.Fprintf(&b, "| %s | %d | `%s` | %s |\n", strings.ReplaceAll(item.Reason, "|", "/"), item.Size, strings.ReplaceAll(item.Path, "|", "/"), strings.ReplaceAll(item.Detail, "|", "/"))
+		}
+	}
+	return b.String()
+}
+
+func buildAnalysisStructuralIndexDoc(run ProjectAnalysisRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Structural Index\n\n")
+	analysisDocsWriteHeader(&b, run)
+	analysisDocsWriteDocMetadata(&b, run, "STRUCTURAL_INDEX.md")
+	index := normalizeStructuralIndex(run.StructuralIndex)
+	fmt.Fprintf(&b, "\n## Parser Coverage\n\n")
+	fmt.Fprintf(&b, "- Indexed files: %d\n", index.Metrics.IndexedFiles)
+	fmt.Fprintf(&b, "- Indexed symbols: %d\n", index.Metrics.IndexedSymbols)
+	fmt.Fprintf(&b, "- Indexed references: %d\n", index.Metrics.IndexedReferences)
+	fmt.Fprintf(&b, "- Parser failures: %d\n", index.Metrics.ParserFailures)
+	fmt.Fprintf(&b, "- Fallback files: %d\n", index.Metrics.FallbackFiles)
+	fmt.Fprintf(&b, "- Unsupported files: %d\n", index.Metrics.UnsupportedFiles)
+	fmt.Fprintf(&b, "- Tree-sitter files: %d\n", index.Metrics.TreeSitterFiles)
+	fmt.Fprintf(&b, "- Symbol anchored files: %d\n", index.Metrics.SymbolAnchoredFiles)
+	if len(index.AdapterNotes) > 0 {
+		fmt.Fprintf(&b, "\n## Adapter Notes\n\n")
+		for _, note := range index.AdapterNotes {
+			fmt.Fprintf(&b, "- %s\n", note)
+		}
+	}
+	if index.PacketCoverage.TotalPackets > 0 || index.PacketCoverage.TotalClaims > 0 {
+		fmt.Fprintf(&b, "\n## Evidence Packet Coverage\n\n")
+		fmt.Fprintf(&b, "- Claims with packets: %d / %d (%.2f)\n", index.PacketCoverage.ClaimsWithPackets, index.PacketCoverage.TotalClaims, index.PacketCoverage.ClaimPacketCoverageRatio)
+		fmt.Fprintf(&b, "- Packets with symbol anchors: %d / %d (%.2f)\n", index.PacketCoverage.PacketsWithSymbolAnchor, index.PacketCoverage.TotalPackets, index.PacketCoverage.PacketSymbolAnchorCoverageRatio)
+	}
+	if len(index.Symbols) > 0 {
+		fmt.Fprintf(&b, "\n## Top Symbols\n\n")
+		fmt.Fprintf(&b, "| Symbol | Kind | Source | Parser |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- |\n")
+		for _, symbol := range limitStructuralSymbols(index.Symbols, 120) {
+			source := symbol.File
+			if symbol.StartLine > 0 {
+				source = fmt.Sprintf("%s:%d-%d", symbol.File, symbol.StartLine, symbol.EndLine)
+			}
+			fmt.Fprintf(&b, "| `%s` | %s | `%s` | %s |\n",
+				strings.ReplaceAll(firstNonBlankAnalysisString(symbol.CanonicalName, symbol.Name), "|", "/"),
+				strings.ReplaceAll(symbol.Kind, "|", "/"),
+				strings.ReplaceAll(source, "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(symbol.ExtractionMethod, "unknown"), "|", "/"),
+			)
+		}
+	}
+	if len(index.Diagnostics) > 0 {
+		fmt.Fprintf(&b, "\n## Diagnostics\n\n")
+		fmt.Fprintf(&b, "| Severity | Parser | Path | Reason | Detail |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- |\n")
+		for _, diagnostic := range limitStructuralDiagnostics(index.Diagnostics, 80) {
+			fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s |\n",
+				strings.ReplaceAll(diagnostic.Severity, "|", "/"),
+				strings.ReplaceAll(diagnostic.Parser, "|", "/"),
+				strings.ReplaceAll(diagnostic.Path, "|", "/"),
+				strings.ReplaceAll(diagnostic.Reason, "|", "/"),
+				strings.ReplaceAll(diagnostic.Detail, "|", "/"),
+			)
+		}
+	}
+	return b.String()
+}
+
+func buildAnalysisEvidencePacketsDoc(run ProjectAnalysisRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Evidence Packets\n\n")
+	analysisDocsWriteHeader(&b, run)
+	analysisDocsWriteDocMetadata(&b, run, "EVIDENCE_PACKETS.md")
+	if len(run.EvidencePackets) == 0 {
+		fmt.Fprintf(&b, "\nNo evidence packets were generated for this run.\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "\n## Packet Index\n\n")
+	fmt.Fprintf(&b, "| Packet | Shard | Category | Kind | Source | Method | Evidence Class | Graph Edges | Confidence |\n")
+	fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	for _, packet := range limitEvidencePackets(run.EvidencePackets, 120) {
+		source := packet.Path
+		if packet.StartLine > 0 {
+			source = fmt.Sprintf("%s:%d-%d", packet.Path, packet.StartLine, packet.EndLine)
+		}
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | `%s` | %s | %s | %s | %s |\n",
+			strings.ReplaceAll(packet.ID, "|", "/"),
+			strings.ReplaceAll(packet.ShardID, "|", "/"),
+			strings.ReplaceAll(firstNonBlankAnalysisString(packet.Category, "supporting"), "|", "/"),
+			strings.ReplaceAll(packet.Kind, "|", "/"),
+			strings.ReplaceAll(source, "|", "/"),
+			strings.ReplaceAll(packet.ExtractionMethod, "|", "/"),
+			strings.ReplaceAll(packet.EvidenceClass, "|", "/"),
+			strings.ReplaceAll(strings.Join(limitStrings(packet.GraphEdgeIDs, 4), ", "), "|", "/"),
+			strings.ReplaceAll(firstNonBlankAnalysisString(packet.Confidence, "medium"), "|", "/"),
+		)
+	}
+	fmt.Fprintf(&b, "\n## Claim Packet Coverage\n\n")
+	coverage := run.PacketCoverage
+	if coverage.TotalPackets == 0 && len(run.EvidencePackets) > 0 {
+		coverage = computeAnalysisPacketCoverage(run.Reports, run.EvidencePackets)
+	}
+	fmt.Fprintf(&b, "- Claims with packets: %d / %d (%.2f)\n", coverage.ClaimsWithPackets, coverage.TotalClaims, coverage.ClaimPacketCoverageRatio)
+	fmt.Fprintf(&b, "- Packets with symbol anchors: %d / %d (%.2f)\n\n", coverage.PacketsWithSymbolAnchor, coverage.TotalPackets, coverage.PacketSymbolAnchorCoverageRatio)
+	fmt.Fprintf(&b, "| Shard | Claim | Packets | Confidence |\n")
+	fmt.Fprintf(&b, "| --- | --- | --- | --- |\n")
+	for _, row := range analysisClaimEvidencePacketRows(run, 120) {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", strings.ReplaceAll(row[0], "|", "/"), strings.ReplaceAll(row[1], "|", "/"), strings.ReplaceAll(row[2], "|", "/"), strings.ReplaceAll(row[3], "|", "/"))
 	}
 	return b.String()
 }
@@ -1040,6 +1255,24 @@ func hasSecuritySignals(run ProjectAnalysisRun) bool {
 
 func analysisDocsSourceArtifacts(run ProjectAnalysisRun) []string {
 	items := []string{"final_document", "snapshot", "knowledge_pack"}
+	if run.CoverageLedger.SkippedFileCount > 0 || run.CoverageLedger.IncludedFiles > 0 {
+		items = append(items, "coverage_ledger")
+	}
+	if len(run.EvidencePackets) > 0 {
+		items = append(items, "evidence_packets")
+	}
+	if len(run.EvidenceGraph.Nodes) > 0 || len(run.EvidenceGraph.Edges) > 0 {
+		items = append(items, "evidence_graph", "graph_shards", "graph_reuse")
+	}
+	if run.ClaimVerification.TotalClaims > 0 || len(run.UnsupportedClaims) > 0 {
+		items = append(items, "claim_verification", "unsupported_claims")
+	}
+	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
+		items = append(items, "security_overlay")
+	}
+	if hasStructuralIndexData(run.StructuralIndex) {
+		items = append(items, "structural_index")
+	}
 	if hasSemanticIndexV2Data(run.SemanticIndexV2) {
 		items = append(items, "structural_index_v2")
 	}
@@ -1050,6 +1283,62 @@ func analysisDocsSourceArtifacts(run ProjectAnalysisRun) []string {
 		items = append(items, "vector_corpus")
 	}
 	return items
+}
+
+func analysisCoverageLedgerReasonRows(ledger AnalysisCoverageLedger) [][2]string {
+	return [][2]string{
+		{"max_file_bytes", fmt.Sprintf("%d", ledger.OversizedFiles)},
+		{"unreadable", fmt.Sprintf("%d", ledger.UnreadableFiles)},
+		{"non_text", fmt.Sprintf("%d", ledger.NonTextFiles)},
+		{"excluded", fmt.Sprintf("%d", ledger.ExcludedFiles)},
+	}
+}
+
+func limitSkippedFiles(items []AnalysisSkippedFile, limit int) []AnalysisSkippedFile {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitEvidencePackets(items []EvidencePacket, limit int) []EvidencePacket {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitStructuralSymbols(items []SymbolRecord, limit int) []SymbolRecord {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitStructuralDiagnostics(items []StructuralIndexDiagnostic, limit int) []StructuralIndexDiagnostic {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func analysisClaimEvidencePacketRows(run ProjectAnalysisRun, limit int) [][4]string {
+	rows := [][4]string{}
+	for _, report := range run.Reports {
+		for _, claim := range report.Claims {
+			label := firstNonBlankAnalysisString(claim.ID, claim.Claim)
+			rows = append(rows, [4]string{
+				firstNonBlankAnalysisString(report.ShardID, report.Title),
+				label,
+				strings.Join(claim.EvidencePacketIDs, ", "),
+				firstNonBlankAnalysisString(claim.Confidence, "medium"),
+			})
+			if limit > 0 && len(rows) >= limit {
+				return rows
+			}
+		}
+	}
+	return rows
 }
 
 func analysisDocsGeneratedAt(run ProjectAnalysisRun) time.Time {
@@ -1070,6 +1359,8 @@ func analysisDocsGeneratedAt(run ProjectAnalysisRun) time.Time {
 
 func analysisRunConfidence(run ProjectAnalysisRun) string {
 	switch {
+	case run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards > 0:
+		return "medium"
 	case run.Summary.ApprovedShards == 0 && run.Summary.TotalShards > 0:
 		return "low"
 	case run.Summary.ReviewFailures > 0:
@@ -1113,7 +1404,19 @@ func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 	case "API_AND_ENTRYPOINTS.md":
 		return analysisUniqueStrings(append(run.Snapshot.EntrypointFiles, symbolFiles(analysisEntrypointSymbols(run))...))
 	case "BUILD_AND_ARTIFACTS.md":
-		return analysisUniqueStrings(append(run.Snapshot.ManifestFiles, compileCommandFiles(run.Snapshot.CompileCommands)...))
+		return analysisUniqueStrings(append(append(run.Snapshot.ManifestFiles, compileCommandFiles(run.Snapshot.CompileCommands)...), buildArtifactSourceAnchors(run)...))
+	case "COVERAGE_LEDGER.md":
+		return analysisCoverageLedgerSourceAnchors(run)
+	case "STRUCTURAL_INDEX.md":
+		return analysisStructuralIndexSourceAnchors(run)
+	case "EVIDENCE_PACKETS.md":
+		return analysisEvidencePacketSourceAnchors(run)
+	case "EVIDENCE_GRAPH.md":
+		return analysisEvidenceGraphSourceAnchors(run)
+	case "SECURITY_OVERLAY.md":
+		return analysisSecurityOverlaySourceAnchors(run)
+	case "UNSUPPORTED_CLAIMS.md":
+		return analysisUnsupportedClaimSourceAnchors(run)
 	case "VERIFICATION_MATRIX.md":
 		return analysisUniqueStrings(append(run.KnowledgePack.HighRiskFiles, run.KnowledgePack.AnalysisExecution.TopChangeExamples...))
 	case "FUZZ_TARGETS.md":
@@ -1131,6 +1434,12 @@ func analysisDocConfidence(run ProjectAnalysisRun, name string) string {
 		return "low"
 	}
 	if name == "BUILD_AND_ARTIFACTS.md" && len(run.Snapshot.BuildContexts) == 0 && len(run.Snapshot.CompileCommands) == 0 {
+		return "medium"
+	}
+	if name == "UNSUPPORTED_CLAIMS.md" && run.ClaimVerification.BlockingCount > 0 {
+		return "low"
+	}
+	if name == "SECURITY_OVERLAY.md" && run.SecurityOverlay.Metrics.MissingValidationCandidates > 0 {
 		return "medium"
 	}
 	return confidence
@@ -1216,7 +1525,7 @@ func analysisGraphSourceAnchors(run ProjectAnalysisRun) []string {
 }
 
 func analysisDocsReuseTargets() []string {
-	return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery"}
+	return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery", "graph_shards", "security_overlay"}
 }
 
 func analysisDocReuseTargets(name string) []string {
@@ -1229,6 +1538,10 @@ func analysisDocReuseTargets(name string) []string {
 		return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery"}
 	case "VERIFICATION_MATRIX.md":
 		return []string{"verification_planner", "evidence"}
+	case "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md", "EVIDENCE_GRAPH.md", "UNSUPPORTED_CLAIMS.md":
+		return []string{"analysis_context", "evidence", "verification_planner"}
+	case "SECURITY_OVERLAY.md":
+		return []string{"analysis_context", "evidence", "verification_planner", "fuzz_target_discovery"}
 	case "FUZZ_TARGETS.md":
 		return []string{"fuzz_target_discovery", "verification_planner"}
 	default:
@@ -1258,6 +1571,16 @@ func analysisDocQueryIntents(name string) []string {
 		return []string{"flow_trace", "security_surface"}
 	case "BUILD_AND_ARTIFACTS.md":
 		return []string{"build_artifact", "impact", "unreal_structure"}
+	case "COVERAGE_LEDGER.md":
+		return []string{"deep_map", "impact", "verification"}
+	case "EVIDENCE_PACKETS.md":
+		return []string{"deep_map", "flow_trace", "security_surface", "verification"}
+	case "EVIDENCE_GRAPH.md":
+		return []string{"deep_map", "flow_trace", "impact", "security_surface", "verification"}
+	case "SECURITY_OVERLAY.md":
+		return []string{"security_surface", "verification", "fuzz_target_discovery"}
+	case "UNSUPPORTED_CLAIMS.md":
+		return []string{"verification", "impact", "security_surface"}
 	case "VERIFICATION_MATRIX.md":
 		return []string{"verification", "impact", "security_surface"}
 	case "FUZZ_TARGETS.md":
@@ -1277,7 +1600,7 @@ func analysisDocPriority(name string) int {
 		return 9
 	case "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
 		return 8
-	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md":
+	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "SECURITY_OVERLAY.md", "UNSUPPORTED_CLAIMS.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md", "EVIDENCE_GRAPH.md":
 		return 7
 	case "FOLDER_MAP.md", "API_AND_ENTRYPOINTS.md", "FUZZ_TARGETS.md":
 		return 6
@@ -1455,6 +1778,43 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 		"BUILD_AND_ARTIFACTS.md": {
 			{"build.contexts", "Build Contexts"},
 			{"build.compile_commands", "Compile Command Coverage"},
+			{"build.diagnostics", "Build Diagnostics"},
+			{"build.include_resolution", "Include Resolution"},
+			{"build.generated_code", "Generated Code Relations"},
+			{"build.unreal_graph_coverage", "Unreal Graph Coverage"},
+		},
+		"COVERAGE_LEDGER.md": {
+			{"coverage.scan_summary", "Scan Summary"},
+			{"coverage.skip_reasons", "Skip Reasons"},
+			{"coverage.skipped_files", "Skipped Files"},
+		},
+		"STRUCTURAL_INDEX.md": {
+			{"structural.parser_coverage", "Parser Coverage"},
+			{"structural.adapter_notes", "Adapter Notes"},
+			{"structural.evidence_packet_coverage", "Evidence Packet Coverage"},
+			{"structural.top_symbols", "Top Symbols"},
+			{"structural.diagnostics", "Diagnostics"},
+		},
+		"EVIDENCE_PACKETS.md": {
+			{"evidence.packet_index", "Packet Index"},
+			{"evidence.claim_packet_coverage", "Claim Packet Coverage"},
+		},
+		"EVIDENCE_GRAPH.md": {
+			{"evidence_graph.summary", "Graph Summary"},
+			{"evidence_graph.graph_shards", "Graph Shards"},
+			{"evidence_graph.incremental_reuse", "Incremental Reuse"},
+		},
+		"SECURITY_OVERLAY.md": {
+			{"security_overlay.summary", "Summary"},
+			{"security_overlay.nodes", "Overlay Nodes"},
+			{"security_overlay.edges", "Overlay Edges"},
+			{"security_overlay.follow_up", "Follow-Up"},
+		},
+		"UNSUPPORTED_CLAIMS.md": {
+			{"claims.verification_summary", "Verification Summary"},
+			{"claims.unsupported", "Unsupported Or Downgraded Claims"},
+			{"claims.verified_facts", "Verified Facts"},
+			{"claims.follow_through", "Verification Follow-Through"},
 		},
 		"VERIFICATION_MATRIX.md": {
 			{"verification.matrix", "Verification Matrix"},
@@ -1557,6 +1917,65 @@ func compileCommandFiles(commands []CompilationCommandRecord) []string {
 	return items
 }
 
+func buildArtifactSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, ctx := range run.Snapshot.BuildContexts {
+		items = append(items, ctx.Source)
+		items = append(items, limitStrings(ctx.Files, 20)...)
+	}
+	for _, record := range limitImportResolutionRecords(run.Snapshot.ImportResolutions, 80) {
+		items = append(items, record.SourceFile, record.TargetPath)
+	}
+	for _, diagnostic := range limitBuildDiagnostics(run.Snapshot.BuildDiagnostics, 40) {
+		items = append(items, diagnostic.Path)
+	}
+	for _, edge := range limitGeneratedCodeEdges(run.SemanticIndexV2.GeneratedCodeEdges, 40) {
+		items = append(items, edge.SourceFile)
+	}
+	return analysisUniqueStrings(items)
+}
+
+func analysisCoverageLedgerSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, item := range limitSkippedFiles(run.CoverageLedger.SkippedFiles, 30) {
+		items = append(items, item.Path)
+	}
+	if len(items) == 0 {
+		items = append(items, run.KnowledgePack.TopImportantFiles...)
+	}
+	return analysisUniqueStrings(items)
+}
+
+func analysisStructuralIndexSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, symbol := range limitStructuralSymbols(run.StructuralIndex.Symbols, 80) {
+		if strings.TrimSpace(symbol.File) == "" {
+			continue
+		}
+		if symbol.StartLine > 0 {
+			items = append(items, fmt.Sprintf("%s:%d", symbol.File, symbol.StartLine))
+		} else {
+			items = append(items, symbol.File)
+		}
+	}
+	return analysisUniqueStrings(items)
+}
+
+func analysisEvidencePacketSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, packet := range limitEvidencePackets(run.EvidencePackets, 60) {
+		if packet.Path == "" {
+			continue
+		}
+		if packet.StartLine > 0 {
+			items = append(items, fmt.Sprintf("%s:%d-%d", packet.Path, packet.StartLine, packet.EndLine))
+		} else {
+			items = append(items, packet.Path)
+		}
+	}
+	return analysisUniqueStrings(items)
+}
+
 func analysisDocTitle(name string) string {
 	switch name {
 	case "INDEX.md":
@@ -1581,6 +2000,18 @@ func analysisDocTitle(name string) string {
 		return "API And Entrypoints"
 	case "BUILD_AND_ARTIFACTS.md":
 		return "Build And Artifacts"
+	case "COVERAGE_LEDGER.md":
+		return "Coverage Ledger"
+	case "STRUCTURAL_INDEX.md":
+		return "Structural Index"
+	case "EVIDENCE_PACKETS.md":
+		return "Evidence Packets"
+	case "EVIDENCE_GRAPH.md":
+		return "Evidence Graph"
+	case "SECURITY_OVERLAY.md":
+		return "Security Anti-Cheat Overlay"
+	case "UNSUPPORTED_CLAIMS.md":
+		return "Unsupported Claims"
 	case "VERIFICATION_MATRIX.md":
 		return "Verification Matrix"
 	case "FUZZ_TARGETS.md":
@@ -1618,6 +2049,18 @@ func analysisDocPurpose(name string) string {
 		return "entrypoint files, indexed symbols, and representative call edges"
 	case "BUILD_AND_ARTIFACTS.md":
 		return "build contexts, manifests, compile command coverage, and artifacts"
+	case "COVERAGE_LEDGER.md":
+		return "scan coverage, skipped files, size limits, binary/unreadable exclusions, and source coverage caveats"
+	case "STRUCTURAL_INDEX.md":
+		return "Tree-sitter/fallback parser coverage, symbol anchors, references, diagnostics, and packet coverage"
+	case "EVIDENCE_PACKETS.md":
+		return "symbol-aware source slices used by worker claims and deterministic claim evidence coverage"
+	case "EVIDENCE_GRAPH.md":
+		return "graph-guided shard neighborhoods, required packet selection, and symbol-level reuse fingerprints"
+	case "SECURITY_OVERLAY.md":
+		return "deterministic Windows driver, RPC, telemetry, Unreal authority, asset/config, and anti-cheat boundary overlay"
+	case "UNSUPPORTED_CLAIMS.md":
+		return "deterministic claim verifier results, unsupported claims, downgrades, blocking issues, and follow-through"
 	case "VERIFICATION_MATRIX.md":
 		return "required and optional verification by change area"
 	case "FUZZ_TARGETS.md":
@@ -1688,6 +2131,26 @@ func limitCompileCommands(items []CompilationCommandRecord, limit int) []Compila
 		return append([]CompilationCommandRecord(nil), items...)
 	}
 	return append([]CompilationCommandRecord(nil), items[:limit]...)
+}
+
+func limitBuildDiagnostics(items []BuildContextDiagnostic, limit int) []BuildContextDiagnostic {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]BuildContextDiagnostic(nil), items...)
+	}
+	return append([]BuildContextDiagnostic(nil), items[:limit]...)
+}
+
+func limitImportResolutionRecords(items []ImportResolutionRecord, limit int) []ImportResolutionRecord {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]ImportResolutionRecord(nil), items...)
+	}
+	return append([]ImportResolutionRecord(nil), items[:limit]...)
 }
 
 func limitUnrealNetworkSurfaces(items []UnrealNetworkSurface, limit int) []UnrealNetworkSurface {

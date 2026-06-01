@@ -111,6 +111,7 @@ type ReviewRun struct {
 	ID                    string                       `json:"id"`
 	SchemaVersion         string                       `json:"schema_version"`
 	KernforgeVersion      string                       `json:"kernforge_version,omitempty"`
+	KernforgeBuild        KernforgeBuildIdentity       `json:"kernforge_build,omitempty"`
 	PolicyPackVersions    map[string]string            `json:"policy_pack_versions,omitempty"`
 	ReviewFingerprint     string                       `json:"review_fingerprint,omitempty"`
 	Trigger               string                       `json:"trigger,omitempty"`
@@ -829,8 +830,6 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		}
 		run.ReviewerRuns = append(run.ReviewerRuns, reviewerRuns...)
 		run.Findings = append(run.Findings, modelFindings...)
-		run.CrossReviewTriage = buildCrossReviewTriageLedger(run)
-		run.Findings = append(run.Findings, crossReviewTriageConsistencyFindings(run)...)
 		run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
 	} else if opts.NoModel {
 		run.Result.Degraded = true
@@ -848,6 +847,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	refreshReviewCrossReviewTriage(&run)
 	run.ObligationLedger = buildReviewObligationLedger(run)
 	emitReviewPipelineProgress(rt, run, 5, "gate decision", "게이트 판정", "Decide approved, approved_with_warnings, needs_revision, or insufficient_evidence.", "approved, approved_with_warnings, needs_revision, insufficient_evidence 중 하나로 판정합니다.")
 	run.Gate = evaluateReviewGate(run)
@@ -905,10 +905,12 @@ func newReviewRunSkeleton(rt *runtimeState, root string, opts ReviewHarnessOptio
 	if objective == "" && rt.session != nil && rt.session.TaskState != nil {
 		objective = strings.TrimSpace(rt.session.TaskState.Goal)
 	}
+	buildIdentity := currentBuildIdentity()
 	return ReviewRun{
 		ID:               fmt.Sprintf("review-%s", now.Format("20060102-150405.000")),
 		SchemaVersion:    reviewSchemaVersion,
-		KernforgeVersion: currentVersion(),
+		KernforgeVersion: buildIdentity.Version,
+		KernforgeBuild:   buildIdentity,
 		Trigger:          trigger,
 		AutoTriggered:    opts.AutoTriggered,
 		Objective:        objective,

@@ -55,10 +55,17 @@
 8. `/analyze-project`는 docs를 기본 생성하며, 예전 `--docs` 플래그는 하위 호환용 hidden parser input으로만 유지한다. 문서 재생성은 `/docs-refresh`가 담당한다.
 9. local provider에서는 `max_files_per_shard` / `max_lines_per_shard`를 명시하지 않았을 때 provider, 모델 크기, max token, request timeout 신호로 shard 크기를 자동 조정한다.
 10. provider timeout, 5xx, overload, empty response, connection reset 같은 최종 provider-pressure 실패가 남으면 `/analyze-project`가 사용자에게 `adaptive_retry_shards`를 보여 주고 더 작은 shard로 한 번 자동 재실행한다. rate limit은 요청 수를 더 늘릴 수 있으므로 이 경로에서 제외한다.
+11. `coverage_ledger.json`과 `evidence_packets.json`를 run별 artifact와 `latest/` mirror에 저장한다.
+12. worker prompt는 file prefix context보다 symbol-aware evidence packet을 우선 사용하며, claim은 `evidence_packet_ids`를 요구한다.
+13. dedicated reviewer가 없는 single-model run은 `approved`가 아니라 `model_review_skipped`로 집계한다.
+14. non-Unreal Windows/security 프로젝트도 `security_driver`, `security_ioctl`, `security_handles`, `security_memory`, `security_rpc` semantic shard를 탈 수 있다.
+15. Phase 2 `structural_index.json`은 parser adapter 계층, parser diagnostics, fallback metrics, symbol/reference/call-edge 후보, packet coverage metric을 별도 artifact로 저장한다.
+16. Tree-sitter는 `kernforge_treesitter` build tag와 cgo가 있을 때 optional adapter로 활성화되고, 기본 Windows/CGO-off 빌드는 heuristic fallback parser를 사용한다.
+17. generated docs에는 `STRUCTURAL_INDEX.md`가 포함되며 dashboard evidence/memory drilldown에서 structural index 상태를 바로 확인할 수 있다.
 
 아직 남아 있는 대표 항목은 다음과 같다.
 
-1. build condition과 generated code를 더 정밀하게 반영하는 parser/ingestion 계층
+1. build condition과 generated code를 더 정밀하게 반영하는 external precise parser/ingestion 계층
 2. symbol-level invalidation의 세분화와 UE generated artifact 연계 강화
 3. 여러 Kernforge 프로세스가 같은 local provider를 동시에 쓰는 경우까지 포괄하는 cross-process route lease
 
@@ -504,8 +511,24 @@ UE 대응을 위해 다음 shard 클래스를 추가한다.
 
 1. 기존 `/analyze-project` 산출물과 호환 유지
 2. `latest/structural_index.json` 생성
+3. `latest/coverage_ledger.json`과 `latest/evidence_packets.json` 생성
+4. worker claim이 evidence packet id와 source anchor를 함께 남김
 
-### Phase 2: UE semantic indexing
+### Phase 2: Parser-backed structural indexing
+
+목표:
+
+1. Tree-sitter/fallback parser adapter 계층 추가
+2. symbol/reference/call-edge 후보를 `structural_index.json`으로 분리 저장
+3. evidence packet과 shard prompt가 symbol line range를 우선 사용
+
+완료 조건:
+
+1. run별 `_structural_index.json`과 `latest/structural_index.json` 생성
+2. parser coverage, fallback, unsupported, parser failure metric 기록
+3. `STRUCTURAL_INDEX.md`와 dashboard drilldown에서 parser 상태 확인
+
+### Phase 3: UE semantic indexing
 
 목표:
 
@@ -517,7 +540,7 @@ UE 대응을 위해 다음 shard 클래스를 추가한다.
 1. `latest/unreal_graph.json` 생성
 2. fallback 문서가 graph 기반 요약을 사용
 
-### Phase 3: Query-mode retrieval
+### Phase 4: Query-mode retrieval
 
 목표:
 
@@ -529,7 +552,7 @@ UE 대응을 위해 다음 shard 클래스를 추가한다.
 1. worker prompt 생성 시 질의 모드 반영
 2. trace형 질의에서 정밀 path output 생성
 
-### Phase 4: Symbol-level incremental reuse
+### Phase 5: Symbol-level incremental reuse
 
 목표:
 
@@ -541,7 +564,7 @@ UE 대응을 위해 다음 shard 클래스를 추가한다.
 1. 단일 파일 변경이 전체 shard 재분석으로 번지지 않음
 2. UE config만 바뀐 경우 관련 graph만 갱신
 
-### Phase 5: Security and anti-cheat overlay
+### Phase 6: Security and anti-cheat overlay
 
 목표:
 

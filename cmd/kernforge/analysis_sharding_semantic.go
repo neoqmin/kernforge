@@ -71,7 +71,10 @@ func (a *projectAnalyzer) planSemanticShards(snapshot ProjectSnapshot, desiredSh
 		}
 	}
 	if nonEmptyBuckets < 2 || assignedFiles < 4 {
-		return nil
+		mode := normalizeProjectAnalysisMode(snapshot.AnalysisMode)
+		if (mode != "security" && mode != "surface") || nonEmptyBuckets < 1 || assignedFiles < 1 {
+			return nil
+		}
 	}
 
 	shards := []AnalysisShard{}
@@ -151,7 +154,7 @@ func orderedSemanticShardBuckets(mode string) []string {
 			"unreal_ui",
 			"unreal_ability",
 		}
-	case "security":
+	case "security", "surface":
 		return []string{
 			"security_driver",
 			"security_ioctl",
@@ -222,12 +225,20 @@ func mergeSemanticShardsByPriority(shards []AnalysisShard, target int, mode stri
 		left := merged[0]
 		right := merged[1]
 		combined := AnalysisShard{
-			ID:             left.ID,
-			Name:           left.Name + "+" + right.Name,
-			PrimaryFiles:   analysisUniqueStrings(append(append([]string(nil), left.PrimaryFiles...), right.PrimaryFiles...)),
-			ReferenceFiles: analysisUniqueStrings(append(append([]string(nil), left.ReferenceFiles...), right.ReferenceFiles...)),
-			EstimatedFiles: left.EstimatedFiles + right.EstimatedFiles,
-			EstimatedLines: left.EstimatedLines + right.EstimatedLines,
+			ID:                     left.ID,
+			Name:                   left.Name + "+" + right.Name,
+			Type:                   firstNonBlankAnalysisString(left.Type, right.Type),
+			Objective:              firstNonBlankAnalysisString(left.Objective, right.Objective),
+			RequiredEvidence:       analysisUniqueStrings(append(append([]string(nil), left.RequiredEvidence...), right.RequiredEvidence...)),
+			SuccessCriteria:        analysisUniqueStrings(append(append([]string(nil), left.SuccessCriteria...), right.SuccessCriteria...)),
+			PrimaryFiles:           analysisUniqueStrings(append(append([]string(nil), left.PrimaryFiles...), right.PrimaryFiles...)),
+			PrimarySymbols:         analysisUniqueStrings(append(append([]string(nil), left.PrimarySymbols...), right.PrimarySymbols...)),
+			ReferenceFiles:         analysisUniqueStrings(append(append([]string(nil), left.ReferenceFiles...), right.ReferenceFiles...)),
+			SeedSymbols:            analysisUniqueStrings(append(append([]string(nil), left.SeedSymbols...), right.SeedSymbols...)),
+			RequiredPacketIDs:      analysisUniqueStrings(append(append([]string(nil), left.RequiredPacketIDs...), right.RequiredPacketIDs...)),
+			MissingEvidenceClasses: analysisUniqueStrings(append(append([]string(nil), left.MissingEvidenceClasses...), right.MissingEvidenceClasses...)),
+			EstimatedFiles:         left.EstimatedFiles + right.EstimatedFiles,
+			EstimatedLines:         left.EstimatedLines + right.EstimatedLines,
 		}
 		merged = append([]AnalysisShard{combined}, merged[2:]...)
 	}
@@ -235,7 +246,7 @@ func mergeSemanticShardsByPriority(shards []AnalysisShard, target int, mode stri
 }
 
 func hasSemanticShardSignals(snapshot ProjectSnapshot) bool {
-	return len(snapshot.UnrealProjects) > 0 ||
+	if len(snapshot.UnrealProjects) > 0 ||
 		len(snapshot.UnrealPlugins) > 0 ||
 		len(snapshot.UnrealTargets) > 0 ||
 		len(snapshot.UnrealModules) > 0 ||
@@ -243,7 +254,21 @@ func hasSemanticShardSignals(snapshot ProjectSnapshot) bool {
 		len(snapshot.UnrealNetwork) > 0 ||
 		len(snapshot.UnrealAssets) > 0 ||
 		len(snapshot.UnrealSystems) > 0 ||
-		len(snapshot.UnrealSettings) > 0
+		len(snapshot.UnrealSettings) > 0 {
+		return true
+	}
+	signals := collectSemanticShardSignals(snapshot)
+	securitySignalCount := len(signals.SecurityPaths) +
+		len(signals.DriverPaths) +
+		len(signals.IoctlPaths) +
+		len(signals.HandlePaths) +
+		len(signals.MemoryPaths) +
+		len(signals.RPCPaths)
+	structuralSignalCount := len(signals.StartupPaths) + len(signals.BuildPaths)
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "security" || normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "surface" {
+		return securitySignalCount >= 1
+	}
+	return securitySignalCount+structuralSignalCount >= 2
 }
 
 func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals {
@@ -289,6 +314,23 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 		if containsAny(strings.ToLower(item.Name), "anti", "cheat", "guard", "integrity", "tamper", "scan", "memory", "telemetry") {
 			signals.SecurityPaths[item.Path] = struct{}{}
 			addSecurityShardSignalsForPath(item.Path, &signals)
+		}
+	}
+	for _, ctx := range snapshot.BuildContexts {
+		if strings.TrimSpace(ctx.Source) != "" {
+			signals.BuildPaths[ctx.Source] = struct{}{}
+		}
+		for _, path := range ctx.Files {
+			if strings.TrimSpace(path) == "" {
+				continue
+			}
+			if strings.TrimSpace(ctx.Module) != "" || strings.TrimSpace(ctx.Target) != "" || strings.TrimSpace(ctx.Project) != "" {
+				signals.BuildPaths[path] = struct{}{}
+			}
+			if containsAny(strings.ToLower(strings.Join([]string{ctx.Name, ctx.Module, ctx.Project, path}, " ")), "anti", "cheat", "guard", "integrity", "tamper", "scan", "memory", "telemetry") {
+				signals.SecurityPaths[path] = struct{}{}
+				addSecurityShardSignalsForPath(path, &signals)
+			}
 		}
 	}
 	for _, item := range snapshot.UnrealTypes {
@@ -361,6 +403,13 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 					addSecurityShardSignalsForPath(file.Path, &signals)
 				}
 			}
+		}
+	}
+	for _, file := range snapshot.Files {
+		lower := strings.ToLower(file.Path)
+		if containsAny(lower, "driver", "kernel", "minifilter", "wdf", "flt", "ioctl", "devicecontrol", "device_control", "ctl_code", "irp", "handle", "openprocess", "duplicatehandle", "accessmask", "memory", "vm", "mdl", "readprocessmemory", "writeprocessmemory", "scan", "rpc", "pipe", "ipc", "alpc", "dispatch", "command", "anti", "cheat", "guard", "integrity", "tamper", "telemetry") {
+			signals.SecurityPaths[file.Path] = struct{}{}
+			addSecurityShardSignalsForPath(file.Path, &signals)
 		}
 	}
 	return signals

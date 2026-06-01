@@ -8,17 +8,24 @@ import (
 )
 
 type FileRecord struct {
-	Path            string   `json:"path"`
-	Directory       string   `json:"directory,omitempty"`
-	Extension       string   `json:"extension,omitempty"`
-	Language        string   `json:"language,omitempty"`
-	LineCount       int      `json:"line_count,omitempty"`
-	IsManifest      bool     `json:"is_manifest,omitempty"`
-	IsEntrypoint    bool     `json:"is_entrypoint,omitempty"`
-	ImportanceScore int      `json:"importance_score,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	ModuleHints     []string `json:"module_hints,omitempty"`
-	BuildContextIDs []string `json:"build_context_ids,omitempty"`
+	Path             string   `json:"path"`
+	Directory        string   `json:"directory,omitempty"`
+	Extension        string   `json:"extension,omitempty"`
+	Language         string   `json:"language,omitempty"`
+	LineCount        int      `json:"line_count,omitempty"`
+	IsManifest       bool     `json:"is_manifest,omitempty"`
+	IsEntrypoint     bool     `json:"is_entrypoint,omitempty"`
+	ImportanceScore  int      `json:"importance_score,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	ModuleHints      []string `json:"module_hints,omitempty"`
+	BuildContextIDs  []string `json:"build_context_ids,omitempty"`
+	SourceAdapter    string   `json:"source_adapter,omitempty"`
+	Confidence       string   `json:"confidence,omitempty"`
+	Parser           string   `json:"parser,omitempty"`
+	ParserStatus     string   `json:"parser_status,omitempty"`
+	ParserDiagnostic string   `json:"parser_diagnostic,omitempty"`
+	SymbolCount      int      `json:"symbol_count,omitempty"`
+	ReferenceCount   int      `json:"reference_count,omitempty"`
 }
 
 type SymbolRecord struct {
@@ -35,6 +42,9 @@ type SymbolRecord struct {
 	Signature         string            `json:"signature,omitempty"`
 	StartLine         int               `json:"start_line,omitempty"`
 	EndLine           int               `json:"end_line,omitempty"`
+	StartByte         int               `json:"start_byte,omitempty"`
+	EndByte           int               `json:"end_byte,omitempty"`
+	ExtractionMethod  string            `json:"extraction_method,omitempty"`
 	Tags              []string          `json:"tags,omitempty"`
 	Attributes        map[string]string `json:"attributes,omitempty"`
 }
@@ -46,19 +56,25 @@ type SymbolOccurrence struct {
 }
 
 type ReferenceRecord struct {
-	SourceID   string   `json:"source_id,omitempty"`
-	SourceFile string   `json:"source_file,omitempty"`
-	TargetID   string   `json:"target_id,omitempty"`
-	TargetPath string   `json:"target_path,omitempty"`
-	Type       string   `json:"type"`
-	Evidence   []string `json:"evidence,omitempty"`
+	SourceID       string   `json:"source_id,omitempty"`
+	SourceFile     string   `json:"source_file,omitempty"`
+	TargetID       string   `json:"target_id,omitempty"`
+	TargetPath     string   `json:"target_path,omitempty"`
+	Type           string   `json:"type"`
+	BuildContextID string   `json:"build_context_id,omitempty"`
+	SourceAdapter  string   `json:"source_adapter,omitempty"`
+	Confidence     string   `json:"confidence,omitempty"`
+	Evidence       []string `json:"evidence,omitempty"`
 }
 
 type CallEdge struct {
-	SourceID string   `json:"source_id"`
-	TargetID string   `json:"target_id"`
-	Type     string   `json:"type"`
-	Evidence []string `json:"evidence,omitempty"`
+	SourceID       string   `json:"source_id"`
+	TargetID       string   `json:"target_id"`
+	Type           string   `json:"type"`
+	BuildContextID string   `json:"build_context_id,omitempty"`
+	SourceAdapter  string   `json:"source_adapter,omitempty"`
+	Confidence     string   `json:"confidence,omitempty"`
+	Evidence       []string `json:"evidence,omitempty"`
 }
 
 type InheritanceEdge struct {
@@ -68,17 +84,23 @@ type InheritanceEdge struct {
 }
 
 type BuildOwnershipEdge struct {
-	SourceID string   `json:"source_id"`
-	TargetID string   `json:"target_id"`
-	Type     string   `json:"type"`
-	Evidence []string `json:"evidence,omitempty"`
+	SourceID       string   `json:"source_id"`
+	TargetID       string   `json:"target_id"`
+	Type           string   `json:"type"`
+	BuildContextID string   `json:"build_context_id,omitempty"`
+	SourceAdapter  string   `json:"source_adapter,omitempty"`
+	Confidence     string   `json:"confidence,omitempty"`
+	Evidence       []string `json:"evidence,omitempty"`
 }
 
 type GeneratedCodeEdge struct {
-	SourceFile string   `json:"source_file"`
-	TargetID   string   `json:"target_id"`
-	Type       string   `json:"type"`
-	Evidence   []string `json:"evidence,omitempty"`
+	SourceFile     string   `json:"source_file"`
+	TargetID       string   `json:"target_id"`
+	Type           string   `json:"type"`
+	BuildContextID string   `json:"build_context_id,omitempty"`
+	SourceAdapter  string   `json:"source_adapter,omitempty"`
+	Confidence     string   `json:"confidence,omitempty"`
+	Evidence       []string `json:"evidence,omitempty"`
 }
 
 type OverlayEdge struct {
@@ -534,6 +556,9 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		record.TargetID = strings.TrimSpace(record.TargetID)
 		record.TargetPath = strings.TrimSpace(record.TargetPath)
 		record.Type = strings.TrimSpace(record.Type)
+		record.BuildContextID = strings.TrimSpace(record.BuildContextID)
+		record.SourceAdapter = strings.TrimSpace(record.SourceAdapter)
+		record.Confidence = strings.TrimSpace(record.Confidence)
 		if record.Type == "" {
 			return
 		}
@@ -550,6 +575,9 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		edge.SourceID = strings.TrimSpace(edge.SourceID)
 		edge.TargetID = strings.TrimSpace(edge.TargetID)
 		edge.Type = strings.TrimSpace(edge.Type)
+		edge.BuildContextID = strings.TrimSpace(edge.BuildContextID)
+		edge.SourceAdapter = strings.TrimSpace(edge.SourceAdapter)
+		edge.Confidence = strings.TrimSpace(edge.Confidence)
 		if edge.SourceID == "" || edge.TargetID == "" || edge.Type == "" {
 			return
 		}
@@ -581,6 +609,9 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		edge.SourceID = strings.TrimSpace(edge.SourceID)
 		edge.TargetID = strings.TrimSpace(edge.TargetID)
 		edge.Type = strings.TrimSpace(edge.Type)
+		edge.BuildContextID = strings.TrimSpace(edge.BuildContextID)
+		edge.SourceAdapter = strings.TrimSpace(edge.SourceAdapter)
+		edge.Confidence = strings.TrimSpace(edge.Confidence)
 		if edge.SourceID == "" || edge.TargetID == "" || edge.Type == "" {
 			return
 		}
@@ -597,6 +628,9 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		edge.SourceFile = strings.TrimSpace(edge.SourceFile)
 		edge.TargetID = strings.TrimSpace(edge.TargetID)
 		edge.Type = strings.TrimSpace(edge.Type)
+		edge.BuildContextID = strings.TrimSpace(edge.BuildContextID)
+		edge.SourceAdapter = strings.TrimSpace(edge.SourceAdapter)
+		edge.Confidence = strings.TrimSpace(edge.Confidence)
 		if edge.SourceFile == "" || edge.TargetID == "" || edge.Type == "" {
 			return
 		}
@@ -651,6 +685,7 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		if module := unrealModuleForFile(snapshot, file.Path); strings.TrimSpace(module) != "" {
 			moduleHints = append(moduleHints, module)
 		}
+		buildAdapter, buildConfidence := buildContextMetadataForFile(snapshot, file.Path)
 		index.Files = append(index.Files, FileRecord{
 			Path:            file.Path,
 			Directory:       file.Directory,
@@ -663,14 +698,22 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			Tags:            analysisUniqueStrings(tags),
 			ModuleHints:     analysisUniqueStrings(moduleHints),
 			BuildContextIDs: buildContextIDsForFile(snapshot, file.Path),
+			SourceAdapter:   buildAdapter,
+			Confidence:      buildConfidence,
 		})
 		for _, imported := range analysisUniqueStrings(file.Imports) {
-			addReference(ReferenceRecord{
+			record := ReferenceRecord{
 				SourceFile: file.Path,
 				TargetPath: imported,
 				Type:       "file_import",
 				Evidence:   []string{file.Path},
-			})
+			}
+			if resolution, ok := importResolutionForTarget(snapshot, file.Path, imported); ok {
+				record.BuildContextID = resolution.BuildContextID
+				record.SourceAdapter = resolution.SourceAdapter
+				record.Confidence = resolution.Confidence
+			}
+			addReference(record)
 		}
 		if domain, edgeType, ok := classifySecurityOverlayForFile(file.Path); ok {
 			sourceID := "entity:" + file.Path
@@ -701,32 +744,37 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			BuildContextID: ctx.ID,
 			Tags:           analysisUniqueStrings([]string{ctx.Kind, ctx.Project, ctx.Target, ctx.Module, ctx.Plugin}),
 			Attributes: map[string]string{
-				"directory": strings.TrimSpace(ctx.Directory),
-				"project":   strings.TrimSpace(ctx.Project),
-				"target":    strings.TrimSpace(ctx.Target),
-				"module":    strings.TrimSpace(ctx.Module),
-				"plugin":    strings.TrimSpace(ctx.Plugin),
-				"compiler":  strings.TrimSpace(ctx.Compiler),
+				"directory":      strings.TrimSpace(ctx.Directory),
+				"project":        strings.TrimSpace(ctx.Project),
+				"target":         strings.TrimSpace(ctx.Target),
+				"module":         strings.TrimSpace(ctx.Module),
+				"plugin":         strings.TrimSpace(ctx.Plugin),
+				"compiler":       strings.TrimSpace(ctx.Compiler),
+				"source_adapter": strings.TrimSpace(ctx.SourceAdapter),
+				"confidence":     strings.TrimSpace(ctx.Confidence),
 			},
 		})
 		for _, path := range analysisUniqueStrings(ctx.Files) {
 			targetID := "entity:" + strings.TrimSpace(path)
 			ensureSymbol(targetID)
 			addBuildEdge(BuildOwnershipEdge{
-				SourceID: ctx.ID,
-				TargetID: targetID,
-				Type:     "compiles",
-				Evidence: []string{path},
+				SourceID:       ctx.ID,
+				TargetID:       targetID,
+				Type:           "compiles",
+				BuildContextID: ctx.ID,
+				SourceAdapter:  ctx.SourceAdapter,
+				Confidence:     ctx.Confidence,
+				Evidence:       []string{path},
 			})
 		}
 		if strings.TrimSpace(ctx.Project) != "" {
-			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "project:" + ctx.Project, Type: "aligns_with"})
+			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "project:" + ctx.Project, Type: "aligns_with", BuildContextID: ctx.ID, SourceAdapter: ctx.SourceAdapter, Confidence: ctx.Confidence})
 		}
 		if strings.TrimSpace(ctx.Target) != "" {
-			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "target:" + ctx.Target, Type: "aligns_with"})
+			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "target:" + ctx.Target, Type: "aligns_with", BuildContextID: ctx.ID, SourceAdapter: ctx.SourceAdapter, Confidence: ctx.Confidence})
 		}
 		if strings.TrimSpace(ctx.Module) != "" {
-			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "module:" + ctx.Module, Type: "aligns_with"})
+			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "module:" + ctx.Module, Type: "aligns_with", BuildContextID: ctx.ID, SourceAdapter: ctx.SourceAdapter, Confidence: ctx.Confidence})
 		}
 	}
 
@@ -781,8 +829,15 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 					symbol.BaseSymbolID = edge.Target
 				}
 			})
-		case "declares", "depends_on", "loads", "owns":
-			addBuildEdge(BuildOwnershipEdge{SourceID: edge.Source, TargetID: edge.Target, Type: edge.Type})
+		case "declares", "depends_on", "loads", "owns", "builds", "owns_build_context", "contains_source":
+			addBuildEdge(BuildOwnershipEdge{
+				SourceID:       edge.Source,
+				TargetID:       edge.Target,
+				Type:           edge.Type,
+				BuildContextID: edge.Attributes["build_context_id"],
+				SourceAdapter:  edge.Attributes["source_adapter"],
+				Confidence:     edge.Attributes["confidence"],
+			})
 			if edge.Type == "declares" {
 				updateSymbol(edge.Target, func(symbol *SymbolRecord) {
 					if symbol.ContainerSymbolID == "" {
@@ -795,7 +850,7 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			}
 		case "rpc_server", "rpc_client", "rpc_multicast", "spawns", "creates_widget", "binds_input":
 			addCallEdge(CallEdge{SourceID: edge.Source, TargetID: edge.Target, Type: edge.Type})
-		case "references_asset", "configured_by", "registered_in":
+		case "references_asset", "configured_by", "registered_in", "uht_generates":
 			addReference(ReferenceRecord{SourceID: edge.Source, TargetID: edge.Target, Type: edge.Type})
 		}
 
@@ -856,10 +911,13 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		ensureSymbol(sourceID)
 		ensureSymbol(targetID)
 		addReference(ReferenceRecord{
-			SourceID: sourceID,
-			TargetID: targetID,
-			Type:     edge.Type,
-			Evidence: edge.Evidence,
+			SourceID:       sourceID,
+			TargetID:       targetID,
+			Type:           edge.Type,
+			BuildContextID: edge.Attributes["build_context_id"],
+			SourceAdapter:  edge.Attributes["source_adapter"],
+			Confidence:     edge.Confidence,
+			Evidence:       edge.Evidence,
 		})
 		if projectEdgeSuggestsSecurity(edge) {
 			addOverlayEdge(OverlayEdge{
@@ -977,11 +1035,41 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			Tags:          []string{"unreal_generated"},
 		})
 		addGeneratedEdge(GeneratedCodeEdge{
-			SourceFile: item.File,
-			TargetID:   targetID,
-			Type:       "uht_generated_header",
-			Evidence:   []string{item.File},
+			SourceFile:     item.File,
+			TargetID:       targetID,
+			Type:           "uht_generated_header",
+			BuildContextID: firstSliceValue(buildContextIDsForFile(snapshot, item.File)),
+			SourceAdapter:  "unreal_uht_heuristic",
+			Confidence:     "medium",
+			Evidence:       []string{item.File},
 		})
+	}
+	for _, symbol := range snapshot.StructuralIndex.Symbols {
+		if strings.TrimSpace(symbol.BuildContextID) == "" {
+			symbol.BuildContextID = firstSliceValue(buildContextIDsForFile(snapshot, symbol.File))
+		}
+		addSymbol(symbol)
+		if strings.TrimSpace(symbol.File) != "" {
+			addOccurrence(symbol.ID, symbol.File, "definition")
+		}
+		for _, ctxID := range buildContextIDsForFile(snapshot, symbol.File) {
+			adapter, confidence := buildContextMetadataForFile(snapshot, symbol.File)
+			addBuildEdge(BuildOwnershipEdge{
+				SourceID:       ctxID,
+				TargetID:       symbol.ID,
+				Type:           "compiles_symbol",
+				BuildContextID: ctxID,
+				SourceAdapter:  adapter,
+				Confidence:     confidence,
+				Evidence:       []string{symbol.File},
+			})
+		}
+	}
+	for _, ref := range snapshot.StructuralIndex.References {
+		addReference(ref)
+	}
+	for _, edge := range snapshot.StructuralIndex.CallEdges {
+		addCallEdge(edge)
 	}
 	sourceExtraction := collectSourceAnchorsV2(snapshot, symbolByID)
 	for _, symbol := range sourceExtraction.Symbols {

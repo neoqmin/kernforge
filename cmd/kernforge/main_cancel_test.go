@@ -2688,6 +2688,54 @@ func TestHandleProfileCommandShowsStoredRoleModelSetInline(t *testing.T) {
 	}
 }
 
+func TestHandleProfileCommandOmitsUnconfiguredRoleModelNoise(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Profiles = []Profile{
+		{Name: "current", Provider: "openai", Model: "gpt-current"},
+		{Name: "local", Provider: "ollama", Model: "llama3", BaseURL: "http://localhost:11434", RoleModels: &ProfileRoleModels{}},
+		{Name: "codex-cli / gpt-5.5-pro", Provider: "codex-cli", Model: "gpt-5.5-pro"},
+	}
+	rt := &runtimeState{
+		cfg:    cfg,
+		ui:     NewUI(),
+		writer: &output,
+		session: &Session{
+			ID:       "session-profile-compact",
+			Provider: "openai",
+			Model:    "gpt-current",
+		},
+		interactive: false,
+	}
+
+	if err := rt.handleProfileCommand(""); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	text := output.String()
+	if strings.Contains(text, "analysis_worker") || strings.Contains(text, "analysis_reviewer") {
+		t.Fatalf("expected unconfigured role model details to be omitted, got %q", text)
+	}
+	for _, want := range []string{
+		"Current profile: current -> openai-api / gpt-current",
+		"current",
+		"openai-api / gpt-current",
+		"ollama / llama3 | http://localhost:11434",
+		"codex-cli / gpt-5.5-pro",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected compact profile output to contain %q, got %q", want, text)
+		}
+	}
+	if strings.Contains(text, "codex-cli / gpt-5.5-pro  openai-codex-cli / gpt-5.5-pro") {
+		t.Fatalf("expected legacy provider alias profile name not to duplicate normalized route, got %q", text)
+	}
+}
+
 func TestRoleModelActivationReusesStoredProviderKeys(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
@@ -3494,7 +3542,7 @@ func TestProgressDisplayCommandShowsAndSetsMode(t *testing.T) {
 	if _, err := rt.handleCommand(Command{Name: "progress-display"}); err != nil {
 		t.Fatalf("handleCommand(progress-display): %v", err)
 	}
-	if !strings.Contains(out.String(), "progress_display: stream") {
+	if !strings.Contains(out.String(), "progress_display: compact") {
 		t.Fatalf("expected current progress display, got %q", out.String())
 	}
 
