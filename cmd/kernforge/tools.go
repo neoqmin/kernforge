@@ -3381,7 +3381,52 @@ func readFileMaxInt(a, b int) int {
 	return b
 }
 
-type GrepTool struct{ ws Workspace }
+type GrepTool struct {
+	ws            Workspace
+	ripgrepPath   string
+	ripgrepSearch func(context.Context, grepSearchRequest) (grepSearchResult, error)
+}
+
+type grepSearchRequest struct {
+	Root           string
+	DisplayRoot    string
+	Pattern        string
+	PatternForMeta string
+	Glob           string
+	MaxResults     int
+}
+
+type grepSearchMatch struct {
+	Path   string
+	LineNo int
+	Line   string
+}
+
+type grepSearchResult struct {
+	Matches   []grepSearchMatch
+	Truncated bool
+}
+
+type ripgrepJSONText struct {
+	Text *string `json:"text,omitempty"`
+}
+
+type ripgrepJSONMessage struct {
+	Type string `json:"type"`
+	Data struct {
+		Path       ripgrepJSONText `json:"path"`
+		Lines      ripgrepJSONText `json:"lines"`
+		LineNumber int             `json:"line_number"`
+	} `json:"data"`
+}
+
+var (
+	errGrepMaxResultsReached   = errors.New("grep max results reached")
+	errRipgrepUnavailable      = errors.New("ripgrep unavailable")
+	errRipgrepUnsupportedInput = errors.New("ripgrep unsupported input")
+	errRipgrepUnparseableJSON  = errors.New("ripgrep returned unparseable json")
+	errRipgrepInvalidPattern   = errors.New("ripgrep invalid pattern")
+)
 
 func NewGrepTool(ws Workspace) *GrepTool { return &GrepTool{ws: ws} }
 
@@ -3465,10 +3510,31 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 		}
 		return ToolExecutionResult{}, err
 	}
-	var matches []string
-	matchedFiles := map[string]struct{}{}
-	stop := fmt.Errorf("max results reached")
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	request := grepSearchRequest{
+		Root:           root,
+		DisplayRoot:    displayRoot,
+		Pattern:        pattern,
+		PatternForMeta: re.String(),
+		Glob:           glob,
+		MaxResults:     maxResults,
+	}
+	ripgrepResult, ripgrepErr := t.executeRipgrepSearch(ctx, request)
+	if ripgrepErr == nil {
+		return t.renderGrepSearchResult(request, ripgrepResult), nil
+	}
+	if errors.Is(ripgrepErr, context.Canceled) || errors.Is(ripgrepErr, context.DeadlineExceeded) {
+		return ToolExecutionResult{}, ripgrepErr
+	}
+	goResult, err := t.executeGoGrepSearch(ctx, request, re)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	return t.renderGrepSearchResult(request, goResult), nil
+}
+
+func (t GrepTool) executeGoGrepSearch(ctx context.Context, request grepSearchRequest, re *regexp.Regexp) (grepSearchResult, error) {
+	result := grepSearchResult{}
+	err := filepath.WalkDir(request.Root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -3483,8 +3549,8 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 			}
 			return nil
 		}
-		if glob != "" {
-			ok, err := filepath.Match(glob, filepath.Base(path))
+		if request.Glob != "" {
+			ok, err := filepath.Match(request.Glob, filepath.Base(path))
 			if err != nil {
 				return err
 			}
@@ -3498,62 +3564,302 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 		}
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		lineNo := 0
-		fileInfo, statErr := os.Stat(path)
 		for scanner.Scan() {
 			lineNo++
 			line := scanner.Text()
 			if re.MatchString(line) {
-				matchPrefix := fmt.Sprintf("%s:%d: %s", relOrAbs(displayRoot, path), lineNo, line)
-				if statErr == nil {
-					if hint := t.grepReadCacheHint(path, lineNo, fileInfo); hint != "" {
-						matchPrefix += " " + hint
-					}
-				}
-				matches = append(matches, matchPrefix)
-				matchedFiles[relOrAbs(displayRoot, path)] = struct{}{}
-				if len(matches) >= maxResults {
-					return stop
+				result.Matches = append(result.Matches, grepSearchMatch{
+					Path:   path,
+					LineNo: lineNo,
+					Line:   line,
+				})
+				if len(result.Matches) >= request.MaxResults {
+					result.Truncated = true
+					return errGrepMaxResultsReached
 				}
 			}
 		}
 		return nil
 	})
-	if err != nil && err != stop {
-		return ToolExecutionResult{}, err
+	if err != nil && !errors.Is(err, errGrepMaxResultsReached) {
+		return grepSearchResult{}, err
 	}
-	if len(matches) == 0 {
-		return ToolExecutionResult{
-			DisplayText: "(no matches)",
-			Meta: map[string]any{
-				"path":          relOrAbs(displayRoot, root),
-				"pattern":       re.String(),
-				"glob":          glob,
-				"match_count":   0,
-				"file_count":    0,
-				"max_results":   maxResults,
-				"truncated":     false,
-				"matched_paths": []string{},
-			},
-		}, nil
+	return result, nil
+}
+
+func (t GrepTool) renderGrepSearchResult(request grepSearchRequest, result grepSearchResult) ToolExecutionResult {
+	matchedFiles := map[string]struct{}{}
+	lines := make([]string, 0, len(result.Matches))
+	for _, match := range result.Matches {
+		matchPath := grepMatchAbsolutePath(request.Root, match.Path)
+		displayPath := relOrAbs(request.DisplayRoot, matchPath)
+		text := strings.TrimRight(match.Line, "\r\n")
+		line := fmt.Sprintf("%s:%d: %s", displayPath, match.LineNo, text)
+		if info, err := os.Stat(matchPath); err == nil {
+			if hint := t.grepReadCacheHint(matchPath, match.LineNo, info); hint != "" {
+				line += " " + hint
+			}
+		}
+		lines = append(lines, line)
+		matchedFiles[displayPath] = struct{}{}
 	}
 	paths := make([]string, 0, len(matchedFiles))
 	for path := range matchedFiles {
 		paths = append(paths, path)
 	}
 	slices.Sort(paths)
+	truncated := result.Truncated || len(result.Matches) >= request.MaxResults
+	if len(lines) == 0 {
+		return ToolExecutionResult{
+			DisplayText: "(no matches)",
+			Meta: map[string]any{
+				"path":          relOrAbs(request.DisplayRoot, request.Root),
+				"pattern":       request.PatternForMeta,
+				"glob":          request.Glob,
+				"match_count":   0,
+				"file_count":    0,
+				"max_results":   request.MaxResults,
+				"truncated":     truncated,
+				"matched_paths": []string{},
+			},
+		}
+	}
 	return ToolExecutionResult{
-		DisplayText: strings.Join(matches, "\n"),
+		DisplayText: strings.Join(lines, "\n"),
 		Meta: map[string]any{
-			"path":          relOrAbs(displayRoot, root),
-			"pattern":       re.String(),
-			"glob":          glob,
-			"match_count":   len(matches),
+			"path":          relOrAbs(request.DisplayRoot, request.Root),
+			"pattern":       request.PatternForMeta,
+			"glob":          request.Glob,
+			"match_count":   len(result.Matches),
 			"file_count":    len(paths),
-			"max_results":   maxResults,
-			"truncated":     len(matches) >= maxResults,
+			"max_results":   request.MaxResults,
+			"truncated":     truncated,
 			"matched_paths": paths,
 		},
-	}, nil
+	}
+}
+
+func grepMatchAbsolutePath(root string, path string) string {
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	base := root
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		base = filepath.Dir(root)
+	}
+	return filepath.Clean(filepath.Join(base, path))
+}
+
+func (t GrepTool) executeRipgrepSearch(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+	if t.ripgrepSearch != nil {
+		return t.ripgrepSearch(ctx, request)
+	}
+	rgPath, err := t.resolveRipgrepExecutable()
+	if err != nil {
+		return grepSearchResult{}, err
+	}
+	args, err := buildRipgrepArgs(request)
+	if err != nil {
+		return grepSearchResult{}, err
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, rgPath, args...)
+	if info, statErr := os.Stat(request.Root); statErr == nil && info.IsDir() {
+		cmd.Dir = request.Root
+	} else {
+		cmd.Dir = filepath.Dir(request.Root)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return grepSearchResult{}, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return grepSearchResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return grepSearchResult{}, fmt.Errorf("%w: %v", errRipgrepUnavailable, err)
+	}
+
+	stderrDone := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(io.LimitReader(stderr, 64*1024))
+		_, _ = io.Copy(io.Discard, stderr)
+		stderrDone <- string(data)
+	}()
+
+	result := grepSearchResult{}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var parseErr error
+	for scanner.Scan() {
+		match, ok, err := parseRipgrepJSONMatch(scanner.Bytes())
+		if err != nil {
+			parseErr = err
+			cancel()
+			break
+		}
+		if !ok {
+			continue
+		}
+		result.Matches = append(result.Matches, match)
+		if len(result.Matches) >= request.MaxResults {
+			result.Truncated = true
+			cancel()
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil && parseErr == nil && !result.Truncated {
+		parseErr = err
+	}
+	waitErr := cmd.Wait()
+	stderrText := <-stderrDone
+
+	if parseErr != nil {
+		return grepSearchResult{}, fmt.Errorf("%w: %v", errRipgrepUnparseableJSON, parseErr)
+	}
+	if result.Truncated {
+		return result, nil
+	}
+	if ctx.Err() != nil {
+		return grepSearchResult{}, ctx.Err()
+	}
+	if waitErr == nil {
+		return result, nil
+	}
+	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		if exitErr.ExitCode() == 1 && strings.TrimSpace(stderrText) == "" {
+			return result, nil
+		}
+		if ripgrepStderrLooksInvalidPattern(stderrText) {
+			return grepSearchResult{}, fmt.Errorf("%w: %s", errRipgrepInvalidPattern, strings.TrimSpace(stderrText))
+		}
+	}
+	return grepSearchResult{}, waitErr
+}
+
+func buildRipgrepArgs(request grepSearchRequest) ([]string, error) {
+	if strings.TrimSpace(request.Glob) != "" {
+		if _, err := filepath.Match(request.Glob, "probe"); err != nil {
+			return nil, err
+		}
+		if strings.ContainsAny(request.Glob, `/\!{}`) {
+			return nil, fmt.Errorf("%w: glob uses Go fallback", errRipgrepUnsupportedInput)
+		}
+	}
+	args := []string{
+		"--json",
+		"--color=never",
+		"--line-number",
+		"--no-ignore",
+		"--hidden",
+		"--no-messages",
+		"-g",
+		"!.git/**",
+	}
+	if strings.TrimSpace(request.Glob) != "" {
+		args = append(args, "-g", filepath.ToSlash(request.Glob))
+	}
+	args = append(args, "--", request.Pattern, request.Root)
+	return args, nil
+}
+
+func parseRipgrepJSONMatch(line []byte) (grepSearchMatch, bool, error) {
+	if len(bytesTrimSpace(line)) == 0 {
+		return grepSearchMatch{}, false, nil
+	}
+	var msg ripgrepJSONMessage
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return grepSearchMatch{}, false, err
+	}
+	if msg.Type != "match" {
+		return grepSearchMatch{}, false, nil
+	}
+	if msg.Data.Path.Text == nil || msg.Data.Lines.Text == nil || msg.Data.LineNumber <= 0 {
+		return grepSearchMatch{}, false, nil
+	}
+	return grepSearchMatch{
+		Path:   filepath.Clean(*msg.Data.Path.Text),
+		LineNo: msg.Data.LineNumber,
+		Line:   *msg.Data.Lines.Text,
+	}, true, nil
+}
+
+func bytesTrimSpace(data []byte) []byte {
+	for len(data) > 0 && data[0] <= ' ' {
+		data = data[1:]
+	}
+	for len(data) > 0 && data[len(data)-1] <= ' ' {
+		data = data[:len(data)-1]
+	}
+	return data
+}
+
+func (t GrepTool) resolveRipgrepExecutable() (string, error) {
+	if strings.TrimSpace(t.ripgrepPath) != "" {
+		return t.ripgrepPath, nil
+	}
+	for _, candidate := range ripgrepSidecarCandidates() {
+		if ripgrepExecutableExists(candidate) {
+			return candidate, nil
+		}
+	}
+	if ripgrepPATHFallbackAllowed() {
+		if path, err := exec.LookPath("rg"); err == nil {
+			return path, nil
+		}
+	}
+	return "", errRipgrepUnavailable
+}
+
+func ripgrepSidecarCandidates() []string {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	exeDir := filepath.Dir(exe)
+	name := "rg"
+	if runtime.GOOS == "windows" {
+		name = "rg.exe"
+	}
+	dirs := []string{
+		exeDir,
+		filepath.Join(exeDir, "tools"),
+		filepath.Join(exeDir, "release", "tools"),
+		filepath.Join(exeDir, "third_party", "ripgrep"),
+	}
+	out := make([]string, 0, len(dirs))
+	seen := map[string]struct{}{}
+	for _, dir := range dirs {
+		candidate := filepath.Join(dir, name)
+		key := strings.ToLower(filepath.Clean(candidate))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func ripgrepExecutableExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func ripgrepPATHFallbackAllowed() bool {
+	version := strings.TrimSpace(currentVersion())
+	return version == "" || strings.EqualFold(version, "dev")
+}
+
+func ripgrepStderrLooksInvalidPattern(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "regex parse error") ||
+		strings.Contains(lower, "error parsing regex") ||
+		strings.Contains(lower, "error building regex") ||
+		strings.Contains(lower, "regex error")
 }
 
 func buildInvalidGrepPatternResult(displayRoot string, path string, pattern string, glob string, maxResults int, patternErr error) (string, map[string]any) {

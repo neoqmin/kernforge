@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -914,6 +916,339 @@ func TestGrepToolSkipsStaleCachedReadHintsAfterFileChange(t *testing.T) {
 	}
 }
 
+func TestGrepToolUsesRipgrepBackendFormattingAndMetadata(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "main.go")
+	second := filepath.Join(root, "src", "driver.go")
+	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(first, []byte("alpha needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile first: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("beta needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile second: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	called := false
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		called = true
+		if request.Root != root {
+			t.Fatalf("expected resolved root %q, got %q", root, request.Root)
+		}
+		if request.Pattern != "needle" || request.PatternForMeta != "needle" {
+			t.Fatalf("unexpected pattern request: %#v", request)
+		}
+		return grepSearchResult{
+			Matches: []grepSearchMatch{
+				{Path: first, LineNo: 1, Line: "alpha needle\n"},
+				{Path: second, LineNo: 1, Line: "beta needle\n"},
+			},
+		}, nil
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":     "needle",
+		"path":        ".",
+		"max_results": 10,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected ripgrep backend to be called")
+	}
+	if !strings.Contains(result.DisplayText, "main.go:1: alpha needle") ||
+		!strings.Contains(result.DisplayText, "src/driver.go:1: beta needle") {
+		t.Fatalf("unexpected ripgrep formatted output: %q", result.DisplayText)
+	}
+	if toolMetaInt(result.Meta, "match_count") != 2 {
+		t.Fatalf("expected match_count=2, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "file_count") != 2 {
+		t.Fatalf("expected file_count=2, got %#v", result.Meta)
+	}
+	if toolMetaBool(result.Meta, "truncated") {
+		t.Fatalf("did not expect truncation, got %#v", result.Meta)
+	}
+	paths := toolMetaStringSlice(result.Meta, "matched_paths")
+	if len(paths) != 2 || paths[0] != "main.go" || paths[1] != "src/driver.go" {
+		t.Fatalf("unexpected matched_paths: %#v", result.Meta)
+	}
+}
+
+func TestGrepToolRipgrepBackendTruncationMetadata(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("needle\nneedle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		if request.MaxResults != 1 {
+			t.Fatalf("expected max_results=1, got %d", request.MaxResults)
+		}
+		return grepSearchResult{
+			Matches: []grepSearchMatch{
+				{Path: target, LineNo: 1, Line: "needle\n"},
+			},
+			Truncated: true,
+		}, nil
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":     "needle",
+		"max_results": 1,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !toolMetaBool(result.Meta, "truncated") {
+		t.Fatalf("expected truncated=true, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "match_count") != 1 {
+		t.Fatalf("expected one visible match, got %#v", result.Meta)
+	}
+}
+
+func TestGrepToolFallsBackWhenRipgrepUnavailable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{}, errRipgrepUnavailable
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern": "needle",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "main.go:1: needle") {
+		t.Fatalf("expected Go fallback grep output, got %q", result.DisplayText)
+	}
+}
+
+func TestGrepToolFallsBackWhenRipgrepJSONIsUnparseable(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{}, errRipgrepUnparseableJSON
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern": "needle",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "main.go:1: needle") {
+		t.Fatalf("expected fallback after unparseable rg json, got %q", result.DisplayText)
+	}
+}
+
+func TestGrepToolSkipsBinaryFilesWithFallback(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "text.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile text: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "binary.bin"), []byte{'n', 'e', 'e', 'd', 'l', 'e', 0, '\n'}, 0o644); err != nil {
+		t.Fatalf("WriteFile binary: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{}, errRipgrepUnavailable
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern": "needle",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "text.txt:1: needle") {
+		t.Fatalf("expected text match, got %q", result.DisplayText)
+	}
+	if strings.Contains(result.DisplayText, "binary.bin") {
+		t.Fatalf("did not expect binary file match, got %q", result.DisplayText)
+	}
+}
+
+func TestGrepToolFallsBackWhenRipgrepRejectsGoCompatibleRegex(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{}, fmt.Errorf("%w: regex parse error", errRipgrepInvalidPattern)
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern": `\Qneedle\E`,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed should fall back to Go grep: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "main.go:1: needle") {
+		t.Fatalf("expected Go fallback match for rg-rejected pattern, got %q", result.DisplayText)
+	}
+}
+
+func TestGrepToolGlobFilteringCompatibility(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile notes: %v", err)
+	}
+
+	tool := NewGrepTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	tool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{}, errRipgrepUnsupportedInput
+	}
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern": "needle",
+		"glob":    "*.go",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "main.go:1: needle") {
+		t.Fatalf("expected go file match, got %q", result.DisplayText)
+	}
+	if strings.Contains(result.DisplayText, "notes.txt") {
+		t.Fatalf("did not expect txt file match, got %q", result.DisplayText)
+	}
+}
+
+func TestGrepToolDoesNotExposeRawRipgrepArgs(t *testing.T) {
+	def := NewGrepTool(Workspace{}).Definition()
+	properties, ok := def.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected object properties, got %#v", def.InputSchema)
+	}
+	for _, key := range []string{"args", "rg_args", "ripgrep_args", "pre", "search_zip", "follow"} {
+		if _, exists := properties[key]; exists {
+			t.Fatalf("grep schema exposed raw ripgrep option %q", key)
+		}
+	}
+
+	args, err := buildRipgrepArgs(grepSearchRequest{
+		Root:       ".",
+		Pattern:    "--pre",
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("buildRipgrepArgs: %v", err)
+	}
+	separator := slices.Index(args, "--")
+	if separator < 0 {
+		t.Fatalf("expected -- separator in rg args: %#v", args)
+	}
+	for _, arg := range args[:separator] {
+		if arg == "--pre" || arg == "--hostname-bin" || arg == "--search-zip" || arg == "--follow" {
+			t.Fatalf("dangerous ripgrep option appeared before separator: %#v", args)
+		}
+	}
+	if separator+1 >= len(args) || args[separator+1] != "--pre" {
+		t.Fatalf("expected pattern to be passed after --, got %#v", args)
+	}
+}
+
+func TestBuildRipgrepArgsFallsBackForGoOnlyGlobSemantics(t *testing.T) {
+	for _, glob := range []string{`src/*.go`, `!*.go`, `{main,driver}.go`} {
+		_, err := buildRipgrepArgs(grepSearchRequest{
+			Root:       ".",
+			Pattern:    "needle",
+			Glob:       glob,
+			MaxResults: 10,
+		})
+		if !errors.Is(err, errRipgrepUnsupportedInput) {
+			t.Fatalf("glob %q should use Go fallback, got %v", glob, err)
+		}
+	}
+}
+
+func TestRipgrepPATHFallbackAllowedOnlyForDevVersion(t *testing.T) {
+	oldVersion := appVersion
+	oldCommit := appCommit
+	oldBuildTime := appBuildTime
+	defer func() {
+		appVersion = oldVersion
+		appCommit = oldCommit
+		appBuildTime = oldBuildTime
+	}()
+
+	appVersion = "dev"
+	appCommit = ""
+	appBuildTime = ""
+	if !ripgrepPATHFallbackAllowed() {
+		t.Fatalf("expected dev build to allow PATH ripgrep fallback")
+	}
+
+	appVersion = "1.2.3.4"
+	appCommit = ""
+	appBuildTime = ""
+	if ripgrepPATHFallbackAllowed() {
+		t.Fatalf("expected versioned build to require a ripgrep sidecar or Go fallback")
+	}
+}
+
+func TestParseRipgrepJSONMatch(t *testing.T) {
+	raw := `{"type":"match","data":{"path":{"text":"src/main.go"},"lines":{"text":"needle here\n"},"line_number":12}}`
+	match, ok, err := parseRipgrepJSONMatch([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseRipgrepJSONMatch: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected match event")
+	}
+	if filepath.ToSlash(match.Path) != "src/main.go" || match.LineNo != 12 || match.Line != "needle here\n" {
+		t.Fatalf("unexpected parsed match: %+v", match)
+	}
+
+	raw = `{"type":"match","data":{"path":{"text":"bin/blob"},"lines":{"bytes":"AAAA"},"line_number":1}}`
+	if _, ok, err := parseRipgrepJSONMatch([]byte(raw)); err != nil || ok {
+		t.Fatalf("expected binary/bytes match to be ignored, ok=%v err=%v", ok, err)
+	}
+}
+
 func TestToolRegistrySharesReadHintsBetweenReadFileAndGrep(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "sample.cpp")
@@ -936,6 +1271,74 @@ func TestToolRegistrySharesReadHintsBetweenReadFileAndGrep(t *testing.T) {
 	}
 	if !strings.Contains(out, "[cached-nearby:inside]") {
 		t.Fatalf("expected registry-shared cached hint, got %q", out)
+	}
+}
+
+func TestGrepToolNormalizesRelativeRipgrepPathsForReadHints(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.cpp")
+	if err := os.WriteFile(target, []byte("alpha\nbeta target\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: base,
+		Root:     base,
+	}
+	readTool := NewReadFileTool(ws)
+	grepTool := NewGrepTool(ws)
+	grepTool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{
+			Matches: []grepSearchMatch{
+				{Path: "sample.cpp", LineNo: 2, Line: "beta target"},
+			},
+		}, nil
+	}
+	registry := NewToolRegistry(readTool, grepTool)
+
+	if _, err := registry.Execute(context.Background(), "read_file", `{"path":"sample.cpp","start_line":2,"end_line":2}`); err != nil {
+		t.Fatalf("read_file Execute: %v", err)
+	}
+	out, err := registry.Execute(context.Background(), "grep", `{"pattern":"target","path":"."}`)
+	if err != nil {
+		t.Fatalf("grep Execute: %v", err)
+	}
+	if !strings.Contains(out, "sample.cpp:2: beta target [cached-nearby:inside]") {
+		t.Fatalf("expected relative rg path to preserve cached hint, got %q", out)
+	}
+}
+
+func TestGrepToolNormalizesRelativeRipgrepPathsForFileRoot(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.cpp")
+	if err := os.WriteFile(target, []byte("alpha\nbeta target\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: base,
+		Root:     base,
+	}
+	readTool := NewReadFileTool(ws)
+	grepTool := NewGrepTool(ws)
+	grepTool.ripgrepSearch = func(ctx context.Context, request grepSearchRequest) (grepSearchResult, error) {
+		return grepSearchResult{
+			Matches: []grepSearchMatch{
+				{Path: "sample.cpp", LineNo: 2, Line: "beta target"},
+			},
+		}, nil
+	}
+	registry := NewToolRegistry(readTool, grepTool)
+
+	if _, err := registry.Execute(context.Background(), "read_file", `{"path":"sample.cpp","start_line":2,"end_line":2}`); err != nil {
+		t.Fatalf("read_file Execute: %v", err)
+	}
+	out, err := registry.Execute(context.Background(), "grep", `{"pattern":"target","path":"sample.cpp"}`)
+	if err != nil {
+		t.Fatalf("grep Execute: %v", err)
+	}
+	if !strings.Contains(out, "sample.cpp:2: beta target [cached-nearby:inside]") {
+		t.Fatalf("expected file-root relative rg path to preserve cached hint, got %q", out)
 	}
 }
 
