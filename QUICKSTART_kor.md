@@ -8,8 +8,8 @@
 3. 공격자 관점이 중요하면 `/simulate`
 4. 이미 재현되는 증상이 있으면 `/find-root-cause`
 5. 입력 파라미터 관점으로 소스만 먼저 흔들어 보고 싶으면 `/fuzz-func`
-6. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
-7. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
+6. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review selection` 또는 `/edit-selection`
+7. 마지막에는 `/verify`, 그리고 결과는 `/evidence dashboard`와 `/memory search`로 확인
 
 실행 전에 `kernforge --help`를 입력하면 실행 파일 version과 standalone, one-shot, MCP server, daemon proxy 예시를 볼 수 있습니다. version만 확인할 때는 `kernforge --version`을 쓰고, MCP client에 연결할 때는 `kernforge help mcp`를 먼저 보면 됩니다.
 Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review`로 처리합니다. 이 tool은 structured finding, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, action-oriented `next_commands`를 반환하며, 예전 review-code-only surface를 대체합니다.
@@ -28,10 +28,10 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 /find-root-cause guard.sys unload 후에도 user process가 device close에서 멈춰. expected: close가 반환되어야 하지만 observed: pending request가 끝나지 않아.
 /fuzz-func @driver/guard.cpp
 /open driver/guard.cpp
-/review-selection integrity bypass paths
+/review selection integrity bypass paths
 /edit-selection harden the selected integrity checks
 /verify
-/evidence-dashboard category:driver
+/evidence dashboard category:driver
 ```
 
 이 흐름의 의미:
@@ -91,20 +91,20 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 
 선택 영역 작업:
 - `/open <path>`
-- `/review-selection [extra]`
+- `/review selection [extra]`
 - `/edit-selection <task>`
 
 검증:
 - `/verify`
-- `/verify-dashboard`
+- `/verify dashboard`
 - `/set-auto-verify [on|off]`
-- `/detect-verification-tools`
-- `/set-msbuild-path <path>`
+- `/verify tools detect`
+- `/verify tools set msbuild <path>`
 
 증거와 기억:
-- `/evidence-dashboard`
-- `/evidence-search <query>`
-- `/mem-search <query>`
+- `/evidence dashboard`
+- `/evidence search <query>`
+- `/memory search <query>`
 - 같은 workspace의 최근 high-value record는 `Workspace continuity`로 자동 주입되며, 재사용 시 `memory` activity line으로 표시됩니다.
 
 정책:
@@ -112,7 +112,7 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 - `/override`
 
 계획과 tracked feature 작업:
-- `/do-plan-review <task>`
+- `/review plan <task>`
 - `/new-feature <task>`
 - `/new-feature status [id]`
 - `/new-feature implement [id]`
@@ -132,9 +132,9 @@ provider 및 런타임 확인:
 /simulate tamper-surface guard.sys
 /fuzz-func @Driver/guard.cpp
 /open driver/guard.cpp
-/review-selection signing and integrity assumptions
+/review selection signing and integrity assumptions
 /verify
-/evidence-dashboard category:driver
+/evidence dashboard category:driver
 ```
 
 ### 입력 지향 코드 triage
@@ -174,9 +174,9 @@ provider 및 런타임 확인:
 /investigate start provider-visibility MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
-/review-selection provider visibility and schema drift
+/review selection provider visibility and schema drift
 /verify
-/evidence-search category:telemetry outcome:failed
+/evidence search category:telemetry outcome:failed
 ```
 
 ### 여러 세션에 걸친 feature 작업
@@ -189,15 +189,15 @@ provider 및 런타임 확인:
 /new-feature close
 ```
 
-`/new-feature`는 `.kernforge/features/<id>` 아래에 spec, plan, task artifact를 남기며 진행 상태를 추적하고 싶을 때 쓰는 것이 좋다. `/do-plan-review`는 reviewer를 붙여 한 번에 계획을 다듬고 바로 실행하고 싶을 때 더 잘 맞는다.
+`/new-feature`는 `.kernforge/features/<id>` 아래에 spec, plan, task artifact를 남기며 진행 상태를 추적하고 싶을 때 쓰는 것이 좋다. `/review plan`는 reviewer를 붙여 한 번에 계획을 다듬고 바로 실행하고 싶을 때 더 잘 맞는다.
 
 ## 4. 막혔을 때 가장 먼저 볼 것
 
 1. `/status`
 2. `/provider status`
 3. `/analyze-performance startup` 또는 관련 focus
-4. `/evidence-dashboard`
-5. `/mem-search category:driver` 또는 `/mem-search category:telemetry`
+4. `/evidence dashboard`
+5. `/memory search category:driver` 또는 `/memory search category:telemetry`
 6. `/hooks`
 
 빠른 해석:
@@ -206,8 +206,8 @@ provider 및 런타임 확인:
 3. `/provider status`는 현재 provider 연결 상태를 빠르게 보는 용도다. 정규화된 endpoint, API key 설정 여부, provider별로 실제 확인 가능한 budget visibility 범위를 보여준다.
 
 Windows build tool이 없어 automatic verification이 실패하면:
-1. 먼저 `/detect-verification-tools`를 실행한다.
-2. 자동 탐지가 못 찾으면 예를 들어 `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`처럼 직접 지정한다.
+1. 먼저 `/verify tools detect`를 실행한다.
+2. 자동 탐지가 못 찾으면 예를 들어 `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`처럼 직접 지정한다.
 3. 당분간 편집 후 verification을 끄고 싶으면 `/set-auto-verify off`를 사용한다.
 
 모델이 stage/commit/push/PR을 하려고 할 때:

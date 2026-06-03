@@ -3134,6 +3134,62 @@ func TestHandleSetVerificationToolPathCommandPersistsWorkspaceOverride(t *testin
 	}
 }
 
+func TestHandleVerifyToolsCommandPreservesQuotedPathAndShowsCurrentValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	cfgForTrust := DefaultConfig(workspace)
+	markConfigProjectTrustedForTest(t, &cfgForTrust, workspace)
+	if err := SaveUserConfig(cfgForTrust); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	msbuildPath := filepath.Join(home, "Program Files", "Microsoft Visual Studio", "MSBuild.exe")
+	if err := os.MkdirAll(filepath.Dir(msbuildPath), 0o755); err != nil {
+		t.Fatalf("mkdir msbuild dir: %v", err)
+	}
+	if err := os.WriteFile(msbuildPath, []byte("stub"), 0o644); err != nil {
+		t.Fatalf("write msbuild stub: %v", err)
+	}
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		writer: output,
+		ui:     UI{},
+		cfg:    DefaultConfig(workspace),
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+
+	if err := rt.handleVerifyToolsCommand(`set msbuild "` + msbuildPath + `"`); err != nil {
+		t.Fatalf("handleVerifyToolsCommand set: %v", err)
+	}
+	if strings.TrimSpace(rt.cfg.MSBuildPath) != msbuildPath {
+		t.Fatalf("expected quoted msbuild path to be preserved, got %q want %q", rt.cfg.MSBuildPath, msbuildPath)
+	}
+
+	output.Reset()
+	if err := rt.handleVerifyToolsCommand("set msbuild"); err != nil {
+		t.Fatalf("handleVerifyToolsCommand show current: %v", err)
+	}
+	if !strings.Contains(output.String(), "MSBuild path:") || !strings.Contains(output.String(), msbuildPath) {
+		t.Fatalf("expected current MSBuild path output, got %q", output.String())
+	}
+}
+
 func TestAutoPopulateVerificationToolPathsAppliesDetectedValues(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	detected, err := autoPopulateVerificationToolPaths(t.TempDir(), &cfg, func(tool string) string {
@@ -3497,7 +3553,7 @@ func TestSlashCommandTurnElapsedPolicySuppressesLocalMetaCommands(t *testing.T) 
 		"/clear",
 		"/reload",
 		"/selection",
-		"/mem recent",
+		"/memory recent",
 	}
 	for _, input := range cases {
 		cmd, ok := ParseCommand(input)

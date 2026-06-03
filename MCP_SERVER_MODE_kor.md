@@ -345,6 +345,10 @@ kernforge_fuzz
 kernforge_guide
 kernforge_look
 kernforge_fuzz_targets
+kernforge_source_scan
+kernforge_source_candidate_list
+kernforge_source_candidate_show
+kernforge_fuzz_workflow
 kernforge_fuzz_func
 kernforge_fuzz_func_preview
 kernforge_fuzz_func_build
@@ -1050,7 +1054,7 @@ Campaign run은 다음 일을 자동화한다.
 
 1. `execute=true`는 실제 build/test/verification command를 실행할 수 있다.
 2. MCP server mode는 interactive approval을 받을 수 없으므로 trusted workspace에서만 실행한다.
-3. Windows build tool 경로가 필요한 경우 일반 KernForge REPL에서 `/detect-verification-tools` 또는 `/set-msbuild-path`를 먼저 설정해 두는 것이 좋다.
+3. Windows build tool 경로가 필요한 경우 일반 KernForge REPL에서 `/verify tools detect` 또는 `/verify tools set msbuild`를 먼저 설정해 두는 것이 좋다.
 
 ### 7.16 Project analysis 실행
 
@@ -1444,13 +1448,13 @@ startup_timeout_sec = 120
 일반 KernForge REPL에서 먼저:
 
 ```text
-/detect-verification-tools
+/verify tools detect
 ```
 
 자동 탐지가 실패하면:
 
 ```text
-/set-msbuild-path C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe
+/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
 ```
 
 그 다음 MCP server를 재시작한다.

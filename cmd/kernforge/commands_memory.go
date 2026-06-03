@@ -37,7 +37,7 @@ func (rt *runtimeState) handlePersistentMemorySearch(query string) error {
 		return fmt.Errorf("persistent memory is not configured")
 	}
 	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("usage: /mem-search <query>")
+		return fmt.Errorf("usage: /memory search <query>")
 	}
 	records, err := rt.longMem.SearchHits(query, rt.workspace.BaseRoot, rt.session.ID, 8)
 	if err != nil {
@@ -63,7 +63,7 @@ func (rt *runtimeState) handlePersistentMemoryShow(id string) error {
 		return fmt.Errorf("persistent memory is not configured")
 	}
 	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("usage: /mem-show <id>")
+		return fmt.Errorf("usage: /memory show <id>")
 	}
 	record, ok, err := rt.longMem.Get(id)
 	if err != nil {
@@ -121,7 +121,7 @@ func (rt *runtimeState) handlePersistentMemoryAdjust(id, action string) error {
 		return fmt.Errorf("persistent memory is not configured")
 	}
 	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("usage: /mem-%s <id>", action)
+		return fmt.Errorf("usage: /memory %s <id>", action)
 	}
 	var (
 		record PersistentMemoryRecord
@@ -200,7 +200,7 @@ func (rt *runtimeState) handlePersistentMemoryPrune(args string) error {
 	fmt.Fprintln(rt.writer, renderCommandHandoff("Memory", commandHandoffPlan{
 		Title: "Memory was pruned; inspect the remaining reusable context when needed.",
 		Commands: []commandHandoffCommand{
-			{Label: "Inspect", Command: "/mem-dashboard"},
+			{Label: "Inspect", Command: "/memory dashboard"},
 		},
 	}))
 	return nil

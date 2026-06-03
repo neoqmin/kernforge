@@ -8,8 +8,8 @@ The key loop to remember:
 3. Use `/simulate` when an extra risk lens matters.
 4. Use `/find-root-cause` when you already have a concrete symptom to explain.
 5. Use `/fuzz-func` when you want attacker-style source-only parameter reasoning before building a harness.
-6. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
-7. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
+6. Use `/open` plus `/review selection` or `/edit-selection` to stay focused.
+7. Use `/verify`, then inspect the result with `/evidence dashboard` and `/memory search`.
 
 Before launching, `kernforge --help` shows the executable version plus standalone, one-shot, MCP server, and daemon proxy examples. Use `kernforge --version` for the same version-only check, and `kernforge help mcp` when wiring Kernforge into an MCP client.
 When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review`; it returns structured findings, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, and action-oriented `next_commands` instead of the older review-code-only surface.
@@ -28,10 +28,10 @@ Recommended sequence:
 /find-root-cause guard.sys unload leaves the user process stuck in device close. Expected: close returns. Observed: the pending request never completes.
 /fuzz-func @driver/guard.cpp
 /open driver/guard.cpp
-/review-selection integrity bypass paths
+/review selection integrity bypass paths
 /edit-selection harden the selected integrity checks
 /verify
-/evidence-dashboard category:driver
+/evidence dashboard category:driver
 ```
 
 What this does:
@@ -91,20 +91,20 @@ Source-level fuzzing:
 
 Selection workflow:
 - `/open <path>`
-- `/review-selection [extra]`
+- `/review selection [extra]`
 - `/edit-selection <task>`
 
 Verification:
 - `/verify`
-- `/verify-dashboard`
+- `/verify dashboard`
 - `/set-auto-verify [on|off]`
-- `/detect-verification-tools`
-- `/set-msbuild-path <path>`
+- `/verify tools detect`
+- `/verify tools set msbuild <path>`
 
 Evidence and memory:
-- `/evidence-dashboard`
-- `/evidence-search <query>`
-- `/mem-search <query>`
+- `/evidence dashboard`
+- `/evidence search <query>`
+- `/memory search <query>`
 - Persistent memory is also injected automatically as `Workspace continuity` for recent high-value records from the same workspace; Kernforge shows a `memory` activity line when it reuses those records.
 
 Policy:
@@ -112,7 +112,7 @@ Policy:
 - `/override`
 
 Planning and tracked feature work:
-- `/do-plan-review <task>`
+- `/review plan <task>`
 - `/new-feature <task>`
 - `/new-feature status [id]`
 - `/new-feature implement [id]`
@@ -132,9 +132,9 @@ Provider and runtime inspection:
 /simulate tamper-surface guard.sys
 /fuzz-func @Driver/guard.cpp
 /open driver/guard.cpp
-/review-selection signing and integrity assumptions
+/review selection signing and integrity assumptions
 /verify
-/evidence-dashboard category:driver
+/evidence dashboard category:driver
 ```
 
 ### Input-facing code triage
@@ -174,9 +174,9 @@ What this means:
 /investigate start provider-visibility MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
-/review-selection provider visibility and schema drift
+/review selection provider visibility and schema drift
 /verify
-/evidence-search category:telemetry outcome:failed
+/evidence search category:telemetry outcome:failed
 ```
 
 ### Multi-session feature work
@@ -189,15 +189,15 @@ What this means:
 /new-feature close
 ```
 
-Use `/new-feature` when you want persisted spec, plan, and task artifacts under `.kernforge/features/<id>`. Use `/do-plan-review` when you want a reviewed plan and immediate execution without a longer-lived tracked feature workspace.
+Use `/new-feature` when you want persisted spec, plan, and task artifacts under `.kernforge/features/<id>`. Use `/review plan` when you want a reviewed plan and immediate execution without a longer-lived tracked feature workspace.
 
 ## 4. What To Check First When Something Feels Wrong
 
 1. `/status`
 2. `/provider status`
 3. `/analyze-performance startup` or another relevant focus
-4. `/evidence-dashboard`
-5. `/mem-search category:driver` or `/mem-search category:telemetry`
+4. `/evidence dashboard`
+5. `/memory search category:driver` or `/memory search category:telemetry`
 6. `/hooks`
 
 Quick interpretation:
@@ -206,8 +206,8 @@ Quick interpretation:
 3. `/provider status` is the fast view for provider wiring. It shows the normalized endpoint, whether an API key is configured, and what budget visibility is actually available for the current provider.
 
 If automatic verification fails because Windows build tools are missing:
-1. Run `/detect-verification-tools` first.
-2. If detection does not find the tool, set it explicitly, for example `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
+1. Run `/verify tools detect` first.
+2. If detection does not find the tool, set it explicitly, for example `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
 3. If you want editing without post-edit verification for a while, use `/set-auto-verify off`.
 
 If a model tries to stage, commit, push, or open a PR:

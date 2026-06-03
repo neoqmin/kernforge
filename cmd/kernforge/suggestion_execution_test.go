@@ -522,6 +522,33 @@ func TestPRReviewPostCommentsIsRejectedFromAutomaticExecution(t *testing.T) {
 	}
 }
 
+func TestVerifyToolsCommandsAreRejectedFromAutomationAndSuggestions(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		writer:  &bytes.Buffer{},
+		ui:      NewUI(),
+		session: NewSession(root, "provider", "model", "", "default"),
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify dashboard --html"); err != nil {
+		t.Fatalf("expected verification dashboard automation to remain allowed: %v", err)
+	}
+	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify-dashboard-html"); err != nil {
+		t.Fatalf("expected legacy verification dashboard automation alias to remain allowed: %v", err)
+	}
+	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify tools set msbuild C:\\tools\\msbuild.exe"); err == nil {
+		t.Fatalf("expected verification tool path writes to be rejected from automation")
+	}
+	if _, err := rt.executeSafeSuggestionCommand("/verify tools detect"); err == nil {
+		t.Fatalf("expected verification tool detection to be rejected from automatic suggestion execution")
+	}
+}
+
 func TestPRReviewChangedFilesParsesGitStatusShortForms(t *testing.T) {
 	files := prReviewChangedFiles(strings.Join([]string{
 		"M first.go",

@@ -462,8 +462,16 @@ func validateAutomationCommand(typ string, command string) error {
 	}
 	switch strings.TrimSpace(typ) {
 	case AutomationTypeRecurringVerification:
+		if alias, ok := hiddenSlashCommandAlias(cmd.Name); ok {
+			cmd.Name = alias.Canonical
+			cmd.Args = joinCommandArgs(alias.ArgsPrefix, cmd.Args)
+		}
 		switch cmd.Name {
-		case "verify", "verify-dashboard", "verify-dashboard-html":
+		case "verify":
+			subcommand, _ := commandSubcommandAndRest(cmd.Args)
+			if subcommand == "tools" {
+				return fmt.Errorf("recurring verification automation cannot change verification tool paths")
+			}
 			return nil
 		default:
 			return fmt.Errorf("recurring verification automation only allows /verify and verification dashboard commands")
@@ -1240,32 +1248,58 @@ func (rt *runtimeState) executeSafeSuggestionCommandContext(ctx context.Context,
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
+	if alias, ok := hiddenSlashCommandAlias(cmd.Name); ok {
+		cmd.Name = alias.Canonical
+		cmd.Args = joinCommandArgs(alias.ArgsPrefix, cmd.Args)
+	}
 	switch cmd.Name {
 	case "verify":
+		subcommand, rest := commandSubcommandAndRest(cmd.Args)
+		switch subcommand {
+		case "dashboard":
+			filtered, html := commandArgsHaveHTMLFlag(rest)
+			if html {
+				if err := rt.handleVerifyDashboardHTMLCommand(filtered); err != nil {
+					return "", err
+				}
+				return "executed /verify dashboard --html", nil
+			}
+			if err := rt.handleVerifyDashboardCommand(filtered); err != nil {
+				return "", err
+			}
+			return "executed /verify dashboard", nil
+		case "dashboard-html":
+			if err := rt.handleVerifyDashboardHTMLCommand(rest); err != nil {
+				return "", err
+			}
+			return "executed /verify dashboard --html", nil
+		case "tools":
+			return "", fmt.Errorf("/verify tools is not allowed from automatic suggestion execution")
+		}
 		if err := rt.handleVerifyCommandContext(ctx, cmd.Args); err != nil {
 			return "", err
 		}
 		return "executed /verify", nil
-	case "verify-dashboard":
-		if err := rt.handleVerifyDashboardCommand(cmd.Args); err != nil {
+	case "suggest":
+		subcommand, rest := commandSubcommandAndRest(cmd.Args)
+		if subcommand != "dashboard" && subcommand != "dashboard-html" {
+			return "", fmt.Errorf("only /suggest dashboard --html is allowed from automatic suggestion execution")
+		}
+		rest, _ = commandArgsHaveHTMLFlag(rest)
+		if err := rt.handleSuggestDashboardHTMLCommand(rest); err != nil {
 			return "", err
 		}
-		return "executed /verify-dashboard", nil
-	case "verify-dashboard-html":
-		if err := rt.handleVerifyDashboardHTMLCommand(cmd.Args); err != nil {
+		return "executed /suggest dashboard --html", nil
+	case "session":
+		subcommand, rest := commandSubcommandAndRest(cmd.Args)
+		if subcommand != "dashboard" && subcommand != "dashboard-html" {
+			return "", fmt.Errorf("only /session dashboard --html is allowed from automatic suggestion execution")
+		}
+		rest, _ = commandArgsHaveHTMLFlag(rest)
+		if err := rt.handleSessionDashboardHTMLCommand(rest); err != nil {
 			return "", err
 		}
-		return "executed /verify-dashboard-html", nil
-	case "suggest-dashboard-html":
-		if err := rt.handleSuggestDashboardHTMLCommand(cmd.Args); err != nil {
-			return "", err
-		}
-		return "executed /suggest-dashboard-html", nil
-	case "session-dashboard-html":
-		if err := rt.handleSessionDashboardHTMLCommand(cmd.Args); err != nil {
-			return "", err
-		}
-		return "executed /session-dashboard-html", nil
+		return "executed /session dashboard --html", nil
 	case "continuity":
 		if err := rt.handleContinuityCommand(cmd.Args); err != nil {
 			return "", err
@@ -1281,16 +1315,26 @@ func (rt *runtimeState) executeSafeSuggestionCommandContext(ctx context.Context,
 			return "", err
 		}
 		return "executed /completion-audit", nil
-	case "evidence-dashboard":
-		if err := rt.handleEvidenceDashboard(cmd.Args, false); err != nil {
-			return "", err
+	case "evidence":
+		subcommand, rest := commandSubcommandAndRest(cmd.Args)
+		switch subcommand {
+		case "dashboard":
+			query, html := commandArgsHaveHTMLFlag(rest)
+			if err := rt.handleEvidenceDashboard(query, html); err != nil {
+				return "", err
+			}
+			if html {
+				return "executed /evidence dashboard --html", nil
+			}
+			return "executed /evidence dashboard", nil
+		case "dashboard-html":
+			if err := rt.handleEvidenceDashboard(rest, true); err != nil {
+				return "", err
+			}
+			return "executed /evidence dashboard --html", nil
+		default:
+			return "", fmt.Errorf("only /evidence dashboard [--html] is allowed from automatic suggestion execution")
 		}
-		return "executed /evidence-dashboard", nil
-	case "evidence-dashboard-html":
-		if err := rt.handleEvidenceDashboard(cmd.Args, true); err != nil {
-			return "", err
-		}
-		return "executed /evidence-dashboard-html", nil
 	case "docs-refresh":
 		if err := rt.handleDocsRefreshCommand(cmd.Args); err != nil {
 			return "", err

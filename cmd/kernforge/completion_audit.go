@@ -1105,7 +1105,7 @@ func completionAuditStatusForBool(ok bool) string {
 
 func completionAuditNextCommands(artifact CompletionAuditArtifact) []string {
 	commands := []string{
-		"/session-dashboard-html",
+		"/session dashboard --html",
 		"/continuity continue from completion audit",
 	}
 	if len(artifact.BackgroundJobs) > 0 || len(artifact.BackgroundBundles) > 0 {

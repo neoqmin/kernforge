@@ -15,8 +15,8 @@ func TestSimulationHandoffGuidesVerificationAndEvidence(t *testing.T) {
 	for _, needle := range []string{
 		"Simulation handoff:",
 		"Verify: /verify",
-		"Explore: /simulate-dashboard",
-		"Evidence: /evidence-dashboard",
+		"Explore: /simulate dashboard",
+		"Evidence: /evidence dashboard",
 	} {
 		if !strings.Contains(out, needle) {
 			t.Fatalf("expected handoff to include %q, got:\n%s", needle, out)
@@ -33,7 +33,7 @@ func TestVerificationHandoffGuidesFailureAndSuccess(t *testing.T) {
 	for _, needle := range []string{
 		"Verification handoff:",
 		"Retry: /verify",
-		"Inspect: /verify-dashboard",
+		"Inspect: /verify dashboard",
 	} {
 		if !strings.Contains(failed, needle) {
 			t.Fatalf("expected failed handoff to include %q, got:\n%s", needle, failed)
@@ -101,8 +101,8 @@ func TestEvidenceAndMemoryHandoffs(t *testing.T) {
 	for _, needle := range []string{
 		"Evidence handoff:",
 		"Verify: /verify",
-		"Explore: /evidence-dashboard",
-		"Source: /simulate-dashboard",
+		"Explore: /evidence dashboard",
+		"Source: /simulate dashboard",
 	} {
 		if !strings.Contains(evidence, needle) {
 			t.Fatalf("expected evidence handoff to include %q, got:\n%s", needle, evidence)
@@ -121,8 +121,8 @@ func TestEvidenceAndMemoryHandoffs(t *testing.T) {
 	for _, needle := range []string{
 		"Memory handoff:",
 		"Verify: /verify",
-		"Confirm: /mem-confirm mem-1",
-		"Promote: /mem-promote mem-1",
+		"Confirm: /memory confirm mem-1",
+		"Promote: /memory promote mem-1",
 	} {
 		if !strings.Contains(memory, needle) {
 			t.Fatalf("expected memory handoff to include %q, got:\n%s", needle, memory)
@@ -136,7 +136,7 @@ func TestEvidenceAndMemoryHandoffs(t *testing.T) {
 			VerificationMaxRisk: 70,
 		},
 	})
-	if strings.Contains(anonymousMemory, "/mem-confirm ") || strings.Contains(anonymousMemory, "/mem-promote ") {
+	if strings.Contains(anonymousMemory, "/memory confirm ") || strings.Contains(anonymousMemory, "/memory promote ") {
 		t.Fatalf("expected memory handoff without id to avoid invalid commands, got:\n%s", anonymousMemory)
 	}
 
@@ -161,7 +161,7 @@ func TestEvidenceAndMemoryHandoffs(t *testing.T) {
 
 func TestCheckpointFeatureAndWorktreeHandoffs(t *testing.T) {
 	checkpoint := checkpointHandoffAfterCreate(CheckpointMetadata{ID: "cp-1", FileCount: 3})
-	if !strings.Contains(checkpoint, "Inspect: /checkpoint-diff latest") {
+	if !strings.Contains(checkpoint, "Inspect: /checkpoint diff latest") {
 		t.Fatalf("expected checkpoint handoff to suggest diff, got:\n%s", checkpoint)
 	}
 
@@ -179,7 +179,7 @@ func TestCheckpointFeatureAndWorktreeHandoffs(t *testing.T) {
 	for _, needle := range []string{
 		"Feature fuzz handoff:",
 		"Verify: /verify",
-		"Evidence: /evidence-search kind:fuzz_native_result",
+		"Evidence: /evidence search kind:fuzz_native_result",
 		"Campaign: /fuzz-campaign run",
 	} {
 		if !strings.Contains(featureFuzz, needle) {

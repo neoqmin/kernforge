@@ -209,7 +209,7 @@ func (rt *runtimeState) handleCheckpointAutoCommand(args string) error {
 	}
 	value, ok := parseBoolString(args)
 	if !ok {
-		return fmt.Errorf("usage: /checkpoint-auto [on|off]")
+		return fmt.Errorf("usage: /checkpoint auto [on|off]")
 	}
 	rt.cfg.AutoCheckpointEdits = boolPtr(value)
 	if err := rt.saveUserConfig(); err != nil {

@@ -38,11 +38,12 @@ func (rt *runtimeState) handleInvestigateCommand(args string) error {
 	case "list":
 		return rt.handleInvestigationList()
 	case "dashboard":
-		return rt.handleInvestigationDashboard(false)
+		_, html := commandArgsHaveHTMLFlag(rest)
+		return rt.handleInvestigationDashboard(html)
 	case "dashboard-html":
 		return rt.handleInvestigationDashboard(true)
 	default:
-		return fmt.Errorf("usage: /investigate [start|snapshot|note|stop|show|list|dashboard|dashboard-html]")
+		return fmt.Errorf("usage: /investigate [start|snapshot|note|stop|show|list|dashboard [--html]]")
 	}
 }
 

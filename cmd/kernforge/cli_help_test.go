@@ -22,6 +22,9 @@ func TestKernforgeCLIHelpRequestRecognizesCommonForms(t *testing.T) {
 		{args: []string{"-mcp-server", "--help"}, wantOK: true, wantTopic: "mcp"},
 		{args: []string{"-prompt", "--help"}, wantOK: true, wantTopic: "standalone"},
 		{args: []string{"-prompt", "help"}, wantOK: false, wantTopic: ""},
+		{args: []string{"-command", "/help"}, wantOK: false, wantTopic: ""},
+		{args: []string{"-command", "/help review"}, wantOK: false, wantTopic: ""},
+		{args: []string{"-prompt", "/help"}, wantOK: false, wantTopic: ""},
 	}
 	for _, tc := range cases {
 		gotOK, gotTopic := kernforgeCLIHelpRequest(tc.args)

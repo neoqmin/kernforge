@@ -1558,7 +1558,7 @@ func analysisDashboardEvidenceMemoryRows(run ProjectAnalysisRun, docsHref string
 		manifestPath = "docs_manifest.json"
 	}
 	rows := []string{
-		analysisDashboardDrilldownRow("analysis docs evidence", manifestPath, "/evidence-search kind:analysis_docs"),
+		analysisDashboardDrilldownRow("analysis docs evidence", manifestPath, "/evidence search kind:analysis_docs"),
 		analysisDashboardDrilldownRow("coverage ledger", docsHref+"/COVERAGE_LEDGER.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("structural index", docsHref+"/STRUCTURAL_INDEX.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("build context", docsHref+"/BUILD_AND_ARTIFACTS.md", "/analyze-dashboard build"),
@@ -1566,7 +1566,7 @@ func analysisDashboardEvidenceMemoryRows(run ProjectAnalysisRun, docsHref string
 		analysisDashboardDrilldownRow("evidence graph", docsHref+"/EVIDENCE_GRAPH.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow(fmt.Sprintf("claim verifier %s downgraded=%d unsupported=%d blocking=%d unsupported_high=%d", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.DowngradedCount, run.ClaimVerification.UnsupportedCount, run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount), docsHref+"/UNSUPPORTED_CLAIMS.md", "/verify"),
 		analysisDashboardDrilldownRow(fmt.Sprintf("security overlay nodes=%d edges=%d", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount), docsHref+"/SECURITY_OVERLAY.md", "/simulate stealth-surface"),
-		analysisDashboardDrilldownRow("project memory", docsHref+"/INDEX.md", "/mem-search analyze-project"),
+		analysisDashboardDrilldownRow("project memory", docsHref+"/INDEX.md", "/memory search analyze-project"),
 		analysisDashboardDrilldownRow("verification matrix", docsHref+"/VERIFICATION_MATRIX.md", "/verify"),
 		analysisDashboardDrilldownRow("fuzz targets", docsHref+"/FUZZ_TARGETS.md", "/fuzz-campaign run"),
 	}

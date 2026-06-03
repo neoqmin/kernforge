@@ -214,8 +214,8 @@ func TestSuggestionDashboardHTMLIntegratesRelatedDashboards(t *testing.T) {
 	for _, want := range []string{
 		"Integrated Signals",
 		"Dashboard links",
-		"/verify-dashboard-html",
-		"/evidence-dashboard-html",
+		"/verify dashboard --html",
+		"/evidence dashboard --html",
 		"/analyze-dashboard",
 		"status=shown",
 		"Evidence refs",

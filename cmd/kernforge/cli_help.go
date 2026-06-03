@@ -6,7 +6,21 @@ func kernforgeCLIHelpRequest(args []string) (bool, string) {
 	if len(args) == 0 {
 		return false, ""
 	}
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			continue
+		}
+		if kernforgeFlagConsumesHelpValue(arg) {
+			if !strings.Contains(arg, "=") {
+				if i+1 < len(args) && strings.HasPrefix(strings.TrimSpace(args[i+1]), "/") {
+					i++
+					continue
+				}
+			} else {
+				continue
+			}
+		}
 		if isKernforgeHelpFlag(arg) {
 			return true, inferKernforgeHelpTopic(args)
 		}

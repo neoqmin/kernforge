@@ -768,10 +768,10 @@ pre { white-space: pre-wrap; background: #111113; border: 1px solid #3f3f46; bor
 
 func renderSuggestionSignalCardsHTML(snapshot SituationSnapshot) string {
 	cards := []string{
-		suggestionSignalCardHTML("Verification", len(snapshot.MissingVerification), "/verify-dashboard-html", snapshot.MissingVerification),
+		suggestionSignalCardHTML("Verification", len(snapshot.MissingVerification), "/verify dashboard --html", snapshot.MissingVerification),
 		suggestionSignalCardHTML("Analysis docs", len(snapshot.StaleDocs), "/analyze-dashboard", snapshot.StaleDocs),
-		suggestionSignalCardHTML("Evidence", len(snapshot.MissingEvidence), "/evidence-dashboard-html", snapshot.MissingEvidence),
-		suggestionSignalCardHTML("Changed paths", len(snapshot.ChangedPaths), "/checkpoint-diff", snapshot.ChangedPaths),
+		suggestionSignalCardHTML("Evidence", len(snapshot.MissingEvidence), "/evidence dashboard --html", snapshot.MissingEvidence),
+		suggestionSignalCardHTML("Changed paths", len(snapshot.ChangedPaths), "/checkpoint diff", snapshot.ChangedPaths),
 	}
 	return strings.Join(cards, "\n")
 }
@@ -844,15 +844,15 @@ func renderSuggestionEvidenceRefsHTML(item Suggestion) string {
 func suggestionDashboardLinks(item Suggestion) []string {
 	switch strings.TrimSpace(item.Type) {
 	case "run_verification", "inspect_failure":
-		return []string{"/verify-dashboard-html", "/evidence-dashboard-html"}
+		return []string{"/verify dashboard --html", "/evidence dashboard --html"}
 	case "refresh_analysis":
 		return []string{"/analyze-dashboard", "/docs-refresh"}
 	case "evidence_capture":
-		return []string{"/evidence-dashboard-html", "/evidence"}
+		return []string{"/evidence dashboard --html", "/evidence"}
 	case "fuzz_next_step":
-		return []string{"/fuzz-campaign status", "/evidence-dashboard-html"}
+		return []string{"/fuzz-campaign status", "/evidence dashboard --html"}
 	case "checkpoint_or_worktree":
-		return []string{"/checkpoints", "/checkpoint-diff"}
+		return []string{"/checkpoints", "/checkpoint diff"}
 	case "retry_or_switch_model":
 		return []string{"/provider status", "/model"}
 	case "continue_workflow", "cleanup_or_close_feature":

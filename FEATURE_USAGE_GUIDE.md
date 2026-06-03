@@ -31,7 +31,7 @@ The best current loop looks like this:
 6. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning; when a seed handoff is useful, Kernforge prints `/fuzz-campaign run` as the next step.
 7. Use `/review selection`, `/edit-selection`, `/review plan`, or `/new-feature` to drive the work.
 8. Run `/verify` to execute the verification plan.
-9. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
+9. Use `/evidence ...` and `/memory ...` to inspect both recent signals and longer-lived context.
 10. Follow the printed handoff blocks and `/continuity` packet after analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, and task-owner actions instead of memorizing the command order.
 11. Let hooks act as the final policy layer before push or PR.
 
@@ -136,11 +136,11 @@ Useful commands:
 - `/suggest accept <id>`
 - `/suggest dismiss <id>`
 - `/suggest mode <observe|suggest|confirm>`
-- `/suggest-dashboard-html`
+- `/suggest dashboard --html`
 
 Current behavior:
-1. `/suggest-dashboard-html` renders integrated signals and suggested next actions together.
-2. Suggestion cards include related command chips, evidence refs, and dashboard links such as `/verify-dashboard-html`, `/evidence-dashboard-html`, and `/analyze-dashboard`.
+1. `/suggest dashboard --html` renders integrated signals and suggested next actions together.
+2. Suggestion cards include related command chips, evidence refs, and dashboard links such as `/verify dashboard --html`, `/evidence dashboard --html`, and `/analyze-dashboard`.
 3. Cards include `/suggest accept <id>` and `/suggest dismiss <id>` chips so repeated suggestions can be managed.
 4. `/suggest` candidates are synchronized into `TaskGraph` as `suggest:<id>` nodes with ready/in_progress/completed/canceled states.
 5. In `/suggest mode confirm`, accepting a suggestion only runs safe commands such as `/verify`, dashboards, `/docs-refresh`, `/automation add`, and `/review pr`.
@@ -154,7 +154,7 @@ Purpose:
 3. Surface due or failed automation together with open task graph nodes and recent runtime events.
 
 Useful commands:
-- `/session-dashboard-html`
+- `/session dashboard --html`
 - `/events tail 20`
 - `/events export`
 
@@ -572,8 +572,8 @@ Useful commands:
 - `/hook-reload`
 - `/init hooks`
 - `/override`
-- `/override-add <rule-id> <hours> <reason>`
-- `/override-clear <override-id|rule-id|all>`
+- `/override add <rule-id> <hours> <reason>`
+- `/override clear <override-id|rule-id|all>`
 
 Current actions:
 - `warn`
@@ -594,7 +594,7 @@ Recommended operating model:
 2. Add workspace-specific rules in `.kernforge/hooks.json`.
 3. Begin with `warn` and `ask`.
 4. Promote only repeat incident classes to `deny`.
-5. Use `/override-add` only with an expiration and a reason.
+5. Use `/override add` only with an expiration and a reason.
 
 ### 2.2 Security-Aware Verification
 
@@ -615,14 +615,14 @@ Useful commands:
 - `/verify`
 - `/verify --full`
 - `/verify src/foo.cpp,driver/guard.cpp`
-- `/verify-dashboard`
-- `/verify-dashboard-html`
+- `/verify dashboard`
+- `/verify dashboard --html`
 - `/set-auto-verify [on|off]`
-- `/detect-verification-tools`
-- `/set-msbuild-path <path>`
-- `/set-cmake-path <path>`
-- `/set-ctest-path <path>`
-- `/set-ninja-path <path>`
+- `/verify tools detect`
+- `/verify tools set msbuild <path>`
+- `/verify tools set cmake <path>`
+- `/verify tools set ctest <path>`
+- `/verify tools set ninja <path>`
 
 Best used when:
 1. Generic `go test`, `msbuild`, or `ctest` is not enough.
@@ -632,7 +632,7 @@ Best used when:
 Operational notes:
 1. `auto_verify` is now the master switch for edit-triggered verification.
 2. When a Windows verification tool such as `msbuild`, `cmake`, `ctest`, or `ninja` is missing, Kernforge first tries to auto-detect and save a usable path for the workspace, then falls back to prompting if detection still fails.
-3. Use quotes for paths that contain spaces, for example `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
+3. Use quotes for paths that contain spaces, for example `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
 4. Model request timeout is configurable through `request_timeout_seconds`, while `max_request_retries` and `request_retry_delay_ms` control retries for timed-out or transient provider failures.
 5. For long-running local validation, prefer `run_shell_background` plus `check_shell_job` so the agent can reuse one expensive build or test job across multiple turns.
 6. When a setup, formatter, or generator command is genuinely safer than a manual patch, the agent can use `run_shell` with scoped workspace writes by declaring `allow_workspace_writes=true` and a narrow `write_paths` list.
@@ -647,10 +647,10 @@ Purpose:
 
 Useful commands:
 - `/evidence`
-- `/evidence-search <query>`
-- `/evidence-show <id>`
-- `/evidence-dashboard [query]`
-- `/evidence-dashboard-html [query]`
+- `/evidence search <query>`
+- `/evidence show <id>`
+- `/evidence dashboard [query]`
+- `/evidence dashboard --html [query]`
 
 Common evidence kinds:
 1. `verification_category`
@@ -671,11 +671,11 @@ Purpose:
 3. Support long-running investigations and repeated regression classes.
 
 Useful commands:
-- `/mem`
-- `/mem-search <query>`
-- `/mem-show <id>`
-- `/mem-dashboard [query]`
-- `/mem-dashboard-html [query]`
+- `/memory recent`
+- `/memory search <query>`
+- `/memory show <id>`
+- `/memory dashboard [query]`
+- `/memory dashboard --html [query]`
 
 Strength:
 1. It stores more than text. It also stores verification categories, tags, artifacts, failures, severities, signals, and risk.
@@ -899,8 +899,8 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
-5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+5. Saved ids for `/resume`, `/evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
 Prompt budget behavior that now matters:
@@ -933,8 +933,8 @@ Recommended flow:
 7. `/review selection integrity risk paths and verifier interactions`
 8. `/edit-selection harden registration and signing assumptions`
 9. `/verify`
-10. `/evidence-dashboard category:driver`
-11. `/mem-search category:driver signal:signing`
+10. `/evidence dashboard category:driver`
+11. `/memory search category:driver signal:signing`
 12. `/investigate stop hardened signing path reviewed`
 
 What Kernforge adds here:
@@ -961,9 +961,9 @@ Recommended flow:
 7. `/open telemetry/register_provider.cpp`
 8. `/edit-selection align provider registration and fallback visibility`
 9. `/verify`
-10. `/evidence-search category:telemetry outcome:failed`
+10. `/evidence search category:telemetry outcome:failed`
 11. `/simulate forensic-blind-spot MyProvider`
-12. `/mem-search category:telemetry signal:provider`
+12. `/memory search category:telemetry signal:provider`
 13. `/investigate stop provider contract and visibility reviewed`
 
 Why this works well:
@@ -984,8 +984,8 @@ Recommended flow:
 3. `/review selection false positives, stealth coverage, and performance ceilings`
 4. `/edit-selection reduce false positives without weakening evasion coverage`
 5. `/verify`
-6. `/evidence-dashboard category:memory-scan`
-7. `/mem-search category:memory-scan risk:>=70`
+6. `/evidence dashboard category:memory-scan`
+7. `/memory search category:memory-scan risk:>=70`
 
 Why this works well:
 1. Scanner work is usually about coverage and evasion, not just correctness.
@@ -1005,7 +1005,7 @@ Recommended flow:
 4. Let the reviewer critique the plan.
 5. Execute the approved plan.
 6. `/verify`
-7. `/evidence-dashboard`
+7. `/evidence dashboard`
 
 Current strength:
 1. Simulation findings can shape the planning prompt.
@@ -1154,15 +1154,15 @@ Good use cases:
 2. When recent investigation or simulation findings should influence validation.
 3. When you want security-aware review steps in addition to build or test steps.
 
-### 4.7 `/evidence-search` And `/evidence-dashboard`
+### 4.7 `/evidence search` And `/evidence dashboard`
 
 Useful queries:
 
 ```text
-/evidence-search category:driver outcome:failed
-/evidence-search kind:simulation_finding severity:critical
-/evidence-search signal:tamper risk:>=60
-/evidence-dashboard category:telemetry
+/evidence search category:driver outcome:failed
+/evidence search kind:simulation_finding severity:critical
+/evidence search signal:tamper risk:>=60
+/evidence dashboard category:telemetry
 ```
 
 Good use cases:
@@ -1170,17 +1170,17 @@ Good use cases:
 2. When you want only recent signing, provider, or scanner-related failures.
 3. When you want to see active overrides and recent high-risk state together.
 
-### 4.8 `/mem-search`
+### 4.8 `/memory search`
 
 Persistent memory is also injected automatically before the model sees a new turn. Kernforge now includes a small `Workspace continuity` section with recent high-value records from the same workspace, then adds `Query matches` when the current prompt has file mentions, ASCII search terms, or structured filters. When continuity memory is injected, a visible `memory` activity line lists the reused memory ids and compact summaries. This helps a fresh session remember recently touched files, verification outcomes, completed steps, and failed attempts without rereading the same project docs first.
 
 Useful queries:
 
 ```text
-/mem-search category:driver signal:signing
-/mem-search category:telemetry tag:provider
-/mem-search severity:critical risk:>=80
-/mem-search artifact:guard.sys
+/memory search category:driver signal:signing
+/memory search category:telemetry tag:provider
+/memory search severity:critical risk:>=80
+/memory search artifact:guard.sys
 ```
 
 Good use cases:
@@ -1199,13 +1199,13 @@ Inspect:
 Create an exception:
 
 ```text
-/override-add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix after manual verification
+/override add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix after manual verification
 ```
 
 Clear:
 
 ```text
-/override-clear all
+/override clear all
 ```
 
 Good use cases:
@@ -1265,19 +1265,19 @@ Operational notes:
 
 ## 5. When To Use Each Dashboard
 
-### 5.1 `/verify-dashboard`
+### 5.1 `/verify dashboard`
 
 Best when:
 1. You want recent verification trends.
 2. You want to see which checks fail most often.
 
-### 5.2 `/evidence-dashboard`
+### 5.2 `/evidence dashboard`
 
 Best when:
 1. You want the current workspace risk picture.
 2. You want recent failed or high-risk signals plus overrides in one view.
 
-### 5.3 `/mem-dashboard`
+### 5.3 `/memory dashboard`
 
 Best when:
 1. You want long-term context, trust tiers, and verification artifact patterns.
@@ -1304,7 +1304,7 @@ Recommended:
 2. Run `driver-visibility` investigation before risky changes.
 3. Run `tamper-surface` simulation before review or edit.
 4. Run `/verify`.
-5. Inspect `/evidence-dashboard category:driver`.
+5. Inspect `/evidence dashboard category:driver`.
 6. Promote only repeated high-risk failures to `deny`.
 
 ### 6.2 Telemetry Team
@@ -1314,8 +1314,8 @@ Recommended:
 2. Run `stealth-surface` after provider changes.
 3. Run `forensic-blind-spot` when incident traceability matters.
 4. Run `/verify`.
-5. Inspect `/evidence-search category:telemetry outcome:failed`.
-6. Use `/mem-search category:telemetry tag:provider` for long-lived context.
+5. Inspect `/evidence search category:telemetry outcome:failed`.
+6. Use `/memory search category:telemetry tag:provider` for long-lived context.
 
 ### 6.3 Anti-Cheat Or Memory-Scan Team
 
@@ -1350,7 +1350,7 @@ Recommended progression:
 /review selection integrity risk paths
 /edit-selection harden the selected integrity checks
 /verify
-/evidence-dashboard category:driver
+/evidence dashboard category:driver
 ```
 
 ### Scenario B: Telemetry Provider Visibility Drift
@@ -1362,7 +1362,7 @@ Recommended progression:
 /open telemetry/provider.man
 /review selection schema and visibility drift
 /verify
-/evidence-search category:telemetry outcome:failed
+/evidence search category:telemetry outcome:failed
 ```
 
 ### Scenario C: Plan Review Before A Large Change
@@ -1372,7 +1372,7 @@ Recommended progression:
 /simulate forensic-blind-spot guard.sys
 /review plan harden driver registration and preserve telemetry audit artifacts
 /verify
-/simulate-dashboard
+/simulate dashboard
 ```
 
 ### Scenario D: Source-level fuzzing for input-facing path triage
@@ -1417,8 +1417,8 @@ That means the strongest current loop is:
 5. `/review plan`
 6. `/new-feature`
 7. `/verify`
-8. `/evidence-dashboard`
-9. `/mem-search`
+8. `/evidence dashboard`
+9. `/memory search`
 10. Push or PR under hook policy
 
 That loop is the clearest current Kernforge differentiator.

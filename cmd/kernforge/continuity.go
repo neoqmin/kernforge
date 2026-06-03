@@ -375,7 +375,7 @@ func continuityRecoveryActions(session *Session, packet ContinuityPacket) []stri
 func continuityNextCommands(packet ContinuityPacket) []string {
 	commands := []string{
 		"/status",
-		"/session-dashboard-html",
+		"/session dashboard --html",
 	}
 	if len(packet.Worktrees) > 0 {
 		commands = append(commands, "/worktree list")

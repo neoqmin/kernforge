@@ -80,7 +80,7 @@ func investigationHandoffAfterSnapshot(record InvestigationRecord, snapshot Inve
 	title := "Review the captured findings, then run a risk simulation or evidence dashboard."
 	commands := []commandHandoffCommand{
 		{Label: "Explore", Command: "/investigate dashboard"},
-		{Label: "Evidence", Command: "/evidence-dashboard"},
+		{Label: "Evidence", Command: "/evidence dashboard"},
 	}
 	if len(snapshot.Findings) > 0 {
 		commands = append([]commandHandoffCommand{{Label: "Next", Command: "/simulate " + simulationProfileForInvestigation(record.Preset)}}, commands...)
@@ -96,7 +96,7 @@ func investigationHandoffAfterSnapshot(record InvestigationRecord, snapshot Inve
 
 func investigationHandoffAfterStop(record InvestigationRecord) string {
 	commands := []commandHandoffCommand{
-		{Label: "Evidence", Command: "/evidence-dashboard"},
+		{Label: "Evidence", Command: "/evidence dashboard"},
 	}
 	if latest := latestInvestigationSnapshot(record); latest != nil && len(latest.Findings) > 0 {
 		commands = append([]commandHandoffCommand{
@@ -133,8 +133,8 @@ func simulationProfileForInvestigation(preset string) string {
 
 func simulationHandoff(result SimulationResult) string {
 	commands := []commandHandoffCommand{
-		{Label: "Explore", Command: "/simulate-dashboard"},
-		{Label: "Evidence", Command: "/evidence-dashboard"},
+		{Label: "Explore", Command: "/simulate dashboard"},
+		{Label: "Evidence", Command: "/evidence dashboard"},
 	}
 	if len(result.Findings) > 0 {
 		commands = append([]commandHandoffCommand{{Label: "Verify", Command: "/verify"}}, commands...)
@@ -167,13 +167,13 @@ func verificationHandoff(report VerificationReport, activeFeature FeatureWorkflo
 			},
 			Commands: []commandHandoffCommand{
 				{Label: "Retry", Command: "/verify"},
-				{Label: "Inspect", Command: "/verify-dashboard"},
-				{Label: "Evidence", Command: "/evidence-dashboard"},
+				{Label: "Inspect", Command: "/verify dashboard"},
+				{Label: "Evidence", Command: "/evidence dashboard"},
 			},
 		})
 	}
 	commands := []commandHandoffCommand{
-		{Label: "Inspect", Command: "/verify-dashboard"},
+		{Label: "Inspect", Command: "/verify dashboard"},
 		{Label: "Checkpoint", Command: "/checkpoint verified-state"},
 	}
 	if hasActiveFeature && strings.EqualFold(activeFeature.Status, featureStatusImplemented) {
@@ -236,7 +236,7 @@ func evidenceHandoff(records []EvidenceRecord) string {
 		return ""
 	}
 	commands := []commandHandoffCommand{
-		{Label: "Explore", Command: "/evidence-dashboard"},
+		{Label: "Explore", Command: "/evidence dashboard"},
 	}
 	if evidenceNeedsVerification(top) {
 		commands = append([]commandHandoffCommand{{Label: "Verify", Command: "/verify"}}, commands...)
@@ -295,7 +295,7 @@ func evidenceSourceDashboardCommand(record EvidenceRecord) string {
 	case strings.Contains(kind, "fuzz") || strings.Contains(signal, "fuzz"):
 		return "/fuzz-campaign"
 	case strings.Contains(kind, "simulation") || strings.Contains(signal, "simulation"):
-		return "/simulate-dashboard"
+		return "/simulate dashboard"
 	case strings.Contains(kind, "investigation") || strings.Contains(signal, "investigation"):
 		return "/investigate dashboard"
 	case strings.Contains(kind, "analysis"):
@@ -330,7 +330,7 @@ func featureFuzzHandoff(feature FeatureWorkflow, campaign FuzzCampaign) string {
 			},
 			Commands: []commandHandoffCommand{
 				{Label: "Verify", Command: "/verify"},
-				{Label: "Evidence", Command: "/evidence-search kind:fuzz_native_result"},
+				{Label: "Evidence", Command: "/evidence search kind:fuzz_native_result"},
 				{Label: "Campaign", Command: "/fuzz-campaign run"},
 			},
 		})
@@ -353,13 +353,13 @@ func memoryHandoff(records []PersistentMemoryRecord) string {
 		return ""
 	}
 	commands := []commandHandoffCommand{
-		{Label: "Explore", Command: "/mem-dashboard"},
+		{Label: "Explore", Command: "/memory dashboard"},
 	}
 	if strings.TrimSpace(top.ID) != "" && top.Trust == PersistentMemoryTentative {
-		commands = append([]commandHandoffCommand{{Label: "Confirm", Command: "/mem-confirm " + top.ID}}, commands...)
+		commands = append([]commandHandoffCommand{{Label: "Confirm", Command: "/memory confirm " + top.ID}}, commands...)
 	}
 	if strings.TrimSpace(top.ID) != "" && top.Importance != PersistentMemoryHigh && memoryShouldPromote(top) {
-		commands = append(commands, commandHandoffCommand{Label: "Promote", Command: "/mem-promote " + top.ID})
+		commands = append(commands, commandHandoffCommand{Label: "Promote", Command: "/memory promote " + top.ID})
 	}
 	if len(top.VerificationFailures) > 0 || top.VerificationMaxRisk >= 50 {
 		commands = append([]commandHandoffCommand{{Label: "Verify", Command: "/verify"}}, commands...)
@@ -422,7 +422,7 @@ func checkpointHandoffAfterCreate(meta CheckpointMetadata) string {
 			fmt.Sprintf("Checkpoint: %s files=%d", meta.ID, meta.FileCount),
 		},
 		Commands: []commandHandoffCommand{
-			{Label: "Inspect", Command: "/checkpoint-diff latest"},
+			{Label: "Inspect", Command: "/checkpoint diff latest"},
 			{Label: "List", Command: "/checkpoints"},
 		},
 	})
@@ -439,7 +439,7 @@ func checkpointsHandoff(items []CheckpointMetadata) string {
 			fmt.Sprintf("Latest: %s", latest.ID),
 		},
 		Commands: []commandHandoffCommand{
-			{Label: "Compare", Command: "/checkpoint-diff " + latest.ID},
+			{Label: "Compare", Command: "/checkpoint diff " + latest.ID},
 			{Label: "Verify", Command: "/verify"},
 		},
 	})

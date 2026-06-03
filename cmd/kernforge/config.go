@@ -3221,8 +3221,8 @@ General:
 /hook-reload           Reload hook configuration only
 /hooks                 Show loaded hook rules and warnings
 /override              Show active hook overrides for this workspace
-/override-add ...      Create a temporary hook override with a reason
-/override-clear ...    Remove one override, all overrides, or all for a rule
+/override add ...      Create a temporary hook override with a reason
+/override clear ...    Remove one override, all overrides, or all for a rule
 /status                Show current provider, model, session, and memory info
 /version               Show the current application version
 
@@ -3236,8 +3236,8 @@ Conversation And Sessions:
 /sessions [search <query>] List recent sessions or search saved session content
 /handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
 /suggest [status]      Show proactive situation judgment and suggested next actions
-/suggest-dashboard-html Render proactive suggestions as an HTML dashboard
-/session-dashboard-html Generate and open a session thread, task graph, automation, and artifact dashboard
+/suggest dashboard --html Render proactive suggestions as an HTML dashboard
+/session dashboard --html Generate and open a session thread, task graph, automation, and artifact dashboard
 /events [tail|export] Tail or export session conversation events as JSONL for local clients
 /continuity [note]     Generate a long-task resume/recovery packet with worktrees, jobs, failures, and next commands
 /completion-audit [note] Generate a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence
@@ -3279,23 +3279,17 @@ Provider And Models:
 
 Verification And Checkpoints:
 /checkpoint [note]     Create a workspace checkpoint snapshot and suggest diff/list follow-up
-/checkpoint-auto [on|off] Show or change automatic checkpoint creation before edits
-/detect-verification-tools Detect and save workspace verification tool paths
-/set-msbuild-path <path> Set the MSBuild executable path for workspace verification
-/clear-msbuild-path     Clear the workspace MSBuild path override
-/set-cmake-path <path> Set the CMake executable path for workspace verification
-/clear-cmake-path       Clear the workspace CMake path override
-/set-ctest-path <path> Set the CTest executable path for workspace verification
-/clear-ctest-path       Clear the workspace CTest path override
-/set-ninja-path <path> Set the Ninja executable path for workspace verification
-/clear-ninja-path       Clear the workspace Ninja path override
+/checkpoint auto [on|off] Show or change automatic checkpoint creation before edits
+/checkpoint diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
+/verify tools detect Detect and save workspace verification tool paths
+/verify tools set <msbuild|cmake|ctest|ninja> <path> Set a verification tool path override
+/verify tools clear <msbuild|cmake|ctest|ninja> Clear a verification tool path override
 /set-auto-verify [on|off] Show or change automatic verification after edits
-- Quote paths that contain spaces. Example: /set-msbuild-path "C:\Program Files\...\MSBuild.exe"
-/checkpoint-diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
+- Quote paths that contain spaces. Example: /verify tools set msbuild "C:\Program Files\...\MSBuild.exe"
 /checkpoints           List checkpoints for the current workspace
 /investigate [subcommand] Manage live investigation sessions and guide the next snapshot, simulation, or evidence step
-/investigate-dashboard  Show an investigation dashboard for this workspace
-/investigate-dashboard-html Generate and open an HTML investigation dashboard
+/investigate dashboard Show an investigation dashboard for this workspace
+/investigate dashboard --html Generate and open an HTML investigation dashboard
 /simulate [profile]   Run risk-oriented simulation profiles and guide verification or evidence follow-up
 /fuzz-func <name> [--file <path>|@<path>] [--source-scan off|focused|full] Auto-plan directed function fuzzing for one function, reuse or run source-scan context, recover build settings when possible, and ask before heuristic execution
 /fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
@@ -3309,31 +3303,27 @@ Verification And Checkpoints:
 /create-driver-poc <driver-name> --type registryfilter Generate a registry callback filter POC
 /create-driver-poc <driver-name> --type wfpcallout Generate a WFP outbound callout POC
 /find-root-cause <problem> Analyze a reported symptom with 1-8 route-limited worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
-/simulate-dashboard    Show a simulation dashboard for this workspace
-/simulate-dashboard-html Generate and open an HTML simulation dashboard
+/root-cause-patterns [list|match|github-search|normalize|validate] Inspect and validate root-cause pattern packs
+/simulate dashboard    Show a simulation dashboard for this workspace
+/simulate dashboard --html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
 /verify [path,...|--full] Run adaptive or full verification and suggest repair, dashboard, checkpoint, or feature workflow follow-up
-/verify-dashboard [all] Show recent verification history and failure trends
-/verify-dashboard-html [all] Generate and open an HTML verification dashboard report
+/verify dashboard [--html] [all] Show recent verification history and optionally generate an HTML report
 
 Memory:
 /evidence              Show recent evidence records and suggest verification/dashboard/source follow-up
-/evidence-search <query> Search evidence records with optional filters and follow-up guidance
-/evidence-show <id>    Show one evidence record and suggest the next useful action
-/evidence-dashboard [query] Show an evidence dashboard with optional filters
-/evidence-dashboard-html [query] Generate and open an HTML evidence dashboard
-/mem                   Show recent persistent memory entries and suggest confirm/promote/verify follow-up
-/mem-confirm <id>      Mark a memory as confirmed
-/mem-dashboard [query] Show a persistent memory dashboard with optional filters
-/mem-dashboard-html [query] Generate and open an HTML persistent memory dashboard
-/mem-demote <id>       Lower a memory's importance tier
-/mem-promote <id>      Raise a memory's importance tier
-/mem-prune [all]       Prune persistent memory using the current retention policy
-/mem-search <query>    Search persistent memory across past sessions
-/mem-show <id>         Show a detailed persistent memory record by citation id
-/mem-stats             Show persistent memory storage stats
-/mem-tentative <id>    Mark a memory as tentative
-/memory                Show loaded memory files
+/evidence search <query> Search evidence records with optional filters and follow-up guidance
+/evidence show <id>    Show one evidence record and suggest the next useful action
+/evidence dashboard [--html] [query] Show an evidence dashboard, optionally as HTML
+/memory loaded         Show loaded memory files
+/memory recent         Show recent persistent memory entries and suggest confirm/promote/verify follow-up
+/memory search <query> Search persistent memory across past sessions
+/memory show <id>      Show a detailed persistent memory record by citation id
+/memory promote|demote <id> Raise or lower a memory's importance tier
+/memory confirm|tentative <id> Mark a memory as confirmed or tentative
+/memory dashboard [--html] [query] Show a persistent memory dashboard, optionally as HTML
+/memory prune [all]    Prune persistent memory using the current retention policy
+/memory stats          Show persistent memory storage stats
 
 Selection And Review:
 /clear-selection       Clear the current selected code range
@@ -3405,10 +3395,10 @@ func HelpDetail(topic string) (string, bool) {
 - suggest: append one concise next step when it is useful.
 - confirm: keep suggestions explicit and confirmation-oriented for risky or costly work.
 
-/suggest-dashboard-html
+/suggest dashboard --html
 - Render the current situation and ranked suggestions as a local HTML dashboard.
 
-/session-dashboard-html
+/session dashboard --html
 - Generate .kernforge/session_dashboard/latest.html with session metadata, task graph status, automation due/failed state, recent thread events, changed files, background jobs, and artifact refs.
 - In interactive mode, Kernforge tries to open the generated dashboard automatically.
 
@@ -3629,12 +3619,12 @@ General commands cover high-level runtime inspection and app control.
 /override
 - Show active hook overrides for the current workspace.
 
-/override-add <rule-id> <hours> <reason>
+/override add <rule-id> <hours> <reason>
 - Create a temporary hook override for one rule in the current workspace.
 - Example:
-  /override-add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix with manual verification completed
+  /override add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix with manual verification completed
 
-/override-clear <override-id|rule-id|all>
+/override clear <override-id|rule-id|all>
 - Remove one hook override by override id, remove all overrides for a rule, or clear all overrides in the current workspace.
 
 /status
@@ -3665,7 +3655,7 @@ Conversation and session commands manage chat history and saved sessions.
 /session
 - Show the current session id and save location.
 
-/session-dashboard-html
+/session dashboard --html
 - Generate and open .kernforge/session_dashboard/latest.html for the current session thread, task graph, automations, and artifact refs.
 
 /continuity [note]
@@ -3836,10 +3826,10 @@ Verification and checkpoint commands help you validate changes and recover safel
   /verify src/foo.cpp,src/bar.cpp
   /verify @Common/PEreloc.cpp --full
 
-/verify-dashboard [all]
+/verify dashboard [all]
 - Show recent verification history and failure trends in the terminal.
 
-/verify-dashboard-html [all]
+/verify dashboard --html [all]
 - Generate an HTML verification dashboard and try to open it.
 
 /fuzz-func <name> [--file <path>|@<path>] [--source-scan off|focused|full]
@@ -3910,52 +3900,52 @@ Verification and checkpoint commands help you validate changes and recover safel
 - Internal expert actions still exist for tests and recovery, but the default UX is intent-driven automation.
 - Use this before moving source-only /fuzz-func findings into crash, coverage, and evidence lifecycle work.
 
-/investigate [start|snapshot|note|stop|show|list|dashboard|dashboard-html]
+/investigate [start|snapshot|note|stop|show|list|dashboard [--html]]
 - Live investigation commands now print an Investigation handoff after start, snapshot, and stop.
-- The handoff points to /investigate snapshot, /simulate <profile>, /verify, or /evidence-dashboard depending on the captured state.
+- The handoff points to /investigate snapshot, /simulate <profile>, /verify, or /evidence dashboard depending on the captured state.
 
 /simulate <profile> [target]
 - Simulation runs and show output now print a Simulation handoff.
-- The handoff points to /verify when findings exist, plus /simulate-dashboard and /evidence-dashboard for review.
+- The handoff points to /verify when findings exist, plus /simulate dashboard and /evidence dashboard for review.
 
 /verify [path,...|--full]
 - Verification output now prints a Verification handoff.
-- Failed runs point back to /verify plus /verify-dashboard and /evidence-dashboard.
+- Failed runs point back to /verify plus /verify dashboard and /evidence dashboard.
 - Passing runs point to /checkpoint verified-state, and to /new-feature status or /new-feature close depending on tracked feature state.
 
 /checkpoint [note]
 - Create a workspace checkpoint snapshot. In interactive mode, Kernforge prompts for an optional note when none is provided.
-- After creation, Kernforge suggests /checkpoint-diff latest and /checkpoints.
+- After creation, Kernforge suggests /checkpoint diff latest and /checkpoints.
 
-/checkpoint-auto [on|off]
+/checkpoint auto [on|off]
 - Show or change automatic checkpoint creation before edits.
 
-/detect-verification-tools
+/verify tools detect
 - Detect MSBuild, CMake, CTest, and Ninja executable paths on Windows and save any newly found workspace overrides.
 
-/set-msbuild-path <path>
-/set-cmake-path <path>
-/set-ctest-path <path>
-/set-ninja-path <path>
+/verify tools set msbuild <path>
+/verify tools set cmake <path>
+/verify tools set ctest <path>
+/verify tools set ninja <path>
 - Set a workspace-specific executable path used by automatic verification when PATH is incomplete.
 - Without a path, show the current value and any detected suggestion.
 - Paths containing spaces are supported.
 - Quote Windows paths with spaces to avoid ambiguity.
 - Examples:
-  /set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
-  /set-cmake-path "C:\Program Files\CMake\bin\cmake.exe"
+  /verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+  /verify tools set cmake "C:\Program Files\CMake\bin\cmake.exe"
 
-/clear-msbuild-path
-/clear-cmake-path
-/clear-ctest-path
-/clear-ninja-path
+/verify tools clear msbuild
+/verify tools clear cmake
+/verify tools clear ctest
+/verify tools clear ninja
 - Remove the corresponding workspace-specific executable override.
 
 /set-auto-verify [on|off]
 - Show or change automatic verification after edits.
 - This is the master switch for edit-triggered verification.
 
-/checkpoint-diff [target] [-- path[,path2]]
+/checkpoint diff [target] [-- path[,path2]]
 - Compare the current workspace to a checkpoint, optionally limited to specific paths.
 
 /checkpoints
@@ -3993,7 +3983,7 @@ Investigation commands capture live Windows state and store the result as invest
 /investigate dashboard
 - Show a dashboard-style summary of recent investigation sessions.
 
-/investigate dashboard-html
+/investigate dashboard --html
 - Generate an HTML investigation dashboard and try to open it.
 `), true
 	case "simulate", "simulation":
@@ -4016,7 +4006,7 @@ Simulation commands evaluate recent evidence and investigation state through lig
 /simulate dashboard
 - Show a dashboard-style summary of recent simulation runs.
 
-/simulate dashboard-html
+/simulate dashboard --html
 - Generate an HTML simulation dashboard and try to open it.
 `), true
 	case "memory", "mem", "mem-search", "mem-show", "mem-promote", "mem-demote", "mem-confirm", "mem-tentative", "mem-dashboard", "mem-dashboard-html", "mem-prune", "mem-stats", "evidence", "evidence-search", "evidence-show", "evidence-dashboard", "evidence-dashboard-html":
@@ -4025,9 +4015,9 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 
 /evidence
 - Show recent evidence records for the current workspace.
-- The strongest actionable record prints an Evidence handoff toward /verify, /evidence-dashboard, or the source dashboard.
+- The strongest actionable record prints an Evidence handoff toward /verify, /evidence dashboard, or the source dashboard.
 
-/evidence-search <query>
+/evidence search <query>
 - Search evidence records.
 - Filters:
   kind:<verification_category|verification_artifact|verification_failure|hook_override|investigation_session|investigation_snapshot|investigation_finding|simulation_run|simulation_finding>
@@ -4039,25 +4029,25 @@ Memory commands inspect and manage loaded memory files, persistent memory record
   risk:>=<score>
 - Search results also print the same Evidence handoff when a record needs follow-up.
 
-/evidence-show <id>
+/evidence show <id>
 - Show one evidence record in detail.
 - Failed, high-risk, simulation, investigation, or analysis evidence points to the relevant next command.
 
-/evidence-dashboard [query]
+/evidence dashboard [query]
 - Show a dashboard-style evidence summary in the terminal.
-- Accepts the same filters as /evidence-search.
+- Accepts the same filters as /evidence search.
 
-/evidence-dashboard-html [query]
+/evidence dashboard --html [query]
 - Generate an HTML evidence dashboard and try to open it.
 
-/memory
+/memory loaded
 - Show loaded memory files.
 
-/mem
+/memory recent
 - Show recent persistent memory entries relevant to this workspace.
 - Tentative, high-risk, or verification-linked records print a Memory handoff.
 
-/mem-search <query>
+/memory search <query>
 - Search persistent memory across past sessions.
 - Filters:
   importance:<low|medium|high>
@@ -4069,34 +4059,72 @@ Memory commands inspect and manage loaded memory files, persistent memory record
   severity:<low|medium|high|critical>
   signal:<name>
   risk:>=<score>
-- Search results can suggest /mem-confirm, /mem-promote, /verify, or /mem-dashboard.
+- Search results can suggest /memory confirm, /memory promote, /verify, or /memory dashboard.
 
-/mem-show <id>
+/memory show <id>
 - Show one persistent memory record in detail.
 - The detail view prints the same confirm/promote/verify guidance when applicable.
 
-/mem-promote <id>
-/mem-demote <id>
+/memory promote <id>
+/memory demote <id>
 - Raise or lower a memory record's importance tier.
 
-/mem-confirm <id>
-/mem-tentative <id>
+/memory confirm <id>
+/memory tentative <id>
 - Mark a memory record as confirmed or tentative.
 
-/mem-dashboard [query]
+/memory dashboard [query]
 - Show a dashboard-style memory summary in the terminal.
-- Accepts the same filters as /mem-search.
+- Accepts the same filters as /memory search.
 
-/mem-dashboard-html [query]
+/memory dashboard --html [query]
 - Generate an HTML dashboard and try to open it.
 
-/mem-prune [all]
+/memory prune [all]
 - Apply retention policy pruning to persistent memory.
 
-/mem-stats
+/memory stats
 - Show persistent memory storage stats.
 `), true
-	case "selection", "selections", "review", "edit-selection", "open":
+	case "review", "reviews", "review-harness", "review-pr", "review-selection", "do-plan-review":
+		return strings.TrimSpace(`
+Review commands all go through the common ReviewRun harness and write .kernforge/reviews/latest.json plus latest.md.
+
+/review change [diff-or-note]
+- Review the current workspace diff, a patch transaction, or supplied diff/code.
+
+/review plan <task-or-plan>
+- Review an implementation plan or architecture proposal before execution.
+
+/review selection [...]
+- Review the active code selection or selected files with bounded context.
+
+/review pr [--github] [--draft-comments|--post-comments] [--resolve-thread <id>] [--draft-issue|--create-issue]
+- Review pull-request context, changed files, local diff, optional GitHub metadata, and reusable findings.
+- GitHub write flags are explicit-only and are not executed from suggestion acceptance or scheduled automation.
+
+/review final [answer-or-note]
+- Review the final answer against current workspace evidence before claiming completion.
+
+/review goal [note]
+- Review the active goal iteration, required artifacts, latest verification, and remaining blockers.
+
+/review analysis [artifact-or-note]
+- Review analysis, root-cause, fuzz, or project reports for evidence gaps and stale claims.
+
+/review --mode <general-change|security-hardening|core-build|live-fix|refactor|research|ui-polish>
+- Force a review policy. security-hardening applies the stricter kernel/security/bypass/false-positive lens.
+
+/review --no-model
+- Run deterministic reviewers only and still write review artifacts.
+
+/review waive <finding-id> --reason <text>
+- Record a finding waiver with an explicit reason.
+
+Compatibility:
+- /review-pr, /review-selection, and /do-plan-review are hidden aliases. Use /review pr, /review selection, and /review plan in new docs and scripts.
+`), true
+	case "selection", "selections", "edit-selection", "open":
 		return strings.TrimSpace(`
 Selection and review commands let you work on a focused code region instead of the whole workspace.
 

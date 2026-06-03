@@ -29,7 +29,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 6. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다. seed handoff가 유용하면 Kernforge가 다음 단계로 `/fuzz-campaign run`을 보여준다.
 7. `/review selection`, `/edit-selection`, `/review plan`, `/new-feature`로 실제 작업을 진행한다.
 8. `/verify`로 verification plan을 돌린다.
-9. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
+9. `/evidence ...`와 `/memory ...`로 상태와 맥락을 다시 확인한다.
 10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, task-owner action 뒤에 출력되는 handoff block과 `/continuity` packet을 따라가면 명령 순서를 외우지 않아도 된다.
 11. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
@@ -133,11 +133,11 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/suggest accept <id>`
 - `/suggest dismiss <id>`
 - `/suggest mode <observe|suggest|confirm>`
-- `/suggest-dashboard-html`
+- `/suggest dashboard --html`
 
 현재 동작:
-1. `/suggest-dashboard-html`은 integrated signals와 suggested next actions를 함께 렌더링한다.
-2. suggestion card에는 관련 명령, evidence ref, `/verify-dashboard-html`, `/evidence-dashboard-html`, `/analyze-dashboard` 같은 dashboard link chip이 포함된다.
+1. `/suggest dashboard --html`은 integrated signals와 suggested next actions를 함께 렌더링한다.
+2. suggestion card에는 관련 명령, evidence ref, `/verify dashboard --html`, `/evidence dashboard --html`, `/analyze-dashboard` 같은 dashboard link chip이 포함된다.
 3. 각 card에는 `/suggest accept <id>`와 `/suggest dismiss <id>` chip이 있어 같은 제안을 반복 노출하지 않도록 상태를 관리할 수 있다.
 4. `/suggest` 후보는 `TaskGraph`의 `suggest:<id>` node로 동기화되어 ready/in_progress/completed/canceled 상태를 가진다.
 5. `/suggest mode confirm` 상태에서 `/suggest accept <id>`를 실행하면 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review pr` 같은 허용된 safe command만 자동 실행된다.
@@ -151,7 +151,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. due/failed automation을 open task graph node와 최근 runtime event 옆에서 같이 본다.
 
 대표 명령:
-- `/session-dashboard-html`
+- `/session dashboard --html`
 - `/events tail 20`
 - `/events export`
 
@@ -576,8 +576,8 @@ Pattern pack 운영:
 - `/hook-reload`
 - `/init hooks`
 - `/override`
-- `/override-add <rule-id> <hours> <reason>`
-- `/override-clear <override-id|rule-id|all>`
+- `/override add <rule-id> <hours> <reason>`
+- `/override clear <override-id|rule-id|all>`
 
 대표 액션:
 - `warn`
@@ -597,7 +597,7 @@ Pattern pack 운영:
 1. 처음에는 `windows-security` preset만 켠다.
 2. `warn`과 `ask` 위주로 적응한다.
 3. 반복 사고가 나는 규칙만 `deny`로 올린다.
-4. 너무 강한 규칙은 `/override-add`로 예외 흐름을 열되, reason과 expiry를 반드시 남긴다.
+4. 너무 강한 규칙은 `/override add`로 예외 흐름을 열되, reason과 expiry를 반드시 남긴다.
 
 ### 2.2 Security-Aware Verification
 
@@ -618,14 +618,14 @@ Pattern pack 운영:
 - `/verify`
 - `/verify --full`
 - `/verify src/foo.cpp,driver/guard.cpp`
-- `/verify-dashboard`
-- `/verify-dashboard-html`
+- `/verify dashboard`
+- `/verify dashboard --html`
 - `/set-auto-verify [on|off]`
-- `/detect-verification-tools`
-- `/set-msbuild-path <path>`
-- `/set-cmake-path <path>`
-- `/set-ctest-path <path>`
-- `/set-ninja-path <path>`
+- `/verify tools detect`
+- `/verify tools set msbuild <path>`
+- `/verify tools set cmake <path>`
+- `/verify tools set ctest <path>`
+- `/verify tools set ninja <path>`
 
 좋은 상황:
 1. 일반 `go test`, `msbuild`, `ctest`만으로는 부족한 작업
@@ -636,7 +636,7 @@ Pattern pack 운영:
 1. `auto_verify`는 편집 후 automatic verification 전체를 켜고 끄는 마스터 스위치다.
 2. Windows에서 `msbuild`, `cmake`, `ctest`, `ninja`가 없으면 Kernforge가 automatic verification 비활성화 또는 실행 파일 경로 저장을 제안할 수 있다.
 3. 공백이 있는 경로는 따옴표로 감싸는 편이 안전하다.
-4. 예: `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
+4. 예: `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
 5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, `max_request_retries`와 `request_retry_delay_ms`로 timeout 또는 transient provider error 재시도를 제어한다.
 6. interactive shell mode에서는 하위 directory로 깊게 들어간 뒤 `!cd ..`로 workspace 내부 상위 directory를 자유롭게 이동할 수 있다. Kernforge는 workspace 또는 active worktree 경계를 벗어나는 순간만 거부한다.
 
@@ -649,10 +649,10 @@ Pattern pack 운영:
 
 대표 명령:
 - `/evidence`
-- `/evidence-search <query>`
-- `/evidence-show <id>`
-- `/evidence-dashboard [query]`
-- `/evidence-dashboard-html [query]`
+- `/evidence search <query>`
+- `/evidence show <id>`
+- `/evidence dashboard [query]`
+- `/evidence dashboard --html [query]`
 
 현재 자주 보게 되는 evidence 종류:
 1. `verification_category`
@@ -673,11 +673,11 @@ Pattern pack 운영:
 3. 장기적 회귀나 반복 실패 패턴을 시간축으로 추적하는 기반이 된다.
 
 대표 명령:
-- `/mem`
-- `/mem-search <query>`
-- `/mem-show <id>`
-- `/mem-dashboard [query]`
-- `/mem-dashboard-html [query]`
+- `/memory recent`
+- `/memory search <query>`
+- `/memory show <id>`
+- `/memory dashboard [query]`
+- `/memory dashboard --html [query]`
 
 특징:
 1. 단순 메모가 아니라 verification category/tag/artifact/failure/severity/signal/risk를 같이 저장한다.
@@ -818,14 +818,14 @@ review/Ops 테스트 전략:
 
 목적:
 1. 구현 계획도 code, selection, PR, goal, final, analysis review와 같은 공통 review harness로 검토한다.
-2. active main model은 primary review route가 되고, `/review models cross`만 독립 second-pass route로 둔다. design/security/false-positive/test 관점은 별도 모델 role이 아니라 review lens다.
+2. active main model은 primary review route가 되고, `/model cross-review`만 독립 second-pass route로 둔다. design/security/false-positive/test 관점은 별도 모델 role이 아니라 review lens다.
 3. gate와 사용자 흐름이 허용할 때만 실행으로 이어진다.
 
 대표 명령:
 - `/review plan <task>`
-- `/review models status`
-- `/review models`
-- `/review models cross <provider> [model]`
+- `/model cross-review status`
+- `/model cross-review`
+- `/model cross-review <provider> [model]`
 - `/review waive <finding-id> --reason <text>`
 
 좋은 상황:
@@ -902,8 +902,8 @@ review/Ops 테스트 전략:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/review models cross|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
-5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
+4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+5. `/resume`, `/evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
 토큰 예산 관점에서 달라진 점:
@@ -936,8 +936,8 @@ review/Ops 테스트 전략:
 7. `/review selection integrity risk paths and verifier interactions`
 8. `/edit-selection harden registration and signing assumptions`
 9. `/verify`
-10. `/evidence-dashboard category:driver`
-11. `/mem-search category:driver signal:signing`
+10. `/evidence dashboard category:driver`
+11. `/memory search category:driver signal:signing`
 12. 필요하면 `/investigate stop hardened signing path reviewed`
 
 이 흐름에서 Kernforge가 해주는 일:
@@ -951,7 +951,7 @@ review/Ops 테스트 전략:
 - `/simulate tamper-surface guard.sys`
 - `/review selection ...`
 - `/verify`
-- `/evidence-dashboard category:driver`
+- `/evidence dashboard category:driver`
 
 ### 3.2 Telemetry provider drift 또는 XML/manifest 회귀
 
@@ -970,9 +970,9 @@ review/Ops 테스트 전략:
 7. `/open telemetry/register_provider.cpp`
 8. `/edit-selection align provider registration and fallback visibility`
 9. `/verify`
-10. `/evidence-search category:telemetry outcome:failed`
+10. `/evidence search category:telemetry outcome:failed`
 11. `/simulate forensic-blind-spot MyProvider`
-12. `/mem-search category:telemetry signal:provider`
+12. `/memory search category:telemetry signal:provider`
 13. `/investigate stop provider contract and visibility reviewed`
 
 Kernforge가 도와주는 부분:
@@ -993,8 +993,8 @@ Kernforge가 도와주는 부분:
 3. `/review selection false positives, stealth coverage, and perf ceilings`
 4. `/edit-selection reduce false positives without weakening evasion coverage`
 5. `/verify`
-6. `/evidence-dashboard category:memory-scan`
-7. `/mem-search category:memory-scan risk:>=70`
+6. `/evidence dashboard category:memory-scan`
+7. `/memory search category:memory-scan risk:>=70`
 
 왜 이 흐름이 좋은가:
 1. scanner 작업은 단순 correctness보다 coverage와 evasions가 중요하다.
@@ -1014,7 +1014,7 @@ Kernforge가 도와주는 부분:
 4. reviewer가 계획을 비판하도록 둔다.
 5. 승인된 뒤 plan 실행
 6. `/verify`
-7. `/evidence-dashboard`
+7. `/evidence dashboard`
 
 현재 장점:
 1. simulation finding이 planning prompt에 직접 주입된다.
@@ -1164,15 +1164,15 @@ Kernforge가 도와주는 부분:
 2. 최근 simulation finding이 verification에도 반영되는지 보고 싶을 때
 3. 단순 빌드/테스트보다 깊은 보안 review step이 필요한 경우
 
-### 4.7 `/evidence-search`와 `/evidence-dashboard`
+### 4.7 `/evidence search`와 `/evidence dashboard`
 
 자주 쓰는 쿼리 예:
 
 ```text
-/evidence-search category:driver outcome:failed
-/evidence-search kind:simulation_finding severity:critical
-/evidence-search signal:tamper risk:>=60
-/evidence-dashboard category:telemetry
+/evidence search category:driver outcome:failed
+/evidence search kind:simulation_finding severity:critical
+/evidence search signal:tamper risk:>=60
+/evidence dashboard category:telemetry
 ```
 
 좋은 사용 예:
@@ -1180,17 +1180,17 @@ Kernforge가 도와주는 부분:
 2. 최근 failed signing/provider finding만 보고 싶을 때
 3. override가 활성화되어 있는지 같이 보고 싶을 때
 
-### 4.8 `/mem-search`
+### 4.8 `/memory search`
 
-persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 모델로 전달되기 전에 자동으로 주입됩니다. Kernforge는 같은 workspace의 최근 high-value record를 `Workspace continuity` section으로 먼저 넣고, 현재 prompt에 파일 멘션, ASCII 검색어, 구조화 필터가 있으면 `Query matches`도 추가합니다. continuity memory가 주입되면 재사용한 memory id와 짧은 요약을 `memory` activity line으로 사용자에게도 보여줍니다. 그래서 새 세션에서도 최근 수정 파일, verification 결과, 완료 단계, 실패 시도를 다시 문서 전체를 읽기 전에 먼저 참고할 수 있습니다.
+persistent memory는 `/memory search`를 직접 실행하지 않아도 새 turn이 모델로 전달되기 전에 자동으로 주입됩니다. Kernforge는 같은 workspace의 최근 high-value record를 `Workspace continuity` section으로 먼저 넣고, 현재 prompt에 파일 멘션, ASCII 검색어, 구조화 필터가 있으면 `Query matches`도 추가합니다. continuity memory가 주입되면 재사용한 memory id와 짧은 요약을 `memory` activity line으로 사용자에게도 보여줍니다. 그래서 새 세션에서도 최근 수정 파일, verification 결과, 완료 단계, 실패 시도를 다시 문서 전체를 읽기 전에 먼저 참고할 수 있습니다.
 
 자주 쓰는 쿼리 예:
 
 ```text
-/mem-search category:driver signal:signing
-/mem-search category:telemetry tag:provider
-/mem-search severity:critical risk:>=80
-/mem-search artifact:guard.sys
+/memory search category:driver signal:signing
+/memory search category:telemetry tag:provider
+/memory search severity:critical risk:>=80
+/memory search artifact:guard.sys
 ```
 
 좋은 사용 예:
@@ -1209,13 +1209,13 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 예외 추가:
 
 ```text
-/override-add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix after manual verification
+/override add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix after manual verification
 ```
 
 해제:
 
 ```text
-/override-clear all
+/override clear all
 ```
 
 좋은 사용 예:
@@ -1275,19 +1275,19 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 
 ## 5. 대시보드는 언제 어떤 것을 보면 좋은가
 
-### 5.1 `/verify-dashboard`
+### 5.1 `/verify dashboard`
 
 추천 시점:
 1. 최근 verification 실패 경향을 보고 싶을 때
 2. 어떤 check가 자주 깨지는지 보고 싶을 때
 
-### 5.2 `/evidence-dashboard`
+### 5.2 `/evidence dashboard`
 
 추천 시점:
 1. 지금 workspace의 failed/high-risk 상태를 빠르게 보고 싶을 때
 2. override, severity, signal 분포까지 함께 보고 싶을 때
 
-### 5.3 `/mem-dashboard`
+### 5.3 `/memory dashboard`
 
 추천 시점:
 1. 장기 맥락, trust/importance, verification artifact 분포를 보고 싶을 때
@@ -1314,7 +1314,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 2. 코드 수정 전에 `driver-visibility` investigation
 3. 수정 전에 `tamper-surface` simulation
 4. `/verify`
-5. `/evidence-dashboard category:driver`
+5. `/evidence dashboard category:driver`
 6. 반복 실패만 deny로 강화
 
 ### 6.2 Telemetry 팀
@@ -1323,8 +1323,8 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 1. provider manifest 작업 전 `provider-visibility` investigation
 2. 수정 후 `stealth-surface`, 필요하면 `forensic-blind-spot`
 3. `/verify`
-4. `/evidence-search category:telemetry outcome:failed`
-5. `/mem-search category:telemetry tag:provider`
+4. `/evidence search category:telemetry outcome:failed`
+5. `/memory search category:telemetry tag:provider`
 
 ### 6.3 Anti-Cheat / Memory Scan 팀
 
@@ -1359,7 +1359,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /review selection integrity risk paths
 /edit-selection harden the selected integrity checks
 /verify
-/evidence-dashboard category:driver
+/evidence dashboard category:driver
 ```
 
 ### 시나리오 B: telemetry provider visibility drift
@@ -1371,7 +1371,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /open telemetry/provider.man
 /review selection schema and visibility drift
 /verify
-/evidence-search category:telemetry outcome:failed
+/evidence search category:telemetry outcome:failed
 ```
 
 ### 시나리오 C: 큰 변경 전에 plan-review
@@ -1381,7 +1381,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /simulate forensic-blind-spot guard.sys
 /review plan harden driver registration and preserve telemetry audit artifacts
 /verify
-/simulate-dashboard
+/simulate dashboard
 ```
 
 ### 시나리오 D: source-level fuzzing으로 input-facing path triage
@@ -1426,8 +1426,8 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 5. `/review plan`
 6. `/new-feature`
 7. `/verify`
-8. `/evidence-dashboard`
-9. `/mem-search`
+8. `/evidence dashboard`
+9. `/memory search`
 10. push/PR에서 hook policy 적용
 
 이 루프가 현재 Kernforge의 가장 큰 차별점이다.

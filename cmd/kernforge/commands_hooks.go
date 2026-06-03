@@ -82,7 +82,7 @@ func (rt *runtimeState) handleHookOverrideAddCommand(args string) error {
 	}
 	parts := strings.Fields(strings.TrimSpace(args))
 	if len(parts) < 3 {
-		return fmt.Errorf("usage: /override-add <rule-id> <hours> <reason>")
+		return fmt.Errorf("usage: /override add <rule-id> <hours> <reason>")
 	}
 	hours, err := strconv.Atoi(parts[1])
 	if err != nil || hours < 1 {
@@ -108,7 +108,7 @@ func (rt *runtimeState) handleHookOverrideClearCommand(args string) error {
 	}
 	query := strings.TrimSpace(args)
 	if query == "" {
-		return fmt.Errorf("usage: /override-clear <override-id|rule-id|all>")
+		return fmt.Errorf("usage: /override clear <override-id|rule-id|all>")
 	}
 	removed, err := rt.hookOverrides.Remove(query, rt.workspace.BaseRoot, strings.EqualFold(query, "all"))
 	if err != nil {

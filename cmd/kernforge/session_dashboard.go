@@ -354,8 +354,8 @@ func renderSessionDashboardCommandChips() string {
 		"/tasks",
 		"/automation digest",
 		"/automation run-due",
-		"/verify-dashboard-html",
-		"/suggest-dashboard-html",
+		"/verify dashboard --html",
+		"/suggest dashboard --html",
 		"/handoff",
 	}
 	chips := make([]string, 0, len(commands))

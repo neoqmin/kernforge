@@ -26,7 +26,7 @@ Kernforge is centered on `project analysis -> review -> fuzzing/root-cause inves
 | Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong when workflows are encoded through hooks, subagents, and project conventions | Strong at deciding the next practical step during implementation |
 | Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong tool loop, but evidence modeling depends on user/project setup | Strong test/command loop, but domain evidence modeling is generic |
 | Windows/security specialization | Deeply tuned for IOCTL, ETW, drivers, memory scanning, Unreal, telemetry, signing, fuzzing, and anti-cheat surfaces | Broad coding agent, not domain-specific by default | Broad coding agent, not domain-specific by default |
-| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session-dashboard-html`, suggestion-to-task graph; cloud jobs still pending | Automation often comes through hooks and external workflow integration | Mature automation and PR/task workflow direction |
+| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session dashboard --html`, suggestion-to-task graph; cloud jobs still pending | Automation often comes through hooks and external workflow integration | Mature automation and PR/task workflow direction |
 | Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More configurable ecosystem, less built-in Windows security/fuzz workbench depth | More polished general agent experience, less specialized security/fuzzing knowledge out of the box |
 
 ## Repository Layout
@@ -197,10 +197,10 @@ Its current differentiators are:
 - Structured evidence capture from verification
 - Evidence search and evidence dashboards
 - `/investigate` and `/simulate` now print handoffs into snapshots, risk simulation, `/verify`, and evidence dashboards so the user does not need to memorize the analysis loop
-- Evidence and memory views now print handoffs back into `/verify`, source dashboards, `/mem-confirm`, `/mem-promote`, or dashboard review when records need action
+- Evidence and memory views now print handoffs back into `/verify`, source dashboards, `/memory confirm`, `/memory promote`, or dashboard review when records need action
 - Checkpoints, tracked features, isolated worktrees, and task-owner assignments now give short follow-up hints for diff review, implementation, cleanup, preservation, and fuzz verification gates
 - Runtime toggle for automatic verification with `/set-auto-verify [on|off]`
-- Windows verification tool path detection and overrides with `/detect-verification-tools` and `/set-*-path`
+- Windows verification tool path detection and overrides with `/verify tools detect` and `/verify tools set|clear <tool>`
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
 - Automatic safety checkpoint creation for repeated high-risk failure patterns
 
@@ -312,7 +312,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/memory show`, `/evidence show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -514,8 +514,8 @@ Basic safe flow for driver changes:
 
 1. Edit driver-related files.
 2. Run `/verify` to build a verification plan biased toward signing, symbols, packaging, and verifier readiness.
-3. Run `/evidence-dashboard` or `/evidence-search category:driver` to inspect recent failed evidence.
-4. If needed, run `/mem-search category:driver` to pull in older session context.
+3. Run `/evidence dashboard` or `/evidence search category:driver` to inspect recent failed evidence.
+4. If needed, run `/memory search category:driver` to pull in older session context.
 5. During push or PR creation, hook policy can re-check recent evidence and respond with warnings, confirmations, blocks, or automatic checkpoints.
 
 Recommended flow with live state and simulation risk context:
@@ -527,7 +527,7 @@ Recommended flow with live state and simulation risk context:
 5. `/review selection integrity risk paths`
 6. `/edit-selection harden the selected integrity checks`
 7. `/verify`
-8. `/evidence-dashboard category:driver`
+8. `/evidence dashboard category:driver`
 
 The `driver-visibility` preset is intentionally narrow. It captures a lightweight triage snapshot of current driver visibility, verifier state, and related artifacts, not a deep driver load root-cause analysis.
 
@@ -537,8 +537,8 @@ Basic flow for telemetry regressions:
 
 1. Edit provider, manifest, or XML-related files.
 2. Run `/verify`.
-3. Run `/evidence-search category:telemetry outcome:failed` to inspect recent provider or XML failures.
-4. Run `/mem-search category:telemetry tag:provider` to recall earlier reasoning and regression context.
+3. Run `/evidence search category:telemetry outcome:failed` to inspect recent provider or XML failures.
+4. Run `/memory search category:telemetry tag:provider` to recall earlier reasoning and regression context.
 5. Before push or PR, hooks may inject extra review context or require confirmation.
 
 ### Task Ownership Profiles And Worktree Isolation Example
@@ -579,7 +579,7 @@ Recommended flow 1: let Kernforge auto-assign for ordinary feature work
 5. Kernforge will assign task owners per task-graph node, then attach editable ownership and lease paths to each node.
 6. If the secondary edit nodes have disjoint leases, an automatic editable worker can create an additional patch in its own task-owner worktree.
 7. If verification restarts for the same owner or same lease, the older background verification bundle is superseded automatically, so you do not keep following stale output.
-8. Use `/tasks`, `/specialists status`, `/worktree status`, and `/verify-dashboard` to inspect routing and verification progress.
+8. Use `/tasks`, `/specialists status`, `/worktree status`, and `/verify dashboard` to inspect routing and verification progress.
 9. When the isolated worktree is clean and no longer needed, run `/worktree cleanup`.
 
 Recommended flow 2: pin domain owners manually
@@ -630,16 +630,16 @@ Task-owner profile overlay shape:
 
 Verification:
 - `/verify`
-- `/verify-dashboard`
+- `/verify dashboard`
 
 Evidence:
 - `/evidence`
-- `/evidence-search category:driver outcome:failed`
-- `/evidence-dashboard`
+- `/evidence search category:driver outcome:failed`
+- `/evidence dashboard`
 
 Memory:
-- `/mem-search category:telemetry tag:provider`
-- `/mem-dashboard`
+- `/memory search category:telemetry tag:provider`
+- `/memory dashboard`
 
 Policy:
 - `/hooks`
@@ -1066,17 +1066,17 @@ Useful commands:
 
 ```text
 /memory
-/mem
-/mem-search <query>
-/mem-show <id>
-/mem-promote <id>
-/mem-demote <id>
-/mem-confirm <id>
-/mem-tentative <id>
-/mem-dashboard [query]
-/mem-dashboard-html [query]
-/mem-prune [all]
-/mem-stats
+/memory recent
+/memory search <query>
+/memory show <id>
+/memory promote <id>
+/memory demote <id>
+/memory confirm <id>
+/memory tentative <id>
+/memory dashboard [query]
+/memory dashboard --html [query]
+/memory prune [all]
+/memory stats
 ```
 
 ## Skills And MCP
@@ -1190,7 +1190,7 @@ Explain the structure of this repository
 /sessions
 /handoff [note]
 /handoff import <path>
-/session-dashboard-html
+/session dashboard --html
 /events [tail|export]
 /continuity [note]
 /recover [note]
@@ -1200,7 +1200,7 @@ Explain the structure of this repository
 ```
 
 - `/handoff` writes `.kernforge/handoff/latest.md/json` with changed files, open tasks, verification, recent events, artifact refs, and a continuation prompt for another agent or cloud task. `/handoff import <path>` normalizes a returned result packet and marks matching `completed_tasks` in the TaskGraph.
-- `/session-dashboard-html` writes `.kernforge/session_dashboard/latest.html` with the current thread events, task graph, automation due/failed state, changed files, background jobs, and artifact refs.
+- `/session dashboard --html` writes `.kernforge/session_dashboard/latest.html` with the current thread events, task graph, automation due/failed state, changed files, background jobs, and artifact refs.
 - `/events` tails or exports session conversation events as JSONL for local dashboards, schedulers, harnesses, and app-server style clients.
 - `/continuity` writes `.kernforge/continuity/latest.md/json` as a local resume and recovery packet; `/recover` writes `.kernforge/recovery/latest.md/json` as a narrower failure runbook; `/jobs` lets you poll or cancel persisted background shell work from the terminal.
 - `/completion-audit` writes `.kernforge/completion_audit/latest.md/json` as a local final-readiness gate for blockers, warnings, verification, tasks, jobs, and artifact evidence.
@@ -1394,11 +1394,11 @@ Useful commands:
 
 ```text
 /verify [path,...|--full]
-/verify-dashboard [all]
-/verify-dashboard-html [all]
+/verify dashboard [all]
+/verify dashboard --html [all]
 /checkpoint [note]
-/checkpoint-auto [on|off]
-/checkpoint-diff [target] [-- path[,path2]]
+/checkpoint auto [on|off]
+/checkpoint diff [target] [-- path[,path2]]
 /checkpoints
 /rollback [target]
 /init verify
@@ -1412,26 +1412,26 @@ Evidence commands:
 
 ```text
 /evidence
-/evidence-search <query>
-/evidence-show <id>
-/evidence-dashboard [query]
-/evidence-dashboard-html [query]
+/evidence search <query>
+/evidence show <id>
+/evidence dashboard [query]
+/evidence dashboard --html [query]
 ```
 
 Investigation commands:
 
 ```text
 /investigate [subcommand]
-/investigate-dashboard
-/investigate-dashboard-html
+/investigate dashboard
+/investigate dashboard --html
 ```
 
 Simulation commands:
 
 ```text
 /simulate [profile]
-/simulate-dashboard
-/simulate-dashboard-html
+/simulate dashboard
+/simulate dashboard --html
 ```
 
 Source-level fuzzing commands:
@@ -1471,8 +1471,8 @@ Hook and override commands:
 /hooks
 /hook-reload
 /override
-/override-add ...
-/override-clear ...
+/override add ...
+/override clear ...
 ```
 
 ## Project Analysis

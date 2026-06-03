@@ -82,7 +82,7 @@ func evaluateTamperSurface(target string, evidence []EvidenceRecord, investigati
 				Message:     "Provider registration weakness can allow telemetry degradation or visibility gaps.",
 				RecommendedActions: []string{
 					"/investigate start provider-visibility " + simulationValueOrDefault(target, item.Subject),
-					"/evidence-search category:telemetry outcome:failed",
+					"/evidence search category:telemetry outcome:failed",
 				},
 			})
 		}
@@ -101,7 +101,7 @@ func evaluateTamperSurface(target string, evidence []EvidenceRecord, investigati
 						Message:     "Repeated inability to observe the target suggests an unresolved tamper-related risk path.",
 						RecommendedActions: []string{
 							"/investigate snapshot",
-							"/evidence-search outcome:failed",
+							"/evidence search outcome:failed",
 						},
 					})
 				}
@@ -169,7 +169,7 @@ func evaluateStealthSurface(target string, evidence []EvidenceRecord, investigat
 				RiskScore:   44,
 				Message:     "Recent failure evidence is concentrated in one category, which may leave alternate visibility gaps weakly covered.",
 				RecommendedActions: []string{
-					"/evidence-dashboard",
+					"/evidence dashboard",
 					"/investigate list",
 				},
 			})
@@ -251,7 +251,7 @@ func evaluateForensicBlindSpot(target string, evidence []EvidenceRecord, investi
 			Message:     "Verification failed recently, but there is no linked live snapshot to preserve runtime state.",
 			RecommendedActions: []string{
 				"/investigate start process-visibility " + strings.TrimSpace(target),
-				"/verify-dashboard",
+				"/verify dashboard",
 			},
 		})
 	}

@@ -6380,6 +6380,11 @@ func webResearchMCPStatusSummary(server MCPServerConfig, getenv func(string) str
 
 func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	cmd.Name = normalizeSlashCommandName(cmd.Name)
+	if alias, ok := hiddenSlashCommandAlias(cmd.Name); ok {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("/"+cmd.Name+" is deprecated; use "+alias.Replacement+" instead."))
+		cmd.Name = alias.Canonical
+		cmd.Args = joinCommandArgs(alias.ArgsPrefix, cmd.Args)
+	}
 	switch cmd.Name {
 	case "help":
 		fmt.Fprintln(rt.writer, rt.ui.section("Help"))
@@ -6606,7 +6611,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "verify":
-		if err := rt.handleVerifyCommand(cmd.Args); err != nil {
+		if err := rt.handleVerifyFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "specialists":
@@ -6614,7 +6619,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "suggest":
-		if err := rt.handleSuggestCommand(cmd.Args); err != nil {
+		if err := rt.handleSuggestFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "suggest-dashboard-html":
@@ -6676,7 +6681,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "override":
-		if err := rt.handleHookOverridesCommand(); err != nil {
+		if err := rt.handleOverrideFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "override-add":
@@ -6708,20 +6713,15 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_items", fmt.Sprintf("%d", len(rt.session.Plan))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("memory_files", fmt.Sprintf("%d", len(rt.memory.Files))))
 	case "memory":
-		if len(rt.memory.Files) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No memory files loaded."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Memory"))
-		for _, file := range rt.memory.Files {
-			fmt.Fprintln(rt.writer, rt.ui.dim(file.Path))
+		if err := rt.handleMemoryFamilyCommand(cmd.Args); err != nil {
+			return false, err
 		}
 	case "mem":
 		if err := rt.handlePersistentMemoryRecent(cmd.Args); err != nil {
 			return false, err
 		}
 	case "evidence":
-		if err := rt.handleEvidenceRecent(cmd.Args); err != nil {
+		if err := rt.handleEvidenceFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "evidence-search":
@@ -6829,7 +6829,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "checkpoint":
-		if err := rt.handleCheckpointCommand(cmd.Args); err != nil {
+		if err := rt.handleCheckpointFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "checkpoint-auto":
@@ -7101,10 +7101,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		_ = rt.store.Save(rt.session)
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Session renamed to "+cmd.Args))
 	case "session":
-		fmt.Fprintln(rt.writer, rt.ui.section("Session"))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("session_id", rt.session.ID))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("name", rt.session.Name))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("stored_at", filepath.Join(rt.store.Root(), rt.session.ID+".json")))
+		if err := rt.handleSessionFamilyCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "sessions":
 		sessionArgs := strings.TrimSpace(cmd.Args)
 		if sessionArgs != "" {

@@ -18,13 +18,18 @@ func (rt *runtimeState) handleSimulateCommand(args string) error {
 	if len(fields) == 0 {
 		return rt.showSimulationStatus()
 	}
+	rest := ""
+	if len(fields) > 1 {
+		rest = strings.TrimSpace(trimmed[len(fields[0]):])
+	}
 	switch strings.ToLower(fields[0]) {
 	case "show":
-		return rt.handleSimulationShow(strings.TrimSpace(trimmed[len(fields[0]):]))
+		return rt.handleSimulationShow(rest)
 	case "list":
 		return rt.handleSimulationList()
 	case "dashboard":
-		return rt.handleSimulationDashboard(false)
+		_, html := commandArgsHaveHTMLFlag(rest)
+		return rt.handleSimulationDashboard(html)
 	case "dashboard-html":
 		return rt.handleSimulationDashboard(true)
 	default:

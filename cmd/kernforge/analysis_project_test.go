@@ -4492,7 +4492,7 @@ func TestBuildAnalysisDashboardHTMLIncludesCoreSections(t *testing.T) {
 	}
 
 	html := buildAnalysisDashboardHTML(run, "docs")
-	for _, want := range []string{"Project Analysis Dashboard", "Structure At A Glance", "Project Summary", "Module Map", "Functional Areas", "Runtime Chain", "Driver Dispatch", "Validate IOCTL buffers", "SECURITY_SURFACE.md", "Document Portal", "Developer Docs", "developer_docs", "developer document", `data-query="developer_docs"`, "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence-search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
+	for _, want := range []string{"Project Analysis Dashboard", "Structure At A Glance", "Project Summary", "Module Map", "Functional Areas", "Runtime Chain", "Driver Dispatch", "Validate IOCTL buffers", "SECURITY_SURFACE.md", "Document Portal", "Developer Docs", "developer_docs", "developer document", `data-query="developer_docs"`, "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected dashboard HTML to contain %q\n%s", want, html)
 		}

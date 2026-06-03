@@ -91,7 +91,7 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 - 짧은 `Esc` 탭 취소와 취소 직후 프롬프트 안정화까지 포함한 콘솔 취소 신뢰성
 
 7. planner/reviewer 분리 구조
-- `/do-plan-review`
+- `/review plan`
 - reviewer 모델 별도 구성
 
 8. 확장 가능성
@@ -152,7 +152,7 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 4. fuzz finding과 evidence graph, verification history, tracked feature를 하나의 issue lifecycle로 묶는 MVP가 들어갔고, coverage feedback과 dedup도 1차 구현됨. 다음은 coverage report format 확장이 필요함
 5. local automation은 interval due 판단, digest/monitor/watch, process-detached daemon, notify artifact/webhook, `-command` scheduler runner, PR review report, gh metadata, safe comment draft/post까지 들어갔다. 다음은 cloud recurring job이다.
 6. long-task continuity는 `/continuity` packet, `/recover` failure runbook, `/jobs` terminal polling/cancel, 직접 `!shell` 실패의 `command_error` event 기록, `/worktree list`, `/completion-audit` readiness gate로 로컬 재개/복구/완료 판정 UX를 보강했다.
-7. cloud delegation은 `/handoff` artifact, `/handoff import`, `/session-dashboard-html` snapshot으로 이어받기 packet, 결과 merge, 현재 thread/task/automation 시각화를 만들 수 있다. 다음은 실제 cloud execution backend이다.
+7. cloud delegation은 `/handoff` artifact, `/handoff import`, `/session dashboard --html` snapshot으로 이어받기 packet, 결과 merge, 현재 thread/task/automation 시각화를 만들 수 있다. 다음은 실제 cloud execution backend이다.
 8. PR review automation은 local report, gh metadata, comment draft/post, review thread resolve, follow-up issue draft/create, label/assignee/milestone까지 들어갔다. 다음은 상주 PR monitor와 cloud-backed review workflow다.
 
 ### 대화형 에이전트 관점 비교
@@ -167,7 +167,7 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 
 | 항목 | Claude Code | Codex | 현재 Kernforge | 해석 |
 |---|---:|---:|---:|---|
-| 최근 대화/상황 grounding | 5 | 5 | 5 | `ConversationEventLog`, `ActiveConversationState`, `/session-dashboard-html`, `/continuity`로 직전 오류, tool result, handoff, provider/model, artifact ref, recovery action을 보존하고 시각화한다. |
+| 최근 대화/상황 grounding | 5 | 5 | 5 | `ConversationEventLog`, `ActiveConversationState`, `/session dashboard --html`, `/continuity`로 직전 오류, tool result, handoff, provider/model, artifact ref, recovery action을 보존하고 시각화한다. |
 | "방금 에러" 같은 지시어 이해 | 5 | 5 | 5 | `RecentErrorResolver`가 provider/tool/command error를 직접 찾아 답하고, `/recover`가 같은 실패 맥락을 `.kernforge/recovery/latest.md/json` runbook으로 외부화한다. 여러 오류 후보가 있으면 가장 가까운 오류를 설명하면서 다른 후보의 kind/source/model/shard/signature도 함께 보여준다. |
 | 현재 작업 이어가기 | 5 | 5 | 5 | pending handoff, compact working memory, open artifact 보존에 더해 `/continuity`가 changed files, open tasks, worktree, background job, verification failure, next command를 하나의 resume packet으로 묶고 `/completion-audit`가 완료 차단 조건을 파일로 남긴다. |
 | 스스로 다음 행동 제안 | 4 | 5 | 4 | `SituationSnapshot`과 `ProactiveSuggestionEngine`이 verification gap, stale docs, fuzz gap, provider 429, dirty worktree, recurring verification, PR review automation을 제안한다. 기본 답변 자동 노출은 과잉 제안을 피하려 provider-blocking 위주로 제한했다. |
@@ -179,7 +179,7 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 | 보안/Windows/anti-cheat 도메인 감도 | 2 | 3 | 5 | Kernforge는 IOCTL, ETW, memory scanning, Unreal, driver/build/signing/fuzz workflow에 맞춘 판단 기준을 제품 중심에 둔다. |
 | 외부 시스템 연동 | 5 | 4 | 3 | MCP, gh 기반 PR metadata, review comment draft/post/thread resolve, issue create, issue 운영 필드, webhook notification, handoff artifact는 들어갔다. cloud automation은 아직 얇다. |
 | 자동화/스케줄링 | 3 | 5 | 4 | `/automation`으로 recurring verification/PR review slot, interval due 판단, digest, monitor/watch, process-detached daemon, notify artifact/webhook, safe dispatcher, `-command` scheduler runner 실행을 제공한다. cloud recurring job은 다음 단계다. |
-| UX polish | 4 | 5 | 3 | Kernforge CLI/Windows viewer와 `/session-dashboard-html` 정적 dashboard는 실용적이지만, Codex급 desktop/app experience와 interactive thread visualization은 아직 부족하다. |
+| UX polish | 4 | 5 | 3 | Kernforge CLI/Windows viewer와 `/session dashboard --html` 정적 dashboard는 실용적이지만, Codex급 desktop/app experience와 interactive thread visualization은 아직 부족하다. |
 
 대화형 agent 능력만 놓고 본 현재 위치:
 1. Kernforge는 "상황 기억"과 "최근 오류 grounding"에서는 Claude/Codex의 하위 호환 수준까지 올라왔다.
@@ -195,13 +195,13 @@ Kernforge가 차별화해야 할 방향:
 5. 장기적으로 `/suggest` 결과를 dashboard, task graph, feature lifecycle, automation scheduler와 연결해 "현재 상황 -> 추천 행동 -> 실행 -> 검증 -> evidence 기록" 루프를 완성한다.
 
 다음 보강 우선순위:
-1. 완료: `SuggestionDashboard`를 analysis/verification/evidence dashboard와 통합했다. `/suggest-dashboard-html`은 integrated signals, related dashboard command chips, evidence refs, accept/dismiss command chips를 함께 보여준다.
+1. 완료: `SuggestionDashboard`를 analysis/verification/evidence dashboard와 통합했다. `/suggest dashboard --html`은 integrated signals, related dashboard command chips, evidence refs, accept/dismiss command chips를 함께 보여준다.
 2. 완료: `AutonomyMode=confirm`에서 `/suggest accept <id>` 시 safe slash command dispatcher가 허용된 명령을 실행하고 suggestion을 `executed`로 전환한다.
 3. 완료: dismissed/accepted suggestion을 persistent memory로 승격해 session을 넘는 사용자 선호를 학습한다.
 4. 완료: 여러 background job 또는 subagent가 동시에 실패했을 때 recent error resolver가 후보의 kind/source/model/shard/signature를 비교 설명한다.
 5. 완료: 일반 구현/수정/실행 요청을 `SelfDrivingWorkLoop`로 승격해 task graph와 자동 verification/final answer review 종료 조건에 연결했다.
 6. 완료: `/suggest` 후보와 accepted/dismissed/executed 상태를 `TaskGraph`의 `suggest:<id>` node로 동기화한다.
-7. 완료: `/automation`과 `/review-pr` MVP를 추가해 recurring verification slot, PR review report generation, suggestion accept -> automation 등록 흐름을 연결했다.
+7. 완료: `/automation`과 `/review pr` MVP를 추가해 recurring verification slot, PR review report generation, suggestion accept -> automation 등록 흐름을 연결했다.
 
 ## 3. 제품 방향 추천
 
@@ -437,7 +437,7 @@ Kernforge가 차별화해야 할 방향:
 15. `/fuzz-campaign run`이 campaign 생성, latest `/fuzz-func` attach, source-only `VirtualScenarios`의 `corpus/<run-id>/scenario-XX-*.json` 승격을 자동 수행
 16. `/fuzz-func` 결과 출력이 campaign handoff를 자동 표시해 사용자가 다음 명령을 추측하지 않아도 됨
 17. 완료: `/investigate`, `/simulate`, `/verify`, `/analyze-performance`가 각각 Investigation/Simulation/Verification/Performance handoff를 출력해 dashboard, simulation, verification, evidence, checkpoint, tracked feature status/close로 자연스럽게 이어짐
-18. 완료: `/evidence`, `/mem`, `/checkpoint`, `/new-feature status|implement|close`, `/worktree create|leave|cleanup`, `/specialists assign`도 Evidence/Memory/Checkpoint/Feature/Worktree/Specialist handoff를 출력해 verify, dashboard, confirm/promote, diff, cleanup, feature status로 이어짐
+18. 완료: `/evidence`, `/memory recent`, `/checkpoint`, `/new-feature status|implement|close`, `/worktree create|leave|cleanup`, `/specialists assign`도 Evidence/Memory/Checkpoint/Feature/Worktree/Specialist handoff를 출력해 verify, dashboard, confirm/promote, diff, cleanup, feature status로 이어짐
 19. 완료: `/fuzz-campaign run`이 attached `/fuzz-func` native execution 상태, crash directory, build/run log를 수집해 campaign native result report와 `kind=fuzz_native_result` evidence로 기록함
 20. 완료: native result report에 crash fingerprint, suspected invariant, minimization command, corpus/crash path를 남김
 21. 완료: campaign manifest에 finding lifecycle과 artifact graph schema를 추가해 seed, native result, evidence, source anchor, verification gate, tracked feature gate를 연결함
@@ -796,17 +796,17 @@ MVP 범위:
 5. 완료: `NextActionPlanner`가 blocking/risk/cost 기준으로 후보를 ranking하고 기본 답변에는 provider rate-limit처럼 즉시 조치가 명확한 제안만 1개 붙인다. 나머지 후보는 `/suggest`에서 확인한다.
 6. 완료: session JSON에 `suggestion_memory`를 저장하고 shown/accepted/dismissed/executed 상태와 cooldown을 보존한다.
 7. 완료: `Compact()` working memory가 pending/dismissed suggestion을 `[Conversation Working Memory]`에 보존한다.
-8. 완료: `/suggest`, `/suggest accept <id>`, `/suggest dismiss <id>`, `/suggest mode <observe|suggest|confirm>`, `/suggest-dashboard-html` 명령을 추가했다.
-9. 완료: `/suggest-dashboard-html`이 current situation, integrated signals, ranked suggested next actions를 로컬 HTML dashboard로 렌더링한다.
-10. 완료: suggestion card가 관련 dashboard 명령(`/verify-dashboard-html`, `/evidence-dashboard-html`, `/analyze-dashboard` 등), evidence refs, `/suggest accept|dismiss <id>` command chip을 같이 보여준다.
+8. 완료: `/suggest`, `/suggest accept <id>`, `/suggest dismiss <id>`, `/suggest mode <observe|suggest|confirm>`, `/suggest dashboard --html` 명령을 추가했다.
+9. 완료: `/suggest dashboard --html`이 current situation, integrated signals, ranked suggested next actions를 로컬 HTML dashboard로 렌더링한다.
+10. 완료: suggestion card가 관련 dashboard 명령(`/verify dashboard --html`, `/evidence dashboard --html`, `/analyze-dashboard` 등), evidence refs, `/suggest accept|dismiss <id>` command chip을 같이 보여준다.
 11. 완료: provider 429 제안 1회 노출, verification/checkpoint gap 생성, fuzz minimization gap 생성, dismissed suggestion compaction 보존, accepted suggestion event 연결 회귀 테스트를 추가했다.
 12. 완료: suggestion dashboard가 analysis/verification/evidence 통합 링크를 렌더링하는 회귀 테스트를 추가했다.
-13. 완료: `/suggest accept <id>`가 `confirm` 모드에서는 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review-pr` 같은 safe command만 실행하고 성공 시 suggestion 상태를 `executed`로 바꾼다.
+13. 완료: `/suggest accept <id>`가 `confirm` 모드에서는 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review pr` 같은 safe command만 실행하고 성공 시 suggestion 상태를 `executed`로 바꾼다.
 14. 완료: accepted/dismissed suggestion을 persistent memory에 `suggestion-preference` category로 승격한다.
 15. 완료: `/suggest` 후보를 `TaskGraph`의 `suggest:<stable-id>` node로 동기화하고 상태를 ready/in_progress/completed/canceled로 반영한다.
 16. 완료: provider/tool/command error 후보가 여러 개 있을 때 recent error answer가 다른 후보 목록을 함께 보여준다.
 17. 완료: `session.Automations`와 `/automation` 명령을 추가해 recurring verification 및 PR review automation slot을 세션에 저장하고 수동 실행한다.
-18. 완료: `/review-pr`가 git status/diff stat/changed files/checklist를 `.kernforge/pr_review/latest.md`로 생성하고 conversation event에 artifact ref를 남긴다.
+18. 완료: `/review pr`가 git status/diff stat/changed files/checklist를 `.kernforge/pr_review/latest.md`로 생성하고 conversation event에 artifact ref를 남긴다.
 
 남은 구현 항목:
 - 없음. P0 범위의 proactive situation snapshot, rule-based suggestion engine, policy/memory, CLI/HTML dashboard, compact 보존, 회귀 테스트 구현을 완료했다.
@@ -1121,14 +1121,14 @@ MVP rule set:
 
 현재 구현 상태:
 1. 완료: `SessionAutomation`을 session JSON에 저장한다.
-2. 완료: `/automation [list|status|due|digest|monitor|run-due]`, `/automation add recurring-verification [--every <duration>] [/verify args]`, `/automation add pr-review [--every <duration>] [/review-pr]`, `/automation run <id>`, `/automation pause|resume|remove <id>`를 추가했다.
-3. 완료: `/review-pr`가 로컬 PR review automation report를 `.kernforge/pr_review/latest.md`에 생성한다.
-4. 완료/MVP: `/review-pr --github`가 `gh pr view --json ...` 결과를 report에 붙여 PR URL, 상태, review decision, comments, checks 요약을 기록한다.
-5. 완료/MVP: `/review-pr --draft-comments`가 `.kernforge/pr_review/comments.md`에 file-level GitHub review comment 초안을 만들고 실제 게시는 하지 않는다.
-6. 완료/MVP: `/review-pr --post-comments`가 명시적 요청에서만 `gh pr review --comment --body-file .kernforge/pr_review/comments.md`로 draft를 게시한다. suggestion accept와 scheduled automation에서는 차단한다.
-7. 완료/MVP: `/review-pr --resolve-thread <id>`가 명시적 요청에서만 GitHub GraphQL `resolveReviewThread` mutation을 실행한다. suggestion accept와 scheduled automation에서는 차단한다.
-8. 완료/MVP: `/review-pr --draft-issue`가 `.kernforge/pr_review/issue.md`를 만들고, `/review-pr --create-issue`가 명시적 요청에서만 `gh issue create --title ... --body-file ...`를 실행한다.
-9. 완료/MVP: `/review-pr --draft-issue|--create-issue`가 반복/쉼표 구분 `--label`, 반복/쉼표 구분 `--assignee`, quoted `--milestone`을 받아 draft metadata와 `gh issue create` flag에 반영한다.
+2. 완료: `/automation [list|status|due|digest|monitor|run-due]`, `/automation add recurring-verification [--every <duration>] [/verify args]`, `/automation add pr-review [--every <duration>] [/review pr]`, `/automation run <id>`, `/automation pause|resume|remove <id>`를 추가했다.
+3. 완료: `/review pr`가 로컬 PR review automation report를 `.kernforge/pr_review/latest.md`에 생성한다.
+4. 완료/MVP: `/review pr --github`가 `gh pr view --json ...` 결과를 report에 붙여 PR URL, 상태, review decision, comments, checks 요약을 기록한다.
+5. 완료/MVP: `/review pr --draft-comments`가 `.kernforge/pr_review/comments.md`에 file-level GitHub review comment 초안을 만들고 실제 게시는 하지 않는다.
+6. 완료/MVP: `/review pr --post-comments`가 명시적 요청에서만 `gh pr review --comment --body-file .kernforge/pr_review/comments.md`로 draft를 게시한다. suggestion accept와 scheduled automation에서는 차단한다.
+7. 완료/MVP: `/review pr --resolve-thread <id>`가 명시적 요청에서만 GitHub GraphQL `resolveReviewThread` mutation을 실행한다. suggestion accept와 scheduled automation에서는 차단한다.
+8. 완료/MVP: `/review pr --draft-issue`가 `.kernforge/pr_review/issue.md`를 만들고, `/review pr --create-issue`가 명시적 요청에서만 `gh issue create --title ... --body-file ...`를 실행한다.
+9. 완료/MVP: `/review pr --draft-issue|--create-issue`가 반복/쉼표 구분 `--label`, 반복/쉼표 구분 `--assignee`, quoted `--milestone`을 받아 draft metadata와 `gh issue create` flag에 반영한다.
 10. 완료: proactive suggestion이 verification gap과 dirty diff를 보고 recurring verification/PR review automation 등록을 제안한다.
 11. 완료/MVP: interval schedule을 `next_run_at`으로 저장하고 `/automation due`, `/automation run-due`로 due slot을 safe command dispatcher에서 실행한다.
 12. 완료/MVP: `/automation digest`, `/automation monitor`, `/status`, REPL 시작 notice가 due/failed/paused automation 요약과 실패 결과를 노출한다.
@@ -1136,7 +1136,7 @@ MVP rule set:
 14. 완료/MVP: `/automation notify`와 `/automation monitor --notify`가 `.kernforge/automation/latest_digest.md`를 생성해 외부 watcher/CI가 digest를 읽을 수 있게 한다.
 15. 완료/MVP: `/automation notify|monitor|watch --webhook-url <url>`이 digest JSON을 외부 receiver로 POST하고 URL secret을 event에서 redaction한다.
 16. 완료/MVP: `/handoff`가 `.kernforge/handoff/latest.md/json`에 changed files, open tasks, verification, recent events, artifact refs, continuation prompt를 저장한다.
-17. 완료/MVP: `/session-dashboard-html`이 `.kernforge/session_dashboard/latest.html`에 thread event, task graph, automation due/failed 상태, changed files, background jobs, artifact refs를 렌더링한다.
+17. 완료/MVP: `/session dashboard --html`이 `.kernforge/session_dashboard/latest.html`에 thread event, task graph, automation due/failed 상태, changed files, background jobs, artifact refs를 렌더링한다.
 18. 완료/MVP: `/handoff import <path>`가 cloud/local delegated result를 `.kernforge/handoff/imports/*.json/md`로 정규화하고 conversation event와 matching TaskGraph `completed_tasks` 상태에 merge한다.
 19. 완료/MVP: `/completion-audit`가 `.kernforge/completion_audit/latest.md/json`에 objective, acceptance, required artifact, verification, open task, edit/failure repair, background job, recent error, coding harness blocker/warning을 기록해 완료 선언 전 evidence gate를 만든다.
 20. 완료/MVP: `/recover`가 `.kernforge/recovery/latest.md/json`에 최근 provider/tool/command error, verification failure, active failure repair, background job/bundle, open task, next command를 모아 즉시 재개 가능한 failure runbook을 만든다.
@@ -1363,7 +1363,7 @@ MVP rule set:
 | hooks/policy runtime | 4 | 5 | 3 | 두 핵심축의 safety gate로 고도화 |
 | subagents | 4 | 5 | 4 | 분석/문서화와 fuzz campaign specialist로 고도화 |
 | automations | 3 | 2 | 4 | interval due, digest, monitor/watch, process-detached daemon, notify artifact/webhook, safe dispatcher, `-command` scheduler runner, session dashboard MVP 완료. cloud job은 P2 |
-| GitHub review automation | 2 | 2 | 4 | `/review-pr --github --draft-comments --post-comments --resolve-thread --create-issue`와 issue label/assignee/milestone MVP 완료. 상주 PR monitor는 P2 |
+| GitHub review automation | 2 | 2 | 4 | `/review pr --github --draft-comments --post-comments --resolve-thread --create-issue`와 issue label/assignee/milestone MVP 완료. 상주 PR monitor는 P2 |
 | Windows security tooling | 3 | 1 | 2 | 분석, fuzz, evidence를 잇는 차별화 |
 | anti-cheat specialization | 3 | 1 | 1 | 분석 문서와 fuzz profile 중심으로 집중 |
 | desktop UX shell | 2 | 2 | 4 | Phase 3 이후 Go core 유지형 Wails app으로 확장 |
@@ -1900,7 +1900,7 @@ MVP rule set:
 
 22. 완료: automation MVP
 - `/automation`으로 recurring verification 및 PR review automation slot을 저장/실행/일시정지/삭제
-- `/review-pr`로 `.kernforge/pr_review/latest.md` report 생성
+- `/review pr`로 `.kernforge/pr_review/latest.md` report 생성
 - proactive suggestion이 automation 등록을 next action으로 제안
 
 이 흐름이 정리되면, 현재 구현된 `fuzz_campaign.go`, `commands_fuzz_func.go`, `evidence_store.go`, `shell_background.go`, `analysis_docs.go`, `verify.go`, `feature_workflow.go`에 더해 새 conversation runtime 계층이 붙으면서 source-to-native fuzzing workbench와 Codex급 대화형 agent 경험이 함께 열린다.

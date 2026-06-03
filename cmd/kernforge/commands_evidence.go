@@ -54,7 +54,7 @@ func (rt *runtimeState) handleEvidenceSearch(query string) error {
 		return fmt.Errorf("evidence store is not configured")
 	}
 	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("usage: /evidence-search <query>")
+		return fmt.Errorf("usage: /evidence search <query>")
 	}
 	records, err := rt.evidence.Search(query, rt.workspace.BaseRoot, 12)
 	if err != nil {
@@ -100,7 +100,7 @@ func (rt *runtimeState) handleEvidenceShow(id string) error {
 		return fmt.Errorf("evidence store is not configured")
 	}
 	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("usage: /evidence-show <id>")
+		return fmt.Errorf("usage: /evidence show <id>")
 	}
 	record, ok, err := rt.evidence.Get(id)
 	if err != nil {
