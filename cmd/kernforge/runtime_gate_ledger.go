@@ -598,7 +598,7 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		ledger.Blockers = append(ledger.Blockers, "latest review has unwaived blockers: "+strings.Join(limitStrings(blockers, 6), ", "))
 		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
 			ID:             "repair",
-			Command:        "/continuity continue from review",
+			Command:        "/session continuity continue from review",
 			Reason:         "latest review has blocking findings",
 			Safety:         "safe_local",
 			When:           "after reading review findings",
@@ -641,7 +641,7 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 			Reason:         "changed files have no latest verification report",
 			Safety:         "safe_local",
 			When:           "before completion or git write",
-			ClientHint:     "Run verification, then repeat /review or /completion-audit.",
+			ClientHint:     "Run verification, then repeat /review or /session audit.",
 			ExpectedResult: "A current verification report is linked into the runtime gate ledger.",
 		})
 		return
@@ -655,7 +655,7 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 			Reason:         "latest verification is stale for current changed files",
 			Safety:         "safe_local",
 			When:           "before completion or git write",
-			ClientHint:     "Run verification for the current patch transaction, then repeat /review or /completion-audit.",
+			ClientHint:     "Run verification for the current patch transaction, then repeat /review or /session audit.",
 			ExpectedResult: "A current verification report is linked into the runtime gate ledger.",
 		})
 		return

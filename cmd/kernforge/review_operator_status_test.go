@@ -36,7 +36,7 @@ func testOperatorStatusReviewRun() ReviewRun {
 			Reason:  "blocking review findings require repair",
 			NextCommands: []ReviewNextCommand{{
 				ID:             "repair",
-				Command:        "/continuity continue from review",
+				Command:        "/session continuity continue from review",
 				Reason:         "latest review has blocking findings",
 				Safety:         "safe_local",
 				ClientHint:     "Repair RF-OPS-1 and rerun review.",
@@ -122,7 +122,7 @@ func TestOperatorStatusCompactOutputIncludesLifecycleGatesBlockersAndNextCommand
 		"code_repair_blocker=1",
 		"remaining_obligations",
 		"next_command",
-		"/continuity continue from review",
+		"/session continuity continue from review",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected compact status output to contain %q, got:\n%s", want, text)
@@ -245,7 +245,7 @@ func TestNeedsUserDecisionRendersActionableGuidanceInMarkdownAndMCP(t *testing.T
 			"safe_to_change",
 			"do_not_change_yet",
 			"next_command",
-			"/continuity continue from review",
+			"/session continuity continue from review",
 		} {
 			if !strings.Contains(rendered, want) {
 				t.Fatalf("expected actionable triage guidance %q in:\n%s", want, rendered)

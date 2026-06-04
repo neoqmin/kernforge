@@ -93,7 +93,7 @@ func TestContinuityCommandWritesRecoveryPacket(t *testing.T) {
 		t.Fatalf("read continuity markdown: %v", err)
 	}
 	text := string(md)
-	for _, want := range []string{"# Continuity Packet", "Recovery Actions", "go test ./...", "job-1", "bundle-1", "Finish Codex parity loop", "/jobs status"} {
+	for _, want := range []string{"# Continuity Packet", "Recovery Actions", "go test ./...", "job-1", "bundle-1", "Finish Codex parity loop", "/session jobs status"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected continuity markdown to contain %q, got %q", want, text)
 		}

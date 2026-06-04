@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func commandSubcommandAndRest(args string) (string, string) {
@@ -170,6 +171,13 @@ func (rt *runtimeState) handleCheckpointFamilyCommand(args string) error {
 		return rt.handleCheckpointAutoCommand(rest)
 	case "diff":
 		return rt.handleCheckpointDiffCommand(rest)
+	case "list":
+		if strings.TrimSpace(rest) != "" {
+			return fmt.Errorf("usage: /checkpoint list")
+		}
+		return rt.handleCheckpointsCommand()
+	case "rollback":
+		return rt.handleRollbackCommand(rest)
 	default:
 		return rt.handleCheckpointCommand(args)
 	}
@@ -186,13 +194,131 @@ func (rt *runtimeState) handleSuggestFamilyCommand(args string) error {
 
 func (rt *runtimeState) handleSessionFamilyCommand(args string) error {
 	subcommand, rest := commandSubcommandAndRest(args)
-	if subcommand == "dashboard" || subcommand == "dashboard-html" {
+	switch subcommand {
+	case "", "status":
+		return rt.handleSessionStatusCommand()
+	case "list":
+		return rt.handleSessionListCommand(rest)
+	case "search", "find":
+		return rt.handleSessionListCommand(joinCommandArgs("search", rest))
+	case "events":
+		return rt.handleEventsCommand(rest)
+	case "continuity":
+		return rt.handleContinuityCommand(rest)
+	case "recover":
+		return rt.handleRecoverCommand(rest)
+	case "audit", "completion-audit":
+		return rt.handleCompletionAuditCommand(rest)
+	case "jobs":
+		return rt.handleJobsCommand(rest)
+	case "handoff":
+		return rt.handleDelegationHandoffCommand(rest)
+	case "tasks":
+		if strings.TrimSpace(rest) != "" {
+			return fmt.Errorf("usage: /session tasks")
+		}
+		return rt.handleTasksCommand()
+	case "dashboard", "dashboard-html":
 		rest, _ = commandArgsHaveHTMLFlag(rest)
 		return rt.handleSessionDashboardHTMLCommand(rest)
+	default:
+		return fmt.Errorf("usage: /session [status|list|search|events|continuity|recover|audit|jobs|handoff|tasks|dashboard [--html]]")
 	}
+}
+
+func (rt *runtimeState) handleSessionStatusCommand() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Session"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("session_id", rt.session.ID))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("name", rt.session.Name))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("stored_at", filepath.Join(rt.store.Root(), rt.session.ID+".json")))
+	return nil
+}
+
+func (rt *runtimeState) handleSessionListCommand(args string) error {
+	sessionArgs := strings.TrimSpace(args)
+	if sessionArgs != "" {
+		query := sessionArgs
+		parts := strings.SplitN(sessionArgs, " ", 2)
+		if len(parts) > 0 {
+			action := normalizeSlashCommandName(parts[0])
+			if action == "search" || action == "find" {
+				if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+					return fmt.Errorf("usage: /session search <query>")
+				}
+				query = strings.TrimSpace(parts[1])
+			}
+		}
+		items, err := rt.store.Search(query, 20)
+		if err != nil {
+			return err
+		}
+		if len(items) == 0 {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("No sessions matched query."))
+			return nil
+		}
+		fmt.Fprintln(rt.writer, rt.ui.section("Session Search"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("query", query))
+		for _, item := range items {
+			fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
+			if strings.TrimSpace(item.WorkingDir) != "" {
+				fmt.Fprintf(rt.writer, "  %s %s\n", rt.ui.dim("cwd:"), rt.ui.dim(item.WorkingDir))
+			}
+			if strings.TrimSpace(item.Snippet) != "" {
+				fmt.Fprintf(rt.writer, "  %s %s\n", rt.ui.dim(item.MatchField+":"), item.Snippet)
+			}
+		}
+		return nil
+	}
+	items, err := rt.store.List()
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved sessions."))
+		return nil
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Sessions"))
+	for _, item := range items {
+		fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleTasksCommand() error {
+	if len(rt.session.Plan) == 0 {
+		if rt.session.TaskGraph != nil && len(rt.session.TaskGraph.Nodes) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
+			fmt.Fprintln(rt.writer, rt.session.TaskGraph.RenderExportSection())
+			return nil
+		}
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No active plan."))
+		return nil
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
+	var completed int
+	var inProgress int
+	var pending int
+	for _, item := range rt.session.Plan {
+		switch item.Status {
+		case "completed":
+			completed++
+		case "in_progress":
+			inProgress++
+		default:
+			pending++
+		}
+	}
+	fmt.Fprintln(rt.writer)
+	rt.printKVGroup("Summary",
+		kv("total", fmt.Sprintf("%d", len(rt.session.Plan))),
+		kv("completed", fmt.Sprintf("%d", completed)),
+		kv("in_progress", fmt.Sprintf("%d", inProgress)),
+		kv("pending", fmt.Sprintf("%d", pending)),
+	)
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Plan"))
+	for i, item := range rt.session.Plan {
+		fmt.Fprintln(rt.writer, rt.ui.planItem(i, item.Status, item.Step))
+	}
 	return nil
 }

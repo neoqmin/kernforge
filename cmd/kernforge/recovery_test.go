@@ -92,7 +92,7 @@ func TestRecoverCommandWritesRecoveryBrief(t *testing.T) {
 		t.Fatalf("read recovery markdown: %v", err)
 	}
 	text := string(md)
-	for _, want := range []string{"# Recovery Brief", "Primary Failure", "Recovery Actions", "Fix tests first", "/jobs check job-1", "/jobs bundle bundle-1", "!go test ./...", "Repair failing tests"} {
+	for _, want := range []string{"# Recovery Brief", "Primary Failure", "Recovery Actions", "Fix tests first", "/session jobs check job-1", "/session jobs bundle bundle-1", "!go test ./...", "Repair failing tests"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected recovery markdown to contain %q, got %q", want, text)
 		}

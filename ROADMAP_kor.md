@@ -151,8 +151,8 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 3. `/fuzz-func`는 강한 source-level triage와 docs catalog ranking을 갖췄지만 coverage-guided fuzzing, corpus lifecycle, crash minimization, sanitizer/coverage report까지 이어지는 전문 워크벤치는 아직 부족함
 4. fuzz finding과 evidence graph, verification history, tracked feature를 하나의 issue lifecycle로 묶는 MVP가 들어갔고, coverage feedback과 dedup도 1차 구현됨. 다음은 coverage report format 확장이 필요함
 5. local automation은 interval due 판단, digest/monitor/watch, process-detached daemon, notify artifact/webhook, `-command` scheduler runner, PR review report, gh metadata, safe comment draft/post까지 들어갔다. 다음은 cloud recurring job이다.
-6. long-task continuity는 `/continuity` packet, `/recover` failure runbook, `/jobs` terminal polling/cancel, 직접 `!shell` 실패의 `command_error` event 기록, `/worktree list`, `/completion-audit` readiness gate로 로컬 재개/복구/완료 판정 UX를 보강했다.
-7. cloud delegation은 `/handoff` artifact, `/handoff import`, `/session dashboard --html` snapshot으로 이어받기 packet, 결과 merge, 현재 thread/task/automation 시각화를 만들 수 있다. 다음은 실제 cloud execution backend이다.
+6. long-task continuity는 `/session continuity` packet, `/session recover` failure runbook, `/session jobs` terminal polling/cancel, 직접 `!shell` 실패의 `command_error` event 기록, `/worktree list`, `/session audit` readiness gate로 로컬 재개/복구/완료 판정 UX를 보강했다.
+7. cloud delegation은 `/session handoff` artifact, `/session handoff import`, `/session dashboard --html` snapshot으로 이어받기 packet, 결과 merge, 현재 thread/task/automation 시각화를 만들 수 있다. 다음은 실제 cloud execution backend이다.
 8. PR review automation은 local report, gh metadata, comment draft/post, review thread resolve, follow-up issue draft/create, label/assignee/milestone까지 들어갔다. 다음은 상주 PR monitor와 cloud-backed review workflow다.
 
 ### 대화형 에이전트 관점 비교
@@ -167,14 +167,14 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 
 | 항목 | Claude Code | Codex | 현재 Kernforge | 해석 |
 |---|---:|---:|---:|---|
-| 최근 대화/상황 grounding | 5 | 5 | 5 | `ConversationEventLog`, `ActiveConversationState`, `/session dashboard --html`, `/continuity`로 직전 오류, tool result, handoff, provider/model, artifact ref, recovery action을 보존하고 시각화한다. |
-| "방금 에러" 같은 지시어 이해 | 5 | 5 | 5 | `RecentErrorResolver`가 provider/tool/command error를 직접 찾아 답하고, `/recover`가 같은 실패 맥락을 `.kernforge/recovery/latest.md/json` runbook으로 외부화한다. 여러 오류 후보가 있으면 가장 가까운 오류를 설명하면서 다른 후보의 kind/source/model/shard/signature도 함께 보여준다. |
-| 현재 작업 이어가기 | 5 | 5 | 5 | pending handoff, compact working memory, open artifact 보존에 더해 `/continuity`가 changed files, open tasks, worktree, background job, verification failure, next command를 하나의 resume packet으로 묶고 `/completion-audit`가 완료 차단 조건을 파일로 남긴다. |
+| 최근 대화/상황 grounding | 5 | 5 | 5 | `ConversationEventLog`, `ActiveConversationState`, `/session dashboard --html`, `/session continuity`로 직전 오류, tool result, handoff, provider/model, artifact ref, recovery action을 보존하고 시각화한다. |
+| "방금 에러" 같은 지시어 이해 | 5 | 5 | 5 | `RecentErrorResolver`가 provider/tool/command error를 직접 찾아 답하고, `/session recover`가 같은 실패 맥락을 `.kernforge/recovery/latest.md/json` runbook으로 외부화한다. 여러 오류 후보가 있으면 가장 가까운 오류를 설명하면서 다른 후보의 kind/source/model/shard/signature도 함께 보여준다. |
+| 현재 작업 이어가기 | 5 | 5 | 5 | pending handoff, compact working memory, open artifact 보존에 더해 `/session continuity`가 changed files, open tasks, worktree, background job, verification failure, next command를 하나의 resume packet으로 묶고 `/session audit`가 완료 차단 조건을 파일로 남긴다. |
 | 스스로 다음 행동 제안 | 4 | 5 | 4 | `SituationSnapshot`과 `ProactiveSuggestionEngine`이 verification gap, stale docs, fuzz gap, provider 429, dirty worktree, recurring verification, PR review automation을 제안한다. 기본 답변 자동 노출은 과잉 제안을 피하려 provider-blocking 위주로 제한했다. |
 | 제안 반복/거절 기억 | 3 | 4 | 4 | `SuggestionMemory`가 shown/accepted/dismissed/executed/cooldown을 session JSON에 보존하고, accepted/dismissed 선호는 persistent memory에도 승격한다. |
-| 작업 계획과 실행 루프 | 4 | 5 | 5 | 일반 구현/수정/실행 요청에서 `SelfDrivingWorkLoop`가 task state와 task graph를 자동 시드하고 inspect -> implement -> verify -> summarize 루프를 system prompt와 종료 조건에 주입한다. 복잡한 작업은 기존 planner/reviewer preflight를 우선 사용하고 `/completion-audit`가 final readiness를 외부 artifact로 검문한다. |
-| tool 사용 안정성 | 4 | 5 | 5 | Windows shell guard, diff preview, edit approval, verification, checkpoint, failure repair harness, 직접 `!shell` 실패 event 기록, `/recover`, `/jobs` polling/cancel이 연결되어 local command loop recovery가 더 자연스러워졌다. |
-| 병렬/전문 agent 운용 | 5 | 5 | 4 | project analysis conductor/worker/reviewer와 specialist/worktree가 있고 `/handoff`와 `/handoff import`로 다른 agent/cloud task가 이어받고 결과를 merge할 compact packet을 만든다. 실제 병렬 cloud 실행은 Claude/Codex가 앞선다. |
+| 작업 계획과 실행 루프 | 4 | 5 | 5 | 일반 구현/수정/실행 요청에서 `SelfDrivingWorkLoop`가 task state와 task graph를 자동 시드하고 inspect -> implement -> verify -> summarize 루프를 system prompt와 종료 조건에 주입한다. 복잡한 작업은 기존 planner/reviewer preflight를 우선 사용하고 `/session audit`가 final readiness를 외부 artifact로 검문한다. |
+| tool 사용 안정성 | 4 | 5 | 5 | Windows shell guard, diff preview, edit approval, verification, checkpoint, failure repair harness, 직접 `!shell` 실패 event 기록, `/session recover`, `/session jobs` polling/cancel이 연결되어 local command loop recovery가 더 자연스러워졌다. |
+| 병렬/전문 agent 운용 | 5 | 5 | 4 | project analysis conductor/worker/reviewer와 specialist/worktree가 있고 `/session handoff`와 `/session handoff import`로 다른 agent/cloud task가 이어받고 결과를 merge할 compact packet을 만든다. 실제 병렬 cloud 실행은 Claude/Codex가 앞선다. |
 | 검증/증거 기반 판단 | 3 | 4 | 5 | Kernforge의 verification history, evidence store, analysis docs, fuzz findings 결합은 보안 작업에서는 오히려 강점이다. |
 | 보안/Windows/anti-cheat 도메인 감도 | 2 | 3 | 5 | Kernforge는 IOCTL, ETW, memory scanning, Unreal, driver/build/signing/fuzz workflow에 맞춘 판단 기준을 제품 중심에 둔다. |
 | 외부 시스템 연동 | 5 | 4 | 3 | MCP, gh 기반 PR metadata, review comment draft/post/thread resolve, issue create, issue 운영 필드, webhook notification, handoff artifact는 들어갔다. cloud automation은 아직 얇다. |
@@ -436,8 +436,8 @@ Kernforge가 차별화해야 할 방향:
 14. `/fuzz-campaign` planner가 현재 상태를 보고 다음 한 단계를 제안
 15. `/fuzz-campaign run`이 campaign 생성, latest `/fuzz-func` attach, source-only `VirtualScenarios`의 `corpus/<run-id>/scenario-XX-*.json` 승격을 자동 수행
 16. `/fuzz-func` 결과 출력이 campaign handoff를 자동 표시해 사용자가 다음 명령을 추측하지 않아도 됨
-17. 완료: `/investigate`, `/simulate`, `/verify`, `/analyze-performance`가 각각 Investigation/Simulation/Verification/Performance handoff를 출력해 dashboard, simulation, verification, evidence, checkpoint, tracked feature status/close로 자연스럽게 이어짐
-18. 완료: `/evidence`, `/memory recent`, `/checkpoint`, `/new-feature status|implement|close`, `/worktree create|leave|cleanup`, `/specialists assign`도 Evidence/Memory/Checkpoint/Feature/Worktree/Specialist handoff를 출력해 verify, dashboard, confirm/promote, diff, cleanup, feature status로 이어짐
+17. 완료: `/investigate`, `/simulate`, `/verify`, `/analyze-performance`가 각각 Investigation/Simulation/Verification/Performance handoff를 출력해 dashboard, simulation, verification, evidence, checkpoint, tracked feature lifecycle로 자연스럽게 이어짐
+18. 완료: `/evidence`, `/memory recent`, `/checkpoint`, `/new-feature`, `/new-feature next`, `/worktree create|leave|cleanup`, `/specialists assign`도 Evidence/Memory/Checkpoint/Feature/Worktree/Specialist handoff를 출력해 verify, dashboard, confirm/promote, diff, cleanup, feature lifecycle로 이어짐
 19. 완료: `/fuzz-campaign run`이 attached `/fuzz-func` native execution 상태, crash directory, build/run log를 수집해 campaign native result report와 `kind=fuzz_native_result` evidence로 기록함
 20. 완료: native result report에 crash fingerprint, suspected invariant, minimization command, corpus/crash path를 남김
 21. 완료: campaign manifest에 finding lifecycle과 artifact graph schema를 추가해 seed, native result, evidence, source anchor, verification gate, tracked feature gate를 연결함
@@ -488,7 +488,7 @@ Kernforge가 차별화해야 할 방향:
 6. 부분 완료: compile command coverage와 build context 수준은 `FUZZ_TARGETS.md`에 표시한다. 다음은 부족한 build context를 자동 보강 task로 전환한다.
 7. 완료: native run 결과를 evidence store에 자동 기록
 8. 완료: crash triage report와 minimization command 생성
-9. 완료: fuzz native result를 `/verify` targeted planner step과 `/new-feature status` gate handoff에 연결
+9. 완료: fuzz native result를 `/verify` targeted planner step과 `/new-feature` gate handoff에 연결
 10. 완료: generated docs catalog에서 campaign seed 후보를 생성
 11. 완료: fuzz finding lifecycle과 artifact/evidence graph schema를 campaign manifest에 기록
 12. 완료: coverage gap을 다음 `FUZZ_TARGETS.md` refresh와 ranking에 feedback
@@ -1088,11 +1088,11 @@ MVP rule set:
 ### P2. Review Profiles For Adversarial Thinking
 
 최근 안정화:
-1. 완료: `/profile`과 `/profile-review`가 one-shot 모드에서 암묵적으로 첫 profile을 활성화하지 않고 목록만 보여주도록 수정
+1. 완료: `/profile` one-shot 모드가 암묵적으로 첫 profile을 활성화하지 않고 목록만 보여주도록 수정
 2. 완료: `/profile <number>`, `/profile rN`, `/profile dN`, `/profile pN`, `/profile pin|unpin|rename|delete <number>` 직접 action 지원
-3. 완료: 동일한 안전 동작과 명시 action을 `/profile-review`에도 적용하고 help/completion/docs에 반영
+3. 완료: 동일한 안전 동작과 명시 action을 cross-review profile 흐름에도 적용하고 help/completion/docs에 반영
 4. 완료: 저장된 main profile이 없을 때 현재 provider/model을 첫 profile로 자동 저장하고, `/profile`에서 plan-review, analysis worker/reviewer, specialist 역할별 model profile routing까지 함께 표시
-5. 완료: 모델 선택의 대표 창구를 `/model`로 유지하기 위해 `/profile add|save-current` 및 `/profile-review add|save-current` 노출 제거
+5. 완료: 모델 선택의 대표 창구를 `/model`로 유지하기 위해 `/profile add|save-current` 및 cross-review profile 저장 command 노출 제거
 6. 완료: legacy `api_key`를 provider별 key store로 자동 보강하고, 사용자 설정 저장 시 빈 key가 기존 API key를 덮어쓰지 않도록 보존 경로 추가
 7. 완료: main model 변경 시 provider별 저장 key를 `activateProvider`에서 재사용하고, 다른 model 선택은 기존 profile을 덮지 않고 새 profile로 추가되도록 회귀 테스트 추가
 8. 완료: main model 변경이 명시 role model profile을 덮지 않도록 회귀 테스트를 추가하고, 상속 중인 역할은 `not configured; follows ...`로 표시해 실제 변경과 구분
@@ -1135,14 +1135,14 @@ MVP rule set:
 13. 완료/MVP: `/automation watch [--interval 5m] [--cycles N|--once] [--notify]`가 foreground standing monitor loop로 due automation 실행, digest 출력, notify artifact 갱신을 반복한다.
 14. 완료/MVP: `/automation notify`와 `/automation monitor --notify`가 `.kernforge/automation/latest_digest.md`를 생성해 외부 watcher/CI가 digest를 읽을 수 있게 한다.
 15. 완료/MVP: `/automation notify|monitor|watch --webhook-url <url>`이 digest JSON을 외부 receiver로 POST하고 URL secret을 event에서 redaction한다.
-16. 완료/MVP: `/handoff`가 `.kernforge/handoff/latest.md/json`에 changed files, open tasks, verification, recent events, artifact refs, continuation prompt를 저장한다.
+16. 완료/MVP: `/session handoff`가 `.kernforge/handoff/latest.md/json`에 changed files, open tasks, verification, recent events, artifact refs, continuation prompt를 저장한다.
 17. 완료/MVP: `/session dashboard --html`이 `.kernforge/session_dashboard/latest.html`에 thread event, task graph, automation due/failed 상태, changed files, background jobs, artifact refs를 렌더링한다.
-18. 완료/MVP: `/handoff import <path>`가 cloud/local delegated result를 `.kernforge/handoff/imports/*.json/md`로 정규화하고 conversation event와 matching TaskGraph `completed_tasks` 상태에 merge한다.
-19. 완료/MVP: `/completion-audit`가 `.kernforge/completion_audit/latest.md/json`에 objective, acceptance, required artifact, verification, open task, edit/failure repair, background job, recent error, coding harness blocker/warning을 기록해 완료 선언 전 evidence gate를 만든다.
-20. 완료/MVP: `/recover`가 `.kernforge/recovery/latest.md/json`에 최근 provider/tool/command error, verification failure, active failure repair, background job/bundle, open task, next command를 모아 즉시 재개 가능한 failure runbook을 만든다.
-21. 완료: `/recover execute-safe`가 `/verify` 실패 report와 `ready=false` completion audit를 실패 action으로 승격하고, `stop_on_failure`가 있는 뒤 액션을 skip한다.
+18. 완료/MVP: `/session handoff import <path>`가 cloud/local delegated result를 `.kernforge/handoff/imports/*.json/md`로 정규화하고 conversation event와 matching TaskGraph `completed_tasks` 상태에 merge한다.
+19. 완료/MVP: `/session audit`가 `.kernforge/completion_audit/latest.md/json`에 objective, acceptance, required artifact, verification, open task, edit/failure repair, background job, recent error, coding harness blocker/warning을 기록해 완료 선언 전 evidence gate를 만든다.
+20. 완료/MVP: `/session recover`가 `.kernforge/recovery/latest.md/json`에 최근 provider/tool/command error, verification failure, active failure repair, background job/bundle, open task, next command를 모아 즉시 재개 가능한 failure runbook을 만든다.
+21. 완료: `/session recover execute-safe`가 `/verify` 실패 report와 `ready=false` completion audit를 실패 action으로 승격하고, `stop_on_failure`가 있는 뒤 액션을 skip한다.
 22. 완료: safe-auto recovery shell replay를 좁은 Go/Git verification/status 명령으로 제한하고 `-exec`, `-toolexec`, `-vettool`, output/profile 생성 flag 같은 고위험 옵션을 차단했다.
-23. 완료: `/goal`, `-goal`, `-goal-file`을 추가해 inline prompt 또는 markdown 파일 목표를 persistent `GoalState`로 만들고, 구현 -> 자체 리뷰 -> `/verify --full` -> `/completion-audit` -> 최종 semantic review -> 필요 시 `/recover execute-safe` 또는 repair pass를 반복하는 autonomous goal loop를 제공한다.
+23. 완료: `/goal`, `-goal`, `-goal-file`을 추가했다. interactive `/goal`은 inline prompt 또는 markdown 파일 목표를 visible artifact가 있는 persistent `GoalState`로 먼저 기록하고, `/goal start --run`, `/goal start --until-complete`, `/goal run`, 비대화형 `-goal`/`-goal-file`은 구현 -> 자체 리뷰 -> `/verify --full` -> `/session audit` -> 최종 semantic review -> 필요 시 `/session recover execute-safe` 또는 repair pass를 반복하는 autonomous goal loop를 실행한다.
 24. 완료/MVP: goal loop는 실행 중 write/diff/shell/git approval을 session 내에서 bypass해 사용자 확인으로 멈추지 않으며, `.kernforge/goals/latest.md/json`과 goal별 artifact로 상태와 audit 결과를 남긴다.
 25. 완료: goal runtime이 acceptance contract, TaskGraph, completion criteria, independent review verdict, final semantic verdict, explicit `/goal complete` gate, token/time budget, repair pass, progress ledger, command history, iteration checkpoint, no-progress/repeated-failure blocker를 기록해 Codex식 목표 달성 판단과 복구 루프에 더 가깝게 동작한다.
 26. 완료: goal reviewer와 repair worker가 checkpoint diff, 구현 응답, git diff/status, 제한된 untracked excerpt, 구조화된 reviewer issue를 공유해 실제 작업 증거 기반으로 수정 루프를 돌린다.

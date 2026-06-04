@@ -62,38 +62,179 @@ func TestCommandSpecsHaveHelpCoverage(t *testing.T) {
 	}
 }
 
-func TestHiddenSlashCommandAliasesAreNotPublicCompletionCommands(t *testing.T) {
+var removedLegacySlashCommands = []string{
+	"review-pr",
+	"review-selection",
+	"review-selections",
+	"do-plan-review",
+	"set-plan-review",
+	"profile-review",
+	"set-analysis-models",
+	"set-specialist-model",
+	"suggest-dashboard-html",
+	"session-dashboard-html",
+	"sessions",
+	"events",
+	"continuity",
+	"completion-audit",
+	"recover",
+	"jobs",
+	"handoff",
+	"tasks",
+	"verify-dashboard",
+	"verify-dashboard-html",
+	"investigate-dashboard",
+	"investigate-dashboard-html",
+	"simulate-dashboard",
+	"simulate-dashboard-html",
+	"evidence-search",
+	"evidence-show",
+	"evidence-dashboard",
+	"evidence-dashboard-html",
+	"mem",
+	"mem-search",
+	"mem-show",
+	"mem-promote",
+	"mem-demote",
+	"mem-confirm",
+	"mem-tentative",
+	"mem-dashboard",
+	"mem-dashboard-html",
+	"mem-prune",
+	"mem-stats",
+	"override-add",
+	"override-clear",
+	"checkpoint-auto",
+	"checkpoint-diff",
+	"checkpoints",
+	"rollback",
+	"detect-verification-tools",
+	"set-msbuild-path",
+	"clear-msbuild-path",
+	"set-cmake-path",
+	"clear-cmake-path",
+	"set-ctest-path",
+	"clear-ctest-path",
+	"set-ninja-path",
+	"clear-ninja-path",
+}
+
+func TestRemovedLegacySlashCommandsAreNotPublicMetadata(t *testing.T) {
 	public := map[string]bool{}
 	for _, command := range slashCommands {
 		public[command] = true
 	}
 
-	for alias, spec := range hiddenSlashCommandAliases {
-		if public[alias] {
-			t.Fatalf("hidden alias %q is still exposed as a public slash command", alias)
+	for _, command := range removedLegacySlashCommands {
+		if public[command] {
+			t.Fatalf("removed legacy command %q is still exposed as public slash command", command)
 		}
-		if !public[spec.Canonical] {
-			t.Fatalf("hidden alias %q points to non-public canonical command %q", alias, spec.Canonical)
+		if _, ok := slashCommandDescriptions[command]; ok {
+			t.Fatalf("removed legacy command %q still has top-level completion description", command)
 		}
-		if !strings.HasPrefix(spec.Replacement, "/") {
-			t.Fatalf("hidden alias %q has non-command replacement %q", alias, spec.Replacement)
+		if _, ok := slashSubcommandDescriptions[command]; ok {
+			t.Fatalf("removed legacy command %q still has subcommand completion metadata", command)
 		}
 	}
 }
 
-func TestHiddenSlashCommandAliasDispatchWarns(t *testing.T) {
+func TestRemovedLegacySlashCommandsAreNotDispatched(t *testing.T) {
+	root := t.TempDir()
 	var output bytes.Buffer
 	rt := &runtimeState{
-		writer: &output,
-		ui:     UI{color: false},
+		writer:      &output,
+		ui:          UI{color: false},
+		cfg:         DefaultConfig(root),
+		workspace:   Workspace{Root: root, BaseRoot: root},
+		store:       NewSessionStore(filepath.Join(root, "sessions")),
+		session:     NewSession(root, "openai", "gpt-main", "", "default"),
+		checkpoints: &CheckpointManager{Root: filepath.Join(root, "checkpoints")},
 	}
 
-	_, err := rt.handleCommand(Command{Name: "mem"})
-	if err == nil || !strings.Contains(err.Error(), "persistent memory is not configured") {
-		t.Fatalf("expected /mem to route to /memory recent handler, got %v", err)
+	for _, command := range []string{"mem", "checkpoints", "set-analysis-models", "set-specialist-model", "verify-dashboard-html"} {
+		output.Reset()
+		if handled, err := rt.handleCommand(Command{Name: command}); err == nil || handled {
+			t.Fatalf("expected removed legacy command %q to be rejected, handled=%t err=%v", command, handled, err)
+		}
+		if strings.Contains(output.String(), "deprecated; use") {
+			t.Fatalf("removed legacy command %q still emitted deprecation guidance: %q", command, output.String())
+		}
 	}
-	if !strings.Contains(output.String(), "/mem is deprecated; use /memory recent instead.") {
-		t.Fatalf("expected hidden alias warning, got %q", output.String())
+}
+
+func TestModelHubScriptableAnalysisAndTaskOwnerRoutes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:    &output,
+		ui:        UI{color: false},
+		cfg:       cfg,
+		workspace: Workspace{Root: root, BaseRoot: root},
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		session:   NewSession(root, "openai", "gpt-main", "", "default"),
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "model", Args: "analysis-worker deepseek deepseek-reasoner high"}); err != nil {
+		t.Fatalf("configure analysis worker through /model: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil {
+		t.Fatalf("expected analysis worker profile to be configured")
+	}
+	if got := rt.cfg.ProjectAnalysis.WorkerProfile.Provider; got != "deepseek" {
+		t.Fatalf("analysis worker provider = %q", got)
+	}
+	if got := rt.cfg.ProjectAnalysis.WorkerProfile.Model; got != "deepseek-reasoner" {
+		t.Fatalf("analysis worker model = %q", got)
+	}
+	if got := rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort; got != "high" {
+		t.Fatalf("analysis worker reasoning effort = %q", got)
+	}
+	if _, err := rt.handleCommand(Command{Name: "model", Args: "analysis clear"}); err != nil {
+		t.Fatalf("clear analysis routes through /model: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile != nil || rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+		t.Fatalf("expected analysis routes to be cleared")
+	}
+	if _, err := rt.handleCommand(Command{Name: "model", Args: "task-owner planner deepseek deepseek-reasoner medium"}); err != nil {
+		t.Fatalf("configure task owner through /model: %v", err)
+	}
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, "planner")
+	if !ok {
+		t.Fatalf("expected planner task owner profile")
+	}
+	if got := profile.Provider; got != "deepseek" {
+		t.Fatalf("task owner provider = %q", got)
+	}
+	if got := profile.Model; got != "deepseek-reasoner" {
+		t.Fatalf("task owner model = %q", got)
+	}
+	if got := profile.ReasoningEffort; got != "medium" {
+		t.Fatalf("task owner reasoning effort = %q", got)
+	}
+}
+
+func TestRemovedLegacySlashCommandsDoNotHaveDirectHandleCommandCases(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(content)
+	start := strings.Index(text, "func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {")
+	end := strings.Index(text, "func (rt *runtimeState) handleLocaleAutoCommand(args string) error {")
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("could not isolate handleCommand body")
+	}
+	body := text[start:end]
+	for _, command := range removedLegacySlashCommands {
+		if strings.Contains(body, "case \""+command+"\"") {
+			t.Fatalf("removed legacy command %q still has a direct handleCommand case", command)
+		}
 	}
 }
 

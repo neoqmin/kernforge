@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePlanItemsFromTextHandlesNumberedAndFallback(t *testing.T) {
@@ -115,7 +116,7 @@ func TestHandleNewFeatureCommandCreatesTrackedArtifacts(t *testing.T) {
 	if _, err := os.Stat(feature.ImplementationPath); !os.IsNotExist(err) {
 		t.Fatalf("implementation artifact should not exist yet, err=%v", err)
 	}
-	if !strings.Contains(output.String(), "Next: run /new-feature implement") {
+	if !strings.Contains(output.String(), "Next: run /new-feature next") {
 		t.Fatalf("expected next-step guidance, got %q", output.String())
 	}
 }
@@ -186,7 +187,7 @@ func TestHandleNewFeatureImplementUsesTrackedArtifacts(t *testing.T) {
 		t.Fatalf("create tracked feature: %v", err)
 	}
 	featureID := rt.session.ActiveFeatureID
-	if err := rt.handleNewFeatureCommand("implement"); err != nil {
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
 		t.Fatalf("implement tracked feature: %v", err)
 	}
 
@@ -212,6 +213,281 @@ func TestHandleNewFeatureImplementUsesTrackedArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(feature.SpecPath)); err != nil {
 		t.Fatalf("expected feature directory to exist: %v", err)
+	}
+}
+
+func TestHandleNewFeatureCommandEmptyShowsActiveStatus(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "openai", "gpt-5.4", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	feature, err := NewFeatureStore(root).Create(root, "status workflow", "openai / gpt-5.4", "")
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+	session.ActiveFeatureID = feature.ID
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save active session: %v", err)
+	}
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		store:   store,
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleNewFeatureCommand(""); err != nil {
+		t.Fatalf("show active feature: %v", err)
+	}
+	if !strings.Contains(output.String(), "Tracked Feature") || !strings.Contains(output.String(), feature.ID) {
+		t.Fatalf("expected active feature status, got %q", output.String())
+	}
+}
+
+func TestHandleNewFeatureNextHandlesNoActiveFeatureWithoutProvider(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "openai", "gpt-5.4", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		store:   store,
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
+		t.Fatalf("next without active feature: %v", err)
+	}
+	for _, needle := range []string{"No active tracked feature.", "/new-feature <task>", "/new-feature list"} {
+		if !strings.Contains(output.String(), needle) {
+			t.Fatalf("expected no-active guidance to include %q, got %q", needle, output.String())
+		}
+	}
+}
+
+func TestHandleNewFeatureNextReplansBlockedFeature(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "openai", "gpt-5.4", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	featureStore := NewFeatureStore(root)
+	feature, err := featureStore.Create(root, "blocked workflow", "openai / gpt-5.4", "")
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+	feature.Status = featureStatusBlocked
+	if err := featureStore.Save(feature); err != nil {
+		t.Fatalf("save blocked feature: %v", err)
+	}
+	session.ActiveFeatureID = feature.ID
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save active session: %v", err)
+	}
+
+	client := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message:    Message{Role: "assistant", Text: "# Summary\n\nReplanned spec.\n"},
+				StopReason: "stop",
+			},
+			{
+				Message:    Message{Role: "assistant", Text: "1. Rebuild plan\n2. Verify lifecycle"},
+				StopReason: "stop",
+			},
+		},
+	}
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg: Config{
+			Provider:    "openai",
+			Model:       "gpt-5.4",
+			MaxTokens:   1024,
+			Temperature: 0.1,
+		},
+		writer:      &output,
+		ui:          NewUI(),
+		store:       store,
+		session:     session,
+		interactive: false,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+	rt.agent = &Agent{
+		Config:    rt.cfg,
+		Client:    client,
+		Tools:     NewToolRegistry(),
+		Workspace: rt.workspace,
+		Session:   session,
+		Store:     store,
+	}
+
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
+		t.Fatalf("replan blocked feature: %v", err)
+	}
+	got, err := featureStore.Load(feature.ID)
+	if err != nil {
+		t.Fatalf("load replanned feature: %v", err)
+	}
+	if got.Status != featureStatusPlanned {
+		t.Fatalf("expected planned status after replan, got %#v", got)
+	}
+	if len(client.requests) != 2 {
+		t.Fatalf("expected spec and plan requests, got %d", len(client.requests))
+	}
+}
+
+func TestHandleNewFeatureNextRequiresVerificationBeforeClose(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "openai", "gpt-5.4", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	featureStore := NewFeatureStore(root)
+	feature, err := featureStore.Create(root, "implemented workflow", "openai / gpt-5.4", "")
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+	feature.Status = featureStatusImplemented
+	if err := featureStore.Save(feature); err != nil {
+		t.Fatalf("save implemented feature: %v", err)
+	}
+	feature, err = featureStore.Load(feature.ID)
+	if err != nil {
+		t.Fatalf("reload implemented feature: %v", err)
+	}
+	session.ActiveFeatureID = feature.ID
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save active session: %v", err)
+	}
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:      &output,
+		ui:          NewUI(),
+		store:       store,
+		session:     session,
+		interactive: false,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
+		t.Fatalf("implemented next without verification: %v", err)
+	}
+	if !strings.Contains(output.String(), "/verify") {
+		t.Fatalf("expected verification guidance before close, got %q", output.String())
+	}
+	got, err := featureStore.Load(feature.ID)
+	if err != nil {
+		t.Fatalf("load feature: %v", err)
+	}
+	if got.Status != featureStatusImplemented {
+		t.Fatalf("expected feature to remain implemented, got %#v", got)
+	}
+
+	session.LastVerification = &VerificationReport{
+		GeneratedAt: feature.UpdatedAt.Add(-time.Second),
+		Steps:       []VerificationStep{{Label: "unit", Status: VerificationPassed}},
+	}
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save stale passing verification: %v", err)
+	}
+	output.Reset()
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
+		t.Fatalf("implemented next after stale verification: %v", err)
+	}
+	got, err = featureStore.Load(feature.ID)
+	if err != nil {
+		t.Fatalf("load feature after stale verification: %v", err)
+	}
+	if got.Status != featureStatusImplemented {
+		t.Fatalf("expected stale verification to keep feature implemented, got %#v", got)
+	}
+
+	session.LastVerification = &VerificationReport{
+		GeneratedAt: feature.UpdatedAt.Add(time.Second),
+		Steps:       []VerificationStep{{Label: "unit", Status: VerificationPassed}},
+	}
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save passing verification: %v", err)
+	}
+	output.Reset()
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
+		t.Fatalf("implemented next after passing verification: %v", err)
+	}
+	got, err = featureStore.Load(feature.ID)
+	if err != nil {
+		t.Fatalf("load closed feature: %v", err)
+	}
+	if got.Status != featureStatusDone {
+		t.Fatalf("expected feature to close after passing verification, got %#v", got)
+	}
+}
+
+func TestHandleNewFeatureNextShowsDoneCleanupGuidance(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "openai", "gpt-5.4", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	featureStore := NewFeatureStore(root)
+	feature, err := featureStore.Create(root, "done workflow", "openai / gpt-5.4", "")
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+	feature.Status = featureStatusDone
+	if err := featureStore.Save(feature); err != nil {
+		t.Fatalf("save done feature: %v", err)
+	}
+	session.ActiveFeatureID = feature.ID
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save active session: %v", err)
+	}
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		store:   store,
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleNewFeatureCommand("next"); err != nil {
+		t.Fatalf("done next: %v", err)
+	}
+	for _, needle := range []string{"/checkpoint feature-done", "/worktree status"} {
+		if !strings.Contains(output.String(), needle) {
+			t.Fatalf("expected done guidance to include %q, got %q", needle, output.String())
+		}
 	}
 }
 

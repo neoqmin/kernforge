@@ -177,9 +177,9 @@ func verificationHandoff(report VerificationReport, activeFeature FeatureWorkflo
 		{Label: "Checkpoint", Command: "/checkpoint verified-state"},
 	}
 	if hasActiveFeature && strings.EqualFold(activeFeature.Status, featureStatusImplemented) {
-		commands = append([]commandHandoffCommand{{Label: "Close feature", Command: "/new-feature close"}}, commands...)
+		commands = append([]commandHandoffCommand{{Label: "Feature next", Command: "/new-feature next"}}, commands...)
 	} else if hasActiveFeature {
-		commands = append([]commandHandoffCommand{{Label: "Feature", Command: "/new-feature status"}}, commands...)
+		commands = append([]commandHandoffCommand{{Label: "Feature", Command: "/new-feature"}}, commands...)
 	}
 	return renderCommandHandoff("Verification", commandHandoffPlan{
 		Title: "Verification passed; preserve the known-good state or continue the active feature workflow.",
@@ -423,7 +423,7 @@ func checkpointHandoffAfterCreate(meta CheckpointMetadata) string {
 		},
 		Commands: []commandHandoffCommand{
 			{Label: "Inspect", Command: "/checkpoint diff latest"},
-			{Label: "List", Command: "/checkpoints"},
+			{Label: "List", Command: "/checkpoint list"},
 		},
 	})
 }
@@ -450,7 +450,7 @@ func checkpointDiffHandoff(meta CheckpointMetadata, diffs []CheckpointDiffEntry)
 		return renderCommandHandoff("Checkpoint", commandHandoffPlan{
 			Title:    "No file delta was found against this checkpoint.",
 			Details:  []string{"Checkpoint: " + meta.ID},
-			Commands: []commandHandoffCommand{{Label: "List", Command: "/checkpoints"}},
+			Commands: []commandHandoffCommand{{Label: "List", Command: "/checkpoint list"}},
 		})
 	}
 	return renderCommandHandoff("Checkpoint", commandHandoffPlan{
@@ -460,7 +460,7 @@ func checkpointDiffHandoff(meta CheckpointMetadata, diffs []CheckpointDiffEntry)
 		},
 		Commands: []commandHandoffCommand{
 			{Label: "Verify", Command: "/verify"},
-			{Label: "List", Command: "/checkpoints"},
+			{Label: "List", Command: "/checkpoint list"},
 		},
 	})
 }
@@ -471,7 +471,7 @@ func featureStatusHandoff(feature FeatureWorkflow) string {
 		return renderCommandHandoff("Feature", commandHandoffPlan{
 			Title:    "The feature is planned; let Kernforge execute the tracked implementation when ready.",
 			Details:  []string{"Feature: " + feature.ID},
-			Commands: []commandHandoffCommand{{Label: "Continue", Command: "/new-feature implement"}},
+			Commands: []commandHandoffCommand{{Label: "Next", Command: "/new-feature next"}},
 		})
 	case featureStatusImplemented:
 		return renderCommandHandoff("Feature", commandHandoffPlan{
@@ -479,7 +479,7 @@ func featureStatusHandoff(feature FeatureWorkflow) string {
 			Details: []string{"Feature: " + feature.ID},
 			Commands: []commandHandoffCommand{
 				{Label: "Verify", Command: "/verify"},
-				{Label: "Close", Command: "/new-feature close"},
+				{Label: "Next", Command: "/new-feature next"},
 			},
 		})
 	case featureStatusDone:
@@ -495,7 +495,7 @@ func featureStatusHandoff(feature FeatureWorkflow) string {
 		return renderCommandHandoff("Feature", commandHandoffPlan{
 			Title:    "The feature is blocked; regenerate the plan or inspect current artifacts.",
 			Details:  []string{"Feature: " + feature.ID},
-			Commands: []commandHandoffCommand{{Label: "Replan", Command: "/new-feature plan"}},
+			Commands: []commandHandoffCommand{{Label: "Next", Command: "/new-feature next"}},
 		})
 	default:
 		return ""
@@ -519,7 +519,7 @@ func featureCloseHandoff(feature FeatureWorkflow, hasWorktree bool) string {
 func worktreeHandoff(action string, activeFeatureID string) string {
 	commands := []commandHandoffCommand{{Label: "Inspect", Command: "/worktree status"}}
 	if strings.TrimSpace(activeFeatureID) != "" {
-		commands = append([]commandHandoffCommand{{Label: "Feature", Command: "/new-feature status"}}, commands...)
+		commands = append([]commandHandoffCommand{{Label: "Feature", Command: "/new-feature"}}, commands...)
 	}
 	return renderCommandHandoff("Worktree", commandHandoffPlan{
 		Title:    "Keep the isolated workspace aligned with the active task.",
@@ -530,7 +530,7 @@ func worktreeHandoff(action string, activeFeatureID string) string {
 func specialistAssignHandoff(nodeID string, activeFeatureID string) string {
 	commands := []commandHandoffCommand{{Label: "Inspect", Command: "/specialists status"}}
 	if strings.TrimSpace(activeFeatureID) != "" {
-		commands = append([]commandHandoffCommand{{Label: "Feature", Command: "/new-feature status"}}, commands...)
+		commands = append([]commandHandoffCommand{{Label: "Feature", Command: "/new-feature"}}, commands...)
 	}
 	return renderCommandHandoff("Specialist", commandHandoffPlan{
 		Title:    "The editable owner is pinned; continue through the tracked workflow or inspect routing.",

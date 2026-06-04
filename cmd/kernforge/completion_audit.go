@@ -960,9 +960,9 @@ func completionAuditObjectiveEvidence(root string, artifact *CompletionAuditArti
 			"cmd/kernforge/completion_audit_test.go::TestCompletionAuditWarningsAreNotReady",
 			"cmd/kernforge/suggestion_execution.go::executeSafeSuggestionCommand",
 			"cmd/kernforge/suggestion_execution_test.go::TestPRReviewChangedFilesParsesGitStatusShortForms",
-			"README.md::/recover [note]",
-			"README.md::/completion-audit [note]",
-			"FEATURE_USAGE_GUIDE.md::/continuity",
+			"README.md::/session recover [note]",
+			"README.md::/session audit [note]",
+			"FEATURE_USAGE_GUIDE.md::/session continuity",
 		})
 	}
 	if containsAny(objective, "codex", "harness", "app server", "event stream", "jsonl", "하네스") {
@@ -972,8 +972,8 @@ func completionAuditObjectiveEvidence(root string, artifact *CompletionAuditArti
 			"cmd/kernforge/events_test.go::TestEventsExportWritesJSONLAndRecordsEvent",
 			"cmd/kernforge/events_test.go::TestEventsTailPrintsRecentJSONL",
 			"cmd/kernforge/conversation_events.go::conversationEventKindEventStream",
-			"README.md::/events [tail|export]",
-			"FEATURE_USAGE_GUIDE.md::/events export",
+			"README.md::/session events [tail|export]",
+			"FEATURE_USAGE_GUIDE.md::/session events export",
 		})
 	}
 	if containsAny(objective, "goal", "goals", "autonomous", "자율", "목표") {
@@ -1106,20 +1106,20 @@ func completionAuditStatusForBool(ok bool) string {
 func completionAuditNextCommands(artifact CompletionAuditArtifact) []string {
 	commands := []string{
 		"/session dashboard --html",
-		"/continuity continue from completion audit",
+		"/session continuity continue from completion audit",
 	}
 	if len(artifact.BackgroundJobs) > 0 || len(artifact.BackgroundBundles) > 0 {
-		commands = append(commands, "/jobs status")
+		commands = append(commands, "/session jobs status")
 	}
 	if len(artifact.OpenTasks) > 0 {
-		commands = append(commands, "/tasks")
-		commands = append(commands, "/handoff continue from completion audit")
+		commands = append(commands, "/session tasks")
+		commands = append(commands, "/session handoff continue from completion audit")
 	}
 	if completionAuditNeedsVerification(artifact) {
 		commands = append(commands, "/verify")
 	}
 	if len(artifact.Blockers) > 0 {
-		commands = append(commands, "/completion-audit after blockers are fixed")
+		commands = append(commands, "/session audit after blockers are fixed")
 	}
 	return normalizeTaskStateList(commands, 10)
 }

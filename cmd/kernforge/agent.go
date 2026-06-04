@@ -9244,7 +9244,7 @@ func requestExplicitlyAsksForPersistentMemory(lowerLatestUser string) bool {
 	}
 	return containsAny(lowerLatestUser,
 		"persistent memory", "workspace memory", "project memory", "memory context",
-		"memory record", "memory records", "memory search", "/mem", "mem-",
+		"memory record", "memory records", "memory search",
 		"remember from", "recall from", "past session", "previous session", "prior session",
 		"previous work", "prior work", "past work", "prior context", "previous context",
 		"메모리 참고", "메모리에서", "메모리 기록", "메모리 검색", "워크스페이스 메모리",

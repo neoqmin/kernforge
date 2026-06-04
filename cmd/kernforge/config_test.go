@@ -2821,9 +2821,9 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/specialists",
 		"/provider status",
 		"/worktree [status|list|create|enter|attach|leave|cleanup]",
-		"/events [tail|export]",
-		"/completion-audit [note]",
-		"/recover [note]",
+		"/session events [tail|export]",
+		"/session audit [note]",
+		"/session recover [note]",
 		`Using a on "Allow write?" enables write auto-approval for the current session only.`,
 		`Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.`,
 		`Using a on "Allow git?" enables git auto-approval for the current session only.`,
@@ -2845,8 +2845,8 @@ func TestHelpDetailIncludesEventsWorkflow(t *testing.T) {
 		t.Fatalf("expected events help detail to resolve")
 	}
 	for _, needle := range []string{
-		"/events tail [n]",
-		"/events export [path]",
+		"/session events tail [n]",
+		"/session events export [path]",
 		".kernforge/events/latest.jsonl",
 		"JSONL",
 		"local Codex App Server style feed",
@@ -2863,7 +2863,7 @@ func TestHelpDetailIncludesCompletionAuditWorkflow(t *testing.T) {
 		t.Fatalf("expected completion-audit help detail to resolve")
 	}
 	for _, needle := range []string{
-		"/completion-audit [note]",
+		"/session audit [note]",
 		".kernforge/completion_audit/latest.md",
 		"required artifacts",
 		"latest verification",
@@ -2882,9 +2882,9 @@ func TestHelpDetailIncludesRecoverWorkflow(t *testing.T) {
 		t.Fatalf("expected recover help detail to resolve")
 	}
 	for _, needle := range []string{
-		"/recover [note]",
+		"/session recover [note]",
 		".kernforge/recovery/latest.md",
-		"/recover execute-safe [note]",
+		"/session recover execute-safe [note]",
 		"structured diagnosis",
 		"safe-auto whitelist",
 		"latest verification failure",
@@ -2893,6 +2893,26 @@ func TestHelpDetailIncludesRecoverWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected recover help detail to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailClarifiesGoalRecordAndRunBoundary(t *testing.T) {
+	detail, ok := HelpDetail("goal")
+	if !ok {
+		t.Fatalf("expected goal help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/goal <objective>",
+		"without submitting another model turn",
+		"no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run",
+		".kernforge/goals/latest.md",
+		"/goal run latest",
+		"/goal start --run <objective>",
+		"Create the goal and immediately start the autonomous loop",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected goal help detail to contain %q", needle)
 		}
 	}
 }
@@ -3133,12 +3153,12 @@ func TestDefaultConfigUsesCompactProgressDisplay(t *testing.T) {
 	}
 }
 
-func TestParseCommandNormalizesUnderscoreCommandNames(t *testing.T) {
+func TestParseCommandKeepsCommandNamesCanonicalOnly(t *testing.T) {
 	cmd, ok := ParseCommand("/progress_display stream")
 	if !ok {
 		t.Fatalf("expected command to parse")
 	}
-	if cmd.Name != "progress-display" || cmd.Args != "stream" {
+	if cmd.Name != "progress_display" || cmd.Args != "stream" {
 		t.Fatalf("unexpected command: %#v", cmd)
 	}
 }

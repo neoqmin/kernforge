@@ -93,18 +93,18 @@ func TestSafeSuggestionCommandExecutesRecoveryArtifacts(t *testing.T) {
 		},
 	}
 
-	result, err := rt.executeSafeSuggestionCommand("/recover")
+	result, err := rt.executeSafeSuggestionCommand("/session recover")
 	if err != nil {
-		t.Fatalf("execute /recover: %v", err)
+		t.Fatalf("execute /session recover: %v", err)
 	}
-	if result != "executed /recover" {
+	if result != "executed /session recover" {
 		t.Fatalf("unexpected recover result: %q", result)
 	}
-	result, err = rt.executeSafeSuggestionCommand("/completion-audit")
+	result, err = rt.executeSafeSuggestionCommand("/session audit")
 	if err != nil {
-		t.Fatalf("execute /completion-audit: %v", err)
+		t.Fatalf("execute /session audit: %v", err)
 	}
-	if result != "executed /completion-audit" {
+	if result != "executed /session audit" {
 		t.Fatalf("unexpected completion-audit result: %q", result)
 	}
 	for _, path := range []string{
@@ -538,8 +538,8 @@ func TestVerifyToolsCommandsAreRejectedFromAutomationAndSuggestions(t *testing.T
 	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify dashboard --html"); err != nil {
 		t.Fatalf("expected verification dashboard automation to remain allowed: %v", err)
 	}
-	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify-dashboard-html"); err != nil {
-		t.Fatalf("expected legacy verification dashboard automation alias to remain allowed: %v", err)
+	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify-dashboard-html"); err == nil {
+		t.Fatalf("expected legacy verification dashboard automation alias to be rejected")
 	}
 	if err := validateAutomationCommand(AutomationTypeRecurringVerification, "/verify tools set msbuild C:\\tools\\msbuild.exe"); err == nil {
 		t.Fatalf("expected verification tool path writes to be rejected from automation")

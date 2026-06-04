@@ -24,14 +24,15 @@ func goalToolsAvailable(ws Workspace) bool {
 }
 
 type goalToolThreadGoal struct {
-	ThreadID        string `json:"threadId"`
-	Objective       string `json:"objective"`
-	Status          string `json:"status"`
-	TokenBudget     *int64 `json:"tokenBudget,omitempty"`
-	TokensUsed      int64  `json:"tokensUsed"`
-	TimeUsedSeconds int64  `json:"timeUsedSeconds"`
-	CreatedAt       int64  `json:"createdAt"`
-	UpdatedAt       int64  `json:"updatedAt"`
+	ThreadID        string   `json:"threadId"`
+	Objective       string   `json:"objective"`
+	Status          string   `json:"status"`
+	TokenBudget     *int64   `json:"tokenBudget,omitempty"`
+	TokensUsed      int64    `json:"tokensUsed"`
+	TimeUsedSeconds int64    `json:"timeUsedSeconds"`
+	CreatedAt       int64    `json:"createdAt"`
+	UpdatedAt       int64    `json:"updatedAt"`
+	ArtifactRefs    []string `json:"artifactRefs,omitempty"`
 }
 
 type goalToolResponse struct {
@@ -77,7 +78,9 @@ func (t GetGoalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecut
 func (t CreateGoalTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name: "create_goal",
-		Description: "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\n" +
+		Description: "Create an internal active thread goal only when the user or system/developer instructions explicitly ask to start, activate, or use built-in goal tracking.\n" +
+			"Do not call this tool when the user asks to draft, write, create, or prepare a goal prompt; in that case, provide visible prompt text or write the requested markdown file instead.\n" +
+			"For the user-facing Kernforge command flow, tell the user to use /goal <objective> to record a goal, /goal start --run <objective> to create and run one, /goal start @GOAL.md to load a file, or /goal run latest to execute a recorded goal.\n" +
 			"Set token_budget only when an explicit token budget is requested. Fails if a goal exists; use update_goal only for status.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -136,6 +139,13 @@ func (t CreateGoalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	primeGoalSessionState(session, &goal, "created", "")
 	goal.updateUsageTelemetry(session)
 	session.UpsertGoal(goal)
+	if artifactRoot := goalToolArtifactRoot(t.ws, session); strings.TrimSpace(artifactRoot) != "" {
+		updatedGoal, err := writeGoalArtifactsForRoot(session, artifactRoot, goal)
+		if err != nil {
+			return ToolExecutionResult{}, err
+		}
+		goal = updatedGoal
+	}
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindGoal,
 		Severity: conversationSeverityInfo,
@@ -313,7 +323,16 @@ func goalToolThreadGoalFor(session *Session, goal GoalState) goalToolThreadGoal 
 		TimeUsedSeconds: int64(goal.TimeUsedSeconds),
 		CreatedAt:       goal.CreatedAt.Unix(),
 		UpdatedAt:       goal.UpdatedAt.Unix(),
+		ArtifactRefs:    append([]string(nil), goal.ArtifactRefs...),
 	}
+}
+
+func goalToolArtifactRoot(ws Workspace, session *Session) string {
+	root := workspaceSnapshotRoot(ws)
+	if strings.TrimSpace(root) == "" && session != nil {
+		root = session.WorkingDir
+	}
+	return root
 }
 
 func goalToolExecutionResult(response goalToolResponse) ToolExecutionResult {

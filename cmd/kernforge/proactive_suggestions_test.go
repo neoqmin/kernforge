@@ -73,8 +73,8 @@ func TestFailedVerificationSuggestionUsesRecoverBrief(t *testing.T) {
 	items := BuildProactiveSuggestions(SituationSnapshot{}, ProactiveSources{Session: session})
 	for _, item := range items {
 		if item.Type == "inspect_failure" {
-			if item.Command != "/recover" {
-				t.Fatalf("expected failed verification suggestion to use /recover, got %#v", item)
+			if item.Command != "/session recover" {
+				t.Fatalf("expected failed verification suggestion to use /session recover, got %#v", item)
 			}
 			return
 		}

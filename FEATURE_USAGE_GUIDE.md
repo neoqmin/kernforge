@@ -32,7 +32,7 @@ The best current loop looks like this:
 7. Use `/review selection`, `/edit-selection`, `/review plan`, or `/new-feature` to drive the work.
 8. Run `/verify` to execute the verification plan.
 9. Use `/evidence ...` and `/memory ...` to inspect both recent signals and longer-lived context.
-10. Follow the printed handoff blocks and `/continuity` packet after analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, and task-owner actions instead of memorizing the command order.
+10. Follow the printed handoff blocks and `/session continuity` packet after analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, and task-owner actions instead of memorizing the command order.
 11. Let hooks act as the final policy layer before push or PR.
 
 Practical interpretation:
@@ -67,7 +67,7 @@ Current behavior:
 8. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
 9. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
 10. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
-11. `progress_display` controls progress visibility and defaults to `compact`, so routine review and coding work stays readable. `/progress-display auto|compact|stream` changes it from the REPL, and `/progress_display ...` works as the same command when you copy the config key: `compact` keeps short progress in the footer, `auto` keeps durable tool/model/route and project-analysis events without repeating verbose review flow text, and `stream` persists every update for detailed debugging.
+11. `progress_display` controls progress visibility and defaults to `compact`, so routine review and coding work stays readable. `/progress-display auto|compact|stream` changes it from the REPL: `compact` keeps short progress in the footer, `auto` keeps durable tool/model/route and project-analysis events without repeating verbose review flow text, and `stream` persists every update for detailed debugging.
 12. OpenAI-compatible and OpenAI Codex streaming providers emit tool-call construction events so users can see when the model is preparing a tool call and when its arguments are ready.
 13. DeepSeek and other OpenAI-compatible follow-up requests normalize saved tool transcripts before replay. Orphaned `tool` results are dropped, and missing tool-call responses are synthesized as `aborted` outputs so provider-side message validation does not reject recovered sessions. Runtime guidance paths that supersede a tool-call batch persist explicit `NOT_EXECUTED` outputs before the guidance message instead of recovering internal tool output as user context.
 14. Post-change diff review does not import final-answer coding-harness state. Worker/causal-evidence blockers remain visible for final/completion-audit gates, but they do not become post-change code-review blockers.
@@ -155,14 +155,14 @@ Purpose:
 
 Useful commands:
 - `/session dashboard --html`
-- `/events tail 20`
-- `/events export`
+- `/session events tail 20`
+- `/session events export`
 
 Current behavior:
 1. Writes `.kernforge/session_dashboard/latest.html` for the current workspace.
 2. Includes session/provider metadata, context size, task status counts, open task graph nodes, automation due/failed/paused counts, recent conversation events, changed files, background jobs/bundles, and artifact refs.
 3. Records the dashboard path in the conversation event log and opens it automatically in interactive mode when possible.
-4. `/events tail [n]` prints recent session events as JSONL records, while `/events export [path]` writes a durable local event stream to `.kernforge/events/<session-id>.jsonl` and `.kernforge/events/latest.jsonl`.
+4. `/session events tail [n]` prints recent session events as JSONL records, while `/session events export [path]` writes a durable local event stream to `.kernforge/events/<session-id>.jsonl` and `.kernforge/events/latest.jsonl`.
 
 ### Continuity Packet and Local Jobs
 
@@ -172,33 +172,33 @@ Purpose:
 3. Let the terminal user inspect persistent background jobs and bundles directly, not only through model tool calls.
 
 Useful commands:
-- `/continuity`
-- `/continuity continue Codex parity work`
-- `/recover`
-- `/recover continue failed verification`
-- `/recover execute-safe continue failed verification`
-- `/completion-audit`
-- `/completion-audit finish Codex parity work`
-- `/jobs status`
-- `/jobs check latest`
-- `/jobs bundle latest`
-- `/jobs cancel <job-id> stale verification`
-- `/jobs cancel-bundle <bundle-id> superseded`
+- `/session continuity`
+- `/session continuity continue Codex parity work`
+- `/session recover`
+- `/session recover continue failed verification`
+- `/session recover execute-safe continue failed verification`
+- `/session audit`
+- `/session audit finish Codex parity work`
+- `/session jobs status`
+- `/session jobs check latest`
+- `/session jobs bundle latest`
+- `/session jobs cancel <job-id> stale verification`
+- `/session jobs cancel-bundle <bundle-id> superseded`
 - `/worktree list`
 - `/worktree enter`
 - `/worktree attach <path> [branch]`
 
 Current behavior:
-1. `/continuity` writes `.kernforge/continuity/latest.md` and `.kernforge/continuity/latest.json`.
+1. `/session continuity` writes `.kernforge/continuity/latest.md` and `.kernforge/continuity/latest.json`.
 2. The packet includes active/base workspace roots, branch, provider/model, changed files, open task graph nodes, worktree leases, active edit loop, active failure repair, latest verification failure, background jobs/bundles, recent runtime errors, artifact refs, recovery actions, next commands, and a suggested continuation prompt.
-3. Direct `!shell` failures are recorded as `command_error` conversation events, so later `/continuity` and recent-error answers can recover from the failure without requiring the user to paste the output again.
-4. `/jobs` syncs and prints persisted background job/bundle status, then supports direct polling and cancellation by id or `latest`.
+3. Direct `!shell` failures are recorded as `command_error` conversation events, so later `/session continuity` and recent-error answers can recover from the failure without requiring the user to paste the output again.
+4. `/session jobs` syncs and prints persisted background job/bundle status, then supports direct polling and cancellation by id or `latest`.
 5. `/worktree list` shows the session worktree, task-owner editable worktree leases, and `git worktree list --porcelain` in one view before resuming or switching roots.
 6. `/worktree enter` re-enters the recorded isolated worktree after `/worktree leave`, and `/worktree attach <path> [branch]` attaches an existing worktree as an unmanaged session worktree.
-7. `/recover` writes `.kernforge/recovery/latest.md` and `.json` as a narrower failure runbook from the latest error, verification failure, failure-repair state, background jobs, open tasks, and next commands. The runbook includes a structured diagnosis, stable failure signature, action plan status, and execution log.
-8. `/completion-audit` writes `.kernforge/completion_audit/latest.md` and `.json` with blockers, warnings, required artifacts, latest verification, open tasks, background jobs, recent errors, and coding harness evidence before finalizing.
-9. `/recover execute-safe` runs only safe-auto recovery actions and records their status. Shell replay is limited to whitelisted verification/status commands without chaining or redirection.
-10. Slash actions are validated against their recorded artifacts: failed `/verify` reports and non-ready `/completion-audit` results become failed recovery actions, and `stop_on_failure` skips dependent actions.
+7. `/session recover` writes `.kernforge/recovery/latest.md` and `.json` as a narrower failure runbook from the latest error, verification failure, failure-repair state, background jobs, open tasks, and next commands. The runbook includes a structured diagnosis, stable failure signature, action plan status, and execution log.
+8. `/session audit` writes `.kernforge/completion_audit/latest.md` and `.json` with blockers, warnings, required artifacts, latest verification, open tasks, background jobs, recent errors, and coding harness evidence before finalizing.
+9. `/session recover execute-safe` runs only safe-auto recovery actions and records their status. Shell replay is limited to whitelisted verification/status commands without chaining or redirection.
+10. Slash actions are validated against their recorded artifacts: failed `/verify` reports and non-ready `/session audit` results become failed recovery actions, and `stop_on_failure` skips dependent actions.
 11. The safe-auto shell whitelist allows narrow commands such as `go test`, `go vet`, `go list`, `git status`, and `git diff --check`, but rejects high-risk Go/Git flags that can launch external tools or write side artifacts.
 
 ### Autonomous Goals
@@ -209,8 +209,9 @@ Purpose:
 3. Repeat implementation, self-review, verification, completion audit, final semantic review, and recovery until the goal is complete or a concrete blocker is recorded.
 
 Useful commands:
-- `/goal "add the missing recovery tests and update docs"`
-- `/goal start @GOAL.md`
+- `/goal "add the missing recovery tests and update docs"` records a persistent goal and prints artifact paths
+- `/goal start --run "add the missing recovery tests and update docs"` records and immediately runs the autonomous loop
+- `/goal start @GOAL.md` records a markdown goal without running it
 - `/goal start --file GOAL.md --max-iterations 12`
 - `/goal start --time-budget 10m --until-complete @GOAL.md`
 - `/goal start --token-budget 120000 "finish the refactor without exceeding context budget"`
@@ -226,14 +227,14 @@ Useful commands:
 - `kernforge -goal-file GOAL.md`
 
 Current behavior:
-1. `/goal` creates a `GoalState` in the session and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`.
-2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag; one-shot `-goal` runs support matching max-iteration, time-budget, token-budget, until-complete, and rollback flags.
-3. Goal start primes an acceptance contract, task graph, completion criteria, and status artifact before execution.
+1. `/goal` creates a `GoalState` in the session and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`; it records the goal without launching another model turn unless `--run` or `--until-complete` is present.
+2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag; one-shot `-goal` and `-goal-file` runs support matching max-iteration, time-budget, token-budget, until-complete, and rollback flags and execute immediately.
+3. Goal start primes an acceptance contract, task graph, completion criteria, and status artifact before execution. Asking for a "goal prompt" is a drafting request, not an active goal; save that prompt or pass it to `/goal` when you want Kernforge to record or run it.
 4. Each iteration records a checkpoint when checkpoint storage is configured, sends an implementation prompt, then runs an independent review verdict gate.
 5. The review prompt includes concrete evidence whenever available: the implementation reply, checkpoint diff from the iteration start, git status/diff context, changed-file summaries, and bounded untracked-file excerpts.
 6. A `NEEDS_REVISION` review triggers an automatic repair pass before verification. The repair prompt preserves structured reviewer issues plus the same implementation context, so the worker receives actionable findings rather than only a short revision summary.
 7. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for user confirmation.
-8. After the agent pass, Kernforge runs `/verify --full`, writes `/completion-audit`, runs a final semantic reviewer when the audit is ready, and if needed runs `/recover execute-safe` or a semantic repair pass before the next iteration.
+8. After the agent pass, Kernforge runs `/verify --full`, writes `/session audit`, runs a final semantic reviewer when the audit is ready, and if needed runs `/session recover execute-safe` or a semantic repair pass before the next iteration.
 9. The final semantic reviewer receives the same workspace evidence model, and unclear or insufficient review evidence is treated as `NEEDS_REVISION` instead of approval.
 10. The progress ledger tracks changed files, verification, audit blockers/warnings, review verdicts, final semantic verdicts, no-progress count, repeated failure signatures, token usage estimate, and command history.
 11. The loop completes only when the completion audit is `ready=true` and final semantic review returns `APPROVED`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, stopped by the configured iteration/time/token cap, or stopped by repeated no-progress/failure detection.
@@ -305,15 +306,15 @@ Purpose:
 3. Import a result packet from another agent or cloud task and merge its task status/artifact refs back into the current session.
 
 Useful commands:
-- `/handoff`
-- `/handoff continue automation scheduler work`
-- `/handoff import .kernforge/handoff/imports/cloud_result.json`
+- `/session handoff`
+- `/session handoff continue automation scheduler work`
+- `/session handoff import .kernforge/handoff/imports/cloud_result.json`
 
 Current behavior:
 1. Writes `.kernforge/handoff/latest.md` and `.kernforge/handoff/latest.json`.
 2. Records the generated artifact refs in the conversation event log.
 3. The next agent starts from `Suggested Prompt`, `Changed Files`, `Open Tasks`, and `Artifact Refs`.
-4. `/handoff import <path>` normalizes JSON or markdown results into `.kernforge/handoff/imports/*.json` and `*.md`, records a conversation event, and marks matching `completed_tasks` IDs complete in the TaskGraph.
+4. `/session handoff import <path>` normalizes JSON or markdown results into `.kernforge/handoff/imports/*.json` and `*.md`, records a conversation event, and marks matching `completed_tasks` IDs complete in the TaskGraph.
 
 ### Coding Harnesses And Repair Loop
 
@@ -331,7 +332,7 @@ Current behavior:
 6. The test-impact harness maps code-like changed paths to recommended verification commands and records a warning when successful verification evidence is missing.
 7. Build/test shell commands that may write artifacts use an explicit command lifecycle. Kernforge shows them as a verification approval request before execution, not as an already-started shell job. Non-interactive `-prompt -y` runs auto-approve this prompt the same way they auto-accept diff preview, while non-bypass prompt runs skip instead of guessing approval. If the user declines the pinned verification prompt, the tool result is `verification_status=skipped` and `command_execution_status=declined`; that result is not successful verification evidence, does not clear pending verification checks, and must not be retried or polled in the same turn unless the user explicitly approves verification. Declined or prompt-failed automatic verification is also saved as a skipped `VerificationReport`, leaves the verification pending check active, and prompts final answers to say verification was not run instead of treating the run as completed. Generated-document-only artifact turns are exempt from that pending state after deterministic artifact-quality checks approve the report and the final answer avoids unsupported verification claims; they complete the self-driving state instead of re-entering shell validation or review. Background verification starts are recorded as `verification_status=pending` with `verification_evidence=false`; only completed zero-exit background checks become successful evidence. After a terminal decline or skipped automatic verification, same-turn verification retries and `latest` background polls are folded into a synthetic `NOT_EXECUTED` tool result before any new shell/progress status is emitted, steering the model toward disclosure instead of another fake recovery attempt. Final answers can disclose that verification was not run, but the edit-loop ledger still remains `risk_accepted` until successful verification evidence exists for the changed paths. Background job bundles store job lists in `job_entries`; scalar `job_status` remains a single-job status field. Generated analysis, fuzz, and manifest findings are informational verification evidence with an empty command and output-only text; they are reported as skipped evidence context, never executed as shell.
 8. The job-supervisor harness prevents final answers from hiding failed, stale, or still-running background jobs and bundles.
-9. `/completion-audit` externalizes the final readiness gate as `.kernforge/completion_audit/latest.md/json`, so a human or scheduler can see the same blockers and warnings outside the model turn.
+9. `/session audit` externalizes the final readiness gate as `.kernforge/completion_audit/latest.md/json`, so a human or scheduler can see the same blockers and warnings outside the model turn.
 10. The failure-repair harness keeps the first meaningful failure line, repeated count, narrow rerun command, and next repair steps in active context after verification fails.
 11. User-change isolation blocks overwrites when a target file changed outside the agent after the turn began, forcing a fresh read and merge-aware edit.
 12. The final-answer reviewer now runs only for unresolved verification, coding-harness blockers, or actual patch transaction changes. Plan state or task-graph presence alone no longer creates an extra reviewer/revision round-trip.
@@ -382,7 +383,9 @@ Useful commands:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
 - `/docs-refresh`
 - `/analyze-performance [focus]`
-- `/set-analysis-models`
+- `/model analysis`
+- `/model analysis-worker <provider> <model> [reasoning_effort]`
+- `/model analysis-reviewer <provider> <model> [reasoning_effort]`
 
 The goal is optional. If omitted, Kernforge infers a practical goal from the selected mode and path.
 Follow-up modes automatically load a previous `map` run as baseline structure when available. This lets `trace`, `impact`, `surface`, `security`, and `performance` start from the architecture map without sharing the same shard cache.
@@ -393,7 +396,7 @@ When worker and reviewer use the same provider/model/base_url/reasoning_effort r
 Reasoning effort is stored per configured model target, not as one global override. The main profile, optional cross review route, analysis worker/reviewer, and explicit task-owner model overrides can each carry a different `reasoning_effort`; selecting a new effort-capable main, analysis, or task-owner target defaults that target to `low` when it was still undefined, while the cross review route defaults to at least `high` and raises saved `low`/`medium` values to `high` at runtime.
 Strict omission retry is finding-field driven: Kernforge retries when a structured finding is actually omitted, cut off, or weak with omission markers, but it accepts usable structured findings even if prose summary text contains words such as `omitted`.
 Route-specific `base_url` values for the cross review route, analysis worker/reviewer, and task-owner model overrides can be omitted safely. Same-provider routes inherit the main endpoint; different-provider routes use their own configured or default endpoint so proxy/local routes do not drift silently.
-Changing the main provider/model preserves explicit analysis worker and reviewer profiles. Use `/set-analysis-models clear` when you want project analysis to inherit the current main model again instead of a previously dedicated route.
+Changing the main provider/model preserves explicit analysis worker and reviewer profiles. Use `/model analysis clear` when you want project analysis to inherit the current main model again instead of a previously dedicated route.
 `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.
 The generated documentation set includes `FINAL_REPORT.md`, which preserves the assistant-facing final synthesis that was printed at the end of the run, plus the operational docs used for architecture, security, entrypoints, build artifacts, verification, fuzz targets, and operations.
 The dashboard opens those documents in an inline Markdown viewer. Use the `Reader` button for a full-window reading mode when the final report or another generated document is too long for the default panel.
@@ -873,11 +876,9 @@ Purpose:
 
 Useful commands:
 - `/new-feature <task>`
+- `/new-feature`
+- `/new-feature next`
 - `/new-feature list`
-- `/new-feature status [id]`
-- `/new-feature plan [id]`
-- `/new-feature implement [id]`
-- `/new-feature close [id]`
 
 Best used when:
 1. A feature will span multiple sessions or handoffs.
@@ -885,9 +886,10 @@ Best used when:
 3. You want implementation to be an explicit follow-up step instead of happening immediately after planning.
 
 Current integration:
-1. `/new-feature <task>` behaves like `/new-feature start <task>` and creates `feature.json`, `spec.md`, `plan.md`, and `tasks.md`.
+1. `/new-feature <task>` creates `feature.json`, `spec.md`, `plan.md`, and `tasks.md`.
 2. The created feature becomes the active feature in the session status.
-3. `/new-feature implement [id]` executes the saved tracked plan and writes `implementation.md`.
+3. `/new-feature` shows the active feature, artifact paths, task preview, and next action.
+4. `/new-feature next` executes the saved tracked plan, guides verification, or closes after a passing verification.
 
 ### 2.10 Interactive Ergonomics
 
@@ -899,8 +901,8 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
-5. Saved ids for `/resume`, `/evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+5. Saved ids for `/resume`, `/evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, and `/simulate show`; `/new-feature` uses the active feature instead of id-heavy subcommands
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
 Prompt budget behavior that now matters:
@@ -1020,11 +1022,11 @@ Situation:
 Recommended flow:
 1. `/simulate tamper-surface guard.sys`
 2. `/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points`
-3. `/new-feature status`
+3. `/new-feature`
 4. Review the generated `spec.md`, `plan.md`, and `tasks.md` under `.kernforge/features/<id>`.
-5. `/new-feature implement`
+5. `/new-feature next`
 6. `/verify`
-7. `/new-feature close`
+7. `/new-feature next`
 
 Why this works well:
 1. The feature state survives session boundaries.
@@ -1114,10 +1116,10 @@ Basic usage:
 
 ```text
 /new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
-/new-feature status
-/new-feature plan
-/new-feature implement
-/new-feature close
+/new-feature
+/new-feature next
+/verify
+/new-feature next
 ```
 
 Good use cases:
@@ -1127,9 +1129,9 @@ Good use cases:
 
 Current automatic behavior:
 1. A tracked feature workspace is created under `.kernforge/features/<id>`.
-2. `spec.md`, `plan.md`, and `tasks.md` are regenerated when you start or re-plan the feature.
-3. `/new-feature implement [id]` executes the saved plan and writes `implementation.md`.
-4. `status`, `plan`, `implement`, and `close` accept unique id prefixes as well as full ids.
+2. `spec.md`, `plan.md`, and `tasks.md` are generated when you create the feature and regenerated when a blocked feature continues through `next`.
+3. `/new-feature next` executes the saved plan and writes `implementation.md`.
+4. After implementation, `/new-feature next` guides verification first and closes only after a passing verification is recorded.
 
 ### 4.6 `/verify`
 
@@ -1396,10 +1398,10 @@ Interpretation:
 ```text
 /simulate tamper-surface guard.sys
 /new-feature harden driver registration and preserve telemetry audit artifacts
-/new-feature status
-/new-feature implement
+/new-feature
+/new-feature next
 /verify
-/new-feature close
+/new-feature next
 ```
 
 ## 9. Summary

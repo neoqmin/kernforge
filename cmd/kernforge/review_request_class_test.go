@@ -443,7 +443,7 @@ func TestCrossModelReviewThenModifyProducesTriageObligationAndGuidance(t *testin
 	if !strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "Inspect") ||
 		!strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "Safe change") ||
 		!strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "Do not change yet") ||
-		run.CrossReviewTriage.Items[0].NextCommand != "/continuity continue from review" {
+		run.CrossReviewTriage.Items[0].NextCommand != "/session continuity continue from review" {
 		t.Fatalf("expected actionable continuation guidance, got %#v", run.CrossReviewTriage.Items[0])
 	}
 }

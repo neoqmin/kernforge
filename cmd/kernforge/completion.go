@@ -19,13 +19,8 @@ var slashCommands = []string{
 	"codex-login",
 	"specialists",
 	"suggest",
-	"events",
-	"continuity",
-	"completion-audit",
 	"review",
 	"review-soak",
-	"recover",
-	"jobs",
 	"automation",
 	"goal",
 	"permissions",
@@ -48,8 +43,6 @@ var slashCommands = []string{
 	"set-auto-verify",
 	"locale-auto",
 	"worktree",
-	"checkpoints",
-	"rollback",
 	"skills",
 	"mcp",
 	"resources",
@@ -74,15 +67,10 @@ var slashCommands = []string{
 	"resume",
 	"rename",
 	"session",
-	"sessions",
-	"handoff",
-	"tasks",
 	"diff",
 	"export",
 	"config",
 	"trust",
-	"set-analysis-models",
-	"set-specialist-model",
 	"new-feature",
 	"analyze-project",
 	"analyze-dashboard",
@@ -94,125 +82,77 @@ var slashCommands = []string{
 }
 
 var slashCommandDescriptions = map[string]string{
-	"help":                       "Show command lists and detailed usage help.",
-	"status":                     "Show current session state, approvals, and extension status.",
-	"provider":                   "Configure the model provider and inspect provider status.",
-	"profile":                    "Show saved main profiles plus each profile's role model set.",
-	"version":                    "Print the current Kernforge version.",
-	"model":                      "Show or change main, analysis, cross-review, and task-owner model routing.",
-	"effort":                     "Show or set reasoning effort for a configured model target.",
-	"codex-auth":                 "Manage Kernforge-owned OpenAI Codex OAuth login state.",
-	"codex-login":                "Start Kernforge-owned OpenAI Codex OAuth login.",
-	"specialists":                "Show task ownership profiles plus editable ownership and worktree routing state.",
-	"suggest":                    "Inspect proactive situation judgment, suggested next actions, and suggestion mode.",
-	"suggest-dashboard-html":     "Render proactive situation judgment and suggestions in an HTML dashboard.",
-	"session-dashboard-html":     "Render the current session thread, task graph, automation, and artifact state in an HTML dashboard.",
-	"events":                     "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
-	"continuity":                 "Write a long-task continuity packet with recovery actions, worktrees, jobs, changed files, and next commands.",
-	"completion-audit":           "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
-	"review":                     "Run the common review harness for changes, plans, selections, PRs, goals, final answers, or analysis reports.",
-	"review-soak":                "Run the bounded live-provider soak and write status, MCP, Markdown, and runtime-gate artifacts.",
-	"recover":                    "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
-	"jobs":                       "Inspect or cancel persistent background shell jobs and bundles from the terminal.",
-	"automation":                 "Manage reusable scheduled verification and PR review automation slots.",
-	"goal":                       "Run an autonomous Codex-style goal loop from a prompt or markdown file until audit-ready or blocked.",
-	"permissions":                "Inspect or change the session permission mode.",
-	"verify":                     "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
-	"verify-dashboard":           "Summarize recent verification history in the terminal.",
-	"verify-dashboard-html":      "Render recent verification history in the HTML dashboard.",
-	"clear":                      "Clear the current terminal screen.",
-	"compact":                    "Compact the session context to reduce prompt weight.",
-	"context":                    "Inspect the current conversation context and memory payloads.",
-	"memory":                     "Show or manage short-term memory loaded for this workspace.",
-	"mem":                        "Show persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
-	"evidence":                   "Review evidence records and suggest verification, dashboard, or source follow-up.",
-	"evidence-search":            "Search evidence records and suggest verification, dashboard, or source follow-up.",
-	"evidence-show":              "Open one evidence record and suggest the next verification or dashboard step.",
-	"evidence-dashboard":         "Summarize evidence activity in the terminal.",
-	"evidence-dashboard-html":    "Render the evidence dashboard in HTML.",
-	"investigate":                "Run investigation workflows and suggest the next snapshot, simulation, or evidence step.",
-	"investigate-dashboard":      "Summarize investigation history in the terminal.",
-	"investigate-dashboard-html": "Render the investigation dashboard in HTML.",
-	"simulate":                   "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
-	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
-	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
-	"source-scan":                "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
-	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution, optionally selecting objectfilter, minifilter, registryfilter, or wfpcallout.",
-	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
-	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
-	"simulate-dashboard":         "Summarize simulation history in the terminal.",
-	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",
-	"mem-search":                 "Search persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
-	"mem-show":                   "Open one memory entry and suggest confirm, promote, or verification follow-up.",
-	"mem-promote":                "Promote a memory entry for stronger reuse weight.",
-	"mem-demote":                 "Demote a memory entry so it is reused less often.",
-	"mem-confirm":                "Mark a tentative memory entry as confirmed.",
-	"mem-tentative":              "Mark a memory entry as tentative for later review.",
-	"mem-dashboard":              "Summarize persistent memory usage in the terminal.",
-	"mem-dashboard-html":         "Render the persistent memory dashboard in HTML.",
-	"mem-prune":                  "Prune stale or low-value persistent memory entries.",
-	"mem-stats":                  "Show persistent memory counts and health metrics.",
-	"override":                   "Inspect or manage temporary hook override rules.",
-	"override-add":               "Add a temporary hook override rule.",
-	"override-clear":             "Clear active hook override rules.",
-	"checkpoint":                 "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
-	"checkpoint-auto":            "Enable or disable automatic checkpoints before edits.",
-	"detect-verification-tools":  "Probe common Windows build and test tool locations.",
-	"set-msbuild-path":           "Override the MSBuild executable path for verification.",
-	"clear-msbuild-path":         "Clear the workspace MSBuild override path.",
-	"set-cmake-path":             "Override the CMake executable path for verification.",
-	"clear-cmake-path":           "Clear the workspace CMake override path.",
-	"set-ctest-path":             "Override the CTest executable path for verification.",
-	"clear-ctest-path":           "Clear the workspace CTest override path.",
-	"set-ninja-path":             "Override the Ninja executable path for verification.",
-	"clear-ninja-path":           "Clear the workspace Ninja override path.",
-	"set-auto-verify":            "Enable or disable automatic verification after edits.",
-	"checkpoint-diff":            "Compare current workspace files against a checkpoint.",
-	"locale-auto":                "Enable or disable automatic locale switching.",
-	"worktree":                   "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
-	"checkpoints":                "List saved checkpoints for the workspace.",
-	"rollback":                   "Restore the workspace or selected paths from a checkpoint.",
-	"skills":                     "Inspect and manage loaded Codex skills.",
-	"mcp":                        "Inspect MCP server status and tool availability.",
-	"resources":                  "List MCP resources across configured servers.",
-	"resource":                   "Open a specific MCP resource by name or URI.",
-	"prompts":                    "List MCP prompts across configured servers.",
-	"prompt":                     "Run a specific MCP prompt with JSON arguments.",
-	"reload":                     "Reload config, skills, hooks, and MCP state.",
-	"hook-reload":                "Reload hook configuration without restarting.",
-	"hooks":                      "Inspect loaded hooks and hook runtime status.",
-	"init":                       "Bootstrap config, hooks, memory policy, or verify assets.",
-	"open":                       "Open a file in the internal text viewer.",
-	"selection":                  "Show the current viewer selection.",
-	"selections":                 "List saved viewer selections.",
-	"use-selection":              "Promote a saved selection to the active one.",
-	"drop-selection":             "Remove one saved selection from the stack.",
-	"note-selection":             "Attach a note to the active selection.",
-	"tag-selection":              "Attach tags to the active selection.",
-	"clear-selection":            "Clear the active selection only.",
-	"clear-selections":           "Clear the full saved selection stack.",
-	"diff-selection":             "Diff the active selection against current changes.",
-	"edit-selection":             "Apply an edit task scoped to the active selection.",
-	"resume":                     "Resume a previous session by id.",
-	"rename":                     "Rename the current session.",
-	"session":                    "Show the current session metadata.",
-	"sessions":                   "List recent sessions.",
-	"handoff":                    "Generate a compact delegation handoff artifact for another agent or cloud task.",
-	"tasks":                      "Show the active plan and task progress.",
-	"diff":                       "Show the current workspace diff.",
-	"export":                     "Export the current session transcript or artifacts.",
-	"config":                     "Show effective configuration values.",
-	"trust":                      "Show or set whether this project may load project-local config and hooks.",
-	"set-analysis-models":        "Configure worker and reviewer providers for analysis.",
-	"set-specialist-model":       "Configure an optional provider/model override for one task owner profile.",
-	"new-feature":                "Create or manage tracked feature workspaces with implement, verify, close, and cleanup handoffs.",
-	"analyze-project":            "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
-	"analyze-dashboard":          "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
-	"docs-refresh":               "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
-	"analyze-performance":        "Run a performance-focused analysis pass and suggest the next hotspot follow-up.",
-	"set-max-tool-iterations":    "Adjust the max tool loop count for the session.",
-	"progress-display":           "Show or set how in-flight progress updates are displayed.",
-	"exit":                       "Exit the interactive Kernforge session.",
+	"help":                    "Show command lists and detailed usage help.",
+	"status":                  "Show current session state, approvals, and extension status.",
+	"provider":                "Configure the model provider and inspect provider status.",
+	"profile":                 "Show saved main profiles plus each profile's role model set.",
+	"version":                 "Print the current Kernforge version.",
+	"model":                   "Show or change main, analysis, cross-review, and task-owner model routing.",
+	"effort":                  "Show or set reasoning effort for a configured model target.",
+	"codex-auth":              "Manage Kernforge-owned OpenAI Codex OAuth login state.",
+	"codex-login":             "Start Kernforge-owned OpenAI Codex OAuth login.",
+	"specialists":             "Show task ownership profiles plus editable ownership and worktree routing state.",
+	"suggest":                 "Inspect proactive situation judgment, suggested next actions, and suggestion mode.",
+	"review":                  "Run the common review harness for changes, plans, selections, PRs, goals, final answers, or analysis reports.",
+	"review-soak":             "Run the bounded live-provider soak and write status, MCP, Markdown, and runtime-gate artifacts.",
+	"automation":              "Manage reusable scheduled verification and PR review automation slots.",
+	"goal":                    "Record a persistent goal, then explicitly run the autonomous Codex-style loop when ready.",
+	"permissions":             "Inspect or change the session permission mode.",
+	"verify":                  "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
+	"clear":                   "Clear the current terminal screen.",
+	"compact":                 "Compact the session context to reduce prompt weight.",
+	"context":                 "Inspect the current conversation context and memory payloads.",
+	"memory":                  "Show or manage short-term memory loaded for this workspace.",
+	"evidence":                "Review evidence records and suggest verification, dashboard, or source follow-up.",
+	"investigate":             "Run investigation workflows and suggest the next snapshot, simulation, or evidence step.",
+	"simulate":                "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
+	"fuzz-func":               "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
+	"fuzz-campaign":           "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
+	"source-scan":             "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
+	"create-driver-poc":       "Generate an x64 C++20 MSVC kernel-driver POC solution, optionally selecting objectfilter, minifilter, registryfilter, or wfpcallout.",
+	"find-root-cause":         "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
+	"root-cause-patterns":     "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
+	"override":                "Inspect or manage temporary hook override rules.",
+	"checkpoint":              "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
+	"set-auto-verify":         "Enable or disable automatic verification after edits.",
+	"locale-auto":             "Enable or disable automatic locale switching.",
+	"worktree":                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
+	"skills":                  "Inspect and manage loaded Codex skills.",
+	"mcp":                     "Inspect MCP server status and tool availability.",
+	"resources":               "List MCP resources across configured servers.",
+	"resource":                "Open a specific MCP resource by name or URI.",
+	"prompts":                 "List MCP prompts across configured servers.",
+	"prompt":                  "Run a specific MCP prompt with JSON arguments.",
+	"reload":                  "Reload config, skills, hooks, and MCP state.",
+	"hook-reload":             "Reload hook configuration without restarting.",
+	"hooks":                   "Inspect loaded hooks and hook runtime status.",
+	"init":                    "Bootstrap config, hooks, memory policy, or verify assets.",
+	"open":                    "Open a file in the internal text viewer.",
+	"selection":               "Show the current viewer selection.",
+	"selections":              "List saved viewer selections.",
+	"use-selection":           "Promote a saved selection to the active one.",
+	"drop-selection":          "Remove one saved selection from the stack.",
+	"note-selection":          "Attach a note to the active selection.",
+	"tag-selection":           "Attach tags to the active selection.",
+	"clear-selection":         "Clear the active selection only.",
+	"clear-selections":        "Clear the full saved selection stack.",
+	"diff-selection":          "Diff the active selection against current changes.",
+	"edit-selection":          "Apply an edit task scoped to the active selection.",
+	"resume":                  "Resume a previous session by id.",
+	"rename":                  "Rename the current session.",
+	"session":                 "Show session metadata and lifecycle commands for lists, events, recovery, jobs, handoff, tasks, and dashboards.",
+	"diff":                    "Show the current workspace diff.",
+	"export":                  "Export the current session transcript or artifacts.",
+	"config":                  "Show effective configuration values.",
+	"trust":                   "Show or set whether this project may load project-local config and hooks.",
+	"new-feature":             "Create a tracked feature or drive the active feature with next/list lifecycle commands.",
+	"analyze-project":         "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
+	"analyze-dashboard":       "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
+	"docs-refresh":            "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
+	"analyze-performance":     "Run a performance-focused analysis pass and suggest the next hotspot follow-up.",
+	"set-max-tool-iterations": "Adjust the max tool loop count for the session.",
+	"progress-display":        "Show or set how in-flight progress updates are displayed.",
+	"exit":                    "Exit the interactive Kernforge session.",
 }
 
 var slashSubcommandDescriptions = map[string]map[string]string{
@@ -224,10 +164,6 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		builtInPermissionProfileReadOnly:         "Codex built-in read-only active permission profile.",
 		builtInPermissionProfileWorkspace:        "Codex built-in workspace active permission profile.",
 		builtInPermissionProfileDangerFullAccess: "Codex built-in danger-full-access active permission profile.",
-	},
-	"checkpoint-auto": {
-		"on":  "Create a safety checkpoint before edits.",
-		"off": "Skip automatic checkpoint creation before edits.",
 	},
 	"locale-auto": {
 		"on":  "Let Kernforge switch response locale automatically.",
@@ -271,16 +207,39 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"--mode research":           "Use evidence and decision-review policy for research or PoC work.",
 		"--mode ui-polish":          "Use UI, visual, interaction, and accessibility review policy.",
 	},
+	"goal": {
+		"start":           "Record a persistent goal from inline text or a markdown file without running automation.",
+		"start --run":     "Record a goal and immediately start the autonomous loop.",
+		"start --no-run":  "Record a goal and write .kernforge/goals/latest artifacts without running automation.",
+		"start @GOAL.md":  "Load a goal objective from a markdown file and record it.",
+		"run":             "Run or resume the active recorded goal.",
+		"run latest":      "Run or resume the latest recorded goal.",
+		"status":          "Show goal state, iteration count, objective, and artifact paths.",
+		"audit":           "Run a completion audit for the active goal without another implementation pass.",
+		"audit latest":    "Run a completion audit for the latest recorded goal.",
+		"complete":        "Apply the explicit completion gate after audit and semantic review pass.",
+		"complete latest": "Apply the explicit completion gate to the latest recorded goal.",
+		"cancel":          "Cancel the active goal without deleting its artifacts.",
+		"cancel latest":   "Cancel the latest recorded goal without deleting its artifacts.",
+	},
 	"model": {
 		"status":              "Show current model routing, including the optional cross-review route.",
 		"main":                "Configure the main session model.",
+		"analysis":            "Configure or inspect project-analysis worker and reviewer routes.",
+		"analysis status":     "Show current project-analysis worker and reviewer routes.",
+		"analysis clear":      "Reset project-analysis worker and reviewer routes to inherited defaults.",
+		"analysis worker":     "Configure the project-analysis worker model.",
+		"analysis reviewer":   "Configure the project-analysis reviewer model.",
 		"analysis-worker":     "Configure the project-analysis worker model.",
 		"analysis-reviewer":   "Configure the project-analysis reviewer model.",
 		"cross-review":        "Configure the optional independent second-pass reviewer route.",
 		"cross-review status": "Show common review routes, lenses, automation, and route health.",
 		"clear":               "Clear a model route override.",
 		"clear cross-review":  "Clear the optional independent second-pass reviewer route.",
+		"clear analysis":      "Reset project-analysis worker and reviewer routes to inherited defaults.",
 		"task-owner":          "Configure optional task-owner model overrides.",
+		"task-owner status":   "Show effective task-owner model routing.",
+		"task-owner clear":    "Clear one task-owner model override or remove all task-owner model overrides.",
 	},
 	"memory": {
 		"loaded":           "Show short-term memory files loaded into the current session.",
@@ -347,19 +306,31 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"rename": "Rename one saved profile by number.",
 		"delete": "Delete one saved profile by number.",
 	},
-	"set-analysis-models": {
-		"status":   "Show current worker and reviewer analysis providers.",
-		"worker":   "Set the provider used for worker analysis passes.",
-		"reviewer": "Set the provider used for reviewer analysis passes.",
-		"clear":    "Clear provider overrides and use defaults again.",
-	},
-	"set-specialist-model": {
-		"status": "Show optional task owner model overrides and inherited defaults.",
-		"clear":  "Clear one task owner override or remove all task owner model overrides.",
-	},
 	"checkpoint": {
-		"auto": "Show or change automatic checkpoint creation before edits.",
-		"diff": "Compare current workspace files against a checkpoint.",
+		"auto":     "Show or change automatic checkpoint creation before edits.",
+		"diff":     "Compare current workspace files against a checkpoint.",
+		"list":     "List checkpoints for the current workspace.",
+		"rollback": "Restore the workspace to a selected checkpoint, or a specific target if provided.",
+	},
+	"session": {
+		"status":             "Show the current session id and storage path.",
+		"list":               "List recent sessions.",
+		"search":             "Search saved session content.",
+		"events":             "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
+		"continuity":         "Write a long-task continuity packet with recovery actions, worktrees, jobs, changed files, and next commands.",
+		"recover":            "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
+		"audit":              "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
+		"completion-audit":   "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
+		"jobs":               "Inspect or cancel persistent background shell jobs and bundles from the terminal.",
+		"jobs status":        "Show persisted background shell jobs and bundles.",
+		"jobs check":         "Poll one background job by id or latest.",
+		"jobs bundle":        "Poll one background bundle by id or latest.",
+		"jobs cancel":        "Cancel one background job by id or latest.",
+		"jobs cancel-bundle": "Cancel one background bundle by id or latest.",
+		"handoff":            "Generate a compact delegation handoff artifact for another agent or cloud task.",
+		"handoff import":     "Import a delegated result artifact and merge matching completed tasks.",
+		"tasks":              "Show the active plan and task progress.",
+		"dashboard --html":   "Render the current session thread, task graph, automation, and artifact state in an HTML dashboard.",
 	},
 	"analyze-project": {
 		"--mode":      "Choose the analysis mode; Kernforge will infer a default goal when you omit one.",
@@ -375,12 +346,8 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"latest": "Open the latest analyze-project document portal.",
 	},
 	"new-feature": {
-		"start":     "Create a tracked feature workspace and seed planning files.",
-		"status":    "Show the current state of a tracked feature.",
-		"list":      "List tracked feature workspaces.",
-		"plan":      "Regenerate or inspect the tracked feature plan.",
-		"implement": "Execute the next implementation slice for a tracked feature.",
-		"close":     "Finish and archive a tracked feature workspace.",
+		"next": "Run the next safe lifecycle action for the active tracked feature.",
+		"list": "List tracked feature workspaces.",
 	},
 	"investigate": {
 		"status":           "Show the current investigation status.",
@@ -451,13 +418,6 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"attach":  "Attach an existing git worktree path to this session.",
 		"leave":   "Detach from the current isolated worktree without deleting it.",
 		"cleanup": "Remove the recorded isolated worktree after it is clean.",
-	},
-	"jobs": {
-		"status":        "Show persisted background shell jobs and bundles.",
-		"check":         "Poll one background job by id or latest.",
-		"bundle":        "Poll one background bundle by id or latest.",
-		"cancel":        "Cancel one background job by id or latest.",
-		"cancel-bundle": "Cancel one background bundle by id or latest.",
 	},
 	"specialists": {
 		"status":  "Show task ownership profiles plus editable ownership and worktree assignments.",
@@ -756,50 +716,41 @@ func availableAnalyzeProjectFlags(fields []string, firstLevel []string) []string
 
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
-		"permissions":          {"default", "acceptEdits", "plan", "bypassPermissions", builtInPermissionProfileReadOnly, builtInPermissionProfileWorkspace, builtInPermissionProfileDangerFullAccess},
-		"checkpoint-auto":      {"on", "off"},
-		"locale-auto":          {"on", "off"},
-		"set-auto-verify":      {"on", "off"},
-		"progress-display":     {"auto", "compact", "stream"},
-		"worktree":             {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
-		"jobs":                 {"status", "check", "bundle", "cancel", "cancel-bundle"},
-		"specialists":          {"status", "assign", "cleanup"},
-		"suggest":              {"status", "list", "accept", "dismiss", "mode", "dashboard --html"},
-		"session":              {"dashboard --html"},
-		"provider":             append([]string{"status"}, providerChoiceCompletionTokens()...),
-		"effort":               {"undefined", "minimal", "low", "medium", "high", "xhigh"},
-		"codex-auth":           {"status", "login", "logout", "path"},
-		"profile":              {"list", "show", "status", "pin", "unpin", "rename", "delete"},
-		"analyze-project":      {"--mode", "--path"},
-		"analyze-dashboard":    {"latest"},
-		"verify":               {"--full", "dashboard", "dashboard --html", "tools", "tools detect", "tools set", "tools clear"},
-		"model":                {"status", "main", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
-		"review":               {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
-		"review-soak":          {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
-		"handoff":              {"import"},
-		"memory":               {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats"},
-		"evidence":             {"recent", "search", "show", "dashboard", "dashboard --html"},
-		"override":             {"status", "add", "clear"},
-		"checkpoint":           {"auto", "diff"},
-		"set-analysis-models":  {"status", "worker", "reviewer", "clear"},
-		"set-specialist-model": {"status", "clear"},
-		"new-feature":          {"start", "status", "list", "plan", "implement", "close"},
-		"investigate":          {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard --html"},
-		"simulate":             {"status", "show", "list", "dashboard", "dashboard --html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
-		"fuzz-func":            {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "continue --profile extended", "repro <crash>", "minimize <crash>", "language"},
-		"fuzz-campaign":        {"status", "run", "new", "list", "show"},
-		"source-scan":          {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
-		"create-driver-poc":    {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
-		"automation":           {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
-		"init":                 {"config", "hooks", "memory-policy", "skill", "verify"},
+		"permissions":       {"default", "acceptEdits", "plan", "bypassPermissions", builtInPermissionProfileReadOnly, builtInPermissionProfileWorkspace, builtInPermissionProfileDangerFullAccess},
+		"locale-auto":       {"on", "off"},
+		"set-auto-verify":   {"on", "off"},
+		"progress-display":  {"auto", "compact", "stream"},
+		"worktree":          {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
+		"specialists":       {"status", "assign", "cleanup"},
+		"suggest":           {"status", "list", "accept", "dismiss", "mode", "dashboard --html"},
+		"session":           {"status", "list", "search", "events", "continuity", "recover", "audit", "jobs", "handoff", "tasks", "dashboard --html"},
+		"provider":          append([]string{"status"}, providerChoiceCompletionTokens()...),
+		"effort":            {"undefined", "minimal", "low", "medium", "high", "xhigh"},
+		"codex-auth":        {"status", "login", "logout", "path"},
+		"profile":           {"list", "show", "status", "pin", "unpin", "rename", "delete"},
+		"analyze-project":   {"--mode", "--path"},
+		"analyze-dashboard": {"latest"},
+		"verify":            {"--full", "dashboard", "dashboard --html", "tools", "tools detect", "tools set", "tools clear"},
+		"model":             {"status", "main", "analysis", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
+		"review":            {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
+		"goal":              {"start", "start --run", "start --no-run", "start @GOAL.md", "run latest", "status", "audit latest", "complete latest", "cancel latest"},
+		"review-soak":       {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
+		"memory":            {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats"},
+		"evidence":          {"recent", "search", "show", "dashboard", "dashboard --html"},
+		"override":          {"status", "add", "clear"},
+		"checkpoint":        {"auto", "diff", "list", "rollback"},
+		"new-feature":       {"next", "list"},
+		"investigate":       {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard --html"},
+		"simulate":          {"status", "show", "list", "dashboard", "dashboard --html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
+		"fuzz-func":         {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "continue --profile extended", "repro <crash>", "minimize <crash>", "language"},
+		"fuzz-campaign":     {"status", "run", "new", "list", "show"},
+		"source-scan":       {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
+		"create-driver-poc": {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
+		"automation":        {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
+		"init":              {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
 
 	if len(fields) == 0 {
-		if commandName == "set-specialist-model" {
-			options := append([]string{}, firstLevel[commandName]...)
-			options = append(options, rt.allSpecialistNames()...)
-			return normalizeTaskStateList(options, 32), 0, true
-		}
 		if options, ok := firstLevel[commandName]; ok {
 			return options, 0, true
 		}
@@ -849,17 +800,6 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	case "worktree":
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
-		}
-		return nil, 0, false
-	case "jobs":
-		if len(fields) <= 1 {
-			return firstLevel[commandName], 0, true
-		}
-		if len(fields) == 2 && (strings.EqualFold(fields[0], "check") || strings.EqualFold(fields[0], "job") || strings.EqualFold(fields[0], "cancel")) {
-			return append([]string{"latest"}, rt.recentBackgroundJobIDs()...), 1, true
-		}
-		if len(fields) == 2 && (strings.EqualFold(fields[0], "bundle") || strings.EqualFold(fields[0], "check-bundle") || strings.EqualFold(fields[0], "cancel-bundle")) {
-			return append([]string{"latest"}, rt.recentBackgroundBundleIDs()...), 1, true
 		}
 		return nil, 0, false
 	case "specialists":
@@ -932,6 +872,9 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		if len(fields) == 2 && strings.EqualFold(fields[0], "auto") {
 			return []string{"on", "off"}, 1, true
 		}
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "diff") || strings.EqualFold(fields[0], "rollback")) {
+			return append([]string{"latest"}, rt.recentCheckpointIDs()...), 1, true
+		}
 		return nil, 0, false
 	case "suggest":
 		if len(fields) <= 1 {
@@ -945,47 +888,61 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
 		}
-		return nil, 0, false
-	case "evidence-show":
-		if len(fields) <= 1 {
-			return rt.recentEvidenceIDs(), 0, true
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "events")) {
+			return []string{"tail", "export"}, 1, true
 		}
-		return nil, 0, false
-	case "mem-show", "mem-promote", "mem-demote", "mem-confirm", "mem-tentative":
-		if len(fields) <= 1 {
-			return rt.recentPersistentMemoryIDs(), 0, true
+		if len(fields) == 2 && strings.EqualFold(fields[0], "jobs") {
+			return []string{"status", "check", "bundle", "cancel", "cancel-bundle"}, 1, true
 		}
-		return nil, 0, false
-	case "set-analysis-models":
-		if len(fields) == 1 {
-			return firstLevel[commandName], 0, true
+		if len(fields) == 3 && strings.EqualFold(fields[0], "jobs") &&
+			(strings.EqualFold(fields[1], "check") || strings.EqualFold(fields[1], "job") || strings.EqualFold(fields[1], "cancel")) {
+			return append([]string{"latest"}, rt.recentBackgroundJobIDs()...), 2, true
 		}
-		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
-			return providerChoiceCompletionTokens(), 1, true
+		if len(fields) == 3 && strings.EqualFold(fields[0], "jobs") &&
+			(strings.EqualFold(fields[1], "bundle") || strings.EqualFold(fields[1], "check-bundle") || strings.EqualFold(fields[1], "cancel-bundle")) {
+			return append([]string{"latest"}, rt.recentBackgroundBundleIDs()...), 2, true
 		}
-		return nil, 0, false
-	case "set-specialist-model":
-		if len(fields) == 1 {
-			options := append([]string{}, firstLevel[commandName]...)
-			options = append(options, rt.allSpecialistNames()...)
-			return normalizeTaskStateList(options, 32), 0, true
-		}
-		if len(fields) == 2 {
-			if strings.EqualFold(fields[0], "status") || strings.EqualFold(fields[0], "clear") {
-				options := append([]string{}, rt.allSpecialistNames()...)
-				if strings.EqualFold(fields[0], "clear") {
-					options = append([]string{"all"}, options...)
-				}
-				return normalizeTaskStateList(options, 32), 1, true
-			}
-			if rt.hasSpecialistName(fields[0]) {
-				return providerChoiceCompletionTokens(), 1, true
-			}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "handoff") {
+			return []string{"import"}, 1, true
 		}
 		return nil, 0, false
 	case "model":
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
+		}
+		if strings.EqualFold(fields[0], "analysis") {
+			if len(fields) == 2 {
+				return []string{"status", "worker", "reviewer", "clear"}, 1, true
+			}
+			if len(fields) == 3 && (strings.EqualFold(fields[1], "worker") || strings.EqualFold(fields[1], "reviewer")) {
+				return providerChoiceCompletionTokens(), 2, true
+			}
+			return nil, 0, false
+		}
+		if strings.EqualFold(fields[0], "analysis-worker") || strings.EqualFold(fields[0], "analysis-reviewer") {
+			if len(fields) == 2 {
+				return providerChoiceCompletionTokens(), 1, true
+			}
+			return nil, 0, false
+		}
+		if strings.EqualFold(fields[0], "task-owner") {
+			if len(fields) == 2 {
+				options := append([]string{"status", "clear"}, rt.allSpecialistNames()...)
+				return normalizeTaskStateList(options, 32), 1, true
+			}
+			if len(fields) == 3 {
+				if strings.EqualFold(fields[1], "status") || strings.EqualFold(fields[1], "clear") {
+					options := append([]string{}, rt.allSpecialistNames()...)
+					if strings.EqualFold(fields[1], "clear") {
+						options = append([]string{"all"}, options...)
+					}
+					return normalizeTaskStateList(options, 32), 2, true
+				}
+				if rt.hasSpecialistName(fields[1]) {
+					return providerChoiceCompletionTokens(), 2, true
+				}
+			}
+			return nil, 0, false
 		}
 		if strings.EqualFold(fields[0], "cross-review") {
 			if len(fields) == 2 {
@@ -996,7 +953,11 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if strings.EqualFold(fields[0], "clear") {
 			if len(fields) == 2 {
-				return []string{"cross-review"}, 1, true
+				return []string{"analysis", "cross-review", "task-owner"}, 1, true
+			}
+			if len(fields) == 3 && strings.EqualFold(fields[1], "task-owner") {
+				options := append([]string{"all"}, rt.allSpecialistNames()...)
+				return normalizeTaskStateList(options, 32), 2, true
 			}
 			return nil, 0, false
 		}
@@ -1031,12 +992,6 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	case "new-feature":
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
-		}
-		if len(fields) == 2 {
-			switch strings.ToLower(strings.TrimSpace(fields[0])) {
-			case "status", "plan", "implement", "close":
-				return rt.recentFeatureIDs(), 1, true
-			}
 		}
 		return nil, 0, false
 	case "investigate":
@@ -1252,6 +1207,23 @@ func (rt *runtimeState) recentBackgroundBundleIDs() []string {
 	return normalizeTaskStateList(ids, 16)
 }
 
+func (rt *runtimeState) recentCheckpointIDs() []string {
+	if rt == nil || rt.checkpoints == nil {
+		return nil
+	}
+	items, err := rt.checkpoints.List(firstNonBlankString(rt.workspace.Root, rt.workspace.BaseRoot))
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return normalizeTaskStateList(ids, 16)
+}
+
 func (rt *runtimeState) editableSpecialistNames() []string {
 	cfg := Config{}
 	if rt != nil {
@@ -1377,6 +1349,14 @@ func commandCompletionDescription(item string) string {
 	if len(fields) >= 2 {
 		rawSubcommand := strings.TrimSpace(fields[1])
 		subcommand := strings.ToLower(rawSubcommand)
+		if commandName == "model" && len(fields) >= 3 && strings.EqualFold(fields[1], "task-owner") {
+			target := strings.TrimSpace(fields[2])
+			if target != "" && !strings.HasPrefix(strings.ToLower(target), "-") &&
+				!strings.EqualFold(target, "status") &&
+				!strings.EqualFold(target, "clear") {
+				return "Configure an optional provider/model override for the " + target + " task owner profile."
+			}
+		}
 		if descriptions, ok := slashSubcommandDescriptions[commandName]; ok {
 			fullSubcommand := strings.ToLower(strings.Join(fields[1:], " "))
 			if description := strings.TrimSpace(descriptions[fullSubcommand]); description != "" {
@@ -1388,9 +1368,6 @@ func commandCompletionDescription(item string) string {
 			if description := strings.TrimSpace(descriptions[subcommand]); description != "" {
 				return description
 			}
-		}
-		if commandName == "set-specialist-model" && !strings.HasPrefix(subcommand, "-") {
-			return "Configure an optional provider/model override for the " + strings.TrimSpace(fields[1]) + " task owner profile."
 		}
 	}
 	return strings.TrimSpace(slashCommandDescriptions[commandName])

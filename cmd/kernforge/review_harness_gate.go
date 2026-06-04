@@ -1561,7 +1561,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 		}
 		out = append(out, ReviewNextCommand{
 			ID:             "repair",
-			Command:        "/continuity continue from review",
+			Command:        "/session continuity continue from review",
 			Reason:         reason,
 			Safety:         "safe_local",
 			When:           when,
@@ -1583,7 +1583,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 		}
 		out = append(out, ReviewNextCommand{
 			ID:             "repair-warnings",
-			Command:        "/continuity continue from review",
+			Command:        "/session continuity continue from review",
 			Reason:         reason,
 			Safety:         "safe_local",
 			When:           when,
@@ -1605,7 +1605,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 		}
 		out = append(out, ReviewNextCommand{
 			ID:             "repair",
-			Command:        "/continuity continue from review",
+			Command:        "/session continuity continue from review",
 			Reason:         reason,
 			Safety:         "safe_local",
 			When:           when,
@@ -1617,7 +1617,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 	if reviewRunHasCrossReviewUserDecision(run) {
 		out = append(out, ReviewNextCommand{
 			ID:                   "cross-review-triage",
-			Command:              "/continuity continue from review",
+			Command:              "/session continuity continue from review",
 			Reason:               "cross-review triage has findings that need a user or primary repair decision",
 			Safety:               "safe_local",
 			When:                 "before final answer if the finding affects accepted risk or next repair scope",
@@ -1630,7 +1630,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 	if gate.Verdict == reviewVerdictApprovedWithWarnings {
 		out = append(out, ReviewNextCommand{
 			ID:             "completion-audit",
-			Command:        "/completion-audit",
+			Command:        "/session audit",
 			Reason:         "warnings remain; completion audit can validate final readiness",
 			Safety:         "read_only",
 			When:           "before final answer",

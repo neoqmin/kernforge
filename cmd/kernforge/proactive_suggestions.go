@@ -309,7 +309,7 @@ func BuildProactiveSuggestions(snapshot SituationSnapshot, src ProactiveSources)
 			Type:                 "inspect_failure",
 			Title:                "반복 실행보다 실패 원인 drilldown",
 			Reason:               compactPromptSection(failed, 220),
-			Command:              "/recover",
+			Command:              "/session recover",
 			EstimatedCost:        "medium",
 			Risk:                 "medium",
 			RequiresConfirmation: false,
@@ -387,7 +387,7 @@ func BuildProactiveSuggestions(snapshot SituationSnapshot, src ProactiveSources)
 			Type:                 "cleanup_or_close_feature",
 			Title:                "완료된 feature 정리",
 			Reason:               cleanup,
-			Command:              "/new-feature close",
+			Command:              "/new-feature next",
 			EstimatedCost:        "low",
 			Risk:                 "low",
 			RequiresConfirmation: false,
@@ -852,11 +852,11 @@ func suggestionDashboardLinks(item Suggestion) []string {
 	case "fuzz_next_step":
 		return []string{"/fuzz-campaign status", "/evidence dashboard --html"}
 	case "checkpoint_or_worktree":
-		return []string{"/checkpoints", "/checkpoint diff"}
+		return []string{"/checkpoint list", "/checkpoint diff"}
 	case "retry_or_switch_model":
 		return []string{"/provider status", "/model"}
 	case "continue_workflow", "cleanup_or_close_feature":
-		return []string{"/tasks", "/suggest"}
+		return []string{"/session tasks", "/suggest"}
 	default:
 		if strings.TrimSpace(item.Command) != "" {
 			return []string{item.Command}
@@ -975,10 +975,10 @@ func cleanupFeatureSuggestion(sess *Session) string {
 	if sess == nil || strings.TrimSpace(sess.ActiveFeatureID) == "" || sess.LastVerification == nil {
 		return ""
 	}
-	if sess.LastVerification.HasFailures() {
+	if sess.LastVerification.HasFailures() || sess.LastVerification.WasSkipped() || !sess.LastVerification.HasPassedStep() {
 		return ""
 	}
-	return "active feature " + sess.ActiveFeatureID + " has a passing latest verification; consider closing or summarizing it"
+	return "active feature " + sess.ActiveFeatureID + " has a passing latest verification; continue its lifecycle with /new-feature next"
 }
 
 func evidenceCaptureGap(src ProactiveSources) string {

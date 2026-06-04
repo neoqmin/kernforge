@@ -288,7 +288,7 @@ func crossReviewTriageDoNotChangeGuidance(entry CrossReviewTriageEntry) string {
 }
 
 func crossReviewTriageNextCommand(entry CrossReviewTriageEntry) string {
-	return "/continuity continue from review"
+	return "/session continuity continue from review"
 }
 
 func reviewRunHasCrossReviewUserDecision(run ReviewRun) bool {

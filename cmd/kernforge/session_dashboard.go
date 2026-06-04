@@ -351,12 +351,12 @@ func renderSessionDashboardCommandChips() string {
 	commands := []string{
 		"/status",
 		"/review",
-		"/tasks",
+		"/session tasks",
 		"/automation digest",
 		"/automation run-due",
 		"/verify dashboard --html",
 		"/suggest dashboard --html",
-		"/handoff",
+		"/session handoff",
 	}
 	chips := make([]string, 0, len(commands))
 	for _, command := range commands {

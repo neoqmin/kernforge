@@ -462,10 +462,6 @@ func validateAutomationCommand(typ string, command string) error {
 	}
 	switch strings.TrimSpace(typ) {
 	case AutomationTypeRecurringVerification:
-		if alias, ok := hiddenSlashCommandAlias(cmd.Name); ok {
-			cmd.Name = alias.Canonical
-			cmd.Args = joinCommandArgs(alias.ArgsPrefix, cmd.Args)
-		}
 		switch cmd.Name {
 		case "verify":
 			subcommand, _ := commandSubcommandAndRest(cmd.Args)
@@ -1248,10 +1244,6 @@ func (rt *runtimeState) executeSafeSuggestionCommandContext(ctx context.Context,
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	if alias, ok := hiddenSlashCommandAlias(cmd.Name); ok {
-		cmd.Name = alias.Canonical
-		cmd.Args = joinCommandArgs(alias.ArgsPrefix, cmd.Args)
-	}
 	switch cmd.Name {
 	case "verify":
 		subcommand, rest := commandSubcommandAndRest(cmd.Args)
@@ -1292,29 +1284,31 @@ func (rt *runtimeState) executeSafeSuggestionCommandContext(ctx context.Context,
 		return "executed /suggest dashboard --html", nil
 	case "session":
 		subcommand, rest := commandSubcommandAndRest(cmd.Args)
-		if subcommand != "dashboard" && subcommand != "dashboard-html" {
-			return "", fmt.Errorf("only /session dashboard --html is allowed from automatic suggestion execution")
+		switch subcommand {
+		case "dashboard", "dashboard-html":
+			rest, _ = commandArgsHaveHTMLFlag(rest)
+			if err := rt.handleSessionDashboardHTMLCommand(rest); err != nil {
+				return "", err
+			}
+			return "executed /session dashboard --html", nil
+		case "continuity":
+			if err := rt.handleContinuityCommand(rest); err != nil {
+				return "", err
+			}
+			return "executed /session continuity", nil
+		case "recover":
+			if err := rt.handleRecoverCommandContext(ctx, rest); err != nil {
+				return "", err
+			}
+			return "executed /session recover", nil
+		case "audit", "completion-audit":
+			if err := rt.handleCompletionAuditCommand(rest); err != nil {
+				return "", err
+			}
+			return "executed /session audit", nil
+		default:
+			return "", fmt.Errorf("only /session dashboard --html, /session continuity, /session recover, and /session audit are allowed from automatic suggestion execution")
 		}
-		rest, _ = commandArgsHaveHTMLFlag(rest)
-		if err := rt.handleSessionDashboardHTMLCommand(rest); err != nil {
-			return "", err
-		}
-		return "executed /session dashboard --html", nil
-	case "continuity":
-		if err := rt.handleContinuityCommand(cmd.Args); err != nil {
-			return "", err
-		}
-		return "executed /continuity", nil
-	case "recover":
-		if err := rt.handleRecoverCommandContext(ctx, cmd.Args); err != nil {
-			return "", err
-		}
-		return "executed /recover", nil
-	case "completion-audit":
-		if err := rt.handleCompletionAuditCommand(cmd.Args); err != nil {
-			return "", err
-		}
-		return "executed /completion-audit", nil
 	case "evidence":
 		subcommand, rest := commandSubcommandAndRest(cmd.Args)
 		switch subcommand {

@@ -3603,7 +3603,7 @@ func TestProgressDisplayCommandShowsAndSetsMode(t *testing.T) {
 	}
 
 	out.Reset()
-	if _, err := rt.handleCommand(Command{Name: "progress_display", Args: "stream"}); err != nil {
+	if _, err := rt.handleCommand(Command{Name: "progress-display", Args: "stream"}); err != nil {
 		t.Fatalf("handleCommand(progress-display stream): %v", err)
 	}
 	if got := configProgressDisplay(rt.cfg); got != "stream" {
@@ -3771,8 +3771,8 @@ func TestTasksCommandRendersSummaryAndModernPlanItems(t *testing.T) {
 		workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	if _, err := rt.handleCommand(Command{Name: "tasks"}); err != nil {
-		t.Fatalf("handleCommand(tasks): %v", err)
+	if _, err := rt.handleCommand(Command{Name: "session", Args: "tasks"}); err != nil {
+		t.Fatalf("handleCommand(session tasks): %v", err)
 	}
 
 	text := out.String()

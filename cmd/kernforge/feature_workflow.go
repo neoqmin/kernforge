@@ -414,6 +414,26 @@ func (rt *runtimeState) resolveFeature(arg string) (FeatureWorkflow, *FeatureSto
 	return feature, store, nil
 }
 
+func (rt *runtimeState) resolveActiveFeature() (FeatureWorkflow, *FeatureStore, error) {
+	store := rt.featureStore()
+	if store == nil {
+		return FeatureWorkflow{}, nil, fmt.Errorf("feature store is not configured")
+	}
+	targetID := ""
+	if rt.session != nil {
+		targetID = strings.TrimSpace(rt.session.ActiveFeatureID)
+	}
+	if targetID == "" {
+		return FeatureWorkflow{}, store, fmt.Errorf("no active tracked feature")
+	}
+	feature, err := resolveFeatureByIDOrPrefix(store, targetID)
+	if err != nil {
+		return FeatureWorkflow{}, store, err
+	}
+	_ = rt.setActiveFeature(feature)
+	return feature, store, nil
+}
+
 func resolveFeatureByIDOrPrefix(store *FeatureStore, target string) (FeatureWorkflow, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -452,45 +472,43 @@ func resolveFeatureByIDOrPrefix(store *FeatureStore, target string) (FeatureWork
 }
 
 func (rt *runtimeState) handleNewFeatureCommand(args string) error {
-	if rt.agent == nil || rt.agent.Client == nil {
-		return fmt.Errorf("no model provider is configured")
-	}
 	trimmed := strings.TrimSpace(args)
 	if trimmed == "" {
-		if rt.session != nil && strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
-			return rt.handleNewFeatureStatusCommand("")
-		}
-		return fmt.Errorf("usage: /new-feature <task description> | /new-feature [start|list|status|plan|implement|close] ...")
+		return rt.handleNewFeatureStatusCommand("")
 	}
 
-	fields := strings.Fields(trimmed)
-	if len(fields) == 0 {
-		return fmt.Errorf("usage: /new-feature <task description>")
-	}
-	subcommand := strings.ToLower(fields[0])
-	rest := strings.TrimSpace(trimmed[len(fields[0]):])
-	switch subcommand {
-	case "start":
-		return rt.handleNewFeatureStartCommand(rest)
+	switch strings.ToLower(trimmed) {
 	case "list":
 		return rt.handleNewFeatureListCommand()
-	case "status":
-		return rt.handleNewFeatureStatusCommand(rest)
-	case "plan":
-		return rt.handleNewFeaturePlanCommand(rest)
-	case "implement":
-		return rt.handleNewFeatureImplementCommand(rest)
-	case "close":
-		return rt.handleNewFeatureCloseCommand(rest)
+	case "next":
+		return rt.handleNewFeatureNextCommand()
 	default:
 		return rt.handleNewFeatureStartCommand(trimmed)
 	}
+}
+
+func (rt *runtimeState) ensureNewFeatureModelProvider() error {
+	if rt == nil || rt.agent == nil || rt.agent.Client == nil {
+		return fmt.Errorf("no model provider is configured")
+	}
+	if rt.session == nil {
+		return fmt.Errorf("session is not configured")
+	}
+	return nil
+}
+
+func (rt *runtimeState) printNewFeatureUsage() {
+	fmt.Fprintln(rt.writer, rt.ui.warnLine("No active tracked feature."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Start one with /new-feature <task>, or inspect existing work with /new-feature list."))
 }
 
 func (rt *runtimeState) handleNewFeatureStartCommand(request string) error {
 	request = strings.TrimSpace(request)
 	if request == "" {
 		return fmt.Errorf("usage: /new-feature <task description>")
+	}
+	if err := rt.ensureNewFeatureModelProvider(); err != nil {
+		return err
 	}
 	store := rt.featureStore()
 	plannerLabel := rt.session.Provider + " / " + rt.session.Model
@@ -518,6 +536,9 @@ func (rt *runtimeState) handleNewFeatureStartCommand(request string) error {
 }
 
 func (rt *runtimeState) handleNewFeaturePlanCommand(arg string) error {
+	if err := rt.ensureNewFeatureModelProvider(); err != nil {
+		return err
+	}
 	feature, store, err := rt.resolveFeature(arg)
 	if err != nil {
 		return err
@@ -532,6 +553,9 @@ func (rt *runtimeState) handleNewFeaturePlanCommand(arg string) error {
 func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature *FeatureWorkflow) error {
 	if store == nil || feature == nil {
 		return fmt.Errorf("feature workflow is not available")
+	}
+	if err := rt.ensureNewFeatureModelProvider(); err != nil {
+		return err
 	}
 	feature.Planner = strings.TrimSpace(rt.session.Provider + " / " + rt.session.Model)
 	feature.Reviewer = ""
@@ -621,7 +645,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("spec_path", feature.SpecPath))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_path", feature.PlanPath))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("tasks_path", feature.TasksPath))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Next: run /new-feature implement to execute the tracked feature plan."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Next: run /new-feature next to execute the tracked feature plan."))
 	return nil
 }
 
@@ -647,8 +671,18 @@ func (rt *runtimeState) handleNewFeatureListCommand() error {
 }
 
 func (rt *runtimeState) handleNewFeatureStatusCommand(arg string) error {
-	feature, _, err := rt.resolveFeature(arg)
+	var feature FeatureWorkflow
+	var err error
+	if strings.TrimSpace(arg) == "" {
+		feature, _, err = rt.resolveActiveFeature()
+	} else {
+		feature, _, err = rt.resolveFeature(arg)
+	}
 	if err != nil {
+		if strings.Contains(err.Error(), "no active tracked feature") {
+			rt.printNewFeatureUsage()
+			return nil
+		}
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Tracked Feature"))
@@ -683,6 +717,104 @@ func (rt *runtimeState) handleNewFeatureStatusCommand(arg string) error {
 		}
 	}
 	return nil
+}
+
+func featurePlanArtifactsMissing(feature FeatureWorkflow) bool {
+	if strings.TrimSpace(feature.SpecPath) == "" || strings.TrimSpace(feature.PlanPath) == "" {
+		return true
+	}
+	if _, err := os.Stat(feature.SpecPath); err != nil {
+		return true
+	}
+	if _, err := os.Stat(feature.PlanPath); err != nil {
+		return true
+	}
+	return false
+}
+
+func latestFeatureVerificationPassed(sess *Session, feature FeatureWorkflow) bool {
+	if sess == nil || sess.LastVerification == nil {
+		return false
+	}
+	report := sess.LastVerification
+	if report.GeneratedAt.IsZero() {
+		return false
+	}
+	if !feature.UpdatedAt.IsZero() && report.GeneratedAt.Before(feature.UpdatedAt) {
+		return false
+	}
+	return !report.HasFailures() && !report.WasSkipped() && report.HasPassedStep()
+}
+
+func (rt *runtimeState) handleNewFeatureNextCommand() error {
+	feature, _, err := rt.resolveActiveFeature()
+	if err != nil {
+		if strings.Contains(err.Error(), "no active tracked feature") {
+			rt.printNewFeatureUsage()
+			return nil
+		}
+		return err
+	}
+
+	switch strings.ToLower(strings.TrimSpace(feature.Status)) {
+	case featureStatusDraft, featureStatusPlanned:
+		if featurePlanArtifactsMissing(feature) {
+			fmt.Fprintln(rt.writer, rt.ui.hintLine("Tracked feature planning artifacts are missing; regenerating them before implementation."))
+			return rt.handleNewFeaturePlanCommand(feature.ID)
+		}
+		return rt.handleNewFeatureImplementCommand(feature.ID)
+	case featureStatusBlocked:
+		if rt.interactive {
+			proceed, confirmErr := rt.confirm("Regenerate the tracked feature plan before continuing?")
+			if confirmErr != nil {
+				return confirmErr
+			}
+			if !proceed {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("Tracked feature replan aborted by user."))
+				return nil
+			}
+		}
+		return rt.handleNewFeaturePlanCommand(feature.ID)
+	case featureStatusImplemented:
+		if latestFeatureVerificationPassed(rt.session, feature) {
+			if rt.interactive {
+				proceed, confirmErr := rt.confirm("Latest verification passed. Close this tracked feature?")
+				if confirmErr != nil {
+					return confirmErr
+				}
+				if !proceed {
+					fmt.Fprintln(rt.writer, rt.ui.warnLine("Tracked feature close aborted by user."))
+					return nil
+				}
+			}
+			return rt.handleNewFeatureCloseCommand(feature.ID)
+		}
+		fmt.Fprintln(rt.writer, rt.ui.section("Tracked Feature"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("feature_id", feature.ID))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", feature.Status))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Next: run /verify, then /new-feature next to close the tracked feature after a passing verification."))
+		if rt.session != nil && rt.session.LastVerification != nil && rt.session.LastVerification.HasFailures() {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("Latest verification failed: "+rt.session.LastVerification.FailureSummary()))
+		}
+		return nil
+	case featureStatusDone:
+		fmt.Fprintln(rt.writer, rt.ui.section("Tracked Feature"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("feature_id", feature.ID))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", feature.Status))
+		if handoff := featureStatusHandoff(feature); strings.TrimSpace(handoff) != "" {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, handoff)
+		}
+		return nil
+	case featureStatusImplementing:
+		fmt.Fprintln(rt.writer, rt.ui.section("Tracked Feature"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("feature_id", feature.ID))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", feature.Status))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Implementation is already in progress; inspect /new-feature before starting another lifecycle step."))
+		return nil
+	default:
+		return rt.handleNewFeatureStatusCommand(feature.ID)
+	}
 }
 
 func (rt *runtimeState) latestFeatureFuzzCampaign() (FuzzCampaign, bool) {
@@ -748,17 +880,20 @@ func latestAssistantMessageText(sess *Session) string {
 }
 
 func (rt *runtimeState) handleNewFeatureImplementCommand(arg string) error {
+	if err := rt.ensureNewFeatureModelProvider(); err != nil {
+		return err
+	}
 	feature, store, err := rt.resolveFeature(arg)
 	if err != nil {
 		return err
 	}
 	specText, err := os.ReadFile(feature.SpecPath)
 	if err != nil {
-		return fmt.Errorf("feature spec is missing; rerun /new-feature plan %s", feature.ID)
+		return fmt.Errorf("feature spec is missing; run /new-feature next to regenerate planning artifacts before implementation")
 	}
 	planText, err := os.ReadFile(feature.PlanPath)
 	if err != nil {
-		return fmt.Errorf("feature plan is missing; rerun /new-feature plan %s", feature.ID)
+		return fmt.Errorf("feature plan is missing; run /new-feature next to regenerate planning artifacts before implementation")
 	}
 
 	if rt.interactive {

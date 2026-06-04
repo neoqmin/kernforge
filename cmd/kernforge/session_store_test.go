@@ -183,8 +183,8 @@ func TestSessionsCommandSearchesSavedContent(t *testing.T) {
 		store:   store,
 		session: NewSession(root, "test", "test-model", "", "default"),
 	}
-	if _, err := rt.handleCommand(Command{Name: "sessions", Args: "search parity"}); err != nil {
-		t.Fatalf("handleCommand(sessions search): %v", err)
+	if _, err := rt.handleCommand(Command{Name: "session", Args: "search parity"}); err != nil {
+		t.Fatalf("handleCommand(session search): %v", err)
 	}
 	output := out.String()
 	if !strings.Contains(output, "Session Search") {

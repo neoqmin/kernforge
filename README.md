@@ -11,7 +11,7 @@ The first five capabilities to understand are:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, coverage ledger, evidence packets, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
 - `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, request class, classification confidence and ambiguity warnings, lifecycle phase, route mode and route quality, typed state transitions, action envelopes, approval ledgers, capability manifests, freshness, next commands, repair guidance, read-only review mode, document-artifact gates, and write-isolated edit proposals. Natural-language review and edit requests now get runtime-enforced Codex-grade handling: simple reviews stay read-only and findings-first, ambiguous mixed requests choose the safest lifecycle with an explanation, document-artifact requests use artifact-quality gates instead of irrelevant code-review loops, single-model runs execute or explicitly record a separate second-pass review phase, optional cross-review findings are persisted in an actionable triage ledger, and final answers are corrected before display when they omit changed files, review result, validation result, artifact quality, limitations, or remaining risk. The default terminal experience is compact-first: verdict, counts, key findings, report path, and a single next command come first, while detailed lifecycle and route diagnostics stay in `/progress-display stream` and artifacts.
 - Fuzzing starts with `/fuzz-func` source-level triage and continues through `/fuzz-campaign` for campaign manifests, corpus/crash/coverage artifacts, sanitizer or verifier evidence, and verification gate lifecycle management.
-- `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
+- `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: interactive `/goal` records an objective from a prompt or markdown file with visible artifacts, and explicit run forms loop through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
 - `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
 
 Kernforge is centered on `project analysis -> review -> fuzzing/root-cause investigation -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
@@ -26,7 +26,7 @@ Kernforge is centered on `project analysis -> review -> fuzzing/root-cause inves
 | Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong when workflows are encoded through hooks, subagents, and project conventions | Strong at deciding the next practical step during implementation |
 | Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong tool loop, but evidence modeling depends on user/project setup | Strong test/command loop, but domain evidence modeling is generic |
 | Windows/security specialization | Deeply tuned for IOCTL, ETW, drivers, memory scanning, Unreal, telemetry, signing, fuzzing, and anti-cheat surfaces | Broad coding agent, not domain-specific by default | Broad coding agent, not domain-specific by default |
-| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session dashboard --html`, suggestion-to-task graph; cloud jobs still pending | Automation often comes through hooks and external workflow integration | Mature automation and PR/task workflow direction |
+| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/session jobs`, `/session recover`, `/session continuity`, `/session audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/session handoff`, `/session dashboard --html`, suggestion-to-task graph; cloud jobs still pending | Automation often comes through hooks and external workflow integration | Mature automation and PR/task workflow direction |
 | Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More configurable ecosystem, less built-in Windows security/fuzz workbench depth | More polished general agent experience, less specialized security/fuzzing knowledge out of the box |
 
 ## Repository Layout
@@ -101,14 +101,14 @@ Its current differentiators are:
 - Built-in task ownership profile catalog with editable/read-only routing and optional model overrides
 - Node-level editable ownership and lease routing plus task-owner worktree leases and session-level worktree isolation
 - Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
-- Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
+- Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that can be recorded first, then explicitly run through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
 - Providers: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `opencode`, `opencode-go`, `ollama`, `lmstudio`, `vllm`, `llama.cpp`, plus explicit OpenAI-compatible routes
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, structured edit proposal, patch fallback, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
 - Session persistence, resume, rename, clear, compact, and Markdown export
-- Natural failure recovery with `/continuity`, `/recover`, `/recover execute-safe`, `/completion-audit`, `/jobs`, local event export, and session dashboards
+- Natural failure recovery with `/session continuity`, `/session recover`, `/session recover execute-safe`, `/session audit`, `/session jobs`, local event export, and session dashboards
 - Project memory files plus cross-session persistent memory with trust/importance metadata and automatic workspace continuity injection
 - Evidence store, evidence search, and evidence dashboards
 - Local `SKILL.md` skills with discovery and per-request activation
@@ -191,8 +191,8 @@ Its current differentiators are:
 
 - Security-aware verification for driver, telemetry, Unreal, and memory-scan changes
 - Verification history and verification dashboards
-- `/verify` now ends with a `Verification handoff`: failures point back to repair/retry dashboards, while passing runs suggest checkpointing and either feature status or close depending on tracked feature state; native fuzz findings are pulled into targeted planner steps
-- `/recover execute-safe` treats failed `/verify` reports and non-ready `/completion-audit` artifacts as failed recovery actions instead of marking a dispatched slash command as complete
+- `/verify` now ends with a `Verification handoff`: failures point back to repair/retry dashboards, while passing runs suggest checkpointing and the next tracked-feature lifecycle action when a feature is active; native fuzz findings are pulled into targeted planner steps
+- `/session recover execute-safe` treats failed `/verify` reports and non-ready `/session audit` artifacts as failed recovery actions instead of marking a dispatched slash command as complete
 - Safe recovery shell replay is limited to narrow Go/Git verification and status commands, rejects shell chaining/redirection, and blocks high-risk flags such as external test executors, vet tools, and output-writing diff/profile options
 - Structured evidence capture from verification
 - Evidence search and evidence dashboards
@@ -206,16 +206,18 @@ Its current differentiators are:
 
 ### Autonomous Goals
 
-- `/goal <objective>` or `/goal start <objective>` creates a persistent goal and immediately starts an autonomous loop
-- `/goal start @GOAL.md` and `kernforge -goal-file GOAL.md` load the objective from a markdown file
+- `/goal <objective>` or `/goal start <objective>` records a persistent goal and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json` without starting another model turn
+- `/goal start --run <objective>` creates the goal and immediately starts the autonomous loop; `/goal run latest` starts or resumes a goal that was only recorded
+- `/goal start @GOAL.md` records an objective from a markdown file; `kernforge -goal-file GOAL.md` loads and runs it in one-shot CLI mode
 - `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, and `-goal-rollback-on-regression` controls
+- Asking the assistant to write a goal prompt is a drafting request, not an active goal. Save the prompt as markdown or pass it to `/goal` when you are ready to record or run it.
 - Each iteration asks the agent to inspect, develop, modify, review its own changes, run final semantic goal review, and fix bugs without asking the user for confirmation
 - The runtime now binds each goal to an acceptance contract, task graph, independent review verdict, progress ledger, command history, and per-iteration checkpoint when checkpoint storage is configured
 - Goal reviewers receive concrete workspace evidence, including implementation replies, checkpoint diffs when available, git status/diff context, and bounded untracked-file excerpts. If review says `NEEDS_REVISION`, the repair prompt preserves structured reviewer issues and the same implementation context so the worker can act on the actual findings instead of a vague summary.
-- Kernforge then runs `/verify --full`, `/completion-audit`, final semantic review, and if needed `/recover execute-safe` before the next iteration
+- Kernforge then runs `/verify --full`, `/session audit`, final semantic review, and if needed `/session recover execute-safe` before the next iteration
 - The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, explicit token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
 - Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
-- Goals run until completion by default. Use `--max-iterations N`, `--time-budget 10m`, `--token-budget N`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
+- Interactive goals run only after `--run`, `--until-complete`, or `/goal run`; one-shot `-goal` and `-goal-file` run immediately. Use `--max-iterations N`, `--time-budget 10m`, `--token-budget N`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
 - `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, and `/goal cancel` inspect, re-audit, explicitly complete, resume, or stop the active goal
 
 ### Source-Level Function Fuzzing
@@ -259,7 +261,7 @@ Its current differentiators are:
 - Pre-fix review findings are summarized visibly before patch/write tools run, so the transcript shows which RF items drove the repair.
 - When the user names a specific RF id, for example `fix RF-004`, repair handoff carries only that item through `RepairFindings` and pre-fix obligations. Unlisted RFs are not intentionally fixed or reported as resolved; if the selected RF cannot be separated from another RF, Kernforge asks for a user decision before broadening scope.
 - Local code repair blocks web/search/browser MCP tools unless the user explicitly asks for external research.
-- Before a final answer, the coding harness and `/completion-audit` check the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, open tasks, verification, background job state, and required completion facts
+- Before a final answer, the coding harness and `/session audit` check the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, open tasks, verification, background job state, and required completion facts
 - The final-answer reviewer receives the edit-loop ledger plus a typed outcome contract and expects one coherent summary of what changed, what review/self-review found, what verified or was not run, and what risk remains. For edit and local-review lifecycles, missing changed-file, review, validation, or remaining-risk disclosure is corrected internally before the answer is exposed.
 - Single-model mode is shown as first-class state: `single_model_second_pass_ran`, `single_model_second_pass_cached`, or `single_model_second_pass_skipped`. Cross-model review is separately labeled as `cross_model_review_ran`, and reviewer-only post-change review is labeled `reviewer_only_post_change_review_used`; a single-model second pass is never presented as independent cross-review.
 - If a requested document or report artifact is placeholder/TODO content or does not cover the requested topic, the artifact-quality gate blocks the final answer
@@ -281,7 +283,7 @@ Its current differentiators are:
 - In ordinary product development, `implementation-owner` is the default editable task owner, while narrower domain owners such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-analyst`, and `memory-inspection-analyst` take ownership only when the task or paths match strongly.
 - `apply_edit_proposal`, `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned task-owner worktree.
 - `/specialists assign <node-id> <owner-profile> [glob,glob2]` lets you pin an editable task owner and override ownership globs when auto-routing picked a broader default.
-- `/set-specialist-model <owner-profile> <provider> [model]` pins the LLM used by one task owner in this workspace, and `/set-specialist-model clear <owner-profile|all>` removes that override.
+- `/model task-owner <owner-profile> <provider> <model> [reasoning_effort]` pins the LLM used by one task owner in this workspace, and `/model task-owner clear <owner-profile|all>` removes that override.
 - Secondary edit nodes with disjoint leases can run through automatic editable workers, while overlapping leases are deferred instead of racing on the same files.
 - When a parallel task-owner edit restarts verification, older background verification bundles for the same owner or same lease are superseded automatically, and verification-like bundle completion closes the owning node.
 
@@ -289,7 +291,7 @@ Its current differentiators are:
 
 - `/new-feature <task>` creates a tracked feature workspace and writes `spec.md`, `plan.md`, and `tasks.md`
 - Tracked feature artifacts live under `.kernforge/features/<id>` so large work can survive across sessions
-- `/new-feature status|plan|implement|close [id]` lets you inspect, regenerate, execute, and finish the active feature; status also surfaces recent fuzz campaign gates when native results exist
+- `/new-feature` inspects the active feature, while `/new-feature next` runs the next safe lifecycle action; status also surfaces recent fuzz campaign gates when native results exist
 - `/review plan <task>` remains the better fit for one-shot reviewed planning and immediate execution
 
 ### Input And Prompting
@@ -312,7 +314,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/memory show`, `/evidence show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/memory show`, `/evidence show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature next|list`, `/session jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -323,7 +325,7 @@ Its current differentiators are:
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
 - Thinking elapsed time is rebased at phase boundaries and stale runaway timer displays are clamped at the 2-hour mark
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
-- `progress_display` controls in-flight visibility and defaults to `compact` so routine review and coding work stays readable. Change it from the REPL with `/progress-display auto|compact|stream`; `/progress_display ...` is accepted as an alias for users copying the config key. `compact` keeps progress in the footer with short operator lines, `auto` preserves important durable events without repeating verbose review flow text, and `stream` writes every progress update persistently for detailed debugging
+- `progress_display` controls in-flight visibility and defaults to `compact` so routine review and coding work stays readable. Change it from the REPL with `/progress-display auto|compact|stream`. `compact` keeps progress in the footer with short operator lines, `auto` preserves important durable events without repeating verbose review flow text, and `stream` writes every progress update persistently for detailed debugging
 - Provider, tool, and command failures are mirrored to `.kernforge/logs/errors.jsonl` as capped JSONL; Kernforge keeps that file at or below 100 MB so retry-only provider failures remain debuggable after the UI has moved on
 - OpenAI-compatible and OpenAI Codex streaming providers surface tool-call construction events, so the REPL can show when the model is preparing a tool and when the arguments are ready
 - Progress-only model streams keep the same incomplete-stream fallback behavior as normal assistant streams; if a streamed OpenAI-compatible response is empty or incomplete, the retry is forced back through the non-stream path instead of re-entering streaming only because progress events are enabled
@@ -573,18 +575,18 @@ When to use it:
 Recommended flow 1: let Kernforge auto-assign for ordinary feature work
 
 1. Turn on `worktree_isolation.enabled=true` in `.kernforge/config.json`.
-2. Run `/new-feature start settings page and cache invalidation cleanup`.
-3. Run `/new-feature implement`.
+2. Run `/new-feature settings page and cache invalidation cleanup`.
+3. Run `/new-feature next`.
 4. Phrase the implementation request with concrete paths. Example: `Safely update web/src/settings.tsx and pkg/cache/store.go, and keep the settings save flow and cache invalidation verification tight.`
 5. Kernforge will assign task owners per task-graph node, then attach editable ownership and lease paths to each node.
 6. If the secondary edit nodes have disjoint leases, an automatic editable worker can create an additional patch in its own task-owner worktree.
 7. If verification restarts for the same owner or same lease, the older background verification bundle is superseded automatically, so you do not keep following stale output.
-8. Use `/tasks`, `/specialists status`, `/worktree status`, and `/verify dashboard` to inspect routing and verification progress.
+8. Use `/session tasks`, `/specialists status`, `/worktree status`, and `/verify dashboard` to inspect routing and verification progress.
 9. When the isolated worktree is clean and no longer needed, run `/worktree cleanup`.
 
 Recommended flow 2: pin domain owners manually
 
-1. Run `/tasks` to inspect the node ids.
+1. Run `/session tasks` to inspect the node ids.
 2. Run `/specialists assign plan-02 driver-build-fixer driver/**,*.inf,*.cat`.
 3. Run `/specialists assign plan-03 telemetry-analyst telemetry/**,*.man,*.xml`.
 4. Continue the implementation request.
@@ -649,7 +651,7 @@ Isolated implementation:
 - `/specialists`
 - `/specialists status`
 - `/specialists assign <node-id> <owner-profile> [glob,glob2]`
-- `/set-specialist-model <owner-profile> <provider> [model]`
+- `/model task-owner <owner-profile> <provider> <model> [reasoning_effort]`
 - `/worktree status`
 - `/worktree list`
 - `/worktree create [name]`
@@ -825,7 +827,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
 | `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default. Host policy only: ignored from workspace config |
 | `project_analysis` | Multi-agent project analysis configuration, output path, and worker/reviewer profiles |
 | `review` | Common review harness automation settings and the optional cross-review route |
-| `task_ownership` | Enable task ownership profiles and overlay built-in owner profiles. Legacy `specialists` is accepted as a compatibility alias |
+| `task_ownership` | Enable task ownership profiles and overlay built-in owner profiles |
 | `worktree_isolation` | Configure isolated git worktree roots, branch prefixes, and tracked-feature auto-isolation |
 
 Saved main profiles store task-owner model overrides under `profiles[].role_models.task_owners`. Legacy `profiles[].role_models.specialists` is still accepted on load.
@@ -839,7 +841,7 @@ On startup and `/reload`, Kernforge migrates config files that still hold the ol
 - The interactive loop uses the active main model as the first-pass reviewer for `/review`, natural-language review, and pre-fix repair checks. `/model cross-review` configures the optional second-pass cross reviewer route for those flows, while pre-write review keeps the stricter required-reviewer edit gate. Security, design, false-positive, regression, test, and final-gate specialization is applied as review lenses inside the same route. If that gate stops because the cross reviewer failed but the main pre-write review was usable, Kernforge shows the main-review-based fallback phrase; only an explicit user approval plus the normal diff preview confirmation can continue.
 - `/status`, `/hooks`, and the session dashboard now expose the latest review decision as an operations summary, not just a pass/fail line. The compact view shows the latest review id, request class, classification confidence and ambiguity, lifecycle phase, trigger, target, mode, route quality, gate verdict/action, review/repair/document/verification gate status, single-model second-pass status and cache hit, cross-review triage counts, incomplete triage blockers, remaining repair/verification/evidence obligations, final-answer correction status, and the next recommended command. Blocker counts are classified as code repair, reviewer route, evidence gap, verification gap, document artifact quality, and final-answer completeness so cross-review noise does not hide a primary code blocker.
 - Review artifacts render a dedicated single-model second-pass section with ran/skipped/cached state, reviewed paths, model route, finding count, and prompt/raw-output artifact refs when present. A skipped second pass records a compact reason, and a completed single-model second pass is still labeled runtime evidence, not independent cross-review approval.
-- Cross-review triage in Markdown is action oriented: each item carries finding id/title, location, status, reason, required fix, fix refs, changed paths, verification refs, and whether user action is required. `needs_user_decision` entries also surface concrete inspect targets, safe-to-change scope, do-not-change-yet scope, and a next command such as `/continuity continue from review` instead of burying the decision inside raw reviewer output.
+- Cross-review triage in Markdown is action oriented: each item carries finding id/title, location, status, reason, required fix, fix refs, changed paths, verification refs, and whether user action is required. `needs_user_decision` entries also surface concrete inspect targets, safe-to-change scope, do-not-change-yet scope, and a next command such as `/session continuity continue from review` instead of burying the decision inside raw reviewer output.
 - Pre-final answer corrections are persisted as lifecycle facts. Kernforge records whether the final answer was corrected for changed-file disclosure, review/self-review disclosure, validation disclosure, remaining-risk disclosure, review-only findings-first/no-edit formatting, or document-artifact path/quality/limitation disclosure; it does not expose internal correction prompts or accept generic legacy completion phrases as enough evidence.
 - Focused review requests such as `@file:line-line review and fix` use a smaller evidence budget and prompt budget, while pre-write review stays diff-first so the reviewer spends its context on the proposed patch and the required repair findings instead of re-reading the whole file. For range-focused pre-write checks, current file context prioritizes the selected range through the enclosing function end, and a separate function-body excerpt preserves cleanup and success paths that reviewers need to judge the patch. Pre-write evidence also adds small required-repair diff excerpts and explicit planned-patch after excerpts keyed from the original RF titles/fixes, so a large diff cannot hide the exact after-preview lines needed to prove a multi-step repair.
 - Common review model requests use bounded per-attempt timeouts unless a policy overrides them. Cloud API reviewers default to 5 minutes, while CLI reviewers such as `anthropic-claude-cli` and `openai-codex-cli` and local reviewers such as LM Studio/Ollama default to 8 minutes. If recent route health shows a timeout, only the next reviewer call receives an adaptive extension, and status/failure messages translate that condition into user actions: retry the same reviewer with more time, change the reviewer route, continue in single-model mode when acceptable, or change/fix the main model route when the primary failed. DeepSeek strict-review retries remain capped tightly, and progress logs show the current review phase, retry budget, context mode, and timeout before each model call.
@@ -861,11 +863,11 @@ On startup and `/reload`, Kernforge migrates config files that still hold the ol
 - `run_shell` now supports scoped workspace writes when the agent provides `allow_workspace_writes=true` together with `write_paths`. This path is intended for formatters, code generators, or setup commands that are safer to run than re-creating the change by hand.
 - Long-running build, test, and verification commands can use `run_shell_background` and `check_shell_job` so the agent can poll an existing job instead of restarting the same expensive command. Matching running jobs are reused automatically.
 - Independent long-running verification commands can also use `run_shell_bundle_background` and `check_shell_bundle` to run and poll several background jobs in parallel. Bundle metadata is persisted in the session, so the agent can resume polling with `bundle_id="latest"` even after compaction.
-- `/jobs status|check|bundle|cancel|cancel-bundle` exposes those persisted background jobs and bundles to the terminal, so a human or a `-command` runner can poll or cancel long work without waiting for a model turn.
-- `/events tail [n]` prints recent session events as JSONL, and `/events export [path]` writes `.kernforge/events/<session-id>.jsonl` plus `.kernforge/events/latest.jsonl` as a local app-server style feed for dashboards, schedulers, harnesses, and external supervisors.
-- `/continuity [note]` writes `.kernforge/continuity/latest.md/json` with changed files, open tasks, worktrees, active failure repair, latest verification failure, recent shell/provider/tool errors, background jobs, recovery actions, and next commands. Direct `!shell` failures are recorded as `command_error` events so the packet can recover from local command failures without pasted logs.
-- `/recover [note]` writes `.kernforge/recovery/latest.md/json` as a focused failure runbook from the latest provider/tool/command error, verification failure, active failure repair, background jobs, open tasks, and next commands. It now includes a structured diagnosis, stable failure signature, action-plan lifecycle statuses, and execution log. `/recover execute-safe [note]` runs only safe-auto recovery actions such as whitelisted `go test`, `go vet`, `go list`, `git status`, `git diff --check`, `/jobs`, `/continuity`, and `/completion-audit`.
-- `/completion-audit [note]` writes `.kernforge/completion_audit/latest.md/json` with completion blockers, warnings, required artifacts, latest verification, open tasks, background jobs, recent errors, and coding harness evidence before a final answer overclaims done state.
+- `/session jobs status|check|bundle|cancel|cancel-bundle` exposes those persisted background jobs and bundles to the terminal, so a human or a `-command` runner can poll or cancel long work without waiting for a model turn.
+- `/session events tail [n]` prints recent session events as JSONL, and `/session events export [path]` writes `.kernforge/events/<session-id>.jsonl` plus `.kernforge/events/latest.jsonl` as a local app-server style feed for dashboards, schedulers, harnesses, and external supervisors.
+- `/session continuity [note]` writes `.kernforge/continuity/latest.md/json` with changed files, open tasks, worktrees, active failure repair, latest verification failure, recent shell/provider/tool errors, background jobs, recovery actions, and next commands. Direct `!shell` failures are recorded as `command_error` events so the packet can recover from local command failures without pasted logs.
+- `/session recover [note]` writes `.kernforge/recovery/latest.md/json` as a focused failure runbook from the latest provider/tool/command error, verification failure, active failure repair, background jobs, open tasks, and next commands. It now includes a structured diagnosis, stable failure signature, action-plan lifecycle statuses, and execution log. `/session recover execute-safe [note]` runs only safe-auto recovery actions such as whitelisted `go test`, `go vet`, `go list`, `git status`, `git diff --check`, `/session jobs`, `/session continuity`, and `/session audit`.
+- `/session audit [note]` writes `.kernforge/completion_audit/latest.md/json` with completion blockers, warnings, required artifacts, latest verification, open tasks, background jobs, recent errors, and coding harness evidence before a final answer overclaims done state.
 - Background work is now node-aware. Long-running verification carries `owner_node_id` and owner lease context, newer verification bundles for the same owner or same lease supersede older ones, and verification-like bundle completion syncs back into the owning plan node automatically.
 - Secondary executor nodes can now run not only automatic read-only worker follow-ups but also automatic editable workers. On disjoint leases, a specialist can patch in its own worktree and persist both the edit summary and follow-up verification bundle state back into the task graph.
 - Normal work turns print a final elapsed-time line, while local meta commands such as `/exit`, `/status`, `/config`, and `/model` suppress that noise.
@@ -1187,23 +1189,23 @@ Explain the structure of this repository
 /rename <name>
 /resume <session-id>
 /session
-/sessions
-/handoff [note]
-/handoff import <path>
+/session list
+/session handoff [note]
+/session handoff import <path>
 /session dashboard --html
-/events [tail|export]
-/continuity [note]
-/recover [note]
-/completion-audit [note]
-/jobs [status|check|bundle|cancel|cancel-bundle]
-/tasks
+/session events [tail|export]
+/session continuity [note]
+/session recover [note]
+/session audit [note]
+/session jobs [status|check|bundle|cancel|cancel-bundle]
+/session tasks
 ```
 
-- `/handoff` writes `.kernforge/handoff/latest.md/json` with changed files, open tasks, verification, recent events, artifact refs, and a continuation prompt for another agent or cloud task. `/handoff import <path>` normalizes a returned result packet and marks matching `completed_tasks` in the TaskGraph.
+- `/session handoff` writes `.kernforge/handoff/latest.md/json` with changed files, open tasks, verification, recent events, artifact refs, and a continuation prompt for another agent or cloud task. `/session handoff import <path>` normalizes a returned result packet and marks matching `completed_tasks` in the TaskGraph.
 - `/session dashboard --html` writes `.kernforge/session_dashboard/latest.html` with the current thread events, task graph, automation due/failed state, changed files, background jobs, and artifact refs.
-- `/events` tails or exports session conversation events as JSONL for local dashboards, schedulers, harnesses, and app-server style clients.
-- `/continuity` writes `.kernforge/continuity/latest.md/json` as a local resume and recovery packet; `/recover` writes `.kernforge/recovery/latest.md/json` as a narrower failure runbook; `/jobs` lets you poll or cancel persisted background shell work from the terminal.
-- `/completion-audit` writes `.kernforge/completion_audit/latest.md/json` as a local final-readiness gate for blockers, warnings, verification, tasks, jobs, and artifact evidence.
+- `/session events` tails or exports session conversation events as JSONL for local dashboards, schedulers, harnesses, and app-server style clients.
+- `/session continuity` writes `.kernforge/continuity/latest.md/json` as a local resume and recovery packet; `/session recover` writes `.kernforge/recovery/latest.md/json` as a narrower failure runbook; `/session jobs` lets you poll or cancel persisted background shell work from the terminal.
+- `/session audit` writes `.kernforge/completion_audit/latest.md/json` as a local final-readiness gate for blockers, warnings, verification, tasks, jobs, and artifact evidence.
 
 ### Provider And Planning Commands
 
@@ -1215,8 +1217,10 @@ Explain the structure of this repository
 /model clear cross-review
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 /profile [list|<number>|rN|dN|pN]
-/set-analysis-models
-/set-specialist-model [status|clear <owner-profile|all>|<owner-profile> <provider> [model]]
+/model analysis
+/model analysis-worker <provider> <model> [reasoning_effort]
+/model analysis-reviewer <provider> <model> [reasoning_effort]
+/model task-owner [status|clear <owner-profile|all>|<owner-profile> <provider> <model> [reasoning_effort]]
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
 /analyze-dashboard [latest|path]
 /docs-refresh
@@ -1238,16 +1242,16 @@ Explain the structure of this repository
 - `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort analysis-worker high` or `/effort specialist <name> low` changes an analysis or task-owner model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
 - If a model change selects an effort-capable provider while that target's effort is `undefined`, Kernforge saves `low` as the starting effort instead of leaving that route ambiguous.
 - `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
-- Changing only the main model also changes the primary review route. The optional cross route, analysis worker/reviewer routes, and task-owner routes keep their explicit overrides. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/set-analysis-models clear`.
+- Changing only the main model also changes the primary review route. The optional cross route, analysis worker/reviewer routes, and task-owner routes keep their explicit overrides. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/model analysis clear`.
 - `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and optional task-owner model override set. Changing those route models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
 - `/model cross-review` is the single supported path for the optional `cross` review route. `design`, `security`, `false_positive`, `regression`, `test`, and `final_gate` are review lenses selected by the planner, not model routes.
 - `/review-soak --mode scripted` writes `.kernforge/soak/<timestamp>/` artifacts that exercise `document_artifact`, `review_only`, `implementation`, `modify_then_review`, `fix_from_review`, `analysis`, and `mixed_flow` across single-model and cross-model routes. `/review-soak --mode real-provider` only runs when `KERNFORGE_REAL_PROVIDER_SOAK=1` and uses `KERNFORGE_REAL_PROVIDER`, `KERNFORGE_REAL_MODEL`, `KERNFORGE_REAL_BASE_URL`, and `KERNFORGE_REAL_API_KEY`; missing config writes an explicit skipped report instead of failing the suite.
 - `/hooks` also prints the compact runtime gate summary, so hook/policy inspection and `/status` use the same freshness and next-command vocabulary.
-- `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
-- `/set-specialist-model ...` applies a workspace-scoped optional model override to one task owner profile.
+- `/model analysis` configures dedicated worker and reviewer profiles for project analysis.
+- `/model task-owner ...` applies a workspace-scoped optional model override to one task owner profile.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.
-- `/progress-display` shows or saves the runtime progress mode; `/progress_display` is accepted as the same command. The default is `compact` for a quieter Codex CLI-like operator view. Use `auto` for durable tool/model ledger lines without repeated verbose review flow text, or `stream` for a fully persistent progress transcript.
+- `/progress-display` shows or saves the runtime progress mode. The default is `compact` for a quieter Codex CLI-like operator view. Use `auto` for durable tool/model ledger lines without repeated verbose review flow text, or `stream` for a fully persistent progress transcript.
 - `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is kept only as hidden parser compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to regenerate docs from the latest run.
 
 ### Canceling And History
@@ -1399,8 +1403,8 @@ Useful commands:
 /checkpoint [note]
 /checkpoint auto [on|off]
 /checkpoint diff [target] [-- path[,path2]]
-/checkpoints
-/rollback [target]
+/checkpoint list
+/checkpoint rollback [target]
 /init verify
 ```
 
@@ -1486,7 +1490,7 @@ Core commands:
 /analyze-dashboard [latest|path]
 /docs-refresh
 /analyze-performance [focus]
-/set-analysis-models
+/model analysis
 ```
 
 The goal is optional. When it is omitted, Kernforge derives a practical default from the selected mode and path.

@@ -56,7 +56,7 @@ func (rt *runtimeState) handleDelegationHandoffCommand(args string) error {
 	fields := splitAnalysisCommandLine(strings.TrimSpace(args))
 	if len(fields) > 0 && strings.EqualFold(fields[0], "import") {
 		if len(fields) < 2 {
-			return fmt.Errorf("usage: /handoff import <artifact.json|result.md>")
+			return fmt.Errorf("usage: /session handoff import <artifact.json|result.md>")
 		}
 		return rt.handleDelegationImportCommand(root, fields[1])
 	}

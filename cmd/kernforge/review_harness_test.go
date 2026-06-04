@@ -11512,7 +11512,7 @@ func TestPrintReviewRunExplainsNextCommands(t *testing.T) {
 				},
 				{
 					ID:         "repair",
-					Command:    "/continuity continue from review",
+					Command:    "/session continuity continue from review",
 					Reason:     "blocking findings need a focused repair pass",
 					Safety:     "safe_local",
 					When:       "after reading review findings",
@@ -11532,7 +11532,7 @@ func TestPrintReviewRunExplainsNextCommands(t *testing.T) {
 		"  확인 필요: false",
 		"  실행 방법: `/verify --full`로 검증을 실행한 뒤 `/review`를 다시 실행해 최신 근거를 붙이세요.",
 		"  예상 결과: 변경된 파일에 대한 최신 verification report가 기록됩니다.",
-		"- /continuity continue from review\n  이유: 차단 finding이 발견됐지만 현재 요청은 분석/검토이므로, 수정은 사용자가 원할 때만 이어갑니다.",
+		"- /session continuity continue from review\n  이유: 차단 finding이 발견됐지만 현재 요청은 분석/검토이므로, 수정은 사용자가 원할 때만 이어갑니다.",
 		"  실행 방법: 자연어로 `수정해줘`라고 이어가거나 이 명령을 실행하면 최신 리뷰 finding을 기준으로 repair 흐름을 시작합니다.",
 	} {
 		if !strings.Contains(rendered, needle) {
@@ -11553,14 +11553,14 @@ func TestCompactReviewCLIResultCollapsesDuplicateNextCommands(t *testing.T) {
 			NextCommands: []ReviewNextCommand{
 				{
 					ID:         "repair",
-					Command:    "/continuity continue from review",
+					Command:    "/session continuity continue from review",
 					Reason:     "blocking findings need a focused repair pass",
 					Safety:     "safe_local",
 					ClientHint: "Use the repair prompt in the review artifact.",
 				},
 				{
 					ID:                   "cross-review-triage",
-					Command:              "/continuity continue from review",
+					Command:              "/session continuity continue from review",
 					Reason:               "cross-review triage has findings that need a user or primary repair decision",
 					Safety:               "safe_local",
 					RequiresConfirmation: true,
@@ -11578,7 +11578,7 @@ func TestCompactReviewCLIResultCollapsesDuplicateNextCommands(t *testing.T) {
 		ArtifactRefs: []string{"C:/tmp/review.md"},
 	}
 	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false), ProgressDisplay: "compact"}, run)
-	if strings.Count(rendered, "/continuity continue from review") != 1 {
+	if strings.Count(rendered, "/session continuity continue from review") != 1 {
 		t.Fatalf("compact output should show duplicate next command once, got:\n%s", rendered)
 	}
 	for _, want := range []string{
@@ -11603,11 +11603,11 @@ func TestCompactReviewCLIResultCollapsesDuplicateNextCommands(t *testing.T) {
 		"보고서: C:/tmp/review.md",
 		"다음 명령:")
 	md := renderReviewRunMarkdown(run)
-	if strings.Count(md, "/continuity continue from review") < 2 {
+	if strings.Count(md, "/session continuity continue from review") < 2 {
 		t.Fatalf("markdown artifact should preserve full duplicate next-command detail, got:\n%s", md)
 	}
 	mcp := renderReviewMCPResponse(run, 20000)
-	if strings.Count(mcp, "/continuity continue from review") < 2 {
+	if strings.Count(mcp, "/session continuity continue from review") < 2 {
 		t.Fatalf("MCP response should preserve full duplicate next-command detail, got:\n%s", mcp)
 	}
 }
@@ -11687,7 +11687,7 @@ func TestReviewMCPResponseIncludesActionContractBooleans(t *testing.T) {
 		Gate: GateDecision{
 			NextCommands: []ReviewNextCommand{{
 				ID:             "repair",
-				Command:        "/continuity continue from review",
+				Command:        "/session continuity continue from review",
 				Reason:         "blocking findings need a focused repair pass",
 				When:           "after reading review findings",
 				Safety:         "safe_local",
@@ -12334,7 +12334,7 @@ func TestCrossReviewFindingCreatesTriageLedgerEntry(t *testing.T) {
 	if item.TriageStatus != crossReviewTriageNeedsUserDecision || item.FindingID == "" || item.RequiredFix == "" || !item.UserActionNeeded {
 		t.Fatalf("unexpected triage item: %#v", item)
 	}
-	if !strings.Contains(item.UserActionPrompt, "/continuity continue from review") {
+	if !strings.Contains(item.UserActionPrompt, "/session continuity continue from review") {
 		t.Fatalf("expected actionable triage prompt, got %#v", item)
 	}
 	rendered := renderReviewRunMarkdown(run)
@@ -12351,7 +12351,7 @@ func TestCrossReviewFindingCreatesTriageLedgerEntry(t *testing.T) {
 		}
 	}
 	cli := renderReviewCLIResult(cfg, run)
-	for _, want := range []string{"Cross-review triage", "needs_user_decision=1", "/continuity continue from review"} {
+	for _, want := range []string{"Cross-review triage", "needs_user_decision=1", "/session continuity continue from review"} {
 		if !strings.Contains(cli, want) {
 			t.Fatalf("expected CLI triage summary to contain %q, got:\n%s", want, cli)
 		}
@@ -12454,7 +12454,7 @@ func TestCrossReviewTriageMarkdownKeepsCodeBlockersPrimary(t *testing.T) {
 				TriageStatus:     crossReviewTriageNeedsUserDecision,
 				Title:            "Secondary cross-review item",
 				UserActionNeeded: true,
-				UserActionPrompt: "Use `/continuity continue from review` to repair RF-X.",
+				UserActionPrompt: "Use `/session continuity continue from review` to repair RF-X.",
 			}},
 			TotalCount:   1,
 			StatusCounts: map[string]int{crossReviewTriageNeedsUserDecision: 1},
@@ -12516,7 +12516,7 @@ func TestCrossReviewTriageObservabilityNormalizesPartialLedger(t *testing.T) {
 		"total=2",
 		"accepted_deferred=1",
 		"needs_user_decision=1",
-		"/continuity continue from review",
+		"/session continuity continue from review",
 	} {
 		if !strings.Contains(cli, want) {
 			t.Fatalf("expected CLI triage summary to contain %q, got:\n%s", want, cli)

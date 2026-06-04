@@ -188,7 +188,7 @@ func goalCompletionCriteria(objective string, contract *AcceptanceContract) []st
 		"Implementation pass has inspected and changed the workspace when needed.",
 		"Independent review pass has run and any concrete revision request has been repaired.",
 		"Latest scheduled verification has no failing steps when verification steps are available, and full regression is current on the five-cycle cadence when due.",
-		"Latest /completion-audit is ready with no blockers or warnings.",
+		"Latest /session audit is ready with no blockers or warnings.",
 		"Final semantic goal review has approved the completed state.",
 		"No unrecovered repeated failure or no-progress loop remains.",
 	}
@@ -464,7 +464,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		return rt.finishGoalIterationError(goal, iteration, err)
 	}
 	rt.session.SetPlanNodeLifecycle("plan-05", "completed", "Completion audit is being generated for the goal.")
-	auditCommand := startGoalCommand(iteration.Index, "completion-audit", "/completion-audit <goal objective>")
+	auditCommand := startGoalCommand(iteration.Index, "completion-audit", "/session audit <goal objective>")
 	audit, auditErr := rt.runGoalCompletionAudit(goal)
 	auditCommand.finish(statusForErr(auditErr), completionAuditSummaryOrError(audit, auditErr))
 	iteration.Commands = append(iteration.Commands, auditCommand)
@@ -540,7 +540,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 				if err := ctx.Err(); err != nil {
 					return rt.finishGoalIterationError(goal, iteration, err)
 				}
-				recoveryCommand := startGoalCommand(iteration.Index, "recover", "/recover execute-safe goal "+goal.ID)
+				recoveryCommand := startGoalCommand(iteration.Index, "recover", "/session recover execute-safe goal "+goal.ID)
 				recoveryErr := rt.handleRecoverCommandContext(ctx, "execute-safe goal "+goal.ID)
 				recoveryCommand.finish(statusForErr(recoveryErr), errorOrText(recoveryErr, "safe recovery plan executed"))
 				iteration.Commands = append(iteration.Commands, recoveryCommand)

@@ -172,7 +172,7 @@ func TestRunSingleCommandExecutesSlashCommand(t *testing.T) {
 		},
 	}
 
-	if err := rt.runSingleCommand("/handoff import result.json"); err != nil {
+	if err := rt.runSingleCommand("/session handoff import result.json"); err != nil {
 		t.Fatalf("runSingleCommand: %v", err)
 	}
 	if !strings.Contains(output.String(), "Imported delegation result") {

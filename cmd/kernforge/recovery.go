@@ -381,9 +381,9 @@ func recoveryBriefActions(session *Session, brief RecoveryBrief, events []Conver
 		status := strings.TrimSpace(strings.ToLower(job.Status))
 		switch status {
 		case "failed", "stale":
-			actions = append(actions, "Inspect background job "+job.ID+" with /jobs check "+job.ID+" before retrying equivalent work.")
+			actions = append(actions, "Inspect background job "+job.ID+" with /session jobs check "+job.ID+" before retrying equivalent work.")
 		case "running":
-			actions = append(actions, "Poll running background job "+job.ID+" with /jobs check "+job.ID+" before launching duplicate work.")
+			actions = append(actions, "Poll running background job "+job.ID+" with /session jobs check "+job.ID+" before launching duplicate work.")
 		}
 	}
 	for _, bundle := range session.BackgroundBundles {
@@ -391,9 +391,9 @@ func recoveryBriefActions(session *Session, brief RecoveryBrief, events []Conver
 		status := strings.TrimSpace(strings.ToLower(bundle.Status))
 		switch status {
 		case "failed", "stale":
-			actions = append(actions, "Inspect background bundle "+bundle.ID+" with /jobs bundle "+bundle.ID+" before restarting verification.")
+			actions = append(actions, "Inspect background bundle "+bundle.ID+" with /session jobs bundle "+bundle.ID+" before restarting verification.")
 		case "running":
-			actions = append(actions, "Poll running background bundle "+bundle.ID+" with /jobs bundle "+bundle.ID+" before launching duplicate verification.")
+			actions = append(actions, "Poll running background bundle "+bundle.ID+" with /session jobs bundle "+bundle.ID+" before launching duplicate verification.")
 		}
 	}
 	if len(brief.OpenTasks) > 0 {
@@ -403,7 +403,7 @@ func recoveryBriefActions(session *Session, brief RecoveryBrief, events []Conver
 		if len(brief.ChangedFiles) > 0 {
 			actions = append(actions, "Run focused verification for changed files before finalizing.")
 		} else {
-			actions = append(actions, "No active failure was found. Run /completion-audit before finalizing.")
+			actions = append(actions, "No active failure was found. Run /session audit before finalizing.")
 		}
 	}
 	return normalizeTaskStateList(actions, 12)
@@ -525,7 +525,7 @@ func recoveryBriefActionPlan(session *Session, brief RecoveryBrief, events []Con
 				add(RecoveryActionPlanItem{
 					ID:        "job-" + strings.TrimSpace(job.ID),
 					Title:     "Inspect background job " + job.ID + " before launching duplicate work.",
-					Command:   "/jobs check " + job.ID,
+					Command:   "/session jobs check " + job.ID,
 					Rationale: jobSupervisorJobSummary(job),
 					Source:    "background_job",
 					SafeAuto:  true,
@@ -539,7 +539,7 @@ func recoveryBriefActionPlan(session *Session, brief RecoveryBrief, events []Con
 				add(RecoveryActionPlanItem{
 					ID:        "bundle-" + strings.TrimSpace(bundle.ID),
 					Title:     "Inspect background bundle " + bundle.ID + " before restarting verification.",
-					Command:   "/jobs bundle " + bundle.ID,
+					Command:   "/session jobs bundle " + bundle.ID,
 					Rationale: jobSupervisorBundleSummary(bundle),
 					Source:    "background_bundle",
 					SafeAuto:  true,
@@ -551,7 +551,7 @@ func recoveryBriefActionPlan(session *Session, brief RecoveryBrief, events []Con
 		add(RecoveryActionPlanItem{
 			ID:        "open-tasks-01",
 			Title:     "Review open task graph nodes before claiming completion.",
-			Command:   "/tasks",
+			Command:   "/session tasks",
 			Rationale: strings.Join(limitStrings(brief.OpenTasks, 4), " | "),
 			Source:    "task_graph",
 			SafeAuto:  true,
@@ -572,7 +572,7 @@ func recoveryBriefActionPlan(session *Session, brief RecoveryBrief, events []Con
 	add(RecoveryActionPlanItem{
 		ID:        "continuity-01",
 		Title:     "Refresh the long-task continuity packet after recovery actions.",
-		Command:   "/continuity continue from recovery brief",
+		Command:   "/session continuity continue from recovery brief",
 		Rationale: "Keeps compact/resume state aligned with the latest recovery attempt.",
 		Source:    "continuity",
 		SafeAuto:  true,
@@ -580,7 +580,7 @@ func recoveryBriefActionPlan(session *Session, brief RecoveryBrief, events []Con
 	add(RecoveryActionPlanItem{
 		ID:               "completion-audit-01",
 		Title:            "Run completion audit after recovery to prevent overclaiming.",
-		Command:          "/completion-audit after recovery",
+		Command:          "/session audit after recovery",
 		Rationale:        "Final readiness must be based on blockers, warnings, verification, tasks, jobs, and artifact evidence.",
 		Source:           "completion_audit",
 		SafeAuto:         true,
@@ -663,13 +663,13 @@ func recoveryBriefNextCommands(session *Session, brief RecoveryBrief) []string {
 		commands = append(commands, "/verify")
 	}
 	if len(brief.BackgroundJobs) > 0 || len(brief.BackgroundBundles) > 0 {
-		commands = append(commands, "/jobs status")
+		commands = append(commands, "/session jobs status")
 	}
 	if len(brief.OpenTasks) > 0 {
-		commands = append(commands, "/tasks")
+		commands = append(commands, "/session tasks")
 	}
-	commands = append(commands, "/continuity continue from recovery brief")
-	commands = append(commands, "/completion-audit after recovery")
+	commands = append(commands, "/session continuity continue from recovery brief")
+	commands = append(commands, "/session audit after recovery")
 	return normalizeTaskStateList(commands, 10)
 }
 

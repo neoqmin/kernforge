@@ -61,7 +61,7 @@ func parseEventsCommandOptions(args string) (eventsCommandOptions, error) {
 			options.Limit = n
 			return options, nil
 		}
-		return options, fmt.Errorf("usage: /events [tail [n]|export [path]]")
+		return options, fmt.Errorf("usage: /session events [tail [n]|export [path]]")
 	}
 	for _, field := range fields {
 		trimmed := strings.TrimSpace(field)
@@ -84,7 +84,7 @@ func parseEventsCommandOptions(args string) (eventsCommandOptions, error) {
 			options.OutputPath = trimmed
 			continue
 		}
-		return options, fmt.Errorf("usage: /events [tail [n]|export [path]]")
+		return options, fmt.Errorf("usage: /session events [tail [n]|export [path]]")
 	}
 	return options, nil
 }

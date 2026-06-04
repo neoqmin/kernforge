@@ -158,7 +158,21 @@ func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read goal markdown: %v", err)
 	}
-	if !strings.Contains(string(md), "## Objective") || !strings.Contains(output.String(), "Created goal") {
+	out := output.String()
+	for _, want := range []string{
+		"Created goal",
+		"latest_markdown",
+		filepath.Join(root, ".kernforge", "goals", "latest.md"),
+		"latest_json",
+		filepath.Join(root, ".kernforge", "goals", "latest.json"),
+		"Goal recorded without starting an autonomous loop",
+		"/goal run latest",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected goal creation output to contain %q, got %q", want, out)
+		}
+	}
+	if !strings.Contains(string(md), "## Objective") {
 		t.Fatalf("expected goal artifact and output, got md=%q output=%q", string(md), output.String())
 	}
 }
@@ -193,8 +207,58 @@ func TestGoalStartDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	if goal.Status != goalStatusPending || goal.Iteration != 0 {
 		t.Fatalf("expected pending unrun goal, got %#v", goal)
 	}
-	if !strings.Contains(output.String(), "Goal recorded without starting an autonomous loop") {
-		t.Fatalf("expected no-run hint, got %q", output.String())
+	for _, want := range []string{
+		"Goal recorded without starting an autonomous loop",
+		"/goal run latest",
+		"/goal start --run <objective>",
+		"latest_markdown",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("expected no-run hint to contain %q, got %q", want, output.String())
+		}
+	}
+	if strings.Contains(output.String(), "Starting autonomous loop now") {
+		t.Fatalf("record-only goal should not print run hint, got %q", output.String())
+	}
+}
+
+func TestGoalStartRunPrintsExplicitAutomationHint(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			return "APPROVED: goal run smoke", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --run --max-iterations 1 finish sample objective"); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+	out := output.String()
+	for _, want := range []string{
+		"Created goal",
+		"latest_markdown",
+		"Starting autonomous loop now",
+		"mode",
+		"autonomous",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected run output to contain %q, got %q", want, out)
+		}
+	}
+	if strings.Contains(out, "Goal recorded without starting an autonomous loop") {
+		t.Fatalf("unexpected no-run hint, got %q", output.String())
 	}
 }
 
@@ -1646,6 +1710,17 @@ func TestGoalToolsExposeCodexCompatibleSchemas(t *testing.T) {
 	if createDef.Name != "create_goal" {
 		t.Fatalf("create_goal name = %q", createDef.Name)
 	}
+	for _, want := range []string{
+		"internal active thread goal",
+		"Do not call this tool when the user asks to draft, write, create, or prepare a goal prompt",
+		"/goal <objective>",
+		"/goal start --run <objective>",
+		"/goal run latest",
+	} {
+		if !strings.Contains(createDef.Description, want) {
+			t.Fatalf("create_goal description missing %q:\n%s", want, createDef.Description)
+		}
+	}
 	required, ok := createDef.InputSchema["required"].([]string)
 	if !ok || len(required) != 1 || required[0] != "objective" {
 		t.Fatalf("create_goal required = %#v", createDef.InputSchema["required"])
@@ -1698,6 +1773,17 @@ func TestGoalToolsCreateGetAndCompleteGoal(t *testing.T) {
 	}
 	if created.Goal.TokenBudget == nil || *created.Goal.TokenBudget != 1000000 {
 		t.Fatalf("tokenBudget = %#v", created.Goal.TokenBudget)
+	}
+	for _, want := range []string{
+		filepath.Join(root, ".kernforge", "goals", "latest.md"),
+		filepath.Join(root, ".kernforge", "goals", "latest.json"),
+	} {
+		if !containsString(created.Goal.ArtifactRefs, want) {
+			t.Fatalf("create_goal should expose visible artifact %q, got %#v", want, created.Goal.ArtifactRefs)
+		}
+		if _, err := os.Stat(want); err != nil {
+			t.Fatalf("create_goal should write visible artifact %q: %v", want, err)
+		}
 	}
 	if created.RemainingTokens == nil {
 		t.Fatalf("expected remainingTokens in budgeted response: %#v", created)

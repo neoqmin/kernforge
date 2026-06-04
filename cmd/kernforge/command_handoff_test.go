@@ -46,7 +46,7 @@ func TestVerificationHandoffGuidesFailureAndSuccess(t *testing.T) {
 		},
 	}, FeatureWorkflow{ID: "feature-1", Status: featureStatusImplemented}, true)
 	for _, needle := range []string{
-		"Close feature: /new-feature close",
+		"Feature next: /new-feature next",
 		"Checkpoint: /checkpoint verified-state",
 	} {
 		if !strings.Contains(passed, needle) {
@@ -59,7 +59,7 @@ func TestVerificationHandoffGuidesFailureAndSuccess(t *testing.T) {
 			{Label: "unit tests", Status: VerificationPassed},
 		},
 	}, FeatureWorkflow{ID: "feature-1", Status: featureStatusPlanned}, true)
-	if strings.Contains(planned, "/new-feature close") || !strings.Contains(planned, "Feature: /new-feature status") {
+	if strings.Contains(planned, "/new-feature next") || !strings.Contains(planned, "Feature: /new-feature") {
 		t.Fatalf("expected planned feature handoff to inspect status instead of close, got:\n%s", planned)
 	}
 }
@@ -166,7 +166,7 @@ func TestCheckpointFeatureAndWorktreeHandoffs(t *testing.T) {
 	}
 
 	feature := featureStatusHandoff(FeatureWorkflow{ID: "feat-1", Status: featureStatusImplemented})
-	if !strings.Contains(feature, "Verify: /verify") || !strings.Contains(feature, "Close: /new-feature close") {
+	if !strings.Contains(feature, "Verify: /verify") || !strings.Contains(feature, "Next: /new-feature next") {
 		t.Fatalf("expected implemented feature handoff, got:\n%s", feature)
 	}
 
@@ -188,12 +188,12 @@ func TestCheckpointFeatureAndWorktreeHandoffs(t *testing.T) {
 	}
 
 	worktree := worktreeHandoff("create", "feat-1")
-	if strings.Contains(worktree, "/new-feature implement") || !strings.Contains(worktree, "Feature: /new-feature status") {
+	if strings.Contains(worktree, "/new-feature next") || !strings.Contains(worktree, "Feature: /new-feature") {
 		t.Fatalf("expected worktree handoff to inspect feature status, got:\n%s", worktree)
 	}
 
 	specialist := specialistAssignHandoff("node-1", "feat-1")
-	if strings.Contains(specialist, "/new-feature implement") || !strings.Contains(specialist, "Feature: /new-feature status") {
+	if strings.Contains(specialist, "/new-feature next") || !strings.Contains(specialist, "Feature: /new-feature") {
 		t.Fatalf("expected specialist handoff to inspect feature status, got:\n%s", specialist)
 	}
 }

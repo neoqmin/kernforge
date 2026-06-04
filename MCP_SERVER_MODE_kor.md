@@ -671,7 +671,7 @@ Codex 같은 외부 agent가 실제 산출물 경로를 찾아 열 수 있도록
 
 어떤 KernForge tool을 써야 할지 모를 때는 `kernforge_guide`를 먼저 호출한다. 이 도구는 자연어 request를 받아 intent를 추정하고, 부족한 항목은 `questions`로 되묻고, 다음에 호출할 안전한 tool을 `recommended_tool_call`로 제안한다.
 
-사용자가 `KernForge로 IsValidCommand 봐줘`처럼 함수명이나 파일명만 던진 경우에는 기본 진입점인 `kernforge` tool을 먼저 호출한다. 이 도구는 실행형 작업을 절대 시작하지 않고, `kernforge_guide`의 target-only 질의 모드로 연결해 사용자에게 다음 행동을 고르게 한다. `kernforge_look`은 같은 흐름을 제공하는 호환 alias다.
+사용자가 `KernForge로 IsValidCommand 봐줘`처럼 함수명이나 파일명만 던진 경우에는 기본 진입점인 `kernforge` tool을 먼저 호출한다. 이 도구는 실행형 작업을 절대 시작하지 않고, `kernforge_guide`의 target-only 질의 모드로 연결해 사용자에게 다음 행동을 고르게 한다. MCP host가 look 전용 라우팅을 이미 갖고 있으면 `kernforge_look`도 같은 안전한 first-step 흐름을 제공한다.
 
 ```json
 {
@@ -702,7 +702,7 @@ Codex 같은 외부 agent가 실제 산출물 경로를 찾아 열 수 있도록
 
 정보가 부족하면 `state=needs_input`과 함께 `questions`가 반환된다. 이 질문에 답한 뒤 `kernforge_guide`를 다시 호출하면 된다.
 
-사용자가 `KernForge로 ...`라고 시작하거나 KernForge 사용을 요청하면 기본 진입점인 `kernforge` tool로 먼저 보낸다. 함수명이나 파일명만 말한 경우도 `kernforge` 또는 `kernforge_look`으로 보내는 것이 가장 자연스럽다. 직접 `kernforge_guide`로 보내도 같은 target-only 흐름을 탄다. 이 경우 KernForge는 바로 실행하지 않고 `ask_user`, `choices`, `codex_instruction`을 반환한다. 응답에 `stop_after_response=true`가 있으면 Codex는 여기서 멈추고, `ask_user`와 `choices`만 사용자에게 보여준 뒤 답변을 기다려야 한다. 이 단계에서는 shell로 로컬 파일을 읽거나 `kernforge_status`, `kernforge_analysis_context`, `kernforge_analyze_project`, `kernforge_verify`, fuzz 관련 tool을 추가 호출하지 않는다.
+사용자가 `KernForge로 ...`라고 시작하거나 KernForge 사용을 요청하면 기본 진입점인 `kernforge` tool로 먼저 보낸다. 함수명이나 파일명만 말한 경우도 우선 `kernforge`로 보내는 것이 가장 자연스럽다. 직접 `kernforge_guide`로 보내도 같은 target-only 흐름을 탄다. 이 경우 KernForge는 바로 실행하지 않고 `ask_user`, `choices`, `codex_instruction`을 반환한다. 응답에 `stop_after_response=true`가 있으면 Codex는 여기서 멈추고, `ask_user`와 `choices`만 사용자에게 보여준 뒤 답변을 기다려야 한다. 이 단계에서는 shell로 로컬 파일을 읽거나 `kernforge_status`, `kernforge_analysis_context`, `kernforge_analyze_project`, `kernforge_verify`, fuzz 관련 tool을 추가 호출하지 않는다.
 
 예:
 

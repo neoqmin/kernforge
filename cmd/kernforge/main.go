@@ -885,7 +885,14 @@ func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
 }
 
 func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
-	switch normalizeSlashCommandName(cmd.Name) {
+	name := normalizeSlashCommandName(cmd.Name)
+	if name == "verify" {
+		subcommand, _ := commandSubcommandAndRest(cmd.Args)
+		if subcommand == "tools" {
+			return false
+		}
+	}
+	switch name {
 	case "",
 		"exit",
 		"quit",
@@ -896,11 +903,9 @@ func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
 		"version",
 		"context",
 		"session",
-		"sessions",
 		"clear",
 		"reset",
 		"new",
-		"tasks",
 		"skills",
 		"mcp",
 		"resources",
@@ -909,13 +914,7 @@ func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
 		"hook-reload",
 		"hooks",
 		"override",
-		"override-add",
-		"override-clear",
 		"memory",
-		"mem",
-		"mem-search",
-		"mem-show",
-		"mem-stats",
 		"model",
 		"effort",
 		"provider",
@@ -931,19 +930,9 @@ func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
 		"clear-selection",
 		"clear-selections",
 		"set-max-tool-iterations",
-		"set-analysis-models",
-		"set-specialist-model",
 		"set-auto-verify",
 		"locale-auto",
-		"set-msbuild-path",
-		"clear-msbuild-path",
-		"set-cmake-path",
-		"clear-cmake-path",
-		"set-ctest-path",
-		"clear-ctest-path",
-		"set-ninja-path",
-		"clear-ninja-path",
-		"detect-verification-tools":
+		"checkpoint":
 		return false
 	default:
 		return true
@@ -4774,10 +4763,24 @@ func (rt *runtimeState) handleModelCommandArgs(args string) error {
 		if len(fields) == 2 && strings.EqualFold(fields[1], "cross-review") {
 			return rt.clearReviewModelRole("cross_reviewer")
 		}
-		return fmt.Errorf("usage: /model clear cross-review")
-	case "main", "analysis-worker", "analysis-reviewer", "task-owner":
+		if len(fields) == 2 && strings.EqualFold(fields[1], "analysis") {
+			return rt.clearProjectAnalysisModelRoutes()
+		}
+		if len(fields) >= 2 && strings.EqualFold(fields[1], "task-owner") {
+			return rt.handleModelTaskOwnerCommand(append([]string{"clear"}, fields[2:]...))
+		}
+		return fmt.Errorf("usage: /model clear <analysis|cross-review|task-owner <owner-profile|all>>")
+	case "analysis":
+		return rt.handleModelAnalysisCommand(fields[1:])
+	case "analysis-worker":
+		return rt.handleModelAnalysisRoleCommand("worker", fields[1:])
+	case "analysis-reviewer":
+		return rt.handleModelAnalysisRoleCommand("reviewer", fields[1:])
+	case "task-owner":
+		return rt.handleModelTaskOwnerCommand(fields[1:])
+	case "main":
 		if len(fields) != 1 {
-			return fmt.Errorf("usage: /model %s", fields[0])
+			return fmt.Errorf("usage: /model main")
 		}
 		return rt.applyModelHubChoice(fields[0])
 	case "plan-review":
@@ -4785,6 +4788,112 @@ func (rt *runtimeState) handleModelCommandArgs(args string) error {
 	default:
 		return fmt.Errorf("unknown model target: %s", fields[0])
 	}
+}
+
+func (rt *runtimeState) handleModelAnalysisCommand(fields []string) error {
+	if len(fields) == 0 {
+		if rt.interactive {
+			return rt.handleSetAnalysisModelsCommand("")
+		}
+		return rt.showProjectAnalysisModelStatus()
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[0])) {
+	case "status":
+		if len(fields) != 1 {
+			return fmt.Errorf("usage: /model analysis status")
+		}
+		return rt.showProjectAnalysisModelStatus()
+	case "clear", "reset":
+		if len(fields) != 1 {
+			return fmt.Errorf("usage: /model analysis clear")
+		}
+		return rt.clearProjectAnalysisModelRoutes()
+	case "worker", "analysis-worker":
+		return rt.handleModelAnalysisRoleCommand("worker", fields[1:])
+	case "reviewer", "analysis-reviewer":
+		return rt.handleModelAnalysisRoleCommand("reviewer", fields[1:])
+	default:
+		return fmt.Errorf("usage: /model analysis [status|clear|worker <provider> <model> [reasoning_effort]|reviewer <provider> <model> [reasoning_effort]]")
+	}
+}
+
+func (rt *runtimeState) handleModelAnalysisRoleCommand(role string, fields []string) error {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role != "worker" && role != "reviewer" {
+		return fmt.Errorf("unsupported analysis role: %s", role)
+	}
+	if len(fields) == 0 {
+		if rt.interactive {
+			err := rt.configureProjectAnalysisRoleInteractive(role, "")
+			if errors.Is(err, ErrPromptCanceled) {
+				return nil
+			}
+			return err
+		}
+		return fmt.Errorf("usage: /model analysis-%s <provider> <model> [reasoning_effort]", role)
+	}
+	provider, ok := resolveProviderChoice(fields[0])
+	if !ok {
+		return fmt.Errorf("unknown provider: %s", fields[0])
+	}
+	if len(fields) == 1 {
+		if rt.interactive {
+			err := rt.configureProjectAnalysisRoleInteractive(role, provider)
+			if errors.Is(err, ErrPromptCanceled) {
+				return nil
+			}
+			return err
+		}
+		return fmt.Errorf("usage: /model analysis-%s %s <model> [reasoning_effort]", role, provider)
+	}
+	modelParts := append([]string(nil), fields[1:]...)
+	effort := ""
+	if len(modelParts) > 1 && validReasoningEffort(modelParts[len(modelParts)-1]) {
+		effort = modelParts[len(modelParts)-1]
+		modelParts = modelParts[:len(modelParts)-1]
+	}
+	model := strings.TrimSpace(strings.Join(modelParts, " "))
+	if model == "" {
+		return fmt.Errorf("model is required")
+	}
+	if err := rt.activateProjectAnalysisRole(role, provider, model, "", ""); err != nil {
+		return err
+	}
+	if strings.TrimSpace(effort) != "" {
+		return rt.setAnalysisReasoningEffort(role, effort)
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleModelTaskOwnerCommand(fields []string) error {
+	if len(fields) == 0 {
+		return rt.handleSetSpecialistModelCommand("")
+	}
+	action := strings.ToLower(strings.TrimSpace(fields[0]))
+	if action != "status" && action != "clear" && action != "reset" && len(fields) >= 3 {
+		provider, ok := resolveProviderChoice(fields[1])
+		if !ok {
+			return fmt.Errorf("unknown provider: %s", fields[1])
+		}
+		modelParts := append([]string(nil), fields[2:]...)
+		effort := ""
+		if len(modelParts) > 1 && validReasoningEffort(modelParts[len(modelParts)-1]) {
+			effort = modelParts[len(modelParts)-1]
+			modelParts = modelParts[:len(modelParts)-1]
+		}
+		model := strings.TrimSpace(strings.Join(modelParts, " "))
+		if model == "" {
+			return fmt.Errorf("model is required")
+		}
+		if err := rt.configureSpecialistModelInteractive(fields[0], provider, model); err != nil {
+			return err
+		}
+		if strings.TrimSpace(effort) != "" {
+			return rt.setSpecialistReasoningEffort(fields[0], effort)
+		}
+		return nil
+	}
+	return rt.handleSetSpecialistModelCommand(strings.Join(fields, " "))
 }
 
 func (rt *runtimeState) handleModelCrossReviewCommand(fields []string) error {
@@ -5138,7 +5247,7 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /model cross-review for the optional cross route."))
 	profiles := explicitSpecialistModelProfiles(rt.cfg)
 	if len(profiles) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("task_owner_model_overrides", "none; /specialists manages ownership profiles, /set-specialist-model is optional"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("task_owner_model_overrides", "none; /specialists manages ownership profiles, /model task-owner is optional"))
 		return nil
 	}
 	fmt.Fprintln(rt.writer)
@@ -6380,11 +6489,6 @@ func webResearchMCPStatusSummary(server MCPServerConfig, getenv func(string) str
 
 func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	cmd.Name = normalizeSlashCommandName(cmd.Name)
-	if alias, ok := hiddenSlashCommandAlias(cmd.Name); ok {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("/"+cmd.Name+" is deprecated; use "+alias.Replacement+" instead."))
-		cmd.Name = alias.Canonical
-		cmd.Args = joinCommandArgs(alias.ArgsPrefix, cmd.Args)
-	}
 	switch cmd.Name {
 	case "help":
 		fmt.Fprintln(rt.writer, rt.ui.section("Help"))
@@ -6622,26 +6726,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSuggestFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "suggest-dashboard-html":
-		if err := rt.handleSuggestDashboardHTMLCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "session-dashboard-html":
-		if err := rt.handleSessionDashboardHTMLCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "events":
-		if err := rt.handleEventsCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "continuity":
-		if err := rt.handleContinuityCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "completion-audit":
-		if err := rt.handleCompletionAuditCommand(cmd.Args); err != nil {
-			return false, err
-		}
 	case "review":
 		err := rt.runWithRequestCancelWatcher(context.Background(), func(ctx context.Context) error {
 			return rt.handleReviewCommandWithContext(ctx, cmd.Args)
@@ -6656,14 +6740,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-	case "recover":
-		if err := rt.handleRecoverCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "jobs":
-		if err := rt.handleJobsCommand(cmd.Args); err != nil {
-			return false, err
-		}
 	case "automation":
 		if err := rt.handleAutomationCommand(cmd.Args); err != nil {
 			return false, err
@@ -6672,24 +6748,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleGoalCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "verify-dashboard":
-		if err := rt.handleVerifyDashboardCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "verify-dashboard-html":
-		if err := rt.handleVerifyDashboardHTMLCommand(cmd.Args); err != nil {
-			return false, err
-		}
 	case "override":
 		if err := rt.handleOverrideFamilyCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "override-add":
-		if err := rt.handleHookOverrideAddCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "override-clear":
-		if err := rt.handleHookOverrideClearCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "clear", "reset", "new":
@@ -6716,40 +6776,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleMemoryFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "mem":
-		if err := rt.handlePersistentMemoryRecent(cmd.Args); err != nil {
-			return false, err
-		}
 	case "evidence":
 		if err := rt.handleEvidenceFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "evidence-search":
-		if err := rt.handleEvidenceSearch(cmd.Args); err != nil {
-			return false, err
-		}
-	case "evidence-show":
-		if err := rt.handleEvidenceShow(cmd.Args); err != nil {
-			return false, err
-		}
-	case "evidence-dashboard":
-		if err := rt.handleEvidenceDashboard(cmd.Args, false); err != nil {
-			return false, err
-		}
-	case "evidence-dashboard-html":
-		if err := rt.handleEvidenceDashboard(cmd.Args, true); err != nil {
-			return false, err
-		}
 	case "investigate":
 		if err := rt.handleInvestigateCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "investigate-dashboard":
-		if err := rt.handleInvestigationDashboard(false); err != nil {
-			return false, err
-		}
-	case "investigate-dashboard-html":
-		if err := rt.handleInvestigationDashboard(true); err != nil {
 			return false, err
 		}
 	case "simulate":
@@ -6780,96 +6812,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleRootCausePatternsCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "simulate-dashboard":
-		if err := rt.handleSimulationDashboard(false); err != nil {
-			return false, err
-		}
-	case "simulate-dashboard-html":
-		if err := rt.handleSimulationDashboard(true); err != nil {
-			return false, err
-		}
-	case "mem-search":
-		if err := rt.handlePersistentMemorySearch(cmd.Args); err != nil {
-			return false, err
-		}
-	case "mem-show":
-		if err := rt.handlePersistentMemoryShow(cmd.Args); err != nil {
-			return false, err
-		}
-	case "mem-promote":
-		if err := rt.handlePersistentMemoryAdjust(cmd.Args, "promote"); err != nil {
-			return false, err
-		}
-	case "mem-demote":
-		if err := rt.handlePersistentMemoryAdjust(cmd.Args, "demote"); err != nil {
-			return false, err
-		}
-	case "mem-confirm":
-		if err := rt.handlePersistentMemoryAdjust(cmd.Args, "confirm"); err != nil {
-			return false, err
-		}
-	case "mem-tentative":
-		if err := rt.handlePersistentMemoryAdjust(cmd.Args, "tentative"); err != nil {
-			return false, err
-		}
-	case "mem-dashboard":
-		if err := rt.handlePersistentMemoryDashboard(cmd.Args, false); err != nil {
-			return false, err
-		}
-	case "mem-dashboard-html":
-		if err := rt.handlePersistentMemoryDashboard(cmd.Args, true); err != nil {
-			return false, err
-		}
-	case "mem-prune":
-		if err := rt.handlePersistentMemoryPrune(cmd.Args); err != nil {
-			return false, err
-		}
-	case "mem-stats":
-		if err := rt.handlePersistentMemoryStats(); err != nil {
-			return false, err
-		}
 	case "checkpoint":
 		if err := rt.handleCheckpointFamilyCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "checkpoint-auto":
-		if err := rt.handleCheckpointAutoCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "set-msbuild-path":
-		if err := rt.handleSetVerificationToolPathCommand("msbuild", cmd.Args); err != nil {
-			return false, err
-		}
-	case "clear-msbuild-path":
-		if err := rt.handleClearVerificationToolPathCommand("msbuild"); err != nil {
-			return false, err
-		}
-	case "set-cmake-path":
-		if err := rt.handleSetVerificationToolPathCommand("cmake", cmd.Args); err != nil {
-			return false, err
-		}
-	case "clear-cmake-path":
-		if err := rt.handleClearVerificationToolPathCommand("cmake"); err != nil {
-			return false, err
-		}
-	case "set-ctest-path":
-		if err := rt.handleSetVerificationToolPathCommand("ctest", cmd.Args); err != nil {
-			return false, err
-		}
-	case "clear-ctest-path":
-		if err := rt.handleClearVerificationToolPathCommand("ctest"); err != nil {
-			return false, err
-		}
-	case "set-ninja-path":
-		if err := rt.handleSetVerificationToolPathCommand("ninja", cmd.Args); err != nil {
-			return false, err
-		}
-	case "clear-ninja-path":
-		if err := rt.handleClearVerificationToolPathCommand("ninja"); err != nil {
-			return false, err
-		}
-	case "detect-verification-tools":
-		if err := rt.handleDetectVerificationToolsCommand(); err != nil {
 			return false, err
 		}
 	case "set-auto-verify":
@@ -6882,18 +6826,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "worktree":
 		if err := rt.handleWorktreeCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "checkpoint-diff":
-		if err := rt.handleCheckpointDiffCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "checkpoints":
-		if err := rt.handleCheckpointsCommand(); err != nil {
-			return false, err
-		}
-	case "rollback":
-		if err := rt.handleRollbackCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "skills":
@@ -7104,93 +7036,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSessionFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "sessions":
-		sessionArgs := strings.TrimSpace(cmd.Args)
-		if sessionArgs != "" {
-			query := sessionArgs
-			parts := strings.SplitN(sessionArgs, " ", 2)
-			if len(parts) > 0 {
-				action := normalizeSlashCommandName(parts[0])
-				if action == "search" || action == "find" {
-					if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-						return false, fmt.Errorf("usage: /sessions search <query>")
-					}
-					query = strings.TrimSpace(parts[1])
-				}
-			}
-			items, err := rt.store.Search(query, 20)
-			if err != nil {
-				return false, err
-			}
-			if len(items) == 0 {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine("No sessions matched query."))
-				return false, nil
-			}
-			fmt.Fprintln(rt.writer, rt.ui.section("Session Search"))
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("query", query))
-			for _, item := range items {
-				fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
-				if strings.TrimSpace(item.WorkingDir) != "" {
-					fmt.Fprintf(rt.writer, "  %s %s\n", rt.ui.dim("cwd:"), rt.ui.dim(item.WorkingDir))
-				}
-				if strings.TrimSpace(item.Snippet) != "" {
-					fmt.Fprintf(rt.writer, "  %s %s\n", rt.ui.dim(item.MatchField+":"), item.Snippet)
-				}
-			}
-			return false, nil
-		}
-		items, err := rt.store.List()
-		if err != nil {
-			return false, err
-		}
-		if len(items) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved sessions."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Sessions"))
-		for _, item := range items {
-			fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
-		}
-	case "handoff":
-		if err := rt.handleDelegationHandoffCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "tasks":
-		if len(rt.session.Plan) == 0 {
-			if rt.session.TaskGraph != nil && len(rt.session.TaskGraph.Nodes) > 0 {
-				fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
-				fmt.Fprintln(rt.writer, rt.session.TaskGraph.RenderExportSection())
-				return false, nil
-			}
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No active plan."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
-		var completed int
-		var inProgress int
-		var pending int
-		for _, item := range rt.session.Plan {
-			switch item.Status {
-			case "completed":
-				completed++
-			case "in_progress":
-				inProgress++
-			default:
-				pending++
-			}
-		}
-		fmt.Fprintln(rt.writer)
-		rt.printKVGroup("Summary",
-			kv("total", fmt.Sprintf("%d", len(rt.session.Plan))),
-			kv("completed", fmt.Sprintf("%d", completed)),
-			kv("in_progress", fmt.Sprintf("%d", inProgress)),
-			kv("pending", fmt.Sprintf("%d", pending)),
-		)
-		fmt.Fprintln(rt.writer)
-		fmt.Fprintln(rt.writer, rt.ui.subsection("Plan"))
-		for i, item := range rt.session.Plan {
-			fmt.Fprintln(rt.writer, rt.ui.planItem(i, item.Status, item.Step))
-		}
 	case "provider":
 		return false, rt.handleProviderCommand(cmd.Args)
 	case "profile":
@@ -7314,14 +7159,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleTrustCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "set-analysis-models":
-		if err := rt.handleSetAnalysisModelsCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "set-specialist-model":
-		if err := rt.handleSetSpecialistModelCommand(cmd.Args); err != nil {
-			return false, err
-		}
 	case "new-feature":
 		if err := rt.handleNewFeatureCommand(cmd.Args); err != nil {
 			return false, err
@@ -7345,31 +7182,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "exit", "quit":
 		return true, nil
 	default:
-		if suggestion := removedReviewCommandSuggestion(cmd.Name); suggestion != "" {
-			return false, fmt.Errorf("unknown command: /%s. %s", cmd.Name, suggestion)
-		}
 		return false, fmt.Errorf("unknown command: /%s", cmd.Name)
 	}
 	return false, nil
-}
-
-func removedReviewCommandSuggestion(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "review-pr":
-		return "Use /review pr instead."
-	case "review-selection":
-		return "Use /review selection instead."
-	case "review-selections":
-		return "Use /review selection --all instead."
-	case "do-plan-review":
-		return "Use /review plan instead."
-	case "set-plan-review":
-		return "Use /review plan. The design lens is applied automatically."
-	case "profile-review":
-		return "Use /model cross-review instead."
-	default:
-		return ""
-	}
 }
 
 func (rt *runtimeState) handleLocaleAutoCommand(args string) error {
@@ -7965,14 +7780,7 @@ func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 		case "status":
 			return rt.showProjectAnalysisModelStatus()
 		case "clear", "reset":
-			rt.cfg.ProjectAnalysis.WorkerProfile = nil
-			rt.cfg.ProjectAnalysis.ReviewerProfile = nil
-			rt.rememberCurrentProfile()
-			if err := rt.saveUserConfig(); err != nil {
-				return err
-			}
-			fmt.Fprintln(rt.writer, rt.ui.successLine("Project analysis worker/reviewer models reset to the main active model."))
-			return nil
+			return rt.clearProjectAnalysisModelRoutes()
 		case "worker", "reviewer":
 			provider := ""
 			if len(parts) > 1 {
@@ -7984,7 +7792,7 @@ func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 			}
 			return err
 		default:
-			return fmt.Errorf("usage: /set-analysis-models [status|clear|worker [provider]|reviewer [provider]]")
+			return fmt.Errorf("usage: /model analysis [status|clear|worker <provider> <model> [reasoning_effort]|reviewer <provider> <model> [reasoning_effort]]")
 		}
 	}
 
@@ -8029,7 +7837,7 @@ func (rt *runtimeState) handleSetSpecialistModelCommand(args string) error {
 			return rt.showSpecialistModelStatus(name)
 		case "clear", "reset":
 			if len(parts) < 2 {
-				return fmt.Errorf("usage: /set-specialist-model clear <owner-profile|all>")
+				return fmt.Errorf("usage: /model task-owner clear <owner-profile|all>")
 			}
 			return rt.clearSpecialistModelOverride(parts[1])
 		default:
@@ -8077,6 +7885,17 @@ func (rt *runtimeState) handleSetSpecialistModelCommand(args string) error {
 		return nil
 	}
 	return err
+}
+
+func (rt *runtimeState) clearProjectAnalysisModelRoutes() error {
+	rt.cfg.ProjectAnalysis.WorkerProfile = nil
+	rt.cfg.ProjectAnalysis.ReviewerProfile = nil
+	rt.rememberCurrentProfile()
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Project analysis worker/reviewer models reset to the main active model."))
+	return nil
 }
 
 func parsePlanItemsFromText(plan string) []PlanItem {
@@ -8716,7 +8535,7 @@ func (rt *runtimeState) printProjectTrustStatus() {
 func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 	target := normalizeSpecialistProfileName(name)
 	if target == "" {
-		return fmt.Errorf("usage: /set-specialist-model clear <owner-profile|all>")
+		return fmt.Errorf("usage: /model task-owner clear <owner-profile|all>")
 	}
 	removed := false
 	current := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)

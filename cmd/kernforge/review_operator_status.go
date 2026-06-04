@@ -828,7 +828,7 @@ func reviewBlockerDefaultNextAction(class string) string {
 func reviewBlockerDefaultCommand(class string) string {
 	switch class {
 	case reviewBlockerClassCodeRepair, reviewBlockerClassUserDecisionRequired:
-		return "/continuity continue from review"
+		return "/session continuity continue from review"
 	case reviewBlockerClassReviewerRouteProblem:
 		return "/model cross-review"
 	case reviewBlockerClassEvidenceGap:
@@ -1762,7 +1762,7 @@ func reviewTriageNextCommand(summary *ReviewCrossReviewTriageSummary) string {
 	if summary == nil || (!summary.UserActionNeeded && summary.IncompleteCount == 0) {
 		return ""
 	}
-	return "/continuity continue from review"
+	return "/session continuity continue from review"
 }
 
 func documentArtifactEvidenceRef(session *Session, report *CodingHarnessReport) string {

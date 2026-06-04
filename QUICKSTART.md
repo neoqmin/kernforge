@@ -50,10 +50,12 @@ What this does:
 Project analysis:
 - `/analyze-project [--mode map|trace|impact|surface|security|performance] <goal>`
 - `/analyze-performance [focus]`
-- `/set-analysis-models`
+- `/model analysis`
+- `/model analysis-worker <provider> <model> [reasoning_effort]`
+- `/model analysis-reviewer <provider> <model> [reasoning_effort]`
 - If you omit `--mode`, the default mode is `map`
 - Long `/analyze-project` runs show shard waves, completed/failed shard counts, worker/reviewer model wait events, and final artifact write steps. `progress_display` now defaults to `compact`, so routine progress stays quiet; switch to `/progress-display stream` when you want every update persisted.
-- Use `/set-analysis-models clear` when project analysis should follow the current main model instead of a previously configured worker/reviewer route
+- Use `/model analysis clear` when project analysis should follow the current main model instead of a previously configured worker/reviewer route
 
 Investigation:
 - `/investigate`
@@ -114,8 +116,14 @@ Policy:
 Planning and tracked feature work:
 - `/review plan <task>`
 - `/new-feature <task>`
-- `/new-feature status [id]`
-- `/new-feature implement [id]`
+- `/new-feature`
+- `/new-feature next`
+
+Autonomous goals:
+- `/goal "<objective>"` records a persistent goal and prints `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`
+- `/goal start --run "<objective>"` records and immediately runs the autonomous loop
+- `/goal start @GOAL.md` records a markdown goal; `/goal run latest` starts or resumes it later
+- `kernforge -goal "<objective>"` and `kernforge -goal-file GOAL.md` run the loop in one-shot CLI mode
 
 Provider and runtime inspection:
 - `/provider status`
@@ -183,10 +191,10 @@ What this means:
 
 ```text
 /new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
-/new-feature status
-/new-feature implement
+/new-feature
+/new-feature next
 /verify
-/new-feature close
+/new-feature next
 ```
 
 Use `/new-feature` when you want persisted spec, plan, and task artifacts under `.kernforge/features/<id>`. Use `/review plan` when you want a reviewed plan and immediate execution without a longer-lived tracked feature workspace.

@@ -389,13 +389,13 @@ func TestFormatCompletionSuggestionsShowsCommandDescriptions(t *testing.T) {
 
 func TestFormatCompletionSuggestionsShowsSubcommandDescriptions(t *testing.T) {
 	ui := UI{color: false}
-	rendered := ui.formatCompletionSuggestions([]string{"/new-feature status", "/new-feature implement"}, "/new-feature ")
+	rendered := ui.formatCompletionSuggestions([]string{"/new-feature next", "/new-feature list"}, "/new-feature ")
 
 	for _, needle := range []string{
-		"/new-feature status",
-		"Show the current state of a tracked feature.",
-		"/new-feature implement",
-		"Execute the next implementation slice for a tracked feature.",
+		"/new-feature next",
+		"Run the next safe lifecycle action for the active tracked feature.",
+		"/new-feature list",
+		"List tracked feature workspaces.",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected subcommand completion rendering to contain %q, got %q", needle, rendered)

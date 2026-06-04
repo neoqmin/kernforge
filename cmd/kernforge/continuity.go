@@ -354,13 +354,13 @@ func continuityRecoveryActions(session *Session, packet ContinuityPacket) []stri
 	for _, job := range session.BackgroundJobs {
 		status := strings.ToLower(strings.TrimSpace(job.Status))
 		if status == "failed" || status == "stale" {
-			actions = append(actions, "Inspect background job "+job.ID+" with /jobs check "+job.ID+" before starting another equivalent command.")
+			actions = append(actions, "Inspect background job "+job.ID+" with /session jobs check "+job.ID+" before starting another equivalent command.")
 		}
 	}
 	for _, bundle := range session.BackgroundBundles {
 		status := strings.ToLower(strings.TrimSpace(bundle.Status))
 		if status == "failed" || status == "stale" {
-			actions = append(actions, "Inspect background bundle "+bundle.ID+" with /jobs bundle "+bundle.ID+" before restarting verification.")
+			actions = append(actions, "Inspect background bundle "+bundle.ID+" with /session jobs bundle "+bundle.ID+" before restarting verification.")
 		}
 	}
 	if len(packet.RecentErrors) > 0 {
@@ -381,13 +381,13 @@ func continuityNextCommands(packet ContinuityPacket) []string {
 		commands = append(commands, "/worktree list")
 	}
 	if len(packet.BackgroundJobs) > 0 || len(packet.BackgroundBundles) > 0 {
-		commands = append(commands, "/jobs status")
+		commands = append(commands, "/session jobs status")
 	}
 	if strings.TrimSpace(packet.LastVerificationFailure) != "" || len(packet.ChangedFiles) > 0 {
 		commands = append(commands, "/verify")
 	}
 	if len(packet.OpenTasks) > 0 {
-		commands = append(commands, "/handoff continue from continuity packet")
+		commands = append(commands, "/session handoff continue from continuity packet")
 	}
 	return normalizeTaskStateList(commands, 10)
 }
@@ -528,7 +528,7 @@ func (rt *runtimeState) handleJobsCommand(args string) error {
 		reason := strings.TrimSpace(strings.Join(fields[2:], " "))
 		return rt.handleJobsCancelBundle(bundleID, reason)
 	default:
-		return fmt.Errorf("usage: /jobs [status|check <job-id|latest>|bundle <bundle-id|latest>|cancel <job-id|latest> [reason]|cancel-bundle <bundle-id|latest> [reason]]")
+		return fmt.Errorf("usage: /session jobs [status|check <job-id|latest>|bundle <bundle-id|latest>|cancel <job-id|latest> [reason]|cancel-bundle <bundle-id|latest> [reason]]")
 	}
 }
 

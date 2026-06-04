@@ -3189,7 +3189,7 @@ type Command struct {
 }
 
 func normalizeSlashCommandName(name string) string {
-	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "_", "-")
+	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func ParseCommand(input string) (Command, bool) {
@@ -3232,35 +3232,37 @@ Conversation And Sessions:
 /export [file]         Export the conversation as markdown
 /rename <name>         Rename the current session
 /resume <session-id>   Resume a saved session
-/session               Show the current session id and storage path
-/sessions [search <query>] List recent sessions or search saved session content
-/handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
+/session [status]      Show the current session id and storage path
+/session list|search <query> List recent sessions or search saved session content
+/session handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
 /suggest [status]      Show proactive situation judgment and suggested next actions
 /suggest dashboard --html Render proactive suggestions as an HTML dashboard
 /session dashboard --html Generate and open a session thread, task graph, automation, and artifact dashboard
-/events [tail|export] Tail or export session conversation events as JSONL for local clients
-/continuity [note]     Generate a long-task resume/recovery packet with worktrees, jobs, failures, and next commands
-/completion-audit [note] Generate a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence
-/recover [note]        Generate a focused recovery brief from recent errors, verification failure, jobs, and next commands
-/jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
+/session events [tail|export] Tail or export session conversation events as JSONL for local clients
+/session continuity [note] Generate a long-task resume/recovery packet with worktrees, jobs, failures, and next commands
+/session audit [note]  Generate a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence
+/session recover [note] Generate a focused recovery brief from recent errors, verification failure, jobs, and next commands
+/session jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
 /automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
 /review [change|plan|selection|pr|final|goal|analysis] Run the common review harness and write .kernforge/reviews/latest.*
 /review-soak --mode scripted|real-provider [--turns N] [--timeout 2m] Run the bounded live-provider endurance soak and write .kernforge/soak artifacts
 /review pr [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Review a PR target, optionally with explicit GitHub writes
-/goal [start|run|status|audit|complete|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
-/tasks                 Show the current task list
+/goal [start|run|status|audit|complete|cancel] Record a persistent goal, then explicitly run the autonomous loop when ready
+/session tasks         Show the current task list
 
 Provider And Models:
 /review plan <task>   Review an implementation plan through the common review harness
-/new-feature <task>    Create tracked feature artifacts and guide implement, verify, close, or cleanup follow-up
+/new-feature <task>    Create tracked feature artifacts; use /new-feature and /new-feature next to continue
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path, infer a mode-specific goal when omitted, generate a project knowledge base, docs, manifest, dashboard, and next-step handoff
 /docs-refresh          Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus from saved artifacts
 /analyze-dashboard [latest|path] Open the latest or selected project analysis document portal
 /analyze-performance [focus] Analyze likely performance bottlenecks and suggest hotspot follow-up commands
 /specialists           Show task ownership profiles plus editable ownership and worktree routing state
-/set-analysis-models   Configure worker/reviewer models for /analyze-project
-/set-specialist-model  Configure an optional provider/model override for a task owner profile
 /model                 Show all model routing and interactively reconfigure one target
+/model analysis-worker <provider> <model> [reasoning_effort] Configure the project-analysis worker route
+/model analysis-reviewer <provider> <model> [reasoning_effort] Configure the project-analysis reviewer route
+/model analysis clear  Reset project-analysis worker/reviewer routes to inherited defaults
+/model task-owner [status|clear <owner-profile|all>|<owner-profile> <provider> <model> [reasoning_effort]] Configure optional task-owner model overrides
 /effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
 /codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
 /permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions, or Codex built-in profile ids
@@ -3281,12 +3283,13 @@ Verification And Checkpoints:
 /checkpoint [note]     Create a workspace checkpoint snapshot and suggest diff/list follow-up
 /checkpoint auto [on|off] Show or change automatic checkpoint creation before edits
 /checkpoint diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
+/checkpoint list       List checkpoints for the current workspace
+/checkpoint rollback [target] Restore the workspace to a selected checkpoint, or a specific target if provided
 /verify tools detect Detect and save workspace verification tool paths
 /verify tools set <msbuild|cmake|ctest|ninja> <path> Set a verification tool path override
 /verify tools clear <msbuild|cmake|ctest|ninja> Clear a verification tool path override
 /set-auto-verify [on|off] Show or change automatic verification after edits
 - Quote paths that contain spaces. Example: /verify tools set msbuild "C:\Program Files\...\MSBuild.exe"
-/checkpoints           List checkpoints for the current workspace
 /investigate [subcommand] Manage live investigation sessions and guide the next snapshot, simulation, or evidence step
 /investigate dashboard Show an investigation dashboard for this workspace
 /investigate dashboard --html Generate and open an HTML investigation dashboard
@@ -3306,7 +3309,6 @@ Verification And Checkpoints:
 /root-cause-patterns [list|match|github-search|normalize|validate] Inspect and validate root-cause pattern packs
 /simulate dashboard    Show a simulation dashboard for this workspace
 /simulate dashboard --html Generate and open an HTML simulation dashboard
-/rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
 /verify [path,...|--full] Run adaptive or full verification and suggest repair, dashboard, checkpoint, or feature workflow follow-up
 /verify dashboard [--html] [all] Show recent verification history and optionally generate an HTML report
 
@@ -3402,10 +3404,10 @@ func HelpDetail(topic string) (string, bool) {
 - Generate .kernforge/session_dashboard/latest.html with session metadata, task graph status, automation due/failed state, recent thread events, changed files, background jobs, and artifact refs.
 - In interactive mode, Kernforge tries to open the generated dashboard automatically.
 
-/events [tail [n]]
+/session events [tail [n]]
 - Print recent session conversation events as JSONL records with session id, workspace, provider, model, and event payload.
 
-/events export [path]
+/session events export [path]
 - Write the current session event stream to .kernforge/events/<session-id>.jsonl and refresh .kernforge/events/latest.jsonl unless an explicit path is provided.
 - Use this as the local app-server style event feed for dashboards, schedulers, test harnesses, and external supervisors.
 
@@ -3463,16 +3465,21 @@ func HelpDetail(topic string) (string, bool) {
 /goal start <objective>
 /goal start @GOAL.md
 /goal start --file GOAL.md
-- Create a Codex-style goal from inline text or a markdown file without submitting another model turn.
+- Record a Codex-style goal from inline text or a markdown file without submitting another model turn.
 - Kernforge records the acceptance contract, task graph, completion criteria, and progress ledger so the goal can guide later turns.
+- This is the visible product flow. If you only want a goal prompt drafted, ask for prompt text or save it as markdown first; no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run.
+- Kernforge writes .kernforge/goals/latest.md and .kernforge/goals/latest.json plus per-goal copies and prints those paths after creation.
+- Start the recorded goal with /goal run latest when you explicitly want automation.
 
 /goal start --run <objective>
+- Create the goal and immediately start the autonomous loop.
+
+/goal start --until-complete <objective>
 - Explicitly start Kernforge's autonomous goal loop after creating the goal.
 - Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without user intervention.
-- Each loop iteration runs the agent, /verify --full, /completion-audit, final semantic review, and when needed /recover execute-safe.
+- Each loop iteration runs the agent, /verify --full, /session audit, final semantic review, and when needed /session recover execute-safe.
 
 /goal start --max-iterations N <objective>
-/goal start --until-complete <objective>
 /goal start --time-budget 10m <objective>
 /goal start --token-budget N <objective>
 /goal start --rollback-on-regression <objective>
@@ -3489,7 +3496,7 @@ func HelpDetail(topic string) (string, bool) {
 - Show the active goal, status, iteration count, latest audit state, and artifact paths.
 
 /goal audit [id|latest]
-- Re-run /completion-audit for the goal objective and attach the result to the goal state without marking it complete.
+- Re-run /session audit for the goal objective and attach the result to the goal state without marking it complete.
 
 /goal complete [id|latest]
 - Re-run completion audit, run the final semantic goal reviewer, and mark the goal complete only when both gates approve.
@@ -3499,27 +3506,27 @@ func HelpDetail(topic string) (string, bool) {
 `), true
 	case "events", "event-stream":
 		return strings.TrimSpace(`
-/events
-/events tail [n]
+/session events
+/session events tail [n]
 - Print recent session conversation events as JSONL records.
 - Each record includes session_id, workspace, provider, model, and the normalized event payload.
 
-/events export [path]
+/session events export [path]
 - Write a durable JSONL event stream for the current session.
 - Without a path, Kernforge writes .kernforge/events/<session-id>.jsonl and refreshes .kernforge/events/latest.jsonl.
 - Use the exported stream as a local Codex App Server style feed for dashboards, schedulers, test harnesses, or external supervisors.
 `), true
 	case "continuity", "resume-brief", "recovery":
 		return strings.TrimSpace(`
-/continuity [note]
+/session continuity [note]
 - Generate .kernforge/continuity/latest.md and latest.json as a local long-task resume and failure-recovery packet.
 - The packet includes active/base workspace roots, branch, provider/model, changed files, open task graph nodes, worktree leases, active edit loop, active failure repair, latest verification failure, background jobs/bundles, recent runtime errors, artifact refs, recovery actions, next commands, and a suggested continuation prompt.
 - Use it before resuming after context compaction, switching models, delegating work, or recovering from a failed verification/shell command.
-- Direct !shell command failures are recorded as command_error conversation events, so /continuity can surface them without requiring you to paste the error again.
+- Direct !shell command failures are recorded as command_error conversation events, so /session continuity can surface them without requiring you to paste the error again.
 `), true
 	case "completion-audit", "completion", "final-audit":
 		return strings.TrimSpace(`
-/completion-audit [note]
+/session audit [note]
 - Generate .kernforge/completion_audit/latest.md and latest.json as an explicit completion readiness gate.
 - The audit checks the objective, acceptance contract, required artifacts, latest verification, open task graph nodes, active edit/failure-repair state, background jobs/bundles, recent runtime errors, and the latest coding harness report.
 - Status is blocked when hard evidence is missing or failing, needs_review when warnings or uncertainty remain, and ready only when no blockers or warnings remain.
@@ -3527,43 +3534,43 @@ func HelpDetail(topic string) (string, bool) {
 `), true
 	case "recover", "failure-recovery":
 		return strings.TrimSpace(`
-/recover [note]
+/session recover [note]
 - Generate .kernforge/recovery/latest.md and latest.json as a focused failure recovery brief.
 - The brief pulls from the most recent provider/tool/command error, latest verification failure, active failure repair attempt, failed/stale/running background jobs or bundles, changed files, open tasks, worktrees, and artifact refs.
 - It prints a primary failure, structured diagnosis, action plan with lifecycle status, recovery actions, next commands, and a continuation prompt so a local user or -command runner can resume without pasting logs back into the model.
-- Use /recover immediately after a failed shell command, failed /verify, stale background job, or provider/tool error.
+- Use /session recover immediately after a failed shell command, failed /verify, stale background job, or provider/tool error.
 
-/recover execute-safe [note]
-- Generate the same recovery brief, then execute only safe_auto actions such as whitelisted verification reruns, /jobs inspection, /continuity, and /completion-audit.
+/session recover execute-safe [note]
+- Generate the same recovery brief, then execute only safe_auto actions such as whitelisted verification reruns, /session jobs inspection, /session continuity, and /session audit.
 - Shell commands are not replayed unless they pass the recovery safe-auto whitelist, for example go test, go vet, go list, git status, or git diff --check without shell chaining or redirection.
 - Execution status and output are recorded in the recovery action plan and execution log.
 `), true
 	case "jobs", "background-jobs", "background":
 		return strings.TrimSpace(`
-/jobs
-/jobs status
+/session jobs
+/session jobs status
 - Show persisted background shell jobs and bundles, including running, completed, failed, stale, canceled, preempted, and superseded counts.
 
-/jobs check <job-id|latest>
+/session jobs check <job-id|latest>
 - Poll one background shell job and show its latest status, exit code, log path, and output tail.
 
-/jobs bundle <bundle-id|latest>
+/session jobs bundle <bundle-id|latest>
 - Poll one background shell bundle and summarize the member jobs.
 
-/jobs cancel <job-id|latest> [reason]
+/session jobs cancel <job-id|latest> [reason]
 - Cancel one background shell job when it is stale, superseded, or no longer needed.
 
-/jobs cancel-bundle <bundle-id|latest> [reason]
+/session jobs cancel-bundle <bundle-id|latest> [reason]
 - Cancel every job in a background shell bundle and mark the bundle canceled.
 `), true
 	case "handoff", "delegation":
 		return strings.TrimSpace(`
-/handoff [note]
+/session handoff [note]
 - Generate .kernforge/handoff/latest.md and latest.json as a compact delegation packet for another local agent, Codex cloud task, or human reviewer.
 - The packet includes workspace, branch, provider/model, changed files, open task graph nodes, last verification summary, recent events, artifact refs, and a suggested continuation prompt.
 - The command does not push, post, or run external services.
 
-/handoff import <artifact.json|result.md>
+/session handoff import <artifact.json|result.md>
 - Import a result packet from another local agent, human reviewer, or cloud task.
 - The import is normalized into .kernforge/handoff/imports/*.json and *.md, added to the conversation event log, and any completed_tasks IDs are marked completed in the TaskGraph when they match existing nodes.
 `), true
@@ -3658,19 +3665,19 @@ Conversation and session commands manage chat history and saved sessions.
 /session dashboard --html
 - Generate and open .kernforge/session_dashboard/latest.html for the current session thread, task graph, automations, and artifact refs.
 
-/continuity [note]
+/session continuity [note]
 - Generate .kernforge/continuity/latest.md and latest.json for long-task resume, recovery actions, background jobs, worktrees, and next commands.
 
-/completion-audit [note]
+/session audit [note]
 - Generate .kernforge/completion_audit/latest.md and latest.json with completion blockers, warnings, verification, tasks, background jobs, and artifact evidence.
 
-/recover [note]
+/session recover [note]
 - Generate .kernforge/recovery/latest.md and latest.json from recent errors, verification failure, active failure repair, background jobs, open tasks, and next commands.
 
-/sessions
+/session list
 - List recent saved sessions.
 
-/tasks
+/session tasks
 - Show the current shared task list / plan items.
 `), true
 	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "progress-display", "profile", "plan-review", "new-feature", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
@@ -3731,28 +3738,19 @@ Provider and model commands control which model is active and how planning/revie
 
 /new-feature <task>
 - Create a tracked feature workspace under .kernforge/features/<id>, generate spec.md, plan.md, and tasks.md, then mark it as the active feature.
-- Equivalent to /new-feature start <task>.
-
-/new-feature start <task>
-- Explicitly create a tracked feature and regenerate its spec/plan/tasks artifacts.
 
 /new-feature list
 - List tracked features for the current workspace.
 
-/new-feature status [id]
-- Show the active or selected tracked feature, including artifact paths and task preview.
-- Planned features point to /new-feature implement; implemented features point to /verify and /new-feature close.
+/new-feature
+- Show the active tracked feature, including artifact paths, task preview, gates, and the recommended next action.
 
-/new-feature plan [id]
-- Regenerate spec.md, plan.md, and tasks.md for the active or selected tracked feature.
-
-/new-feature implement [id]
-- Execute the saved tracked feature plan and persist an implementation summary artifact.
-- After implementation, Kernforge suggests /verify before closing the feature.
-
-/new-feature close [id]
-- Mark the active or selected tracked feature as done.
-- Closing suggests /worktree cleanup when an isolated worktree is attached, plus /checkpoint feature-done.
+/new-feature next
+- Run the next safe lifecycle action for the active feature.
+- Planned features execute the saved implementation plan.
+- Blocked features regenerate planning artifacts after confirmation in interactive mode.
+- Implemented features point to /verify first, then close after a passing verification.
+- Done features show checkpoint and worktree cleanup guidance.
 
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
 - Analyze the workspace using a conductor and multiple sub-agents, then write project analysis artifacts.
@@ -3797,20 +3795,21 @@ Provider and model commands control which model is active and how planning/revie
 
 /specialists assign <node-id> <owner-profile> [glob,glob2]
 - Bind one task-graph node to an editable task owner, optionally override its ownership globs, and ensure that owner has an isolated worktree lease.
-- After assignment, Kernforge points back to /specialists status and /new-feature status when a tracked feature is active.
+- After assignment, Kernforge points back to /specialists status and /new-feature when a tracked feature is active.
 
 /specialists cleanup <owner-profile|all>
 - Remove one task-owner worktree or all recorded task-owner worktrees after verifying they are clean.
 
-/set-analysis-models
+/model analysis
 - Configure dedicated worker and reviewer models used by /analyze-project.
-- Use /set-analysis-models status to show the current analysis model configuration.
-- Use /set-analysis-models clear to reset worker and reviewer to the main active model.
+- Use /model analysis status to show the current analysis model configuration.
+- Use /model analysis clear to reset worker and reviewer to the main active model.
+- Use /model analysis-worker <provider> <model> [reasoning_effort] or /model analysis-reviewer <provider> <model> [reasoning_effort] for scriptable setup.
 
-/set-specialist-model
+/model task-owner
 - Configure an optional provider/model override for a specific task owner profile.
-- Use /set-specialist-model status to show effective task owner model routing.
-- Use /set-specialist-model <owner-profile> <provider> [model] to set an override, or /set-specialist-model clear <owner-profile|all> to remove overrides.
+- Use /model task-owner status to show effective task owner model routing.
+- Use /model task-owner <owner-profile> <provider> <model> [reasoning_effort] to set an override, or /model task-owner clear <owner-profile|all> to remove overrides.
 `), true
 	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func", "fuzz-campaign", "source-scan", "source_scan", "sourcescan", "create-driver-poc", "create_driver_poc", "createdriverpoc":
 		return strings.TrimSpace(`
@@ -3911,11 +3910,11 @@ Verification and checkpoint commands help you validate changes and recover safel
 /verify [path,...|--full]
 - Verification output now prints a Verification handoff.
 - Failed runs point back to /verify plus /verify dashboard and /evidence dashboard.
-- Passing runs point to /checkpoint verified-state, and to /new-feature status or /new-feature close depending on tracked feature state.
+- Passing runs point to /checkpoint verified-state, and to /new-feature or /new-feature next depending on tracked feature state.
 
 /checkpoint [note]
 - Create a workspace checkpoint snapshot. In interactive mode, Kernforge prompts for an optional note when none is provided.
-- After creation, Kernforge suggests /checkpoint diff latest and /checkpoints.
+- After creation, Kernforge suggests /checkpoint diff latest and /checkpoint list.
 
 /checkpoint auto [on|off]
 - Show or change automatic checkpoint creation before edits.
@@ -3948,10 +3947,10 @@ Verification and checkpoint commands help you validate changes and recover safel
 /checkpoint diff [target] [-- path[,path2]]
 - Compare the current workspace to a checkpoint, optionally limited to specific paths.
 
-/checkpoints
+/checkpoint list
 - List checkpoints for the current workspace.
 
-/rollback [target]
+/checkpoint rollback [target]
 - Restore the workspace to a selected checkpoint by default, or a specific target if provided.
 `), true
 	case "investigate", "investigation":
@@ -4120,9 +4119,6 @@ Review commands all go through the common ReviewRun harness and write .kernforge
 
 /review waive <finding-id> --reason <text>
 - Record a finding waiver with an explicit reason.
-
-Compatibility:
-- /review-pr, /review-selection, and /do-plan-review are hidden aliases. Use /review pr, /review selection, and /review plan in new docs and scripts.
 `), true
 	case "selection", "selections", "edit-selection", "open":
 		return strings.TrimSpace(`
@@ -4201,7 +4197,7 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 /worktree create [name]
 - Create and attach an isolated git worktree rooted under the configured worktree isolation root.
 - The optional name influences the branch and directory slug.
-- When a tracked feature is active, creation points back to /new-feature status so Kernforge can choose the right next step.
+- When a tracked feature is active, creation points back to /new-feature so Kernforge can choose the right next step.
 
 /worktree enter
 - Re-enter the recorded isolated worktree after /worktree leave without creating a new branch.

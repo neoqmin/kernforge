@@ -1204,7 +1204,7 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 			Reason:  "blocking review findings require revision",
 			NextCommands: []ReviewNextCommand{{
 				ID:      "repair",
-				Command: "/continuity continue from review",
+				Command: "/session continuity continue from review",
 				Reason:  "latest review has blocking findings",
 				Safety:  "safe_local",
 			}},
@@ -1228,7 +1228,7 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 				TriageStatus:     crossReviewTriageNeedsUserDecision,
 				Title:            "Needs a product decision",
 				UserActionNeeded: true,
-				UserActionPrompt: "Use `/continuity continue from review` to repair RF-X.",
+				UserActionPrompt: "Use `/session continuity continue from review` to repair RF-X.",
 			}},
 			TotalCount:      1,
 			StatusCounts:    map[string]int{crossReviewTriageNeedsUserDecision: 1},
@@ -1287,7 +1287,7 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 		"verification_gap=1",
 		"evidence_gap=1",
 		"next_command",
-		"/continuity continue from review",
+		"/session continuity continue from review",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected status output to contain %q, got %q", want, text)

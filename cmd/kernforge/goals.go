@@ -274,7 +274,8 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 			"status": goal.Status,
 		},
 	})
-	if err := rt.writeGoalArtifacts(goal); err != nil {
+	goal, err = rt.writeGoalArtifactsWithState(goal)
+	if err != nil {
 		return err
 	}
 	if rt.store != nil {
@@ -282,12 +283,36 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 			return err
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Created goal: "+goal.ID))
+	rt.printGoalCreatedSummary(goal, options.Run)
 	if !options.Run {
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting an autonomous loop. Run it with /goal run "+goal.ID+" when you explicitly want automation."))
 		return nil
 	}
 	return rt.runGoalBySelector(goal.ID, options.MaxIterations)
+}
+
+func (rt *runtimeState) printGoalCreatedSummary(goal GoalState, run bool) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Created goal: "+goal.ID))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("status", goal.Status))
+	refs := goal.ArtifactRefs
+	if len(refs) == 0 {
+		refs = goalArtifactRefs(rt.goalArtifactRoot(), goal.ID)
+	}
+	if len(refs) >= 2 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_markdown", refs[0]))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_json", refs[1]))
+	}
+	if len(refs) >= 4 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("goal_markdown", refs[2]))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("goal_json", refs[3]))
+	}
+	if run {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Starting autonomous loop now. Use /goal status to inspect progress."))
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting an autonomous loop. Start it with /goal run latest, or create-and-run with /goal start --run <objective>."))
 }
 
 func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions, error) {
@@ -691,7 +716,7 @@ func buildGoalReviewPrompt(goal GoalState, iteration GoalIteration, root string,
 	b.WriteString("4. Start with APPROVED if the implementation can proceed to verification, or NEEDS_REVISION if a concrete fix is still required.\n")
 	b.WriteString("5. Return concrete findings only. If there are no actionable findings, say so and name any residual verification or evidence gap.\n")
 	b.WriteString("6. Do not ask the user whether to proceed.\n")
-	b.WriteString("7. Do not claim completion unless the state is ready for /verify and /completion-audit.\n")
+	b.WriteString("7. Do not claim completion unless the state is ready for /verify and /session audit.\n")
 	if len(goal.CompletionCriteria) > 0 {
 		b.WriteString("\nCompletion criteria:\n")
 		for _, item := range goal.CompletionCriteria {
@@ -1044,7 +1069,7 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 		return fmt.Errorf("%s", goal.LastError)
 	}
 	commands := []GoalCommandRecord{}
-	auditCommand := startGoalCommand(goal.Iteration, "completion-audit", "/completion-audit <goal objective>")
+	auditCommand := startGoalCommand(goal.Iteration, "completion-audit", "/session audit <goal objective>")
 	audit, auditErr := rt.runGoalCompletionAudit(goal)
 	auditCommand.finish(statusForErr(auditErr), completionAuditSummaryOrError(audit, auditErr))
 	commands = append(commands, auditCommand)
@@ -1154,7 +1179,7 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	if strings.EqualFold(strings.TrimSpace(selector), "list") || (strings.TrimSpace(selector) == "" && len(rt.session.Goals) > 1) {
 		fmt.Fprintln(rt.writer, rt.ui.section("Goals"))
 		if len(rt.session.Goals) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Use /goal start <objective> or /goal start @GOAL.md."))
+			rt.printNoGoalsHint()
 			return nil
 		}
 		for _, goal := range rt.session.Goals {
@@ -1165,7 +1190,7 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	index, ok := rt.session.GoalIndex(selector)
 	if !ok {
 		if len(rt.session.Goals) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Use /goal start <objective> or /goal start @GOAL.md."))
+			rt.printNoGoalsHint()
 			return nil
 		}
 		return fmt.Errorf("goal not found: %s", valueOrDefault(selector, "latest"))
@@ -1217,6 +1242,14 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("objective", compactPromptSection(goal.Objective, 260)))
 	return nil
+}
+
+func (rt *runtimeState) printNoGoalsHint() {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Record one with /goal <objective>, or load a file with /goal start @GOAL.md."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("To create and run immediately, use /goal start --run <objective>."))
 }
 
 func goalMaxIterationsLabel(max int) string {
@@ -1299,42 +1332,68 @@ func (rt *runtimeState) printGoalCompletionUsage(goal GoalState) {
 }
 
 func (rt *runtimeState) writeGoalArtifacts(goal GoalState) error {
+	_, err := rt.writeGoalArtifactsWithState(goal)
+	return err
+}
+
+func (rt *runtimeState) writeGoalArtifactsWithState(goal GoalState) (GoalState, error) {
+	root := rt.goalArtifactRoot()
+	return writeGoalArtifactsForRoot(rt.session, root, goal)
+}
+
+func (rt *runtimeState) goalArtifactRoot() string {
+	if rt == nil {
+		return ""
+	}
 	root := workspaceSnapshotRoot(rt.workspace)
 	if strings.TrimSpace(root) == "" && rt.session != nil {
 		root = rt.session.WorkingDir
 	}
+	return root
+}
+
+func writeGoalArtifactsForRoot(session *Session, root string, goal GoalState) (GoalState, error) {
 	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("workspace root is not configured")
+		return goal, fmt.Errorf("workspace root is not configured")
 	}
 	goal.updateTimeUsedSeconds(time.Now())
 	outDir := filepath.Join(root, userConfigDirName, "goals")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return err
+		return goal, err
 	}
-	jsonPath := filepath.Join(outDir, "latest.json")
-	mdPath := filepath.Join(outDir, "latest.md")
-	idJSONPath := filepath.Join(outDir, goal.ID+".json")
-	idMDPath := filepath.Join(outDir, goal.ID+".md")
-	goal.ArtifactRefs = []string{mdPath, jsonPath, idMDPath, idJSONPath}
+	refs := goalArtifactRefs(root, goal.ID)
+	goal.ArtifactRefs = refs
 	data, err := json.MarshalIndent(goal, "", "  ")
 	if err != nil {
-		return err
+		return goal, err
 	}
-	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
-		return err
+	if err := os.WriteFile(refs[1], data, 0o644); err != nil {
+		return goal, err
 	}
-	if err := os.WriteFile(idJSONPath, data, 0o644); err != nil {
-		return err
+	if err := os.WriteFile(refs[3], data, 0o644); err != nil {
+		return goal, err
 	}
 	markdown := []byte(renderGoalMarkdown(goal))
-	if err := os.WriteFile(mdPath, markdown, 0o644); err != nil {
-		return err
+	if err := os.WriteFile(refs[0], markdown, 0o644); err != nil {
+		return goal, err
 	}
-	if err := os.WriteFile(idMDPath, markdown, 0o644); err != nil {
-		return err
+	if err := os.WriteFile(refs[2], markdown, 0o644); err != nil {
+		return goal, err
 	}
-	rt.session.UpsertGoal(goal)
-	return nil
+	if session != nil {
+		session.UpsertGoal(goal)
+	}
+	return goal, nil
+}
+
+func goalArtifactRefs(root string, goalID string) []string {
+	outDir := filepath.Join(root, userConfigDirName, "goals")
+	return []string{
+		filepath.Join(outDir, "latest.md"),
+		filepath.Join(outDir, "latest.json"),
+		filepath.Join(outDir, goalID+".md"),
+		filepath.Join(outDir, goalID+".json"),
+	}
 }
 
 func renderGoalMarkdown(goal GoalState) string {

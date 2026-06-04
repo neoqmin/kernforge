@@ -50,10 +50,12 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 프로젝트 분석:
 - `/analyze-project [--mode map|trace|impact|surface|security|performance] <goal>`
 - `/analyze-performance [focus]`
-- `/set-analysis-models`
+- `/model analysis`
+- `/model analysis-worker <provider> <model> [reasoning_effort]`
+- `/model analysis-reviewer <provider> <model> [reasoning_effort]`
 - `--mode`를 생략하면 기본 모드는 `map`
 - 긴 `/analyze-project` 실행은 shard wave, 완료/실패 shard 수, worker/reviewer 모델 대기 event, 마지막 artifact 저장 단계를 보여준다. 이제 `progress_display` 기본값은 `compact`이므로 일반 진행은 조용하게 유지되고, 모든 update를 transcript에 남기고 싶을 때만 `/progress-display stream`으로 올린다.
-- project analysis가 이전에 설정한 worker/reviewer route가 아니라 현재 main model을 따르길 원하면 `/set-analysis-models clear`를 사용한다.
+- project analysis가 이전에 설정한 worker/reviewer route가 아니라 현재 main model을 따르길 원하면 `/model analysis clear`를 사용한다.
 
 조사:
 - `/investigate`
@@ -114,8 +116,14 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 계획과 tracked feature 작업:
 - `/review plan <task>`
 - `/new-feature <task>`
-- `/new-feature status [id]`
-- `/new-feature implement [id]`
+- `/new-feature`
+- `/new-feature next`
+
+Autonomous goal:
+- `/goal "<objective>"`는 persistent goal을 기록하고 `.kernforge/goals/latest.md`, `.kernforge/goals/latest.json` 경로를 출력한다.
+- `/goal start --run "<objective>"`는 goal을 기록한 뒤 즉시 autonomous loop를 실행한다.
+- `/goal start @GOAL.md`는 markdown goal을 기록한다. 나중에 `/goal run latest`로 시작하거나 재개한다.
+- `kernforge -goal "<objective>"`와 `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 loop를 바로 실행한다.
 
 provider 및 런타임 확인:
 - `/provider status`
@@ -183,10 +191,10 @@ provider 및 런타임 확인:
 
 ```text
 /new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
-/new-feature status
-/new-feature implement
+/new-feature
+/new-feature next
 /verify
-/new-feature close
+/new-feature next
 ```
 
 `/new-feature`는 `.kernforge/features/<id>` 아래에 spec, plan, task artifact를 남기며 진행 상태를 추적하고 싶을 때 쓰는 것이 좋다. `/review plan`는 reviewer를 붙여 한 번에 계획을 다듬고 바로 실행하고 싶을 때 더 잘 맞는다.
