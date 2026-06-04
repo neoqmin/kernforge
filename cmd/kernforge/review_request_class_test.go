@@ -151,6 +151,45 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 			want:     reviewRequestClassVerificationOnly,
 			wantKind: reviewLifecycleKindVerificationOnly,
 		},
+		{
+			name: "goal prompt draft only ignores pre write trigger",
+			opts: ReviewHarnessOptions{
+				Trigger: "pre_write",
+				Target:  reviewTargetChange,
+				Request: "Proxy DLL 탐지 기능 구현을 위한 goal 프롬프트를 작성해줘",
+				Paths:   []string{".kernforge/goals/PROXY_DLL_DETECTION.md"},
+			},
+			want:     reviewRequestClassGeneral,
+			wantKind: reviewLifecycleKindGeneral,
+		},
+		{
+			name: "english goal prompt draft only",
+			opts: ReviewHarnessOptions{
+				Request: "write a goal prompt for hardening the runtime gates",
+			},
+			want:     reviewRequestClassGeneral,
+			wantKind: reviewLifecycleKindGeneral,
+		},
+		{
+			name: "goal prompt save to file is document artifact",
+			opts: ReviewHarnessOptions{
+				Target:  reviewTargetAnalysis,
+				Request: "goal 프롬프트를 .md 파일로 저장해줘",
+				Paths:   []string{".kernforge/goals/GOAL.md"},
+			},
+			want:     reviewRequestClassDocumentArtifact,
+			wantKind: reviewLifecycleKindDocumentArtifact,
+		},
+		{
+			name: "goal prompt save as markdown path is document artifact",
+			opts: ReviewHarnessOptions{
+				Target:  reviewTargetAnalysis,
+				Request: "goal 프롬프트를 GOAL.md로 저장해줘",
+				Paths:   []string{".kernforge/goals/GOAL.md"},
+			},
+			want:     reviewRequestClassDocumentArtifact,
+			wantKind: reviewLifecycleKindDocumentArtifact,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

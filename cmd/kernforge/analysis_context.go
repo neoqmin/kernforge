@@ -1346,6 +1346,9 @@ func looksLikeExplicitEditIntent(text string) bool {
 	if strings.HasPrefix(lower, "/") {
 		return true
 	}
+	if looksLikeGoalPromptDraftOnlyRequest(lower) {
+		return false
+	}
 	if looksLikeExecutionFlowQuestion(lower) {
 		return false
 	}
@@ -1381,6 +1384,12 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	if lower == "" {
 		return false
 	}
+	if looksLikeGoalPromptDraftOnlyRequest(lower) {
+		return false
+	}
+	if looksLikeGoalPromptFileArtifactRequest(lower) {
+		return true
+	}
 	hasDocumentNoun := containsAny(lower,
 		"document", "documents", "doc", "markdown", ".md", "report", "reports", "write-up", "writeup", "research", "paper", "papers", "notes", "spec", "specs",
 		"문서", "문서들", "마크다운", "보고서", "리서치", "연구", "정리", "초안", "명세", "스펙",
@@ -1391,6 +1400,48 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	return containsAny(lower,
 		"add ", "author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ",
 		"작성", "만들", "생성", "업데이트", "정리", "초안", "추가",
+	)
+}
+
+func looksLikeGoalPromptDraftOnlyRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	if !looksLikeGoalPromptAuthoringRequest(lower) {
+		return false
+	}
+	return !looksLikeExplicitGoalActivationOrArtifactRequest(lower)
+}
+
+func looksLikeGoalPromptFileArtifactRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" || !looksLikeGoalPromptAuthoringRequest(lower) {
+		return false
+	}
+	return containsAny(lower,
+		"save to file", "save as", "write to file", "create file", "as a file", "markdown file",
+		"파일로 저장", "파일에 저장", "파일을 만들어", "파일 만들어", "파일 생성", "파일에 써",
+		".md 파일", ".md로 저장", "markdown 파일", "마크다운 파일", "저장해", "저장하",
+	)
+}
+
+func looksLikeGoalPromptAuthoringRequest(lower string) bool {
+	return containsAny(lower,
+		"goal prompt", "goal 프롬프트", "goal프롬프트", "목표 프롬프트", "목표프롬프트",
+		"goal 초안", "goal초안", "목표 초안", "목표초안", "goal 문안", "goal문안",
+		"goal markdown", "goal 마크다운", "goal마크다운",
+	)
+}
+
+func looksLikeExplicitGoalActivationOrArtifactRequest(lower string) bool {
+	return containsAny(lower,
+		"/goal", "goal start", "goal run", "start goal", "run goal",
+		"-goal", "-goal-file", "--run", "--until-complete", "--file", "@goal", "@ goal",
+		"active goal", "activate goal", "execute goal", "save to file", "save as", "write to file", "create file",
+		"goal을 실행", "goal 실행", "goal을 시작", "goal 시작", "goal로 실행", "내장 goal", "goal 기능을 켜",
+		"파일로 저장", "파일에 저장", "파일을 만들어", "파일 만들어", "파일 생성", "파일에 써",
+		".md 파일", ".md로 저장", "markdown file", "마크다운 파일", "저장해", "저장하",
 	)
 }
 

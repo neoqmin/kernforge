@@ -4585,7 +4585,7 @@ const (
 	shellOutputProgressEvery  = 2 * time.Second
 )
 
-var shellManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[;|&(){}])\s*(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
+var shellManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[;|&(){}\r\n])\s*(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
 var shellNestedManualWorkspaceWriteCommandPattern = regexp.MustCompile(`(?i)(^|[\s;|&(){}"'` + "`" + `])(?:set-content|add-content|clear-content|out-file|tee-object|new-item|remove-item|rename-item|move-item|copy-item|set-acl|export-csv|export-clixml|start-transcript|stop-transcript|mkdir|md|del|erase|copy|move|ren|rename|rm|mv|cp|touch)\b`)
 
 type shellCommandAssessment struct {
@@ -6217,6 +6217,9 @@ func splitPOSIXShellCommandWords(command string) []string {
 
 func shellCommandSeparatorsForTokenizing(command string) string {
 	replacer := strings.NewReplacer(
+		"\r\n", " ; ",
+		"\n", " ; ",
+		"\r", " ; ",
 		"&&", " && ",
 		"||", " || ",
 		"&", " & ",

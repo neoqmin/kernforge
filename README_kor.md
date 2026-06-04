@@ -205,6 +205,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - `/goal start @GOAL.md`는 markdown 파일에서 목표를 읽어 기록한다. `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 파일 goal을 읽고 바로 실행한다.
 - `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행하며, `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, `-goal-rollback-on-regression` 제어도 지원한다.
 - assistant에게 goal prompt 작성을 요청하는 것은 draft 요청이며 active goal이 아니다. 준비된 prompt를 markdown으로 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다.
+- "goal prompt 작성"처럼 draft만 요청한 문장은 본문에 구현 내용이 있어도 일반 chat/review 라우팅으로 남는다. `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 요청이 있을 때만 goal을 기록하거나 실행한다.
 - 각 iteration은 agent에게 실제 코드 확인, 개발, 수정, 자체 리뷰, 최종 semantic goal review, 버그 수정을 사용자 확인 없이 수행하게 한다.
 - goal runtime은 각 목표를 acceptance contract, task graph, 독립 review verdict, progress ledger, command history, checkpoint 저장소가 설정된 경우 iteration별 checkpoint에 연결한다.
 - goal reviewer는 implementation reply, 가능한 경우 checkpoint diff, git status/diff context, 제한된 untracked 파일 excerpt 같은 실제 workspace 증거를 함께 받는다. review가 `NEEDS_REVISION`이면 repair prompt는 구조화된 reviewer issue와 같은 구현 context를 보존해서 worker가 모호한 요약이 아니라 실제 지적 사항을 기준으로 수정할 수 있게 한다.
@@ -241,6 +242,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 단순 변경은 `apply_edit_proposal`로 구조화된 proposal을 먼저 제출할 수 있다. 이 경로는 file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, review evidence를 기록한 뒤 preview/review/approval/write 순서로 실행한다. `apply_patch`는 현재 파일 내용을 읽은 뒤 복잡한 hunk-level 변경을 처리하는 expert fallback으로 남긴다.
 - 잘못된 patch는 BOM, CRLF/CR, 주변 설명문, code fence, quoted path 같은 흔한 wrapper 문제를 먼저 정규화한다. 같은 invalid patch signature가 반복되면 동일 patch 재시도 대신 target file을 다시 읽고 새 patch를 만들도록 유도한다.
 - edit target mismatch나 pre-write review 차단처럼 stale-context 복구 신호가 생긴 뒤에는 넓은 recovery patch를 workspace에 적용하지 않고 연기한다. 차단된 pre-write proposal은 적용된 상태가 아니므로, 다음 edit tool은 `read_file`, `grep`, `git_diff`로 현재 파일 또는 현재 diff를 다시 확인한 뒤에만 실행된다. 모델은 거절된 proposal의 delta가 아니라 현재 상태에 바로 적용 가능한 좁은 standalone patch를 다시 제출해야 한다.
+- review Markdown과 MCP status는 proposal 상태와 실제 workspace 상태를 분리한다. 적용되지 않은 pre-write preview는 `Changed Paths`가 아니라 `Proposed Paths` 또는 `Blocked Proposal Paths`로 표시되고, 실제 write가 적용되기 전까지 `applying_change` phase는 pending 또는 blocked로 남는다.
 - pre-write review는 `edit_proposals`를 review artifact와 MCP 응답에 보존하므로 승인된 proposal 의도, raw preview, changed path, freshness 판정이 서로 연결된다.
 - runtime gate freshness는 stale review, waiver 없는 review blocker, 실패한 verification, 누락된 review coverage가 있으면 final answer, git write, MCP write-side action, completion audit handoff를 차단하거나 경고한다.
 - `/status` 기본 출력은 compact operator card다. request class, classification confidence/ambiguity, 현재 lifecycle phase, route mode, reviewer route quality, review/repair/document/verification/final-answer gate, second-pass state, cross-review triage count, blocker class, 남은 obligation, 다음 추천 명령을 한눈에 보여준다.
@@ -839,6 +841,7 @@ cross review route, analysis worker/reviewer, task-owner의 `base_url`은 선택
 - 자동 verification이 실패하면 self-driving task는 `recovery` phase로 남고, 검증 문제가 해소되거나 명확한 fallback이 정리되면 최종 답변과 함께 plan을 완료 처리한다.
 - task-graph node는 retry budget과 최근 failure context를 함께 가진다. 같은 node에서 실패가 반복되면 그 node를 명시적으로 `blocked`로 올려서, executor가 같은 실패를 무한 반복하지 않고 다른 recovery path를 더 강하게 선택하게 만든다.
 - `run_shell`은 이제 `allow_workspace_writes=true`와 `write_paths`를 함께 주면 제한된 workspace shell mutation을 허용한다. formatter, codegen, setup처럼 수동 패치보다 실제 명령 실행이 더 안전한 경우를 위한 경로다.
+- `Set-Content`, `Out-File`, redirection 계열 파일 쓰기, PowerShell here-string 뒤의 `Set-Content` 같은 수동 shell 파일 쓰기는 shell 승인 질문 전에 차단된다. 사람이 작성한 파일 본문은 edit tool 경로를 사용해야 한다.
 - 오래 걸리는 build, test, verification 명령은 `run_shell_background`와 `check_shell_job`으로 돌려서 같은 비싼 명령을 다시 시작하지 않고 기존 job을 polling할 수 있다. 동일한 running job이 있으면 자동으로 재사용한다.
 - 서로 독립적인 긴 검증 명령은 `run_shell_bundle_background`와 `check_shell_bundle`로 여러 background job을 병렬로 시작하고 함께 polling할 수 있다. bundle 메타데이터도 세션에 저장되므로, compact 이후에도 `bundle_id=\"latest\"`로 이어서 polling할 수 있다.
 - `/session jobs status|check|bundle|cancel|cancel-bundle`은 저장된 background job/bundle을 터미널에서 직접 확인하거나 취소한다. 그래서 사람이나 `-command` runner가 모델 턴을 기다리지 않고 장기 작업을 이어서 polling할 수 있다.

@@ -1681,10 +1681,12 @@ func TestRunShellRejectsInlinePowerShellFileWrites(t *testing.T) {
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
 
 	cases := map[string]string{
-		"semicolon_set_content": "Get-Content input.txt; Set-Content output.txt 'changed'",
-		"dotnet_write_all_text": "$content = 'changed'; [System.IO.File]::WriteAllText('output.txt', $content)",
-		"invoke_web_out_file":   "Invoke-WebRequest https://example.test/file.txt -OutFile output.txt",
-		"pipeline_out_file":     "Get-Content input.txt | Out-File output.txt",
+		"semicolon_set_content":        "Get-Content input.txt; Set-Content output.txt 'changed'",
+		"dotnet_write_all_text":        "$content = 'changed'; [System.IO.File]::WriteAllText('output.txt', $content)",
+		"here_string_set_content_lf":   "$content = @\"\n# Goal\n\"@\nSet-Content -Path output.txt -Value $content",
+		"here_string_set_content_crlf": "$content = @\"\r\n# Goal\r\n\"@\r\nSet-Content -Path output.txt -Value $content",
+		"invoke_web_out_file":          "Invoke-WebRequest https://example.test/file.txt -OutFile output.txt",
+		"pipeline_out_file":            "Get-Content input.txt | Out-File output.txt",
 	}
 	for name, command := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1701,6 +1703,36 @@ func TestRunShellRejectsInlinePowerShellFileWrites(t *testing.T) {
 				t.Fatalf("expected output.txt to remain absent, stat err=%v", statErr)
 			}
 		})
+	}
+}
+
+func TestRunShellHereStringWriteRejectedBeforeShellPermissionPrompt(t *testing.T) {
+	root := t.TempDir()
+	promptCalls := 0
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			promptCalls++
+			return true, nil
+		}),
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command": "$content = @\"\n# Goal\n\"@\nSet-Content -Path output.txt -Value $content",
+	})
+	if err == nil {
+		t.Fatalf("expected here-string mutating shell command to be rejected")
+	}
+	if !strings.Contains(err.Error(), "manual workspace file writes") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if promptCalls != 0 {
+		t.Fatalf("manual write guard should run before shell permission prompt, got %d prompt(s)", promptCalls)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "output.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected output.txt to remain absent, stat err=%v", statErr)
 	}
 }
 

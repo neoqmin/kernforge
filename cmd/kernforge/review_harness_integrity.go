@@ -328,6 +328,10 @@ func buildReviewLedgerConsistency(root string, rt *runtimeState, run ReviewRun) 
 	if strings.TrimSpace(run.Evidence.VerificationSummary) == "" && reviewRunHasChangeEvidence(run) && run.Target != reviewTargetPlan {
 		if run.Evidence.VerificationRequired {
 			check.Blockers = append(check.Blockers, "required verification evidence is missing")
+		} else if reviewRunHasBlockedPreWriteProposal(run) {
+			check.Warnings = append(check.Warnings, "blocked proposal has no linked verification evidence")
+		} else if reviewRunHasUnappliedPreWriteProposal(run) {
+			check.Warnings = append(check.Warnings, "pre-write proposal has no linked verification evidence")
 		} else {
 			check.Warnings = append(check.Warnings, "changed files have no linked verification evidence")
 		}
@@ -338,7 +342,7 @@ func buildReviewLedgerConsistency(root string, rt *runtimeState, run ReviewRun) 
 			check.Blockers = append(check.Blockers, "changed paths are not covered by this review: "+strings.Join(limitStrings(missing, 8), ", "))
 		}
 	}
-	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") && run.ApprovalLedger.ReviewGateApproved {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") && reviewRunPreWriteGateApproved(run) {
 		if !run.ApprovalLedger.DiffPreviewShown || !run.ApprovalLedger.UserWriteApproved {
 			message := "pre-write review approval is not write approval; diff preview and explicit user write approval are still required"
 			if strings.EqualFold(strings.TrimSpace(run.ReviewerGatePolicy), reviewReviewerGatePolicyMainOnlyFallback) {

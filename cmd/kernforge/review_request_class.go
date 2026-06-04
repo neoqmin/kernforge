@@ -425,6 +425,15 @@ func classifyReviewRequestClassDecision(rt *runtimeState, root string, opts Revi
 	if explicitNoEdit {
 		decision.Signals = append(decision.Signals, "explicit_no_edit")
 	}
+	if looksLikeGoalPromptDraftOnlyRequest(lower) {
+		decision.RequestClass = reviewRequestClassGeneral
+		decision.LifecycleKind = reviewLifecycleKindGeneral
+		decision.Reason = "goal prompt authoring request is draft-only unless an explicit goal command, run flag, file source, or save-to-file instruction is present"
+		decision.Confidence = 0.9
+		decision.Signals = append(decision.Signals, "goal_prompt_draft_only")
+		decision.Normalize()
+		return decision
+	}
 	if documentIntent && sourceModification {
 		if requestExplicitlyOrdersReviewBeforeModification(lower) || requestLooksLikeInspectBugsThenFixConfirmed(lower) {
 			decision.RequestClass = reviewRequestClassReviewThenModify
@@ -584,6 +593,9 @@ func requestHasSourceModificationIntent(lower string, paths []string) bool {
 	if lower == "" {
 		return false
 	}
+	if looksLikeGoalPromptDraftOnlyRequest(lower) {
+		return false
+	}
 	if requestHasExplicitNoEditLanguage(lower) && !containsAny(lower, "fix only", "fix confirmed", "수정할 항목만", "확정된") {
 		return false
 	}
@@ -725,6 +737,9 @@ func requestLooksLikeReviewThenModify(lower string) bool {
 func requestLooksLikeModifyThenReview(lower string) bool {
 	lower = strings.ToLower(strings.TrimSpace(lower))
 	if lower == "" {
+		return false
+	}
+	if looksLikeGoalPromptDraftOnlyRequest(lower) {
 		return false
 	}
 	if requestLooksLikeReviewThenModify(lower) {

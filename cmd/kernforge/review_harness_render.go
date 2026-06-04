@@ -584,13 +584,24 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		b.WriteString("\n")
 	}
 	if len(run.ChangeSet.ChangedPaths) > 0 {
-		b.WriteString("## Changed Paths\n\n")
+		b.WriteString(reviewChangeSetPathSectionHeading(run))
+		b.WriteString("\n\n")
 		for _, path := range limitStrings(run.ChangeSet.ChangedPaths, 64) {
 			fmt.Fprintf(&b, "- `%s`\n", filepath.ToSlash(path))
 		}
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func reviewChangeSetPathSectionHeading(run ReviewRun) string {
+	if reviewRunHasBlockedPreWriteProposal(run) {
+		return "## Blocked Proposal Paths"
+	}
+	if reviewRunHasUnappliedPreWriteProposal(run) {
+		return "## Proposed Paths"
+	}
+	return "## Changed Paths"
 }
 
 func renderReviewFindingMarkdown(b *strings.Builder, finding ReviewFinding) {

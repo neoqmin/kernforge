@@ -124,6 +124,7 @@ Autonomous goals:
 - `/goal start --run "<objective>"` records and immediately runs the autonomous loop
 - `/goal start @GOAL.md` records a markdown goal; `/goal run latest` starts or resumes it later
 - `kernforge -goal "<objective>"` and `kernforge -goal-file GOAL.md` run the loop in one-shot CLI mode
+- Asking for a goal prompt draft does not start or record a goal unless you explicitly use `/goal`, `-goal`, a goal file, `--run`, or a save-to-file instruction
 
 Provider and runtime inspection:
 - `/provider status`

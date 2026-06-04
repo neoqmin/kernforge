@@ -159,3 +159,41 @@ func TestClassifyTurnIntentSeparatesFixDirectionFromEditExecution(t *testing.T) 
 		}
 	}
 }
+
+func TestGoalPromptDraftRequestsAreNotEditIntent(t *testing.T) {
+	for _, request := range []string{
+		"goal 프롬프트를 작성해줘",
+		"write a goal prompt for runtime hardening",
+		"goal prompt를 markdown으로 보여줘",
+	} {
+		if looksLikeExplicitEditIntent(request) {
+			t.Fatalf("goal prompt draft request %q should not be treated as explicit edit execution", request)
+		}
+		if looksLikeDocumentAuthoringIntent(request) {
+			t.Fatalf("goal prompt draft request %q should not be treated as file authoring", request)
+		}
+		if got := classifyTurnIntent(request); got == TurnIntentEditCode {
+			t.Fatalf("goal prompt draft request %q should not become edit intent", request)
+		}
+		mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+		if mode.ExplicitEditRequest {
+			t.Fatalf("goal prompt draft request %q should not set explicit edit mode, got %#v", request, mode)
+		}
+	}
+
+	saveRequest := "goal 프롬프트를 .md 파일로 저장해줘"
+	if !looksLikeExplicitEditIntent(saveRequest) {
+		t.Fatalf("goal prompt file request %q should be treated as explicit edit execution", saveRequest)
+	}
+	if !looksLikeDocumentAuthoringIntent(saveRequest) {
+		t.Fatalf("goal prompt file request %q should be treated as document authoring", saveRequest)
+	}
+
+	pathSaveRequest := "goal 프롬프트를 GOAL.md로 저장해줘"
+	if !looksLikeExplicitEditIntent(pathSaveRequest) {
+		t.Fatalf("goal prompt path-save request %q should be treated as explicit edit execution", pathSaveRequest)
+	}
+	if !looksLikeDocumentAuthoringIntent(pathSaveRequest) {
+		t.Fatalf("goal prompt path-save request %q should be treated as document authoring", pathSaveRequest)
+	}
+}

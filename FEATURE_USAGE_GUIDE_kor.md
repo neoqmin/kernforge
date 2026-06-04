@@ -226,7 +226,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 현재 동작:
 1. `/goal`은 session에 `GoalState`를 만들고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. `--run` 또는 `--until-complete`가 없으면 추가 model turn을 시작하지 않고 기록만 한다.
 2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있으며 비대화형 `-goal`과 `-goal-file`은 max-iteration, time-budget, token-budget, until-complete, rollback flag를 지원하고 즉시 실행한다.
-3. goal start는 실행 전에 acceptance contract, task graph, completion criteria, status artifact를 준비한다. "goal prompt 작성" 요청은 draft 요청이지 active goal이 아니며, 그 prompt를 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다.
+3. goal start는 실행 전에 acceptance contract, task graph, completion criteria, status artifact를 준비한다. "goal prompt 작성" 요청은 draft 요청이지 active goal이 아니며, 그 prompt를 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다. draft만 요청한 goal prompt는 `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 지시가 있을 때만 기록/실행으로 승격된다.
 4. 각 iteration은 checkpoint 저장소가 설정된 경우 checkpoint를 남기고, 구현 prompt 뒤에 독립 review verdict gate를 실행한다.
 5. review prompt는 가능한 경우 implementation reply, iteration 시작 checkpoint diff, git status/diff context, changed-file summary, 제한된 untracked 파일 excerpt 같은 실제 증거를 포함한다.
 6. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다. repair prompt는 구조화된 reviewer issue와 같은 implementation context를 보존하므로 worker는 짧고 모호한 revision summary가 아니라 실제 지적 사항을 받는다.
@@ -642,6 +642,7 @@ Pattern pack 운영:
 4. 예: `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
 5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, `max_request_retries`와 `request_retry_delay_ms`로 timeout 또는 transient provider error 재시도를 제어한다.
 6. interactive shell mode에서는 하위 directory로 깊게 들어간 뒤 `!cd ..`로 workspace 내부 상위 directory를 자유롭게 이동할 수 있다. Kernforge는 workspace 또는 active worktree 경계를 벗어나는 순간만 거부한다.
+7. `Set-Content`, `Out-File`, redirection, PowerShell here-string 뒤의 `Set-Content`처럼 사람이 작성한 본문을 shell로 쓰는 형태는 shell 승인 질문 전에 차단된다. 이런 파일 본문은 edit tool 경로로 작성한다.
 
 ### 2.3 Evidence Store
 
@@ -863,7 +864,7 @@ review/Ops 테스트 전략:
    최종 답변 sanitizer는 code fence 밖의 반복 문장 run을 한 번으로 접고, 한국어 문장이 붙어 출력되는 경우 sentence spacing을 보정한다.
    review, final-answer, completion-audit ledger는 patch transaction이 있으면 그 scope를 우선한다. ambient dirty git file은 git-write gate에서는 계속 보지만, 현재 repair patch의 review를 가짜로 stale하게 만들지는 않는다.
 22. 리뷰된 repair가 다시 pre-write gate를 통과하지 못하거나 좁은 확인 예산을 소진하면, Kernforge는 리뷰 미통과를 먼저 알리고 최신 리뷰 결과와 마지막 수정안을 보여준 뒤 `계속 수정할까요? [y/N]`으로 묻는다. 이 confirmation은 자연어 prompt가 아니라 session state다. `y`만 저장된 review/proposal 기준으로 이어가고, `n`은 멈춘다.
-   edit target mismatch나 pre-write 차단 뒤의 넓은 recovery `apply_patch`는 파일을 수정하지 않고 연기된다. 차단된 pre-write proposal은 현재 workspace 상태가 아니므로, 다음 edit tool은 `read_file`, `grep`, `git_diff` 중 하나로 현재 파일 또는 diff를 다시 확인한 뒤에만 실행된다. 다음 edit은 현재 파일을 기준으로 한 좁은 standalone patch여야 하며, 넓은 recovery patch가 반복되면 최신 리뷰와 마지막 수정안을 보여주고 멈춘다.
+   edit target mismatch나 pre-write 차단 뒤의 넓은 recovery `apply_patch`는 파일을 수정하지 않고 연기된다. 차단된 pre-write proposal은 현재 workspace 상태가 아니므로, 다음 edit tool은 `read_file`, `grep`, `git_diff` 중 하나로 현재 파일 또는 diff를 다시 확인한 뒤에만 실행된다. review artifact는 적용되지 않은 preview를 `Changed Paths`가 아니라 `Proposed Paths` 또는 `Blocked Proposal Paths`로 표시하고, 실제 write가 적용되기 전까지 `applying_change` phase를 pending 또는 blocked로 남긴다. 다음 edit은 현재 파일을 기준으로 한 좁은 standalone patch여야 하며, 넓은 recovery patch가 반복되면 최신 리뷰와 마지막 수정안을 보여주고 멈춘다.
 23. 외부 verification callback도 built-in verification과 같은 runtime evidence 계약으로 정규화한다. 성공한 callback report가 `GeneratedAt`, `Trigger`, `Workspace`, `ChangedPaths`를 비워 반환하면 Kernforge가 현재 automatic verification request 기준으로 값을 채운 뒤 review evidence와 runtime-gate freshness를 계산한다.
 24. 비대화형 단발 실행(`-prompt`, `-command`, `-goal`, `-goal-file`)은 interactive cancel watcher를 설치하지 않는다. Codex식 명시 event/decision 경계처럼, 사용자가 확인할 수 없는 ambient keyboard state는 요청 취소로 승격하지 않고 장시간 review/repair/goal loop는 실제 모델, 도구, 승인 상태만으로 진행/중단된다.
 25. 일반 작업 턴은 완료 시 턴 소요시간을 출력한다. `/exit`, `/status`, `/config`, `/model` 같은 로컬 메타 명령은 소요시간 footer를 생략한다.

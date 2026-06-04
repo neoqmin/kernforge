@@ -124,6 +124,7 @@ Autonomous goal:
 - `/goal start --run "<objective>"`는 goal을 기록한 뒤 즉시 autonomous loop를 실행한다.
 - `/goal start @GOAL.md`는 markdown goal을 기록한다. 나중에 `/goal run latest`로 시작하거나 재개한다.
 - `kernforge -goal "<objective>"`와 `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 loop를 바로 실행한다.
+- goal prompt 초안 작성 요청은 `/goal`, `-goal`, goal 파일, `--run`, 또는 파일 저장 지시가 있을 때만 goal 기록/실행으로 승격된다.
 
 provider 및 런타임 확인:
 - `/provider status`

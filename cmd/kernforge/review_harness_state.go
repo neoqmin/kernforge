@@ -286,6 +286,37 @@ func buildReviewApprovalLedger(rt *runtimeState, run ReviewRun) ReviewApprovalLe
 	return ledger
 }
 
+func reviewRunHasUnappliedPreWriteProposal(run ReviewRun) bool {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || run.ApprovalLedger.WriteApplied {
+		return false
+	}
+	return len(run.ChangeSet.ChangedPaths) > 0 ||
+		strings.TrimSpace(run.ChangeSet.DiffExcerpt) != "" ||
+		strings.TrimSpace(run.ChangeSet.DiffStat) != ""
+}
+
+func reviewRunPreWriteGateApproved(run ReviewRun) bool {
+	if run.ApprovalLedger.ReviewGateApproved {
+		return true
+	}
+	verdict := strings.TrimSpace(firstNonBlankString(run.Gate.Verdict, run.Result.Verdict))
+	return strings.EqualFold(verdict, reviewVerdictApproved) ||
+		strings.EqualFold(verdict, reviewVerdictApprovedWithWarnings)
+}
+
+func reviewRunHasBlockedPreWriteProposal(run ReviewRun) bool {
+	if !reviewRunHasUnappliedPreWriteProposal(run) {
+		return false
+	}
+	if reviewRunPreWriteGateApproved(run) {
+		return false
+	}
+	return !run.ApprovalLedger.ReviewGateApproved ||
+		strings.EqualFold(strings.TrimSpace(run.Gate.Verdict), reviewVerdictNeedsRevision) ||
+		strings.EqualFold(strings.TrimSpace(run.Gate.Verdict), reviewVerdictBlocked) ||
+		strings.EqualFold(strings.TrimSpace(run.Gate.Verdict), reviewVerdictInsufficientEvidence)
+}
+
 func reviewApprovalLedgerVerificationPassed(session *Session, run ReviewRun) bool {
 	if session == nil || session.LastVerification == nil {
 		return false

@@ -277,6 +277,134 @@ func TestReviewLedgerConsistencyBlocksStaleFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestReviewTimelineMarksBlockedPreWriteProposalAsBlocked(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-proposal",
+		Target:  reviewTargetChange,
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{".kernforge/goals/GOAL.md"},
+			DiffExcerpt:  "preview",
+		},
+		ApprovalLedger: ReviewApprovalLedger{
+			ReviewGateApproved: false,
+			WriteApplied:       false,
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+			NextCommands: []ReviewNextCommand{{
+				Command: "/session continuity continue from review",
+			}},
+		},
+	}
+
+	phase := reviewTimelinePhaseForApplyingChange(run)
+	if phase.Phase != reviewLifecyclePhaseApplyingChange {
+		t.Fatalf("expected applying_change phase, got %#v", phase)
+	}
+	if phase.Status != reviewTimelineStatusBlocked {
+		t.Fatalf("expected blocked proposal phase, got %#v", phase)
+	}
+	if phase.EvidenceRef != "edit_proposal" {
+		t.Fatalf("expected proposal evidence ref, got %#v", phase)
+	}
+	if !strings.Contains(phase.Reason, "no workspace write") {
+		t.Fatalf("expected no-workspace-write reason, got %#v", phase)
+	}
+	if phase.NextCommand != "/session continuity continue from review" {
+		t.Fatalf("expected gate next command, got %#v", phase)
+	}
+}
+
+func TestReviewMarkdownUsesBlockedProposalPathsForUnappliedPreWrite(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-proposal",
+		Target:  reviewTargetChange,
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{".kernforge/goals/GOAL.md"},
+			DiffExcerpt:  "preview",
+		},
+		ApprovalLedger: ReviewApprovalLedger{
+			ReviewGateApproved: false,
+			WriteApplied:       false,
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+		},
+	}
+
+	rendered := renderReviewRunMarkdown(run)
+	if !strings.Contains(rendered, "## Blocked Proposal Paths") {
+		t.Fatalf("expected blocked proposal paths heading, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "## Changed Paths") {
+		t.Fatalf("blocked proposal should not render as changed paths, got:\n%s", rendered)
+	}
+}
+
+func TestReviewMarkdownUsesProposedPathsForApprovedUnappliedPreWrite(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-proposal-approved",
+		Target:  reviewTargetChange,
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{".kernforge/goals/GOAL.md"},
+			DiffExcerpt:  "preview",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	phase := reviewTimelinePhaseForApplyingChange(run)
+	if phase.Status != reviewTimelineStatusPending {
+		t.Fatalf("approved but unapplied proposal should stay pending for write approval, got %#v", phase)
+	}
+	rendered := renderReviewRunMarkdown(run)
+	if !strings.Contains(rendered, "## Proposed Paths") {
+		t.Fatalf("expected proposed paths heading, got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "## Blocked Proposal Paths") || strings.Contains(rendered, "## Changed Paths") {
+		t.Fatalf("approved unapplied proposal should not render as blocked or changed paths, got:\n%s", rendered)
+	}
+}
+
+func TestReviewLedgerConsistencyUsesBlockedProposalWarning(t *testing.T) {
+	root := t.TempDir()
+	run := ReviewRun{
+		ID:      "review-proposal",
+		Target:  reviewTargetChange,
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{".kernforge/goals/GOAL.md"},
+			DiffExcerpt:  "preview",
+		},
+		Evidence: ReviewEvidencePack{
+			ChangedPaths: []string{".kernforge/goals/GOAL.md"},
+		},
+		ApprovalLedger: ReviewApprovalLedger{
+			ReviewGateApproved: false,
+			WriteApplied:       false,
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+		},
+	}
+
+	check := buildReviewLedgerConsistency(root, nil, run)
+	if check.Status != reviewLedgerConsistencyWarning {
+		t.Fatalf("expected warning consistency check, got %#v", check)
+	}
+	warnings := strings.Join(check.Warnings, " ")
+	if !strings.Contains(warnings, "blocked proposal has no linked verification evidence") {
+		t.Fatalf("expected blocked proposal verification warning, got %#v", check.Warnings)
+	}
+	if strings.Contains(warnings, "changed files have no linked verification evidence") {
+		t.Fatalf("blocked proposal should not render generic changed-files warning, got %#v", check.Warnings)
+	}
+}
+
 func TestResumeSanityDetectsConflictingLatestUserRequest(t *testing.T) {
 	root := t.TempDir()
 	rt := reviewStateTestRuntime(root, nil)

@@ -1350,6 +1350,24 @@ func reviewTimelinePhaseForPreWrite(run ReviewRun) ReviewLifecyclePhase {
 }
 
 func reviewTimelinePhaseForApplyingChange(run ReviewRun) ReviewLifecyclePhase {
+	if reviewRunHasUnappliedPreWriteProposal(run) {
+		status := reviewTimelineStatusPending
+		reason := "pre-write proposal is recorded but no workspace write has been applied"
+		next := "show diff preview and get explicit write approval only after the review gate approves"
+		if reviewRunHasBlockedPreWriteProposal(run) {
+			status = reviewTimelineStatusBlocked
+			reason = "pre-write proposal is blocked by the review gate and no workspace write was applied"
+			next = "repair the proposal and rerun pre-write review before any write"
+		}
+		return ReviewLifecyclePhase{
+			Phase:          reviewLifecyclePhaseApplyingChange,
+			Status:         status,
+			Reason:         reason,
+			EvidenceRef:    "edit_proposal",
+			NextSafeAction: next,
+			NextCommand:    reviewLifecycleNextCommand(run.Gate.NextCommands),
+		}
+	}
 	if len(run.ChangeSet.ChangedPaths) > 0 {
 		return ReviewLifecyclePhase{
 			Phase:       reviewLifecyclePhaseApplyingChange,
