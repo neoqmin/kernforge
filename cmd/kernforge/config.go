@@ -3473,11 +3473,11 @@ func HelpDetail(topic string) (string, bool) {
 /goal <objective>
 /goal @GOAL.md
 /goal --file GOAL.md
-- Record a Codex-style goal from inline text or a markdown file without submitting another model turn.
-- Kernforge records the acceptance contract, task graph, completion criteria, and progress ledger so the goal can guide later turns.
+- Record a Codex-style goal from inline text or a markdown file and ask the active model to draft an editable execution plan.
+- Kernforge records the acceptance contract, task graph, completion criteria, progress ledger, and model-drafted plan so the goal can guide later turns.
 - This is the visible product flow. If you only want a goal prompt drafted, ask for prompt text or save it as markdown first; no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run.
-- Kernforge writes .kernforge/goals/latest.md and .kernforge/goals/latest.json plus per-goal copies and prints those paths after creation.
-- Start the recorded goal with /goal run latest when you explicitly want automation.
+- Kernforge writes .kernforge/goals/latest.md and .kernforge/goals/latest.json plus per-goal copies, prints those paths after creation, and shows /goal run latest as the next command.
+- Review or edit ## Execution Plan in latest.md first, then start the recorded goal with /goal run latest when you explicitly want automation.
 
 /goal --run <objective>
 - Create the goal and immediately start the autonomous loop.

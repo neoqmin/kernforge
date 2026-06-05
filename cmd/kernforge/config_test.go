@@ -2904,7 +2904,8 @@ func TestHelpDetailClarifiesGoalRecordAndRunBoundary(t *testing.T) {
 	}
 	for _, needle := range []string{
 		"/goal <objective>",
-		"without submitting another model turn",
+		"ask the active model to draft an editable execution plan",
+		"Review or edit ## Execution Plan in latest.md first",
 		"no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run",
 		".kernforge/goals/latest.md",
 		"/goal run latest",

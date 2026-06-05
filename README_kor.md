@@ -201,7 +201,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### Autonomous Goals
 
-- `/goal <objective>`는 persistent goal을 기록하고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. 이 단계는 추가 model turn을 시작하지 않는다.
+- `/goal <objective>`는 persistent goal을 기록하고 active model이 목표별 실행 plan을 작성하게 한 뒤, 편집 가능한 plan preview와 `/goal run latest`를 보여주고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. 이 단계는 autonomous loop를 시작하지 않는다.
+- model이 작성한 plan을 조정하려면 `/goal run latest` 전에 `.kernforge/goals/latest.md`의 `## Execution Plan`을 수정한다.
 - `/goal --run <objective>`는 goal을 만들고 즉시 autonomous loop를 시작한다. 이미 기록한 goal은 `/goal run latest`로 시작하거나 재개한다.
 - `/goal @GOAL.md`는 markdown 파일에서 목표를 읽어 기록한다. `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 파일 goal을 읽고 바로 실행한다.
 - `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행하며, `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, `-goal-rollback-on-regression` 제어도 지원한다.

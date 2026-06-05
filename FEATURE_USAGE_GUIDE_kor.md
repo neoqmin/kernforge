@@ -206,7 +206,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. 구현, 자체 리뷰, 검증, completion audit, 최종 semantic review, recovery를 목표 완료 또는 구체 blocker 기록까지 반복한다.
 
 대표 명령:
-- `/goal "missing recovery test와 docs를 추가해"`는 persistent goal을 기록하고 artifact 경로를 출력한다.
+- `/goal "missing recovery test와 docs를 추가해"`는 persistent goal을 기록하고 active model이 작성한 편집 가능한 plan preview와 `/goal run latest`를 보여준다.
 - `/goal --run "missing recovery test와 docs를 추가해"`는 goal을 기록한 뒤 즉시 autonomous loop를 실행한다.
 - `/goal @GOAL.md`는 markdown goal을 기록하되 실행하지 않는다.
 - `/goal --file GOAL.md --max-iterations 12`
@@ -224,9 +224,9 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `kernforge -goal-file GOAL.md`
 
 현재 동작:
-1. `/goal`은 session에 `GoalState`를 만들고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. `--run` 또는 `--until-complete`가 없으면 추가 model turn을 시작하지 않고 기록만 한다.
+1. `/goal`은 session에 `GoalState`를 만들고 active model이 목표별 실행 plan을 작성하게 한 뒤, 편집 가능한 plan preview와 `/goal run latest`를 출력하고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. `--run` 또는 `--until-complete`가 없으면 autonomous execution loop는 시작하지 않는다.
 2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있으며 비대화형 `-goal`과 `-goal-file`은 max-iteration, time-budget, token-budget, until-complete, rollback flag를 지원하고 즉시 실행한다.
-3. goal 기록은 실행 전에 acceptance contract, task graph, completion criteria, status artifact를 준비한다. "goal prompt 작성" 요청은 draft 요청이지 active goal이 아니며, 그 prompt를 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다. draft만 요청한 goal prompt는 `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 지시가 있을 때만 기록/실행으로 승격된다. 예전 `start` 서브커맨드는 생성과 실행 역할을 명확히 나누기 위해 제거했다.
+3. goal 기록은 실행 전에 acceptance contract, task graph, completion criteria, status artifact, model-drafted plan을 준비한다. plan을 바꾸려면 `/goal run latest` 전에 `.kernforge/goals/latest.md`의 `## Execution Plan`을 수정한다. run 명령은 이 section을 다시 읽어 실행 plan에 반영한다. "goal prompt 작성" 요청은 draft 요청이지 active goal이 아니며, 그 prompt를 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다. draft만 요청한 goal prompt는 `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 지시가 있을 때만 기록/실행으로 승격된다. 예전 `start` 서브커맨드는 생성과 실행 역할을 명확히 나누기 위해 제거했다.
 4. 각 iteration은 checkpoint 저장소가 설정된 경우 checkpoint를 남기고, 구현 prompt 뒤에 독립 review verdict gate를 실행한다.
 5. review prompt는 가능한 경우 implementation reply, iteration 시작 checkpoint diff, git status/diff context, changed-file summary, 제한된 untracked 파일 excerpt 같은 실제 증거를 포함한다.
 6. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다. repair prompt는 구조화된 reviewer issue와 같은 implementation context를 보존하므로 worker는 짧고 모호한 revision summary가 아니라 실제 지적 사항을 받는다.

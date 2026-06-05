@@ -207,7 +207,8 @@ Its current differentiators are:
 
 ### Autonomous Goals
 
-- `/goal <objective>` records a persistent goal and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json` without starting another model turn
+- `/goal <objective>` records a persistent goal, asks the active model to draft an objective-specific execution plan, shows the editable plan preview plus `/goal run latest`, and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json` without starting the autonomous loop
+- Edit `## Execution Plan` in `.kernforge/goals/latest.md` before `/goal run latest` when you want to adjust the model-drafted plan
 - `/goal --run <objective>` creates the goal and immediately starts the autonomous loop; `/goal run latest` starts or resumes a goal that was only recorded
 - `/goal @GOAL.md` records an objective from a markdown file; `kernforge -goal-file GOAL.md` loads and runs it in one-shot CLI mode
 - `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, and `-goal-rollback-on-regression` controls

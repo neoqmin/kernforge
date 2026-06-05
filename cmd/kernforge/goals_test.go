@@ -356,6 +356,11 @@ func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 		filepath.Join(root, ".kernforge", "goals", "latest.md"),
 		"latest_json",
 		filepath.Join(root, ".kernforge", "goals", "latest.json"),
+		"Drafting a plan to achieve this goal",
+		"Plan Preview",
+		"plan_01",
+		"Inspect the objective",
+		"next_command",
 		"Goal recorded without starting an autonomous loop",
 		"/goal run latest",
 	} {
@@ -365,6 +370,16 @@ func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(string(md), "## Objective") {
 		t.Fatalf("expected goal artifact and output, got md=%q output=%q", string(md), output.String())
+	}
+	for _, want := range []string{
+		"## Execution Plan",
+		"- [pending] Inspect the objective",
+		"## Next Command",
+		"`/goal run latest`",
+	} {
+		if !strings.Contains(string(md), want) {
+			t.Fatalf("expected goal markdown to contain %q, got:\n%s", want, string(md))
+		}
 	}
 }
 
@@ -382,8 +397,18 @@ func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 			Root:     root,
 		},
 		goalReply: func(ctx context.Context, prompt string) (string, error) {
-			t.Fatalf("goal creation should not submit an autonomous prompt by default: %s", prompt)
-			return "", nil
+			if !strings.Contains(prompt, "Generate a detailed execution plan") {
+				t.Fatalf("expected planning prompt during record-only goal creation, got %s", prompt)
+			}
+			if !strings.Contains(prompt, "finish sample objective") {
+				t.Fatalf("expected objective in planning prompt, got %s", prompt)
+			}
+			return strings.Join([]string{
+				"1. Inspect the sample objective and current repository state.",
+				"2. Implement the missing sample objective behavior.",
+				"3. Review the touched code and repair concrete findings.",
+				"4. Run focused goal verification and completion audit checks.",
+			}, "\n"), nil
 		},
 	}
 
@@ -398,8 +423,16 @@ func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	if goal.Status != goalStatusPending || goal.Iteration != 0 {
 		t.Fatalf("expected pending unrun goal, got %#v", goal)
 	}
+	if len(goal.Plan) != 4 || !strings.Contains(goal.Plan[0].Step, "sample objective") {
+		t.Fatalf("expected generated goal plan to be persisted, got %#v", goal.Plan)
+	}
 	for _, want := range []string{
+		"Drafting a plan to achieve this goal",
 		"Goal recorded without starting an autonomous loop",
+		"Plan Preview",
+		"plan_01",
+		"Inspect the sample objective",
+		"next_command",
 		"/goal run latest",
 		"/goal --run <objective>",
 		"latest_markdown",
@@ -410,6 +443,169 @@ func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "Starting autonomous loop now") {
 		t.Fatalf("record-only goal should not print run hint, got %q", output.String())
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".kernforge", "goals", "latest.json"))
+	if err != nil {
+		t.Fatalf("read latest goal json: %v", err)
+	}
+	persisted := GoalState{}
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("unmarshal latest goal json: %v", err)
+	}
+	if len(persisted.Plan) != 4 || !strings.Contains(persisted.Plan[0].Step, "sample objective") {
+		t.Fatalf("expected generated plan in persisted goal json, got %#v", persisted.Plan)
+	}
+	md, err := os.ReadFile(filepath.Join(root, ".kernforge", "goals", "latest.md"))
+	if err != nil {
+		t.Fatalf("read latest goal markdown: %v", err)
+	}
+	for _, want := range []string{
+		"## Execution Plan",
+		"- [pending] Inspect the sample objective",
+		"## Plan Editing",
+	} {
+		if !strings.Contains(string(md), want) {
+			t.Fatalf("expected generated plan markdown to contain %q, got:\n%s", want, string(md))
+		}
+	}
+}
+
+func TestRenderGoalMarkdownDirectIncludesPlanForUnrunGoal(t *testing.T) {
+	now := time.Now()
+	goal := GoalState{
+		ID:        "goal-1",
+		Objective: "finish sample objective",
+		Status:    goalStatusPending,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	md := renderGoalMarkdown(goal)
+	for _, want := range []string{
+		"## Execution Plan",
+		"- [pending] Inspect the objective",
+		"## Next Command",
+		"`/goal run latest`",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("expected direct goal markdown to contain %q, got:\n%s", want, md)
+		}
+	}
+}
+
+func TestGoalRunReloadsEditedExecutionPlanFromMarkdown(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	latestPath := filepath.Join(root, ".kernforge", "goals", "latest.md")
+	editedMarkdown := strings.Join([]string{
+		"# Goal",
+		"",
+		"## Execution Plan",
+		"",
+		"- [completed] Inspect the edited proxy DLL detection surface.",
+		"- [pending] Wire the edited worker enforcement path.",
+		"- [pending] Verify the edited goal plan behavior.",
+		"",
+		"## Next Command",
+		"",
+		"`/goal run latest`",
+		"",
+	}, "\n")
+	if err := os.WriteFile(latestPath, []byte(editedMarkdown), 0o644); err != nil {
+		t.Fatalf("write edited goal markdown: %v", err)
+	}
+
+	updated, synced, err := rt.syncGoalPlanFromEditableArtifact(goal, "latest")
+	if err != nil {
+		t.Fatalf("syncGoalPlanFromEditableArtifact: %v", err)
+	}
+	if !synced {
+		t.Fatalf("expected edited execution plan to be synced")
+	}
+	if len(updated.Plan) != 3 || updated.Plan[0].Step != "Inspect the edited proxy DLL detection surface." {
+		t.Fatalf("expected edited plan on goal, got %#v", updated.Plan)
+	}
+	if updated.Plan[0].Status != "completed" {
+		t.Fatalf("expected edited status to be preserved, got %#v", updated.Plan)
+	}
+	if len(session.Plan) != 3 || session.Plan[0].Status != "completed" || session.Plan[1].Status != "in_progress" || session.Plan[1].Step != updated.Plan[1].Step {
+		t.Fatalf("expected edited plan on session with next pending item in progress, got %#v", session.Plan)
+	}
+	prompt := buildGoalImplementationPrompt(updated, 1)
+	if !strings.Contains(prompt, "User-reviewed execution plan") || !strings.Contains(prompt, "[completed] Inspect the edited proxy DLL detection surface") || !strings.Contains(prompt, "[pending] Wire the edited worker enforcement path") {
+		t.Fatalf("expected edited plan in implementation prompt, got:\n%s", prompt)
+	}
+}
+
+func TestWriteGoalArtifactsDoesNotLeakPlanFromDifferentActiveGoal(t *testing.T) {
+	root := initTestGitRepo(t)
+	now := time.Now()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.ActiveGoalID = "goal-active"
+	session.Plan = []PlanItem{{
+		Step:   "Active goal specific step must not leak",
+		Status: "in_progress",
+	}}
+	archived := GoalState{
+		ID:        "goal-archived",
+		Objective: "archived goal",
+		Status:    goalStatusComplete,
+		Iteration: 1,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	written, err := writeGoalArtifactsForRoot(session, root, archived)
+	if err != nil {
+		t.Fatalf("writeGoalArtifactsForRoot: %v", err)
+	}
+	path := filepath.Join(root, ".kernforge", "goals", written.ID+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read goal artifact: %v", err)
+	}
+	md := string(data)
+	if strings.Contains(md, "Active goal specific step must not leak") {
+		t.Fatalf("archived goal artifact leaked active goal plan:\n%s", md)
+	}
+	if strings.Contains(md, "## Next Command") {
+		t.Fatalf("completed archived goal should not show run-next command:\n%s", md)
+	}
+}
+
+func TestRenderGoalMarkdownDoesNotSuggestRunForPausedUnrunGoal(t *testing.T) {
+	now := time.Now()
+	goal := GoalState{
+		ID:        "goal-paused",
+		Objective: "paused before execution",
+		Status:    goalStatusPaused,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	md := renderGoalMarkdown(goal)
+	if strings.Contains(md, "## Next Command") || strings.Contains(md, "`/goal run latest`") {
+		t.Fatalf("paused unrun goal should not suggest autonomous run:\n%s", md)
+	}
+	if !strings.Contains(md, "## Execution Plan") {
+		t.Fatalf("paused unrun goal should still expose the recorded plan for inspection:\n%s", md)
 	}
 }
 
@@ -1333,14 +1529,14 @@ func TestGoalRunInterruptBeforeIterationKeepsGoalActive(t *testing.T) {
 			BaseRoot: root,
 			Root:     root,
 		},
-		goalReply: func(ctx context.Context, prompt string) (string, error) {
-			t.Fatalf("unexpected goal prompt after cancellation: %s", prompt)
-			return "", nil
-		},
 	}
 
 	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
+	}
+	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
+		t.Fatalf("unexpected goal prompt after cancellation: %s", prompt)
+		return "", nil
 	}
 	goal, ok := session.ActiveGoal()
 	if !ok {
@@ -1383,15 +1579,15 @@ func TestGoalRunInterruptDuringAgentPromptKeepsGoalActive(t *testing.T) {
 			BaseRoot: root,
 			Root:     root,
 		},
-		goalReply: func(ctx context.Context, prompt string) (string, error) {
-			replyCount++
-			cancel()
-			return "", ctx.Err()
-		},
 	}
 
 	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
+	}
+	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
+		replyCount++
+		cancel()
+		return "", ctx.Err()
 	}
 	goal, ok := session.ActiveGoal()
 	if !ok {
@@ -1438,17 +1634,17 @@ func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 			Shell:        defaultShell(),
 			ShellTimeout: 30 * time.Second,
 		},
-		goalReply: func(ctx context.Context, prompt string) (string, error) {
-			replyCount++
-			if replyCount == 2 {
-				cancel()
-			}
-			return "fake goal reply", nil
-		},
 	}
 
 	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
+	}
+	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
+		replyCount++
+		if replyCount == 2 {
+			cancel()
+		}
+		return "fake goal reply", nil
 	}
 	goal, ok := session.ActiveGoal()
 	if !ok {
@@ -1648,6 +1844,9 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 			ShellTimeout: 30 * time.Second,
 		},
 		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Generate a detailed execution plan") {
+				return "1. Inspect source files for report-worthy bugs.\n2. Write the bug report artifact.\n3. Verify artifact quality and completion gates.", nil
+			}
 			if strings.Contains(prompt, "Final semantic goal review") {
 				t.Fatalf("accepted document artifact should skip complete-time semantic review:\n%s", prompt)
 			}

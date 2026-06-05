@@ -209,7 +209,7 @@ Purpose:
 3. Repeat implementation, self-review, verification, completion audit, final semantic review, and recovery until the goal is complete or a concrete blocker is recorded.
 
 Useful commands:
-- `/goal "add the missing recovery tests and update docs"` records a persistent goal and prints artifact paths
+- `/goal "add the missing recovery tests and update docs"` records a persistent goal, asks the active model for an editable plan preview, and points to `/goal run latest`
 - `/goal --run "add the missing recovery tests and update docs"` records and immediately runs the autonomous loop
 - `/goal @GOAL.md` records a markdown goal without running it
 - `/goal --file GOAL.md --max-iterations 12`
@@ -227,9 +227,9 @@ Useful commands:
 - `kernforge -goal-file GOAL.md`
 
 Current behavior:
-1. `/goal` creates a `GoalState` in the session and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`; it records the goal without launching another model turn unless `--run` or `--until-complete` is present.
+1. `/goal` creates a `GoalState` in the session, asks the active model to draft an objective-specific execution plan, prints that editable plan preview plus `/goal run latest`, and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`; it records the goal without launching the autonomous execution loop unless `--run` or `--until-complete` is present.
 2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag; one-shot `-goal` and `-goal-file` runs support matching max-iteration, time-budget, token-budget, until-complete, and rollback flags and execute immediately.
-3. Goal recording primes an acceptance contract, task graph, completion criteria, and status artifact before execution. Asking for a "goal prompt" is a drafting request, not an active goal; save that prompt or pass it to `/goal` when you want Kernforge to record or run it. A draft-only goal prompt request stays non-mutating unless it includes `/goal`, `-goal`, `--run`, file input, or an explicit save-to-file instruction. The old `start` subcommand is removed so create and run roles stay separate.
+3. Goal recording primes an acceptance contract, task graph, completion criteria, status artifact, and model-drafted plan before execution. Edit `## Execution Plan` in `.kernforge/goals/latest.md` before `/goal run latest` if the plan needs changes; the run command reloads that section. Asking for a "goal prompt" is a drafting request, not an active goal; save that prompt or pass it to `/goal` when you want Kernforge to record or run it. A draft-only goal prompt request stays non-mutating unless it includes `/goal`, `-goal`, `--run`, file input, or an explicit save-to-file instruction. The old `start` subcommand is removed so create and run roles stay separate.
 4. Each iteration records a checkpoint when checkpoint storage is configured, sends an implementation prompt, then runs an independent review verdict gate.
 5. The review prompt includes concrete evidence whenever available: the implementation reply, checkpoint diff from the iteration start, git status/diff context, changed-file summaries, and bounded untracked-file excerpts.
 6. A `NEEDS_REVISION` review triggers an automatic repair pass before verification. The repair prompt preserves structured reviewer issues plus the same implementation context, so the worker receives actionable findings rather than only a short revision summary.

@@ -70,8 +70,17 @@ func primeGoalSessionState(session *Session, goal *GoalState, reason string, rev
 	if len(goal.CompletionCriteria) == 0 {
 		goal.CompletionCriteria = criteria
 	}
-	session.SetSharedPlan(goalPlanItems())
+	plan := normalizeGoalPlanItems(goal.Plan)
+	planApproved := len(plan) > 0
+	if len(plan) == 0 {
+		plan = normalizeGoalPlanItems(goalPlanItems())
+	}
+	if len(goal.Plan) == 0 {
+		goal.Plan = append([]PlanItem(nil), plan...)
+	}
+	session.SetSharedPlan(plan)
 	session.ensureSharedPlanInProgress()
+	state.SetPlanSummary(renderPlanItemsForTaskState(plan), planApproved)
 }
 
 func (a *Agent) accountGoalProgressAfterTool(call ToolCall) goalToolAccountingOutcome {
