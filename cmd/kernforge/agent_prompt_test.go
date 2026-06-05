@@ -1172,8 +1172,19 @@ func TestSummarizeToolCompletionForRunShellUsesFirstOutputLine(t *testing.T) {
 		Arguments: `{"command":"go test ./..."}`,
 	}, "\nPASS\nok   kernforge  0.123s\n")
 
-	if summary != "run_shell completed: PASS" {
+	if summary != "run_shell completed (2 line(s)): PASS" {
 		t.Fatalf("unexpected run_shell summary: %q", summary)
+	}
+}
+
+func TestSummarizeToolCompletionForRunShellNoOutputSentinel(t *testing.T) {
+	summary := summarizeToolCompletion(Config{AutoLocale: boolPtr(false)}, ToolCall{
+		Name:      "run_shell",
+		Arguments: `{"command":"true"}`,
+	}, "(no output)")
+
+	if summary != "run_shell completed with no output." {
+		t.Fatalf("unexpected run_shell no-output summary: %q", summary)
 	}
 }
 

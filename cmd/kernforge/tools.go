@@ -4776,6 +4776,10 @@ func skippedVerificationCommandText() string {
 	return "verification command skipped because the user declined to run it. Do not retry this verification command or poll a background job for it unless the user explicitly approves verification; disclose that verification was not run. Do not relabel resolved code-review findings as remaining bugs only because verification is missing."
 }
 
+func runShellDisplayTextRepresentsNoOutput(text string) bool {
+	return strings.EqualFold(strings.TrimSpace(text), "(no output)")
+}
+
 func detectUnexpectedShellWorkspaceChanges(workDir string, before map[string]workspaceFileSignature) error {
 	if len(before) == 0 || strings.TrimSpace(workDir) == "" {
 		return nil

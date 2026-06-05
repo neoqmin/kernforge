@@ -3543,6 +3543,19 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	if !strings.Contains(text, "Current session and runtime state.") {
 		t.Fatalf("expected runtime hint, got %q", text)
 	}
+	for _, want := range []string{
+		"-- Overview ",
+		"[gate:ready]",
+		"[provider:openrouter/google/gemini-2.5-pro]",
+		"[permission:danger-full-access]",
+		"[progress:compact]",
+		"[mcp:0]",
+		"/status detail for lifecycle evidence",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected status overview to contain %q, got %q", want, text)
+		}
+	}
 	if !strings.Contains(text, "write_approval:") {
 		t.Fatalf("expected runtime approval state in status, got %q", text)
 	}
@@ -3557,6 +3570,124 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	}
 	if strings.Contains(text, "hooks_enabled:") {
 		t.Fatalf("did not expect config-only hooks_enabled in status, got %q", text)
+	}
+}
+
+func TestOperatorFooterLineShowsCompactRuntimeState(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	rt := &runtimeState{
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		perms:     NewPermissionManager(ModeBypass, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	line := rt.operatorFooterLine()
+	for _, want := range []string{
+		"status ",
+		"[cwd:" + filepath.Base(root) + "]",
+		"[provider:openrouter/google/gemini-2.5-pro]",
+		"[gate:ready]",
+		"[perm:danger-full-access]",
+		"[mcp:0]",
+		"[verify:none]",
+		"[memory:0]",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected operator footer to contain %q, got %q", want, line)
+		}
+	}
+}
+
+func TestStatusOverviewProviderLabelPreservesLongModelTail(t *testing.T) {
+	label := statusOverviewProviderLabel(
+		"openai-codex-subscription",
+		"google/gemini-2.5-pro-preview-2026-critical-tail",
+		42,
+	)
+	if !strings.HasPrefix(label, "openai-codex-.../") {
+		t.Fatalf("expected compact provider prefix, got %q", label)
+	}
+	if !strings.HasSuffix(label, "tical-tail") {
+		t.Fatalf("expected long model tail to remain visible, got %q", label)
+	}
+	if !strings.Contains(label, "...") {
+		t.Fatalf("expected middle truncation marker, got %q", label)
+	}
+}
+
+func TestDirectShellResultSummaryIncludesExecutionMetadata(t *testing.T) {
+	summary := directShellResultSummary("go test ./cmd/kernforge", "PASS\nok kernforge 1.2s\n", map[string]any{
+		"exit_code":         0,
+		"wall_time_seconds": 1.2,
+	}, nil)
+
+	for _, want := range []string{"ok", "exit=0", "1s", "2 line(s)", "!go test ./cmd/kernforge"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected direct shell summary to contain %q, got %q", want, summary)
+		}
+	}
+}
+
+func TestDirectShellResultSummaryMarksNonZeroExitAsFailed(t *testing.T) {
+	summary := directShellResultSummary("go test ./cmd/kernforge", "FAIL\n", map[string]any{
+		"exit_code":         1,
+		"wall_time_seconds": 0.25,
+	}, nil)
+
+	for _, want := range []string{"failed", "exit=1", "250ms", "1 line(s)"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected failed direct shell summary to contain %q, got %q", want, summary)
+		}
+	}
+}
+
+func TestDirectShellResultSummaryUsesNoOutputLabel(t *testing.T) {
+	summary := directShellResultSummary("true", "(no output)", map[string]any{
+		"exit_code":         0,
+		"wall_time_seconds": 0.0001,
+	}, nil)
+
+	for _, want := range []string{"ok", "exit=0", "1ms", "no output", "!true"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected no-output shell summary to contain %q, got %q", want, summary)
+		}
+	}
+	if strings.Contains(summary, "1 line(s)") {
+		t.Fatalf("did not expect sentinel no-output text to be counted as a line, got %q", summary)
+	}
+}
+
+func TestRunShellBuiltinPwdPrintsSummaryBeforeOutput(t *testing.T) {
+	root := t.TempDir()
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if err := rt.runShell("pwd"); err != nil {
+		t.Fatalf("runShell(pwd): %v", err)
+	}
+
+	text := out.String()
+	summaryIndex := strings.Index(text, "[shell")
+	outputIndex := strings.Index(text, ">> shell output [1 line(s)]")
+	if summaryIndex < 0 {
+		t.Fatalf("expected shell summary line, got %q", text)
+	}
+	if outputIndex < 0 {
+		t.Fatalf("expected shell output block, got %q", text)
+	}
+	if summaryIndex > outputIndex {
+		t.Fatalf("expected shell summary before output, got %q", text)
+	}
+	if !strings.Contains(text, "!pwd") {
+		t.Fatalf("expected command preview in shell summary, got %q", text)
 	}
 }
 
@@ -3599,6 +3730,35 @@ func TestStatusCommandShowsEditLoopState(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected status output to include %q, got %q", want, text)
 		}
+	}
+}
+
+func TestStatusOverviewShowsProviderErrorOnce(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+		clientErr: errors.New("provider offline"),
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "status"}); err != nil {
+		t.Fatalf("handleCommand(status): %v", err)
+	}
+
+	text := out.String()
+	if count := strings.Count(text, "provider error: provider offline"); count != 1 {
+		t.Fatalf("expected provider error once, got %d in %q", count, text)
+	}
+	if !strings.Contains(text, "-- Overview ") {
+		t.Fatalf("expected provider error to appear with status overview context, got %q", text)
 	}
 }
 

@@ -15,6 +15,19 @@ type UI struct {
 	color bool
 }
 
+const (
+	shellOutputPreviewHeadLines = 80
+	shellOutputPreviewTailLines = 20
+	shellOutputPreviewMaxChars  = 12000
+	shellOutputPreviewTailChars = 4000
+)
+
+type shellOutputPreview struct {
+	Text      string
+	LineCount int
+	Collapsed bool
+}
+
 func NewUI() UI {
 	color := colorsEnabled()
 	if color {
@@ -165,12 +178,110 @@ func (ui UI) assistant(text string) string {
 }
 
 func (ui UI) shell(text string) string {
+	return ui.shellWithMeta(text)
+}
+
+func (ui UI) shellWithMeta(text string, extraMeta ...string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	body := strings.TrimRight(text, "\r\n")
-	meta := fmt.Sprintf("%d line(s)", countBlockLines(body))
-	return ui.outputHeader("shell output", meta, ui.accent2) + "\n" + ui.cloud(body)
+	preview := shellOutputPreviewFor(text)
+	metaItems := []string{fmt.Sprintf("%d line(s)", preview.LineCount)}
+	if preview.Collapsed {
+		metaItems = append(metaItems, "collapsed")
+	}
+	metaItems = append(metaItems, cleanShellOutputMetaItems(extraMeta)...)
+	meta := strings.Join(metaItems, ", ")
+	return ui.outputHeader("shell output", meta, ui.accent2) + "\n" + ui.cloud(preview.Text)
+}
+
+func cleanShellOutputMetaItems(items []string) []string {
+	cleaned := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.Join(strings.Fields(strings.TrimSpace(item)), " ")
+		if trimmed == "" {
+			continue
+		}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
+}
+
+func shellOutputPreviewFor(text string) shellOutputPreview {
+	body := normalizeBlockLineEndings(strings.TrimRight(text, "\r\n"))
+	preview := shellOutputPreview{
+		Text:      body,
+		LineCount: countBlockLines(body),
+	}
+	if body == "" {
+		return preview
+	}
+
+	if preview.LineCount > shellOutputPreviewHeadLines+shellOutputPreviewTailLines {
+		lines := strings.Split(normalizeBlockLineEndings(body), "\n")
+		preview.Text = collapseShellOutputLines(lines)
+		preview.Collapsed = true
+	}
+
+	if utf8.RuneCountInString(preview.Text) > shellOutputPreviewMaxChars {
+		preview.Text = collapseShellOutputChars(preview.Text)
+		preview.Collapsed = true
+	}
+
+	return preview
+}
+
+func collapseShellOutputLines(lines []string) string {
+	maxLines := shellOutputPreviewHeadLines + shellOutputPreviewTailLines
+	if len(lines) <= maxLines {
+		return strings.Join(lines, "\n")
+	}
+
+	omitted := len(lines) - shellOutputPreviewHeadLines - shellOutputPreviewTailLines
+	if omitted <= 0 {
+		return strings.Join(lines, "\n")
+	}
+
+	out := make([]string, 0, maxLines+1)
+	out = append(out, lines[:shellOutputPreviewHeadLines]...)
+	out = append(out, fmt.Sprintf(
+		"[output collapsed: %d line(s) omitted; showing first %d and last %d line(s)]",
+		omitted,
+		shellOutputPreviewHeadLines,
+		shellOutputPreviewTailLines,
+	))
+	out = append(out, lines[len(lines)-shellOutputPreviewTailLines:]...)
+	return strings.Join(out, "\n")
+}
+
+func collapseShellOutputChars(text string) string {
+	runes := []rune(text)
+	if len(runes) <= shellOutputPreviewMaxChars {
+		return text
+	}
+
+	tailChars := shellOutputPreviewTailChars
+	if tailChars >= shellOutputPreviewMaxChars {
+		tailChars = shellOutputPreviewMaxChars / 3
+	}
+	headChars := shellOutputPreviewMaxChars - tailChars
+	if headChars <= 0 || tailChars <= 0 || len(runes) <= headChars+tailChars {
+		return text
+	}
+
+	omitted := len(runes) - headChars - tailChars
+	marker := fmt.Sprintf(
+		"[output collapsed: %d char(s) omitted; showing first %d and last %d char(s)]",
+		omitted,
+		headChars,
+		tailChars,
+	)
+	return string(runes[:headChars]) + "\n" + marker + "\n" + string(runes[len(runes)-tailChars:])
+}
+
+func normalizeBlockLineEndings(text string) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.ReplaceAll(normalized, "\r", "\n")
 }
 
 func (ui UI) statusKV(key, value string) string {
@@ -194,6 +305,44 @@ func (ui UI) statusKVAligned(key, value string, width int) string {
 		width = 25
 	}
 	return ui.bold(ui.accent(padDisplayRight(label, width))) + ui.dim(" ") + value
+}
+
+func (ui UI) statusPill(label, value string, tone string) string {
+	trimmedLabel := strings.TrimSpace(label)
+	trimmedValue := strings.TrimSpace(value)
+	if trimmedLabel == "" {
+		trimmedLabel = "state"
+	}
+	if trimmedValue == "" {
+		trimmedValue = "unknown"
+	}
+	text := "[" + trimmedLabel + ":" + trimmedValue + "]"
+	switch strings.ToLower(strings.TrimSpace(tone)) {
+	case "success", "ready", "ok", "pass":
+		return ui.success(text)
+	case "warn", "warning", "needs_review", "skip":
+		return ui.warn(text)
+	case "error", "fail", "blocked":
+		return ui.error(text)
+	case "info", "active":
+		return ui.info(text)
+	default:
+		return ui.dim(text)
+	}
+}
+
+func (ui UI) summaryLine(items ...string) string {
+	cleaned := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item) == "" {
+			continue
+		}
+		cleaned = append(cleaned, strings.TrimSpace(item))
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	return strings.Join(cleaned, "  ")
 }
 
 func (ui UI) section(title string) string {
@@ -451,6 +600,8 @@ func (ui UI) activityBadge(kind string) string {
 	switch normalized {
 	case "tool":
 		return ui.bold(ui.accent2(label))
+	case "shell":
+		return ui.bold(ui.accent2(label))
 	case "edit":
 		return ui.bold(ui.success(label))
 	case "verify":
@@ -705,6 +856,48 @@ func truncateDisplayText(text string, limit int) string {
 	return prefix + "..."
 }
 
+func truncateDisplayTextMiddle(text string, limit int) string {
+	trimmed := strings.TrimSpace(text)
+	if limit <= 0 || trimmed == "" {
+		return ""
+	}
+	if visibleLen(trimmed) <= limit {
+		return trimmed
+	}
+	if limit <= 3 {
+		return truncateDisplayText(trimmed, limit)
+	}
+	tailWidth := (limit - 3) / 2
+	headWidth := limit - 3 - tailWidth
+	if headWidth <= 0 || tailWidth <= 0 {
+		return truncateDisplayText(trimmed, limit)
+	}
+	head := truncateDisplayTextWithoutSuffix(trimmed, headWidth)
+	tail := displayTextTail(trimmed, tailWidth)
+	if head == "" || tail == "" {
+		return truncateDisplayText(trimmed, limit)
+	}
+	return head + "..." + tail
+}
+
+func displayTextTail(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	width := 0
+	start := len(runes)
+	for start > 0 {
+		next := runeWidth(runes[start-1])
+		if width+next > limit {
+			break
+		}
+		start--
+		width += next
+	}
+	return string(runes[start:])
+}
+
 func truncateDisplayTextWithoutSuffix(text string, limit int) string {
 	if limit <= 0 {
 		return ""
@@ -723,11 +916,11 @@ func truncateDisplayTextWithoutSuffix(text string, limit int) string {
 }
 
 func countBlockLines(text string) int {
-	trimmed := strings.TrimRight(text, "\r\n")
+	trimmed := normalizeBlockLineEndings(strings.TrimRight(text, "\r\n"))
 	if trimmed == "" {
 		return 0
 	}
-	return strings.Count(strings.ReplaceAll(trimmed, "\r\n", "\n"), "\n") + 1
+	return strings.Count(trimmed, "\n") + 1
 }
 
 func (ui UI) renderAssistantBody(text string) string {

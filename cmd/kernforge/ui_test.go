@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,20 @@ func TestStatusKVAlignedKeepsLongKeysInColumnLayout(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "memory-inspection-analyst:") {
 		t.Fatalf("expected aligned helper to keep colon layout, got %q", rendered)
+	}
+}
+
+func TestStatusPillAndSummaryLineRenderCompactOverview(t *testing.T) {
+	ui := UI{color: false}
+
+	pill := ui.statusPill("gate", "needs_review", "warn")
+	if pill != "[gate:needs_review]" {
+		t.Fatalf("unexpected status pill: %q", pill)
+	}
+
+	summary := ui.summaryLine("", pill, "  ", ui.statusPill("mcp", "2/3 ok 1 fail", "warn"))
+	if summary != "[gate:needs_review]  [mcp:2/3 ok 1 fail]" {
+		t.Fatalf("unexpected summary line: %q", summary)
 	}
 }
 
@@ -291,6 +306,109 @@ func TestShellUsesOutputHeaderAndBody(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "line1\nline2") {
 		t.Fatalf("expected shell body to remain visible, got %q", rendered)
+	}
+}
+
+func TestShellWithMetaAppendsExecutionSummary(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.shellWithMeta("line1\n", "exit=0", "12ms")
+	if !strings.Contains(rendered, ">> shell output [1 line(s), exit=0, 12ms] ") {
+		t.Fatalf("expected shell output header metadata, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "line1") {
+		t.Fatalf("expected shell body to remain visible, got %q", rendered)
+	}
+}
+
+func TestShellNormalizesCarriageReturnOnlyLineEndings(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.shell("line1\rline2\rline3\r")
+	if !strings.Contains(rendered, ">> shell output [3 line(s)] ") {
+		t.Fatalf("expected carriage-return lines to be counted, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "line1\nline2\nline3") {
+		t.Fatalf("expected carriage-return lines to render as normal lines, got %q", rendered)
+	}
+}
+
+func TestTruncateDisplayTextMiddlePreservesTail(t *testing.T) {
+	got := truncateDisplayTextMiddle("google/gemini-2.5-pro-preview-2026-critical-tail", 24)
+	if !strings.HasPrefix(got, "google/") {
+		t.Fatalf("expected provider-style prefix to remain visible, got %q", got)
+	}
+	if !strings.HasSuffix(got, "tical-tail") {
+		t.Fatalf("expected important tail to remain visible, got %q", got)
+	}
+	if visibleLen(got) > 24 {
+		t.Fatalf("expected middle truncation to respect display limit, got %q", got)
+	}
+}
+
+func TestShellCollapsesLongOutputWithHeadAndTail(t *testing.T) {
+	ui := UI{color: false}
+	totalLines := shellOutputPreviewHeadLines + shellOutputPreviewTailLines + 20
+	lines := make([]string, 0, totalLines)
+	for i := 0; i < totalLines; i++ {
+		lines = append(lines, fmt.Sprintf("line%03d", i+1))
+	}
+
+	rendered := ui.shell(strings.Join(lines, "\n"))
+	marker := fmt.Sprintf(
+		"[output collapsed: 20 line(s) omitted; showing first %d and last %d line(s)]",
+		shellOutputPreviewHeadLines,
+		shellOutputPreviewTailLines,
+	)
+	for _, want := range []string{
+		">> shell output [120 line(s), collapsed] ",
+		"line001",
+		"line080",
+		marker,
+		"line101",
+		"line120",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected collapsed shell output to contain %q, got %q", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "line090") {
+		t.Fatalf("expected middle shell output to be omitted, got %q", rendered)
+	}
+}
+
+func TestShellCollapsesVeryLongSingleLineOutput(t *testing.T) {
+	ui := UI{color: false}
+	body := strings.Repeat("x", shellOutputPreviewMaxChars+100)
+
+	rendered := ui.shell(body)
+	marker := fmt.Sprintf(
+		"[output collapsed: 100 char(s) omitted; showing first %d and last %d char(s)]",
+		shellOutputPreviewMaxChars-shellOutputPreviewTailChars,
+		shellOutputPreviewTailChars,
+	)
+	for _, want := range []string{
+		">> shell output [1 line(s), collapsed] ",
+		marker,
+		strings.Repeat("x", 80),
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected long single-line shell output to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
+func TestShellCollapsesVeryLongUnicodeOutputWithoutSplittingUTF8(t *testing.T) {
+	ui := UI{color: false}
+	body := strings.Repeat("가", shellOutputPreviewMaxChars+100)
+
+	rendered := ui.shell(body)
+	if !utf8.ValidString(rendered) {
+		t.Fatalf("expected collapsed shell output to remain valid UTF-8, got %q", rendered)
+	}
+	if strings.Contains(rendered, "\uFFFD") {
+		t.Fatalf("expected collapsed shell output to avoid replacement characters, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "[output collapsed: 100 char(s) omitted;") {
+		t.Fatalf("expected collapsed shell output marker, got %q", rendered)
 	}
 }
 

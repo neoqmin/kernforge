@@ -5968,8 +5968,12 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 			}
 			return fmt.Sprintf(localizedText(cfg, "Verification command skipped: %s", "검증 명령 생략됨: %s"), snippet)
 		}
-		if snippet == "" {
+		if snippet == "" || runShellDisplayTextRepresentsNoOutput(out) {
 			return localizedText(cfg, "run_shell completed with no output.", "shell 완료: 출력 없음.")
+		}
+		lineCount := countNonEmptyLines(out)
+		if lineCount > 0 {
+			return fmt.Sprintf(localizedText(cfg, "run_shell completed (%d line(s)): %s", "shell 완료 (%d줄): %s"), lineCount, snippet)
 		}
 		return fmt.Sprintf(localizedText(cfg, "run_shell completed: %s", "shell 완료: %s"), snippet)
 	case "run_shell_background":
@@ -6035,7 +6039,7 @@ func summarizeToolFailure(cfg Config, call ToolCall, err error) string {
 
 func countNonEmptyLines(text string) int {
 	count := 0
-	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+	for _, line := range strings.Split(normalizeBlockLineEndings(text), "\n") {
 		if strings.TrimSpace(line) != "" {
 			count++
 		}

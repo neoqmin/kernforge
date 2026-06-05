@@ -782,6 +782,7 @@ func (rt *runtimeState) runREPL() error {
 	for {
 		nextTurn := rt.promptTurn + 1
 		rt.printTurnSeparator(nextTurn)
+		rt.printOperatorFooter()
 		input, err := rt.readInput(rt.ui.prompt(rt.session.Provider, rt.session.Model, rt.mainPromptReasoningEffort()))
 		if err != nil {
 			if errors.Is(err, ErrPromptCanceled) {
@@ -877,6 +878,42 @@ func (rt *runtimeState) runAgentReplyWithExistingCancel(ctx context.Context, inp
 func (rt *runtimeState) printTurnSeparator(turn int) {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.turnSeparator(turn, rt.session.Provider, rt.session.Model))
+}
+
+func (rt *runtimeState) printOperatorFooter() {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	line := rt.operatorFooterLine()
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	fmt.Fprintln(rt.writer, line)
+}
+
+func (rt *runtimeState) operatorFooterLine() string {
+	if rt == nil {
+		return ""
+	}
+	ledger := rt.runtimeGateLedgerForStatus(runtimeGateActionFinalAnswer)
+	ledger.Normalize()
+	items := []string{
+		rt.ui.statusPill("cwd", statusOverviewCWD(rt), "info"),
+		rt.ui.statusPill("provider", statusOverviewProvider(rt), "info"),
+		rt.ui.statusPill("gate", statusOverviewGateLabel(ledger), statusOverviewGateTone(ledger.Status)),
+		rt.ui.statusPill("perm", statusOverviewPermission(rt), statusOverviewPermissionTone(rt)),
+		rt.ui.statusPill("mcp", statusOverviewMCP(rt), statusOverviewMCPTone(rt)),
+		rt.ui.statusPill("skills", fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), "info"),
+		rt.ui.statusPill("verify", statusOverviewVerification(rt), statusOverviewVerificationTone(rt)),
+		rt.ui.statusPill("memory", fmt.Sprintf("%d", rt.persistentMemoryCount()), "info"),
+	}
+	if warnings := statusOverviewWarningCount(rt); warnings > 0 {
+		items = append(items, rt.ui.statusPill("warn", fmt.Sprintf("%d", warnings), "warn"))
+	}
+	if rt.clientErr != nil {
+		items = append(items, rt.ui.statusPill("route", "provider_error", "error"))
+	}
+	return rt.ui.dim("status ") + rt.ui.summaryLine(items...)
 }
 
 func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
@@ -2231,11 +2268,13 @@ func (rt *runtimeState) runShell(command string) error {
 	if handled, err := rt.runBuiltinShell(trimmed); handled {
 		return err
 	}
-	out, err := NewRunShellTool(rt.workspace).Execute(context.Background(), map[string]any{
+	result, err := NewRunShellTool(rt.workspace).ExecuteDetailed(context.Background(), map[string]any{
 		"command": trimmed,
 	})
+	out := result.DisplayText
+	rt.printDirectShellSummary(trimmed, out, result.Meta, err)
 	if strings.TrimSpace(out) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.shell(out))
+		fmt.Fprintln(rt.writer, rt.ui.shellWithMeta(out, directShellOutputMeta(result.Meta, err)...))
 	}
 	rt.noteLocalShellCommand(trimmed, out, err)
 	return err
@@ -2250,14 +2289,108 @@ func (rt *runtimeState) runBuiltinShell(command string) (bool, error) {
 		rt.redrawScreen()
 		return true, nil
 	case lower == "ls" || strings.HasPrefix(lower, "ls "):
-		return true, rt.listDirectory(strings.TrimSpace(command[2:]))
+		return true, rt.listDirectory(command, strings.TrimSpace(command[2:]))
 	case lower == "dir" || strings.HasPrefix(lower, "dir "):
-		return true, rt.listDirectory(strings.TrimSpace(command[3:]))
+		return true, rt.listDirectory(command, strings.TrimSpace(command[3:]))
 	case lower == "pwd":
+		rt.printDirectShellSummary(command, rt.workspace.Root, nil, nil)
 		fmt.Fprintln(rt.writer, rt.ui.shell(rt.workspace.Root))
 		return true, nil
 	}
 	return false, nil
+}
+
+func (rt *runtimeState) printDirectShellSummary(command string, output string, meta map[string]any, err error) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	summary := directShellResultSummary(command, output, meta, err)
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.activityLine("shell", summary))
+}
+
+func directShellResultSummary(command string, output string, meta map[string]any, err error) string {
+	status := "ok"
+	if err != nil {
+		status = "failed"
+	}
+	parts := []string{status}
+	if exitCode, ok := directShellMetaExitCode(meta, err); ok {
+		parts = append(parts, fmt.Sprintf("exit=%d", exitCode))
+		if exitCode != 0 {
+			status = "failed"
+			parts[0] = status
+		}
+	}
+	if duration := directShellMetaDuration(meta); duration != "" {
+		parts = append(parts, duration)
+	}
+	if runShellDisplayTextRepresentsNoOutput(output) {
+		parts = append(parts, "no output")
+	} else if lineCount := countBlockLines(output); lineCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d line(s)", lineCount))
+	}
+	if command := directShellCommandPreview(command); command != "" {
+		parts = append(parts, command)
+	}
+	return strings.Join(parts, "  ")
+}
+
+func directShellOutputMeta(meta map[string]any, err error) []string {
+	items := []string{}
+	if exitCode, ok := directShellMetaExitCode(meta, err); ok {
+		items = append(items, fmt.Sprintf("exit=%d", exitCode))
+	} else if err != nil {
+		items = append(items, "failed")
+	}
+	if duration := directShellMetaDuration(meta); duration != "" {
+		items = append(items, duration)
+	}
+	return items
+}
+
+func directShellMetaExitCode(meta map[string]any, err error) (int, bool) {
+	if meta != nil {
+		switch value := meta["exit_code"].(type) {
+		case int:
+			return value, true
+		case int64:
+			return int(value), true
+		case float64:
+			return int(value), true
+		}
+	}
+	return runShellExitCode(err)
+}
+
+func directShellMetaDuration(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	seconds, ok := meta["wall_time_seconds"].(float64)
+	if !ok || seconds < 0 {
+		return ""
+	}
+	duration := time.Duration(seconds * float64(time.Second))
+	if duration < time.Second {
+		milliseconds := duration.Milliseconds()
+		if milliseconds <= 0 && seconds > 0 {
+			milliseconds = 1
+		}
+		return fmt.Sprintf("%dms", milliseconds)
+	}
+	return formatProgressElapsed(duration)
+}
+
+func directShellCommandPreview(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.TrimPrefix(trimmed, "!")
+	return "!" + truncateStatusSnippet(trimmed, 72)
 }
 
 func (rt *runtimeState) changeDirectory(pathArg string) error {
@@ -2289,7 +2422,7 @@ func (rt *runtimeState) changeDirectory(pathArg string) error {
 	return nil
 }
 
-func (rt *runtimeState) listDirectory(pathArg string) error {
+func (rt *runtimeState) listDirectory(command string, pathArg string) error {
 	target := pathArg
 	if strings.TrimSpace(target) == "" {
 		target = "."
@@ -2354,7 +2487,9 @@ func (rt *runtimeState) listDirectory(pathArg string) error {
 	for _, item := range rows {
 		lines = append(lines, fmt.Sprintf("%-5s %-16s %12s %s", item.kind, item.modified, item.size, item.name))
 	}
-	fmt.Fprintln(rt.writer, rt.ui.shell(strings.Join(lines, "\n")))
+	out := strings.Join(lines, "\n")
+	rt.printDirectShellSummary(command, out, nil, nil)
+	fmt.Fprintln(rt.writer, rt.ui.shell(out))
 	return nil
 }
 
@@ -6486,6 +6621,264 @@ func (rt *runtimeState) printKVGroup(title string, items ...uiKV) {
 	}
 }
 
+func (rt *runtimeState) printStatusOverview(action string) {
+	if rt == nil {
+		return
+	}
+	ledger := rt.runtimeGateLedgerForStatus(action)
+	ledger.Normalize()
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Overview"))
+	fmt.Fprintln(rt.writer, rt.ui.summaryLine(
+		rt.ui.statusPill("gate", statusOverviewGateLabel(ledger), statusOverviewGateTone(ledger.Status)),
+		rt.ui.statusPill("provider", statusOverviewProvider(rt), "info"),
+		rt.ui.statusPill("permission", statusOverviewPermission(rt), statusOverviewPermissionTone(rt)),
+		rt.ui.statusPill("progress", configProgressDisplay(rt.cfg), "info"),
+	))
+	fmt.Fprintln(rt.writer, rt.ui.summaryLine(
+		rt.ui.statusPill("mcp", statusOverviewMCP(rt), statusOverviewMCPTone(rt)),
+		rt.ui.statusPill("skills", fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), "info"),
+		rt.ui.statusPill("verify", statusOverviewVerification(rt), statusOverviewVerificationTone(rt)),
+		rt.ui.statusPill("memory", fmt.Sprintf("%d", rt.persistentMemoryCount()), "info"),
+	))
+	if next := runtimeGatePrimaryNextCommandLine(ledger); next != "" {
+		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", next))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", "/status detail for lifecycle evidence, /provider status for live provider details."))
+	}
+	if warnings := statusOverviewWarningCount(rt); warnings > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf("%d extension warning(s); see Extensions below.", warnings)))
+	}
+	if rt.clientErr != nil {
+		fmt.Fprintln(rt.writer, rt.ui.errorLine("provider error: "+rt.clientErr.Error()))
+	}
+}
+
+func statusOverviewGateLabel(ledger RuntimeGateLedger) string {
+	if runtimeGateLedgerEmpty(ledger) {
+		return "unknown"
+	}
+	ledger.Normalize()
+	label := valueOrDefault(ledger.Status, runtimeGateStatusReady)
+	if len(ledger.Blockers) > 0 {
+		label += fmt.Sprintf("/%d blockers", len(ledger.Blockers))
+	} else if len(ledger.Warnings) > 0 {
+		label += fmt.Sprintf("/%d warnings", len(ledger.Warnings))
+	}
+	return label
+}
+
+func statusOverviewGateTone(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case runtimeGateStatusReady:
+		return "ready"
+	case runtimeGateStatusNeedsReview:
+		return "warn"
+	case runtimeGateStatusBlocked:
+		return "blocked"
+	default:
+		return ""
+	}
+}
+
+func statusOverviewCWD(rt *runtimeState) string {
+	if rt == nil {
+		return "unknown"
+	}
+	root := ""
+	if rt.session != nil {
+		root = strings.TrimSpace(workspaceEffectiveActiveRoot(rt.workspace, rt.session))
+		if root == "" {
+			root = strings.TrimSpace(rt.session.WorkingDir)
+		}
+	}
+	if root == "" {
+		root = strings.TrimSpace(rt.workspace.Root)
+	}
+	if root == "" {
+		return "unset"
+	}
+	base := strings.TrimSpace(filepath.Base(filepath.Clean(root)))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return truncateStatusSnippet(root, 24)
+	}
+	return truncateStatusSnippet(base, 24)
+}
+
+func statusOverviewProvider(rt *runtimeState) string {
+	if rt == nil {
+		return "unknown"
+	}
+	provider := ""
+	model := ""
+	if rt.session != nil {
+		provider = providerUserLabel(rt.session.Provider)
+		model = strings.TrimSpace(rt.session.Model)
+	}
+	if provider == "" {
+		provider = providerUserLabel(rt.cfg.Provider)
+	}
+	if model == "" {
+		model = strings.TrimSpace(rt.cfg.Model)
+	}
+	return statusOverviewProviderLabel(provider, model, 42)
+}
+
+func statusOverviewProviderLabel(provider string, model string, limit int) string {
+	provider = strings.Join(strings.Fields(strings.TrimSpace(provider)), " ")
+	model = strings.Join(strings.Fields(strings.TrimSpace(model)), " ")
+	if limit <= 0 {
+		limit = 42
+	}
+	switch {
+	case provider != "" && model != "":
+		providerLimit := 16
+		if limit < 32 {
+			providerLimit = 12
+		}
+		compactProvider := truncateStatusSnippet(provider, providerLimit)
+		modelLimit := limit - visibleLen(compactProvider) - 1
+		if modelLimit < 12 {
+			modelLimit = 12
+		}
+		return compactProvider + "/" + truncateDisplayTextMiddle(model, modelLimit)
+	case provider != "":
+		return truncateStatusSnippet(provider, limit)
+	case model != "":
+		return truncateDisplayTextMiddle(model, limit)
+	default:
+		return "unset"
+	}
+}
+
+func statusOverviewPermission(rt *runtimeState) string {
+	if rt == nil {
+		return "unknown"
+	}
+	mode := ""
+	if rt.perms != nil {
+		mode = string(rt.perms.Mode())
+	}
+	if mode == "" && rt.session != nil {
+		mode = strings.TrimSpace(rt.session.PermissionMode)
+	}
+	if mode == "" {
+		mode = strings.TrimSpace(rt.cfg.PermissionMode)
+	}
+	if profile := activePermissionProfileIDForModeString(mode); profile != "" {
+		return strings.TrimPrefix(profile, ":")
+	}
+	return valueOrDefault(mode, "default")
+}
+
+func statusOverviewPermissionTone(rt *runtimeState) string {
+	if rt == nil || rt.perms == nil {
+		return ""
+	}
+	switch rt.perms.Mode() {
+	case ModeBypass:
+		return "warn"
+	case ModePlan:
+		return "success"
+	default:
+		return "info"
+	}
+}
+
+func statusOverviewMCP(rt *runtimeState) string {
+	total, connected, failed := statusOverviewMCPCounts(rt)
+	if total == 0 {
+		return "0"
+	}
+	if failed > 0 {
+		return fmt.Sprintf("%d/%d ok %d fail", connected, total, failed)
+	}
+	return fmt.Sprintf("%d/%d ok", connected, total)
+}
+
+func statusOverviewMCPTone(rt *runtimeState) string {
+	total, _, failed := statusOverviewMCPCounts(rt)
+	if failed > 0 {
+		return "warn"
+	}
+	if total > 0 {
+		return "success"
+	}
+	return ""
+}
+
+func statusOverviewMCPCounts(rt *runtimeState) (int, int, int) {
+	if rt == nil {
+		return 0, 0, 0
+	}
+	statuses := rt.mcpStatus()
+	total := len(statuses)
+	connected := 0
+	failed := 0
+	for _, status := range statuses {
+		if strings.TrimSpace(status.Error) != "" {
+			failed++
+			continue
+		}
+		connected++
+	}
+	return total, connected, failed
+}
+
+func statusOverviewSkillCount(rt *runtimeState) int {
+	if rt == nil {
+		return 0
+	}
+	return rt.skills.Count()
+}
+
+func statusOverviewEnabledSkills(rt *runtimeState) int {
+	if rt == nil {
+		return 0
+	}
+	return rt.skills.EnabledCount()
+}
+
+func statusOverviewVerification(rt *runtimeState) string {
+	if rt == nil || rt.session == nil || rt.session.LastVerification == nil {
+		return "none"
+	}
+	report := rt.session.LastVerification
+	switch {
+	case report.HasFailures():
+		return "failed"
+	case report.WasSkipped():
+		return "skipped"
+	case report.HasPassedStep():
+		return "passed"
+	default:
+		return "unknown"
+	}
+}
+
+func statusOverviewVerificationTone(rt *runtimeState) string {
+	if rt == nil || rt.session == nil || rt.session.LastVerification == nil {
+		return ""
+	}
+	report := rt.session.LastVerification
+	switch {
+	case report.HasFailures():
+		return "error"
+	case report.WasSkipped():
+		return "warn"
+	case report.HasPassedStep():
+		return "success"
+	default:
+		return ""
+	}
+}
+
+func statusOverviewWarningCount(rt *runtimeState) int {
+	if rt == nil {
+		return 0
+	}
+	return len(rt.skillWarns) + len(rt.mcpWarns) + len(rt.hookWarns)
+}
+
 var webResearchEnvKeys = []string{
 	"TAVILY_API_KEY",
 	"BRAVE_SEARCH_API_KEY",
@@ -6606,6 +6999,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		} else {
 			fmt.Fprintln(rt.writer, rt.ui.hintLine("Current session and runtime state. Use /status detail for lifecycle timeline evidence and /config for effective settings."))
 		}
+		fmt.Fprintln(rt.writer)
+		rt.printStatusOverview(runtimeGateActionFinalAnswer)
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Connection",
 			kv("version", currentVersion()),
@@ -6748,9 +7143,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_prompts", fmt.Sprintf("%d", rt.mcpPromptCount())))
 		for _, warning := range append(append(append([]string(nil), rt.skillWarns...), rt.mcpWarns...), rt.hookWarns...) {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(warning))
-		}
-		if rt.clientErr != nil {
-			fmt.Fprintln(rt.writer, rt.ui.errorLine("provider error: "+rt.clientErr.Error()))
 		}
 	case "version":
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Version: "+currentVersion()))
