@@ -47,6 +47,184 @@ func TestGoalVerificationCadenceHelpers(t *testing.T) {
 	}
 }
 
+func TestBuildGoalImplementationPromptExecutesLoadedObjective(t *testing.T) {
+	prompt := buildGoalImplementationPrompt(GoalState{
+		ID:        "goal-test",
+		Objective: "Goal: Fix /goal execution regressions end to end.",
+	}, 1)
+	for _, want := range []string{
+		"If this goal was loaded from a prompt file, the file contents are already the active objective to execute.",
+		"Do not satisfy an active /goal run by creating another goal-prompt document",
+		"implement that behavior directly",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected implementation prompt to contain %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestSkippedGoalReviewerReplyByConsentNamesModelReviewStatus(t *testing.T) {
+	reply := skippedGoalReviewerReplyByConsent("Autonomous goal independent review pass", ModelReviewConsentDecision{
+		Allowed:       false,
+		Policy:        modelReviewConsentAsk,
+		ConsentSource: "user",
+		SkipReason:    modelReviewSkipByUser,
+	})
+	for _, want := range []string{
+		"model_review_status=skipped_by_user",
+		"consent_source=user",
+		"No reviewer model request was sent",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected skipped reviewer reply to contain %q, got %q", want, reply)
+		}
+	}
+	decision := parseGoalReviewDecision(reply)
+	if decision.NeedsRevision {
+		t.Fatalf("plain skipped model review should not start a repair loop, got %#v from %q", decision, reply)
+	}
+}
+
+func TestGoalReviewerOriginalProposalFromPromptExtractsImplementationReply(t *testing.T) {
+	prompt := strings.Join([]string{
+		"Final semantic goal review for autonomous goal goal-test.",
+		"",
+		"Iteration evidence:",
+		"- Implementation reply:",
+		"  Changed cmd/kernforge/goals.go and added focused tests.",
+		"",
+		"Workspace review evidence:",
+		"  diff --git a/file b/file",
+	}, "\n")
+	got := goalReviewerOriginalProposalFromPrompt(prompt)
+	if !strings.Contains(got, "Changed cmd/kernforge/goals.go") {
+		t.Fatalf("expected implementation reply to be captured, got %q", got)
+	}
+	if strings.Contains(got, "Workspace review evidence") {
+		t.Fatalf("proposal capture should stop before review wrapper evidence, got %q", got)
+	}
+}
+
+func TestRepeatedGoalVerificationReportSkipsWhenPatchScopeDidNotChange(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		GeneratedAt: time.Now(),
+		Trigger:     "manual",
+		Mode:        VerificationAdaptive,
+		Workspace:   root,
+		ChangedPaths: []string{
+			"cmd/kernforge/goals.go",
+		},
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.vcxproj",
+			Command:     "msbuild demo.vcxproj",
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output:      "main.cpp(10,5): error C2065: 'x': undeclared identifier",
+		}},
+	}
+	rt := &runtimeState{
+		ui:      NewUI(),
+		writer:  &bytes.Buffer{},
+		session: session,
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+	goal := GoalState{
+		ID:                   "goal-test",
+		Iteration:            1,
+		RepeatedFailureCount: 1,
+		LastFailureSignature: "Verification failed: compile_error",
+		LastProgress: &GoalProgressState{
+			ChangedFiles:     []string{"cmd/kernforge/goals.go"},
+			FailureSignature: "Verification failed: compile_error",
+		},
+	}
+	report, ok := rt.repeatedGoalVerificationReport(goal, []string{
+		"cmd/kernforge/goals.go",
+		".kernforge/reviews/review.md",
+		"x64/Debug/build.log",
+	})
+	if !ok {
+		t.Fatalf("expected repeated verification guard report")
+	}
+	if !report.HasFailures() || report.Steps[0].FailureKind != "repeated_failure" {
+		t.Fatalf("expected synthetic repeated failure blocker, got %#v", report)
+	}
+	if strings.Contains(strings.Join(report.ChangedPaths, ","), ".kernforge") || strings.Contains(strings.Join(report.ChangedPaths, ","), "x64") {
+		t.Fatalf("generated paths should be filtered from repeated verification report, got %#v", report.ChangedPaths)
+	}
+}
+
+type goalStreamingProviderClient struct{}
+
+func (goalStreamingProviderClient) Name() string {
+	return "goal-streaming"
+}
+
+func (goalStreamingProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	if req.OnTextDelta != nil {
+		req.OnTextDelta("streamed goal body")
+	}
+	return ChatResponse{Message: Message{Role: "assistant", Text: "goal implementation complete"}}, nil
+}
+
+func TestGoalAgentReplySuppressesAssistantStreaming(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	var deltaCalled bool
+	var assistantCalled bool
+	var persistentCalled bool
+	rt := &runtimeState{
+		cfg:       cfg,
+		writer:    &bytes.Buffer{},
+		ui:        NewUI(),
+		session:   session,
+		store:     store,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		agent: &Agent{
+			Config:    cfg,
+			Client:    goalStreamingProviderClient{},
+			Workspace: Workspace{BaseRoot: root, Root: root},
+			Session:   session,
+			Store:     store,
+			EmitAssistantDelta: func(text string) {
+				_ = text
+				deltaCalled = true
+			},
+			EmitAssistant: func(text string) {
+				_ = text
+				assistantCalled = true
+			},
+			EmitAssistantPersistent: func(text string) {
+				_ = text
+				persistentCalled = true
+			},
+		},
+	}
+	reply, err := rt.runGoalAgentReply(context.Background(), "Autonomous goal iteration 1.")
+	if err != nil {
+		t.Fatalf("runGoalAgentReply: %v", err)
+	}
+	if reply != "goal implementation complete" {
+		t.Fatalf("expected goal reply to be returned, got %q", reply)
+	}
+	if deltaCalled || assistantCalled || persistentCalled {
+		t.Fatalf("goal agent reply should suppress assistant streaming, delta=%v assistant=%v persistent=%v", deltaCalled, assistantCalled, persistentCalled)
+	}
+	if rt.agent.EmitAssistantDelta == nil || rt.agent.EmitAssistant == nil || rt.agent.EmitAssistantPersistent == nil {
+		t.Fatalf("goal agent reply should restore assistant emitters")
+	}
+}
+
 func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
@@ -669,7 +847,7 @@ func TestGoalSemanticReviewerConsentDeclineSkipsModelRequest(t *testing.T) {
 	if len(reviewer.requests) != 0 {
 		t.Fatalf("declined goal semantic consent must not call reviewer, got %d request(s)", len(reviewer.requests))
 	}
-	if !strings.HasPrefix(reply, "NEEDS_REVISION: semantic goal review skipped") || !strings.Contains(reply, modelReviewSkipNoInteractiveConsent) {
+	if !strings.HasPrefix(reply, "NEEDS_REVISION: model_review_status="+modelReviewSkipNoInteractiveConsent) || !strings.Contains(reply, "Semantic goal review skipped") {
 		t.Fatalf("expected conservative skipped semantic reply, got %q", reply)
 	}
 }

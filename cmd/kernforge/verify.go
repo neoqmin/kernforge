@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type VerificationStatus string
@@ -43,6 +44,7 @@ type VerificationStep struct {
 	Status            VerificationStatus `json:"status"`
 	FailureKind       string             `json:"failure_kind,omitempty"`
 	Hint              string             `json:"hint,omitempty"`
+	FirstError        string             `json:"first_error,omitempty"`
 	Output            string             `json:"output,omitempty"`
 	DurationMs        int64              `json:"duration_ms,omitempty"`
 	PlannerPriority   int                `json:"-"`
@@ -1214,8 +1216,7 @@ func collectVerificationChangedPaths(root string, sess *Session) []string {
 	for path := range paths {
 		out = append(out, path)
 	}
-	sort.Strings(out)
-	return out
+	return filterPatchScopeChangedPaths(out)
 }
 
 func collectAutomaticVerificationChangedPaths(cfg Config, root string, sess *Session) []string {
@@ -1233,7 +1234,7 @@ func collectAutomaticVerificationChangedPaths(cfg Config, root string, sess *Ses
 func filterCodeLikePaths(paths []string) []string {
 	var out []string
 	for _, path := range paths {
-		if isCodeLikePath(path) {
+		if !pathLooksGeneratedRuntimeOrBuildArtifact(path) && isCodeLikePath(path) {
 			out = append(out, path)
 		}
 	}
@@ -1429,10 +1430,7 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 		out, err := cmd.CombinedOutput()
 		cancel()
 		step.DurationMs = time.Since(start).Milliseconds()
-		text := strings.TrimSpace(string(out))
-		if len(text) > 5000 {
-			text = text[:5000] + "\n... (truncated)"
-		}
+		text := truncateVerificationOutput(verificationOutputText(out), 5000)
 		step.Output = text
 		if runCtx.Err() == context.DeadlineExceeded {
 			step.Status = VerificationFailed
@@ -1451,6 +1449,7 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 			}
 		}
 		if step.Status == VerificationFailed {
+			step.FirstError = extractVerificationFirstError(step.Output)
 			step.FailureKind, step.Hint = classifyVerificationFailure(*step)
 		}
 		if step.Status == VerificationFailed {
@@ -1608,6 +1607,9 @@ func (r VerificationReport) FailureSummary() string {
 		}
 		if strings.TrimSpace(step.FailureKind) != "" {
 			line += " [" + step.FailureKind + "]"
+		}
+		if strings.TrimSpace(step.FirstError) != "" {
+			line += ": " + clampVerificationLine(step.FirstError, 300)
 		}
 		if strings.TrimSpace(step.Hint) != "" {
 			line += ": " + step.Hint
@@ -1820,6 +1822,9 @@ func (r VerificationReport) RenderTerminal(ui UI) string {
 		if step.Status == VerificationFailed && strings.TrimSpace(step.Hint) != "" {
 			lines = append(lines, ui.progressLine(ui.warn("hint: "+strings.TrimSpace(step.Hint))))
 		}
+		if step.Status == VerificationFailed && strings.TrimSpace(step.FirstError) != "" {
+			lines = append(lines, ui.progressLine(ui.warn("first error: "+clampVerificationLine(step.FirstError, 500))))
+		}
 
 		output := strings.TrimSpace(step.Output)
 		if output == "" {
@@ -1853,12 +1858,85 @@ func (r VerificationReport) RenderShort() string {
 func truncateVerificationBlock(text string, maxLines int) string {
 	normalized := strings.ReplaceAll(text, "\r\n", "\n")
 	lines := strings.Split(strings.TrimSpace(normalized), "\n")
+	for i := range lines {
+		lines[i] = clampVerificationLine(lines[i], 900)
+	}
 	if maxLines <= 0 || len(lines) <= maxLines {
 		return strings.Join(lines, "\n")
 	}
 	trimmed := append([]string(nil), lines[:maxLines]...)
 	trimmed = append(trimmed, fmt.Sprintf("... (%d more line(s))", len(lines)-maxLines))
 	return strings.Join(trimmed, "\n")
+}
+
+func verificationOutputText(out []byte) string {
+	out = bytes.TrimPrefix(out, []byte{0xef, 0xbb, 0xbf})
+	if len(out) == 0 {
+		return ""
+	}
+	if utf8.Valid(out) {
+		return string(out)
+	}
+	if decoded := strings.TrimSpace(decodeVerificationOutputBytes(out)); decoded != "" {
+		return decoded
+	}
+	return string(out)
+}
+
+func truncateVerificationOutput(text string, maxChars int) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if maxChars <= 0 || utf8.RuneCountInString(text) <= maxChars {
+		return text
+	}
+	return truncateTextByRunes(text, maxChars) + "\n... (truncated)"
+}
+
+func extractVerificationFirstError(output string) string {
+	lines := splitLines(output)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		switch {
+		case strings.Contains(lower, ": error "),
+			strings.Contains(lower, " fatal error "),
+			strings.Contains(lower, "fatal error c"),
+			strings.Contains(lower, "error msb"),
+			strings.Contains(lower, "error lnk"),
+			strings.Contains(lower, "undefined:"),
+			strings.Contains(lower, "cannot find package"),
+			strings.Contains(lower, "could not compile"):
+			return clampVerificationLine(trimmed, 700)
+		}
+	}
+	return ""
+}
+
+func clampVerificationLine(line string, maxChars int) string {
+	line = strings.TrimRight(line, "\r")
+	if maxChars <= 0 || utf8.RuneCountInString(line) <= maxChars {
+		return line
+	}
+	if maxChars < 16 {
+		return truncateTextByRunes(line, maxChars)
+	}
+	return truncateTextByRunes(line, maxChars-16) + " ... (truncated)"
+}
+
+func truncateTextByRunes(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	count := 0
+	for idx := range text {
+		if count == maxRunes {
+			return strings.TrimSpace(text[:idx])
+		}
+		count++
+	}
+	return strings.TrimSpace(text)
 }
 
 func indentBlock(text string, prefix string) string {

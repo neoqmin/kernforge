@@ -2910,9 +2910,29 @@ func TestHelpDetailClarifiesGoalRecordAndRunBoundary(t *testing.T) {
 		"/goal run latest",
 		"/goal start --run <objective>",
 		"Create the goal and immediately start the autonomous loop",
+		"adaptive verification with scheduled full cadence",
+		"repeated failing verification without new patch-scope edits",
 	} {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected goal help detail to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailClarifiesReviewConsentSkipStatus(t *testing.T) {
+	detail, ok := HelpDetail("review")
+	if !ok {
+		t.Fatalf("expected review help detail to resolve")
+	}
+	for _, needle := range []string{
+		"review.model_review_consent",
+		"model_review_status",
+		"skipped_by_user",
+		"skipped_no_interactive_consent",
+		"original user-visible main-model proposal/ref",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected review help detail to contain %q", needle)
 		}
 	}
 }

@@ -158,7 +158,7 @@ func (rt *runtimeState) buildCompletionAuditArtifact(root string, note string) C
 		ActiveGoalID:    auditSession.ActiveGoalID,
 		Objective:       completionAuditObjective(auditSession, note),
 	}
-	artifact.ChangedFiles = delegationChangedFiles(root)
+	artifact.ChangedFiles = filterPatchScopeChangedPaths(delegationChangedFiles(root))
 	artifact.OpenTasks = delegationOpenTasks(auditSession)
 	artifact.Worktrees = continuityWorktreeSummaries(auditSession)
 	if auditSession.LastVerification != nil {
@@ -520,7 +520,7 @@ func completionAuditEditLoop(session *Session, artifact *CompletionAuditArtifact
 	loop := latestCompletionAuditEditLoop(session)
 	if loop == nil {
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Edit loop is closed or not active",
+			Requirement: "Edit loop is not active",
 			Evidence:    "No edit loop state recorded.",
 			Status:      completionAuditStatusPassed,
 			Source:      "edit_loop",
@@ -529,20 +529,24 @@ func completionAuditEditLoop(session *Session, artifact *CompletionAuditArtifact
 	}
 	loop.Normalize()
 	status := completionAuditStatusPassed
+	requirement := "Edit loop is not active"
 	evidence := valueOrDefault(loop.Status, "unknown")
 	if !editLoopClosedStatus(loop.Status) {
 		status = completionAuditStatusBlocked
+		requirement = "Edit loop is still active"
 		evidence = "Active edit loop is still " + valueOrUnset(loop.Status)
 	} else if len(loop.RemainingRisks) > 0 {
 		status = completionAuditStatusWarning
+		requirement = "Edit loop has remaining risks"
 		evidence = "Remaining risks: " + strings.Join(limitStrings(loop.RemainingRisks, 4), " | ")
 	}
 	if strings.EqualFold(loop.VerificationStatus, string(VerificationFailed)) {
 		status = completionAuditStatusBlocked
+		requirement = "Edit loop verification failed"
 		evidence = "Edit loop verification failed: " + valueOrDefault(loop.VerificationSummary, loop.VerificationBundleID)
 	}
 	completionAuditAddItem(artifact, CompletionAuditItem{
-		Requirement: "Edit loop is closed or not active",
+		Requirement: requirement,
 		Evidence:    evidence,
 		Status:      status,
 		Source:      "edit_loop",
@@ -738,7 +742,7 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 	}
 	if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Code review is not required for accepted document artifact",
 			Evidence:    "Generated document artifact quality gate accepted this documentation-only change; code review is not required for this artifact turn.",
 			Status:      completionAuditStatusPassed,
 			Source:      "review",
@@ -766,7 +770,7 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 			evidence = "No common review run is recorded, but latest verification passed; run /review for an explicit typed gate before git writes."
 		}
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review is missing",
 			Evidence:    evidence,
 			Status:      status,
 			Source:      "review",
@@ -775,7 +779,7 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 	}
 	if strings.TrimSpace(review.SchemaVersion) != reviewSchemaVersion {
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review schema is unsupported",
 			Evidence:    "Latest review artifact has unsupported schema: " + valueOrUnset(review.SchemaVersion),
 			Status:      completionAuditStatusBlocked,
 			Source:      "review",
@@ -784,7 +788,7 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 	}
 	if review.Freshness.Stale {
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review is stale",
 			Evidence:    "Latest review is stale: " + valueOrDefault(review.Freshness.StaleReason, "fingerprint changed"),
 			Status:      completionAuditStatusBlocked,
 			Source:      "review",
@@ -793,7 +797,7 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 	}
 	if staleReason := completionAuditReviewFreshnessIssue(root, *review, artifact); staleReason != "" {
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review is stale",
 			Evidence:    "Latest review is stale: " + staleReason,
 			Status:      completionAuditStatusBlocked,
 			Source:      "review",
@@ -803,21 +807,21 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 	switch review.Gate.Verdict {
 	case reviewVerdictApproved:
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review has no blockers",
 			Evidence:    fmt.Sprintf("%s target=%s mode=%s", review.ID, review.Target, review.Mode),
 			Status:      completionAuditStatusPassed,
 			Source:      "review",
 		})
 	case reviewVerdictApprovedWithWarnings:
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review has warnings",
 			Evidence:    fmt.Sprintf("%s approved with warnings: %s", review.ID, strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", ")),
 			Status:      completionAuditStatusWarning,
 			Source:      "review",
 		})
 	default:
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest common review gate has no blockers",
+			Requirement: "Latest review has blockers",
 			Evidence:    fmt.Sprintf("%s verdict=%s blockers=%s", review.ID, review.Gate.Verdict, strings.Join(limitStrings(review.Gate.BlockingFindings, 6), ", ")),
 			Status:      completionAuditStatusBlocked,
 			Source:      "review",
@@ -874,16 +878,19 @@ func completionAuditRuntimeGate(root string, session *Session, artifact *Complet
 	ledger := buildRuntimeGateLedgerWithCompletionAudit(root, session, runtimeGateActionCompletionAudit, artifact.ID)
 	artifact.RuntimeGateLedger = &ledger
 	status := completionAuditStatusPassed
+	requirement := "Runtime gate ledger is blocker-free"
 	evidence := fmt.Sprintf("%s status=%s", ledger.ID, ledger.Status)
 	if len(ledger.Blockers) > 0 {
 		status = completionAuditStatusBlocked
+		requirement = "Runtime gate has blockers"
 		evidence = "Runtime gate blockers: " + strings.Join(limitStrings(ledger.Blockers, 4), " | ")
 	} else if len(ledger.Warnings) > 0 {
 		status = completionAuditStatusWarning
+		requirement = "Runtime gate has warnings"
 		evidence = "Runtime gate warnings: " + strings.Join(limitStrings(ledger.Warnings, 4), " | ")
 	}
 	completionAuditAddItem(artifact, CompletionAuditItem{
-		Requirement: "Runtime gate ledger is blocker-free",
+		Requirement: requirement,
 		Evidence:    evidence,
 		Status:      status,
 		Source:      "runtime_gate",
@@ -895,7 +902,7 @@ func normalizeCompletionAuditReviewPaths(paths []string) []string {
 	seen := map[string]bool{}
 	for _, path := range paths {
 		path = strings.TrimSpace(filepath.ToSlash(path))
-		if path == "" || shouldSkipMCPReviewFile(path) || seen[path] {
+		if path == "" || shouldSkipMCPReviewFile(path) || pathLooksGeneratedRuntimeOrBuildArtifact(path) || seen[path] {
 			continue
 		}
 		seen[path] = true

@@ -595,6 +595,71 @@ func TestVerificationReportSummaryLine(t *testing.T) {
 	}
 }
 
+func TestCollectVerificationChangedPathsFiltersGeneratedArtifacts(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	mustRunGit(t, root, "add", "main.go")
+	mustRunGit(t, root, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("modify main.go: %v", err)
+	}
+	for path, data := range map[string]string{
+		filepath.Join(root, ".kernforge", "reviews", "review.md"): "review\n",
+		filepath.Join(root, ".vs", "demo", "state.log"):           "state\n",
+		filepath.Join(root, "x64", "Debug", "build.log"):          "build\n",
+		filepath.Join(root, "x64", "Debug", "main.obj"):           "obj\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	changed := collectVerificationChangedPaths(root, nil)
+	if !containsString(changed, "main.go") {
+		t.Fatalf("expected source change in verification scope, got %#v", changed)
+	}
+	for _, forbidden := range []string{".kernforge", ".vs", "x64", "build.log", "main.obj"} {
+		if strings.Contains(strings.Join(changed, ","), forbidden) {
+			t.Fatalf("generated path %q should be filtered from verification scope, got %#v", forbidden, changed)
+		}
+	}
+}
+
+func TestExtractVerificationFirstErrorFromMSBuildOutput(t *testing.T) {
+	output := strings.Join([]string{
+		"Microsoft (R) Build Engine version 17.0.0",
+		`Source\Worker.cpp(42,13): error C2065: 'token': undeclared identifier [Worker.vcxproj]`,
+		"Done Building Project - FAILED.",
+	}, "\n")
+	got := extractVerificationFirstError(output)
+	if !strings.Contains(got, "Worker.cpp(42,13)") || !strings.Contains(got, "error C2065") {
+		t.Fatalf("expected first actionable MSBuild error, got %q", got)
+	}
+	report := VerificationReport{Steps: []VerificationStep{{
+		Label:       "msbuild Worker.vcxproj",
+		Status:      VerificationFailed,
+		FailureKind: "compile_error",
+		FirstError:  got,
+		Hint:        "Fix the reported compiler errors first.",
+	}}}
+	summary := report.FailureSummary()
+	if !strings.Contains(summary, "error C2065") || !strings.Contains(summary, "Fix the reported compiler errors first.") {
+		t.Fatalf("expected first error and hint in failure summary, got %q", summary)
+	}
+}
+
+func TestTruncateVerificationBlockClampsLongLines(t *testing.T) {
+	longLine := strings.Repeat("x", 1200)
+	got := truncateVerificationBlock(longLine+"\nsecond", 4)
+	if len(strings.Split(got, "\n")[0]) > 950 || !strings.Contains(got, "truncated") {
+		t.Fatalf("expected long line to be clamped, got %q", got)
+	}
+}
+
 func TestClassifyVerificationFailureRecognizesCommonGoFailures(t *testing.T) {
 	kind, hint := classifyVerificationFailure(VerificationStep{
 		Label:   "go test ./...",

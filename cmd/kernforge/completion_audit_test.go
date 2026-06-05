@@ -129,6 +129,54 @@ func TestCompletionAuditCommandBlocksMissingArtifactAndFailedVerification(t *tes
 	}
 }
 
+func TestCompletionAuditUsesDirectBlockerLabels(t *testing.T) {
+	now := time.Now()
+	session := NewSession(t.TempDir(), "provider", "model", "", "default")
+	session.ActiveEditLoop = &EditLoopState{
+		ID:        "loop-1",
+		Goal:      "finish",
+		Status:    editLoopStatusActive,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	artifact := &CompletionAuditArtifact{}
+	completionAuditEditLoop(session, artifact)
+	item := completionAuditFindItem(artifact.Checklist, "edit_loop")
+	if item == nil {
+		t.Fatalf("expected edit loop audit item")
+	}
+	if item.Requirement != "Edit loop is still active" || item.Status != completionAuditStatusBlocked {
+		t.Fatalf("expected direct edit-loop blocker label, got %#v", item)
+	}
+
+	reviewArtifact := &CompletionAuditArtifact{ChangedFiles: []string{"cmd/kernforge/goals.go"}}
+	session.LastReviewRun = &ReviewRun{
+		SchemaVersion: reviewSchemaVersion,
+		ID:            "review-1",
+		Freshness: ReviewFreshness{
+			Stale:       true,
+			StaleReason: "fingerprint changed",
+		},
+	}
+	completionAuditReviewGate(t.TempDir(), session, reviewArtifact)
+	reviewItem := completionAuditFindItem(reviewArtifact.Checklist, "review")
+	if reviewItem == nil {
+		t.Fatalf("expected review audit item")
+	}
+	if reviewItem.Requirement != "Latest review is stale" || reviewItem.Status != completionAuditStatusBlocked {
+		t.Fatalf("expected direct stale-review blocker label, got %#v", reviewItem)
+	}
+}
+
+func completionAuditFindItem(items []CompletionAuditItem, source string) *CompletionAuditItem {
+	for i := range items {
+		if items[i].Source == source {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
 func TestCompletionAuditCommandPassesWhenArtifactsAndVerificationPass(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {

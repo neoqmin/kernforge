@@ -806,6 +806,12 @@ func renderReviewCLIResultCompact(cfg Config, run ReviewRun) string {
 		len(run.Gate.BlockingFindings),
 		len(run.Gate.WarningFindings),
 		noteCount)
+	if strings.TrimSpace(run.SkipReason) != "" {
+		fmt.Fprintf(&b, "- %s: model_review_status=%s; consent_source=%s; deterministic checks only\n",
+			reviewRunLocalizedText(cfg, run, "Model review", "모델 리뷰"),
+			run.SkipReason,
+			valueOrDefault(run.ConsentSource, "unknown"))
+	}
 	if strings.TrimSpace(run.Gate.Action) != "" {
 		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "게이트 액션"), run.Gate.Action)
 	}

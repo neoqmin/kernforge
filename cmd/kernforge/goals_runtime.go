@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -298,7 +299,12 @@ func (rt *runtimeState) goalVerificationStepDetail(iteration int) string {
 		fmt.Sprintf("adaptive 검증; 변경 파일 중심의 좁은 검증만 실행; 다음 전체 검증은 iteration %d; changed_paths=%d", next, changedCount))
 }
 
-func (rt *runtimeState) handleGoalVerifyCommandContext(ctx context.Context, iteration int) error {
+func (rt *runtimeState) handleGoalVerifyCommandContext(ctx context.Context, goal GoalState, iteration int) error {
+	changed := collectVerificationChangedPaths(rt.workspace.Root, rt.session)
+	if report, ok := rt.repeatedGoalVerificationReport(goal, changed); ok {
+		rt.recordGoalVerificationReport(ctx, report, changed)
+		return nil
+	}
 	if goalShouldRunFullVerification(iteration) {
 		return rt.handleVerifyCommandContext(ctx, "--full")
 	}
@@ -359,11 +365,69 @@ func (rt *runtimeState) handleGoalAdaptiveVerifyCommandContext(ctx context.Conte
 	} else {
 		report = executeVerificationSteps(ctx, rt.workspace, "manual", plan)
 	}
-	rt.session.LastVerification = &report
-	if rt.store != nil {
-		_ = rt.store.Save(rt.session)
+	rt.recordGoalVerificationReport(ctx, report, changed)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	if rt.verifyHistory != nil {
+	return nil
+}
+
+func (rt *runtimeState) repeatedGoalVerificationReport(goal GoalState, changed []string) (VerificationReport, bool) {
+	if rt == nil || rt.session == nil || rt.session.LastVerification == nil {
+		return VerificationReport{}, false
+	}
+	previous := *rt.session.LastVerification
+	if !previous.HasFailures() {
+		return VerificationReport{}, false
+	}
+	if goal.LastProgress == nil || goal.RepeatedFailureCount < 1 {
+		return VerificationReport{}, false
+	}
+	previousChanged := filterPatchScopeChangedPaths(goal.LastProgress.ChangedFiles)
+	currentChanged := filterPatchScopeChangedPaths(changed)
+	if !sameStringList(previousChanged, currentChanged) {
+		return VerificationReport{}, false
+	}
+	signature := strings.TrimSpace(goal.LastProgress.FailureSignature)
+	if signature == "" {
+		signature = strings.TrimSpace(goal.LastFailureSignature)
+	}
+	if signature == "" {
+		return VerificationReport{}, false
+	}
+	reason := fmt.Sprintf("Repeated verification skipped because no new patch-scope edits occurred after the previous failing verification signature: %s", compactPromptSection(signature, 240))
+	report := VerificationReport{
+		GeneratedAt:  time.Now(),
+		Trigger:      "manual",
+		Mode:         VerificationAdaptive,
+		Decision:     reason + " Repair the failure, record a waiver, or explicitly rerun verification after changing the patch scope.",
+		Workspace:    rt.workspace.Root,
+		ChangedPaths: append([]string(nil), currentChanged...),
+		Steps: []VerificationStep{{
+			Label:       "repeated verification guard",
+			Command:     goalVerificationCommandSummary(goal.Iteration + 1),
+			Scope:       strings.Join(currentChanged, ", "),
+			Stage:       "targeted",
+			Status:      VerificationFailed,
+			FailureKind: "repeated_failure",
+			Hint:        "Repair the previous verification failure, record a waiver, or explicitly rerun verification after a patch-scope edit.",
+			Output:      reason,
+		}},
+	}
+	return report, true
+}
+
+func (rt *runtimeState) recordGoalVerificationReport(ctx context.Context, report VerificationReport, changed []string) {
+	if rt == nil {
+		return
+	}
+	if rt.session != nil {
+		rt.session.LastVerification = &report
+		if rt.store != nil {
+			_ = rt.store.Save(rt.session)
+		}
+	}
+	if rt.verifyHistory != nil && rt.session != nil {
 		_ = rt.verifyHistory.Append(rt.session.ID, workspaceSnapshotRoot(rt.workspace), report)
 	}
 	_, _ = rt.workspace.Hook(ctx, HookPostVerification, HookPayload{
@@ -382,10 +446,22 @@ func (rt *runtimeState) handleGoalAdaptiveVerifyCommandContext(ctx context.Conte
 		lines = append(lines, "", handoff)
 	}
 	rt.printPersistentBlockWhileThinking(lines...)
-	if ctx.Err() != nil {
-		return ctx.Err()
+}
+
+func sameStringList(left []string, right []string) bool {
+	left = uniqueStrings(left)
+	right = uniqueStrings(right)
+	sort.Strings(left)
+	sort.Strings(right)
+	if len(left) != len(right) {
+		return false
 	}
-	return nil
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (GoalState, bool, error) {
@@ -495,7 +571,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 
 	rt.printGoalStep(iteration.Index, "verification", rt.goalVerificationStepDetail(iteration.Index))
 	verifyCommand := startGoalCommand(iteration.Index, "verify", goalVerificationCommandSummary(iteration.Index))
-	verifyErr := rt.handleGoalVerifyCommandContext(ctx, iteration.Index)
+	verifyErr := rt.handleGoalVerifyCommandContext(ctx, goal, iteration.Index)
 	verifyCommand.finish(statusForErr(verifyErr), verificationSummaryOrError(rt.session, verifyErr))
 	iteration.Commands = append(iteration.Commands, verifyCommand)
 	if isGoalCancellationError(verifyErr) {
@@ -646,7 +722,7 @@ func (rt *runtimeState) goalIterationGeneratedDocumentArtifactChangedPaths(root 
 		if err == nil {
 			reviewDiffs, _ := goalReviewCheckpointDiffs(diffs, 0)
 			if len(reviewDiffs) > 0 {
-				return checkpointDiffPaths(reviewDiffs, 256)
+				return filterPatchScopeChangedPaths(checkpointDiffPaths(reviewDiffs, 256))
 			}
 		}
 	}
@@ -655,7 +731,7 @@ func (rt *runtimeState) goalIterationGeneratedDocumentArtifactChangedPaths(root 
 			return paths
 		}
 	}
-	return delegationChangedFiles(root)
+	return filterPatchScopeChangedPaths(delegationChangedFiles(root))
 }
 
 func generatedDocumentArtifactGoalSemanticReview() GoalSemanticReview {
@@ -933,6 +1009,13 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 	if iteration.ReviewerFeedback != "" {
 		fmt.Fprintf(&b, "- Review feedback: %s\n", compactPromptSection(iteration.ReviewerFeedback, 500))
 	}
+	if iteration.ImplementReply != "" {
+		b.WriteString("- Implementation reply:\n")
+		for _, line := range splitLines(compactPromptSection(iteration.ImplementReply, 900)) {
+			fmt.Fprintf(&b, "  %s\n", line)
+		}
+		b.WriteString("\n")
+	}
 	if len(iteration.ChangedFiles) > 0 {
 		b.WriteString("- Changed files:\n")
 		for _, path := range limitStrings(iteration.ChangedFiles, 16) {
@@ -976,6 +1059,9 @@ func parseGoalReviewDecision(text string) goalReviewDecision {
 	case strings.HasPrefix(upper, "NEEDS_REVISION"), strings.HasPrefix(upper, "NEEDS REVISION"), strings.HasPrefix(upper, "REJECTED"):
 		decision.Verdict = "needs_revision"
 		decision.NeedsRevision = true
+	case strings.HasPrefix(upper, "SKIPPED"):
+		decision.Verdict = "skipped"
+		decision.NeedsRevision = strings.Contains(upper, "DETERMINISTIC_BLOCKERS:")
 	case containsAny(
 		strings.ToLower(trimmed),
 		"needs_revision",
@@ -1099,7 +1185,7 @@ func goalAuditStateFromArtifact(audit CompletionAuditArtifact) *GoalAuditState {
 }
 
 func (rt *runtimeState) evaluateGoalProgress(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration) GoalProgressState {
-	changed := delegationChangedFiles(workspaceSnapshotRoot(rt.workspace))
+	changed := filterPatchScopeChangedPaths(delegationChangedFiles(workspaceSnapshotRoot(rt.workspace)))
 	verification := strings.TrimSpace(iteration.Verification)
 	signals := []string{}
 	score := 0

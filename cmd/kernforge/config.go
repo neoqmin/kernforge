@@ -3485,8 +3485,11 @@ func HelpDetail(topic string) (string, bool) {
 
 /goal start --until-complete <objective>
 - Explicitly start Kernforge's autonomous goal loop after creating the goal.
-- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without user intervention.
-- Each loop iteration runs the agent, /verify --full, /session audit, final semantic review, and when needed /session recover execute-safe.
+- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without write, diff preview, shell, or git confirmation prompts.
+- Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y/N/a=auto-review for this session].
+- Each loop iteration runs the agent, adaptive verification with scheduled full cadence, /session audit, final semantic review, and when needed /session recover execute-safe.
+- Generated/runtime/build artifacts are filtered out of goal patch scope; repeated failing verification without new patch-scope edits records a blocker instead of rerunning the same command.
+- Verification summaries show the first actionable compiler/linker/test error in the terminal and keep full raw output in artifacts.
 
 /goal start --max-iterations N <objective>
 /goal start --time-budget 10m <objective>
@@ -4102,7 +4105,8 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 		return strings.TrimSpace(`
 Review commands all go through the common ReviewRun harness and write .kernforge/reviews/latest.json plus latest.md.
 Implicit automatic model-backed reviews obey review.model_review_consent: ask (default), always, or never.
-When an automatic review is skipped or blocked, review artifacts preserve the original user-visible main-model proposal when available.
+Skipped implicit reviews record model_review_status such as skipped_by_user or skipped_no_interactive_consent and do not send another reviewer model request.
+When an automatic review is skipped or blocked, review artifacts preserve the original user-visible main-model proposal/ref when available.
 
 /review change [diff-or-note]
 - Review the current workspace diff, a patch transaction, or supplied diff/code.

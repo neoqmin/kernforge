@@ -129,12 +129,14 @@ func (rt *runtimeState) printModelReviewConsentContext(req ModelReviewConsentReq
 func formatModelReviewConsentOriginalProposal(cfg Config, req ModelReviewConsentRequest) string {
 	ref := strings.TrimSpace(req.OriginalMainProposalRef)
 	proposal := strings.TrimSpace(req.OriginalMainProposal)
-	if ref == "" {
+	if ref == "" && proposal == "" {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString(localizedText(cfg, "Main model proposal awaiting review:", "리뷰 전 메인 모델 제안:"))
-	fmt.Fprintf(&b, "\n- %s: %s", localizedText(cfg, "artifact", "artifact"), filepath.ToSlash(ref))
+	if ref != "" {
+		fmt.Fprintf(&b, "\n- %s: %s", localizedText(cfg, "artifact", "artifact"), filepath.ToSlash(ref))
+	}
 	if proposal != "" {
 		preview := compactPromptSection(proposal, 2400)
 		if strings.TrimSpace(preview) != "" {
