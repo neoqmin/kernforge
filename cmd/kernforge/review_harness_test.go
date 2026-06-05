@@ -144,6 +144,226 @@ func TestReviewHarnessNoModelWritesTypedArtifact(t *testing.T) {
 	}
 }
 
+func TestImplicitModelReviewConsentDeclineSkipsReviewerRequest(t *testing.T) {
+	root := t.TempDir()
+	reviewConsentTestGitChange(t, root)
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("reviewer should not run")}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	rt := &runtimeState{
+		cfg:                             cfg,
+		writer:                          &bytes.Buffer{},
+		workspace:                       Workspace{BaseRoot: root, Root: root},
+		session:                         session,
+		interactive:                     false,
+		modelReviewConsentPromptEnabled: true,
+		agent: &Agent{
+			Config:    cfg,
+			Client:    reviewer,
+			Workspace: Workspace{BaseRoot: root, Root: root},
+			Session:   session,
+		},
+	}
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:        "post_change",
+		Target:         reviewTargetChange,
+		Request:        "review current change",
+		IncludeGitDiff: true,
+		AutoTriggered:  true,
+	})
+	if err != nil {
+		t.Fatalf("run review: %v", err)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("declined implicit consent must not send reviewer request, got %d", len(reviewer.requests))
+	}
+	if run.ModelReviewConsent != modelReviewConsentAsk || run.ConsentSource != "non_interactive" || run.SkipReason != modelReviewSkipNoInteractiveConsent {
+		t.Fatalf("expected non-interactive consent skip, got consent=%q source=%q skip=%q", run.ModelReviewConsent, run.ConsentSource, run.SkipReason)
+	}
+	if !run.Result.Degraded {
+		t.Fatalf("skipped implicit model review should be recorded as degraded metadata")
+	}
+}
+
+func TestBlockingReviewPreservesOriginalMainProposal(t *testing.T) {
+	root := t.TempDir()
+	reviewConsentTestGitChange(t, root)
+	originalProposal := "Original proposal: change main.cpp return value from 0 to 1."
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: proposed change misses the required guard",
+			"severity: high",
+			"category: correctness",
+			"path: main.cpp",
+			"title: missing guard",
+			"evidence: return value changes without the requested guard",
+			"required_fix: add the missing guard before changing behavior",
+		}, "\n")},
+	}}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	rt := &runtimeState{
+		cfg:       cfg,
+		writer:    &bytes.Buffer{},
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   session,
+		agent: &Agent{
+			Config:    cfg,
+			Client:    reviewer,
+			Workspace: Workspace{BaseRoot: root, Root: root},
+			Session:   session,
+		},
+	}
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:              "pre_write",
+		Target:               reviewTargetChange,
+		Request:              "review proposed edit",
+		IncludeGitDiff:       true,
+		AutoTriggered:        true,
+		OriginalMainProposal: originalProposal,
+	})
+	if err != nil {
+		t.Fatalf("run review: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected reviewer request when consent is always")
+	}
+	if run.Gate.Verdict == reviewVerdictApproved || run.Gate.Verdict == reviewVerdictApprovedWithWarnings {
+		t.Fatalf("expected blocking gate, got %#v", run.Gate)
+	}
+	if !strings.Contains(run.OriginalMainProposal, originalProposal) || strings.TrimSpace(run.OriginalMainProposalRef) == "" {
+		t.Fatalf("expected original proposal and ref, got proposal=%q ref=%q", run.OriginalMainProposal, run.OriginalMainProposalRef)
+	}
+	data, err := os.ReadFile(filepath.FromSlash(run.OriginalMainProposalRef))
+	if err != nil {
+		t.Fatalf("read original proposal artifact: %v", err)
+	}
+	if !strings.Contains(string(data), originalProposal) {
+		t.Fatalf("artifact did not preserve original proposal: %s", string(data))
+	}
+	rendered := renderReviewRunMarkdown(run)
+	feedback := formatPreWriteReviewFeedback(cfg, run)
+	if !strings.Contains(rendered, "Original Main Proposal") || !strings.Contains(feedback, "Original main-model proposal") {
+		t.Fatalf("expected rendered review and blocker feedback to expose original proposal, rendered=%q feedback=%q", rendered, feedback)
+	}
+}
+
+func TestAgentPreWriteConsentAskWithoutRuntimeSkipsReviewerAndAllowsPreview(t *testing.T) {
+	root := t.TempDir()
+	reviewConsentTestGitChange(t, root)
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("reviewer should not run")}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	agent := &Agent{
+		Config:         cfg,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+	}
+	diff := strings.Join([]string{
+		"diff --git a/main.cpp b/main.cpp",
+		"--- a/main.cpp",
+		"+++ b/main.cpp",
+		"@@ -1,4 +1,4 @@",
+		" int main()",
+		" {",
+		"-    return 0;",
+		"+    return 1;",
+		" }",
+	}, "\n")
+
+	err := agent.reviewProposedEdit(context.Background(), EditPreview{
+		Title:   "Modify main.cpp",
+		Preview: diff,
+		Paths:   []string{"main.cpp"},
+	})
+	if err != nil {
+		t.Fatalf("skipped pre-write model review should continue to preview/write approval, got error: %v", err)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("ask without runtime consent must not call pre-write reviewer, got %d request(s)", len(reviewer.requests))
+	}
+	if session.LastReviewRun == nil {
+		t.Fatalf("expected skipped pre-write review run to be recorded")
+	}
+	if session.LastReviewRun.SkipReason != modelReviewSkipNoInteractiveConsent {
+		t.Fatalf("expected no-interactive skip, got %#v", session.LastReviewRun)
+	}
+	if !strings.Contains(session.LastReviewRun.OriginalMainProposal, "Proposed diff:") || strings.TrimSpace(session.LastReviewRun.OriginalMainProposalRef) == "" {
+		t.Fatalf("expected original proposed diff to be preserved, got proposal=%q ref=%q", session.LastReviewRun.OriginalMainProposal, session.LastReviewRun.OriginalMainProposalRef)
+	}
+}
+
+func TestExplicitReviewRunsWithoutImplicitConsentPrompt(t *testing.T) {
+	root := t.TempDir()
+	reviewConsentTestGitChange(t, root)
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentNever
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("explicit review approved")}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	rt := &runtimeState{
+		cfg:                             cfg,
+		writer:                          &bytes.Buffer{},
+		workspace:                       Workspace{BaseRoot: root, Root: root},
+		session:                         session,
+		interactive:                     false,
+		modelReviewConsentPromptEnabled: true,
+		agent: &Agent{
+			Config:    cfg,
+			Client:    reviewer,
+			Workspace: Workspace{BaseRoot: root, Root: root},
+			Session:   session,
+		},
+	}
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:        "explicit_command",
+		Target:         reviewTargetChange,
+		Request:        "explicitly review current change",
+		IncludeGitDiff: true,
+	})
+	if err != nil {
+		t.Fatalf("run review: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("explicit review should send reviewer request without implicit consent prompt")
+	}
+	if run.ConsentSource != "explicit_review" || run.SkipReason != "" {
+		t.Fatalf("expected explicit review consent metadata, got source=%q skip=%q", run.ConsentSource, run.SkipReason)
+	}
+}
+
+func reviewConsentTestGitChange(t *testing.T, root string) {
+	t.Helper()
+	runTestGit(t, root, "init")
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(path, []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify file: %v", err)
+	}
+}
+
 func TestReviewHarnessUsesVerificationHistoryForFreshEvidence(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")
@@ -1166,6 +1386,7 @@ func TestPostChangeReviewUsesConfiguredReviewerClient(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.Provider = "scripted"
 	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "main-model", "", "default")
 	agent := &Agent{
 		Config:         cfg,
@@ -1190,6 +1411,49 @@ func TestPostChangeReviewUsesConfiguredReviewerClient(t *testing.T) {
 	}
 	if session.LastReviewRun == nil || !session.LastReviewRun.SingleModelPolicy.Enabled {
 		t.Fatalf("reviewer-only route should use single-model policy, got %#v", session.LastReviewRun)
+	}
+}
+
+func TestAgentPostChangeReviewConsentDeclineSkipsReviewerClient(t *testing.T) {
+	root := t.TempDir()
+	reviewConsentTestGitChange(t, root)
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("reviewer should not run")}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	agent := &Agent{
+		Config:         cfg,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		PromptConfirmModelReview: func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+			if req.Trigger != "post-change" {
+				t.Fatalf("unexpected trigger: %#v", req)
+			}
+			return ModelReviewConsentDecision{
+				Allowed:       false,
+				Policy:        modelReviewConsentAsk,
+				ConsentSource: "user",
+				SkipReason:    modelReviewSkipByUser,
+			}
+		},
+	}
+
+	reviewed, needsRevision, _, _, err := agent.maybeRunPostChangeReview(context.Background(), "implement the change", "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	if !reviewed || needsRevision {
+		t.Fatalf("skipped model review should not start repair loop, reviewed=%t needs=%t", reviewed, needsRevision)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("declined post-change consent must not call reviewer, got %d request(s)", len(reviewer.requests))
+	}
+	if session.LastReviewRun == nil || session.LastReviewRun.SkipReason != modelReviewSkipByUser {
+		t.Fatalf("expected skipped review run metadata, got %#v", session.LastReviewRun)
 	}
 }
 
@@ -4785,6 +5049,7 @@ func TestReviewProposedEditUsesKoreanBlockFeedbackFromOriginalRequest(t *testing
 	cfg.Provider = "scripted"
 	cfg.Model = "model"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -4923,6 +5188,7 @@ func TestReviewProposedEditSkipsGeneratedBugReportFromAcceptanceContractAfterFee
 	cfg.Provider = "scripted"
 	cfg.Model = "model"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{
 		{Role: "user", Text: originalRequest},
@@ -5109,6 +5375,7 @@ func TestReviewProposedEditKeepsBlockingGateForCodeWhenRequestGeneratesReport(t 
 	cfg.Provider = "scripted"
 	cfg.Model = "model"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -5161,6 +5428,7 @@ func TestReviewProposedEditKeepsBlockingGateForCodeWhenPreviewPathsMissingButDif
 	cfg.Provider = "scripted"
 	cfg.Model = "model"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -11135,6 +11403,98 @@ func TestModelCommandClearPersistsLastCrossRouteRemoval(t *testing.T) {
 	}
 	if len(loaded.Review.RoleModels) != 0 {
 		t.Fatalf("expected /model clear cross-review to persist last role removal, got %#v", loaded.Review.RoleModels)
+	}
+}
+
+func TestModelCommandProviderZeroClearsCrossReviewRoute(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var out bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {
+			Provider:        "deepseek",
+			Model:           "deepseek-v4-pro",
+			ReasoningEffort: "high",
+		},
+	}
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      UI{},
+		cfg:     cfg,
+		session: &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
+	}
+
+	if err := rt.handleModelCommand("cross-review 0"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
+	}
+	if len(rt.cfg.Review.RoleModels) != 0 {
+		t.Fatalf("expected provider 0 to clear cross-review route, got %#v", rt.cfg.Review.RoleModels)
+	}
+	if !strings.Contains(out.String(), "Cleared review cross route") {
+		t.Fatalf("expected clear output, got %q", out.String())
+	}
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Review.RoleModels) != 0 {
+		t.Fatalf("expected provider 0 clear to persist, got %#v", loaded.Review.RoleModels)
+	}
+}
+
+func TestModelCommandInteractiveProviderZeroClearsCrossReviewRoute(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var out bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {
+			Provider:        "deepseek",
+			Model:           "deepseek-v4-pro",
+			ReasoningEffort: "high",
+		},
+	}
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("0\n")),
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+		cfg:         cfg,
+		session:     &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
+	}
+
+	if err := rt.handleModelCommand("cross-review"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
+	}
+	if len(rt.cfg.Review.RoleModels) != 0 {
+		t.Fatalf("expected interactive provider 0 to clear cross-review route, got %#v", rt.cfg.Review.RoleModels)
+	}
+	rendered := out.String()
+	for _, needle := range []string{
+		"0. reset review cross route to default",
+		"Cleared review cross route",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected output to contain %q, got %q", needle, rendered)
+		}
+	}
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Review.RoleModels) != 0 {
+		t.Fatalf("expected interactive provider 0 clear to persist, got %#v", loaded.Review.RoleModels)
 	}
 }
 

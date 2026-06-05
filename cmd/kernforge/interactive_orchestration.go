@@ -99,6 +99,12 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 	if a.Client == nil || reviewerClient == nil || strings.TrimSpace(reviewerModel) == "" {
 		return nil
 	}
+	decision := a.confirmImplicitModelReview("plan/feature reviewer", state.RenderPromptSection())
+	if !decision.Allowed {
+		state.SetReviewerGuidance("plan_review_skipped", "Implicit plan/feature model review skipped: "+decision.SkipReason)
+		state.SetNextStep("Proceed with the main tool loop using local evidence and normal write approvals.")
+		return nil
+	}
 	if a.EmitProgress != nil {
 		a.EmitProgress("Building an execution plan before the main tool loop...")
 	}
@@ -272,6 +278,11 @@ func (a *Agent) requestReviewerGuidance(ctx context.Context, reason string, rece
 	if client == nil || strings.TrimSpace(model) == "" || a.Session == nil || a.Session.TaskState == nil {
 		return ""
 	}
+	decision := a.confirmImplicitModelReview("root-cause reviewer", strings.TrimSpace(recent+"\n\n"+detail))
+	if !decision.Allowed {
+		a.Session.TaskState.SetReviewerGuidance(reason, "Implicit recovery reviewer skipped: "+decision.SkipReason)
+		return ""
+	}
 	resp, err := a.completeModelTurnWithClient(ctx, client, ChatRequest{
 		Model: model,
 		System: strings.Join([]string{
@@ -321,6 +332,11 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	}
 	reviewerClient, reviewerModel := a.ensureInteractiveReviewerClient()
 	if a.Client == nil || reviewerClient == nil || strings.TrimSpace(reviewerModel) == "" {
+		return ""
+	}
+	decision := a.confirmImplicitModelReview("plan/feature reviewer", state.RenderPromptSection())
+	if !decision.Allowed {
+		state.SetReviewerGuidance("plan_refresh_skipped", "Implicit recovery plan model review skipped: "+decision.SkipReason)
 		return ""
 	}
 	policy := interactivePlanReviewPolicy(a)
@@ -799,6 +815,15 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 	if client == nil || strings.TrimSpace(model) == "" || a.Session == nil || a.Session.TaskState == nil {
 		return true, ""
 	}
+	a.Session.TaskState.NoteOriginalMainProposal(reply, "")
+	decision := a.confirmImplicitModelReview("final-answer", reply)
+	if !decision.Allowed {
+		text := "SKIPPED: implicit final-answer model review skipped because " + decision.SkipReason + ". Original final-answer draft remains available in task state/review artifacts when present.\n\nOriginal final-answer draft:\n" + compactPromptSection(reply, 1200)
+		a.Session.TaskState.NoteFinalReview("skipped", text)
+		a.recordEditLoopFinalReview("skipped", text)
+		a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+		return true, text
+	}
 	resp, err := a.completeModelTurnWithClient(ctx, client, ChatRequest{
 		Model: model,
 		System: strings.Join([]string{
@@ -827,10 +852,20 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 		a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 		return true, text
 	}
+	text = appendOriginalFinalAnswerDraftToReview(text, reply)
 	a.Session.TaskState.NoteFinalReview("needs_revision", text)
 	a.recordEditLoopFinalReview("needs_revision", text)
 	a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 	return false, text
+}
+
+func appendOriginalFinalAnswerDraftToReview(reviewText string, reply string) string {
+	reviewText = strings.TrimSpace(reviewText)
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return reviewText
+	}
+	return strings.TrimSpace(reviewText + "\n\nOriginal final-answer draft:\n" + compactPromptSection(reply, 1200))
 }
 
 func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, unresolvedVerification bool) string {

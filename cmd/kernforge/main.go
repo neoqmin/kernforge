@@ -30,75 +30,77 @@ func main() {
 }
 
 type runtimeState struct {
-	cfg                        Config
-	reader                     *bufio.Reader
-	writer                     io.Writer
-	ui                         UI
-	bannerShown                bool
-	promptTurn                 int
-	prefillInput               string
-	inputHistory               []string
-	store                      *SessionStore
-	session                    *Session
-	agent                      *Agent
-	perms                      *PermissionManager
-	memory                     MemoryBundle
-	longMem                    *PersistentMemoryStore
-	evidence                   *EvidenceStore
-	investigations             *InvestigationStore
-	simulations                *SimulationStore
-	functionFuzz               *FunctionFuzzStore
-	fuzzCampaigns              *FuzzCampaignStore
-	sourceScan                 *SourceScanStore
-	hookOverrides              *HookOverrideStore
-	checkpoints                *CheckpointManager
-	autoCP                     *AutoCheckpointController
-	verifyHistory              *VerificationHistoryStore
-	backgroundJobs             *BackgroundJobManager
-	modelRoutes                *ModelRouteScheduler
-	hooks                      *HookRuntime
-	hookWarns                  []string
-	skills                     SkillCatalog
-	skillWarns                 []string
-	mcp                        *MCPManager
-	mcpWarns                   []string
-	ollamaModels               []OllamaModelInfo
-	clientErr                  error
-	workspace                  Workspace
-	detectVerificationToolPath func(string) string
-	goalReply                  func(context.Context, string) (string, error)
-	interactive                bool
-	strictConfig               bool
-	configProfile              string
-	outputMu                   sync.Mutex
-	footerVisible              bool
-	footerLineCount            int
-	footerText                 string
-	thinkingMu                 sync.Mutex
-	thinkingStop               func()
-	thinkingStartedAt          time.Time
-	streamMu                   sync.Mutex
-	streamingAssistant         bool
-	streamedAssistantText      strings.Builder
-	pendingAssistantSpacing    string
-	assistantStreamInFence     bool
-	assistantStreamLine        string
-	suppressThinkingMu         sync.Mutex
-	suppressThinking           bool
-	thinkingStatusMu           sync.Mutex
-	thinkingStatusOverride     string
-	thinkingDetailMu           sync.Mutex
-	thinkingDetailLines        []string
-	requestCancelMu            sync.Mutex
-	requestCancelPauses        int
-	requestCancelPending       bool
-	requestCancelIgnoreUntil   time.Time
-	lastAssistantMu            sync.Mutex
-	lastAssistantPrinted       string
-	alwaysApprovePreview       bool
-	alwaysApproveWrites        bool
-	alwaysApproveVerification  bool
-	autoAcceptPreviewOnce      bool
+	cfg                             Config
+	reader                          *bufio.Reader
+	writer                          io.Writer
+	ui                              UI
+	bannerShown                     bool
+	promptTurn                      int
+	prefillInput                    string
+	inputHistory                    []string
+	store                           *SessionStore
+	session                         *Session
+	agent                           *Agent
+	perms                           *PermissionManager
+	memory                          MemoryBundle
+	longMem                         *PersistentMemoryStore
+	evidence                        *EvidenceStore
+	investigations                  *InvestigationStore
+	simulations                     *SimulationStore
+	functionFuzz                    *FunctionFuzzStore
+	fuzzCampaigns                   *FuzzCampaignStore
+	sourceScan                      *SourceScanStore
+	hookOverrides                   *HookOverrideStore
+	checkpoints                     *CheckpointManager
+	autoCP                          *AutoCheckpointController
+	verifyHistory                   *VerificationHistoryStore
+	backgroundJobs                  *BackgroundJobManager
+	modelRoutes                     *ModelRouteScheduler
+	hooks                           *HookRuntime
+	hookWarns                       []string
+	skills                          SkillCatalog
+	skillWarns                      []string
+	mcp                             *MCPManager
+	mcpWarns                        []string
+	ollamaModels                    []OllamaModelInfo
+	clientErr                       error
+	workspace                       Workspace
+	detectVerificationToolPath      func(string) string
+	goalReply                       func(context.Context, string) (string, error)
+	interactive                     bool
+	strictConfig                    bool
+	configProfile                   string
+	outputMu                        sync.Mutex
+	footerVisible                   bool
+	footerLineCount                 int
+	footerText                      string
+	thinkingMu                      sync.Mutex
+	thinkingStop                    func()
+	thinkingStartedAt               time.Time
+	streamMu                        sync.Mutex
+	streamingAssistant              bool
+	streamedAssistantText           strings.Builder
+	pendingAssistantSpacing         string
+	assistantStreamInFence          bool
+	assistantStreamLine             string
+	suppressThinkingMu              sync.Mutex
+	suppressThinking                bool
+	thinkingStatusMu                sync.Mutex
+	thinkingStatusOverride          string
+	thinkingDetailMu                sync.Mutex
+	thinkingDetailLines             []string
+	requestCancelMu                 sync.Mutex
+	requestCancelPauses             int
+	requestCancelPending            bool
+	requestCancelIgnoreUntil        time.Time
+	lastAssistantMu                 sync.Mutex
+	lastAssistantPrinted            string
+	alwaysApprovePreview            bool
+	alwaysApproveWrites             bool
+	alwaysApproveVerification       bool
+	alwaysApproveModelReview        bool
+	modelReviewConsentPromptEnabled bool
+	autoAcceptPreviewOnce           bool
 }
 
 var assistantFollowOnPreamblePattern = regexp.MustCompile(`([\.\:\!\?\)])((?i:Now let me |Let me |Now I |I'll |I will |I need to |First, ))`)
@@ -346,28 +348,29 @@ func run(args []string) error {
 	}
 
 	rt := &runtimeState{
-		cfg:            cfg,
-		reader:         bufio.NewReader(os.Stdin),
-		writer:         os.Stdout,
-		ui:             NewUI(),
-		store:          store,
-		session:        sess,
-		memory:         mem,
-		longMem:        NewPersistentMemoryStore(),
-		evidence:       NewEvidenceStore(),
-		investigations: NewInvestigationStore(),
-		simulations:    NewSimulationStore(),
-		functionFuzz:   NewFunctionFuzzStore(),
-		fuzzCampaigns:  NewFuzzCampaignStore(),
-		sourceScan:     NewSourceScanStore(),
-		hookOverrides:  NewHookOverrideStore(),
-		checkpoints:    NewCheckpointManager(),
-		autoCP:         &AutoCheckpointController{},
-		verifyHistory:  NewVerificationHistoryStore(),
-		modelRoutes:    defaultModelRouteScheduler(),
-		strictConfig:   strictConfig,
-		configProfile:  profileFlag,
-		interactive:    runtimeShouldUseInteractiveLoop(promptFlag, commandFlag, goalFlag, goalFileFlag),
+		cfg:                             cfg,
+		reader:                          bufio.NewReader(os.Stdin),
+		writer:                          os.Stdout,
+		ui:                              NewUI(),
+		store:                           store,
+		session:                         sess,
+		memory:                          mem,
+		longMem:                         NewPersistentMemoryStore(),
+		evidence:                        NewEvidenceStore(),
+		investigations:                  NewInvestigationStore(),
+		simulations:                     NewSimulationStore(),
+		functionFuzz:                    NewFunctionFuzzStore(),
+		fuzzCampaigns:                   NewFuzzCampaignStore(),
+		sourceScan:                      NewSourceScanStore(),
+		hookOverrides:                   NewHookOverrideStore(),
+		checkpoints:                     NewCheckpointManager(),
+		autoCP:                          &AutoCheckpointController{},
+		verifyHistory:                   NewVerificationHistoryStore(),
+		modelRoutes:                     defaultModelRouteScheduler(),
+		strictConfig:                    strictConfig,
+		configProfile:                   profileFlag,
+		interactive:                     runtimeShouldUseInteractiveLoop(promptFlag, commandFlag, goalFlag, goalFileFlag),
+		modelReviewConsentPromptEnabled: true,
 	}
 	defer rt.closeExtensions()
 
@@ -440,6 +443,9 @@ func run(args []string) error {
 		FuzzCampaigns: rt.fuzzCampaigns,
 		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
 			return rt.promptConfirmAutoVerify(plan)
+		},
+		PromptConfirmModelReview: func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+			return rt.confirmImplicitModelReview(req)
 		},
 		PromptResolveAutoVerifyFailure: func(report VerificationReport) (AutoVerifyFailureResolution, error) {
 			return rt.promptResolveAutoVerifyFailure(report)
@@ -2527,6 +2533,9 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 	if isAutoVerificationQuestion(question) {
 		return rt.alwaysApproveVerification
 	}
+	if isModelReviewQuestion(question) {
+		return rt.alwaysApproveModelReview
+	}
 	if isGitApprovalQuestion(question) {
 		return rt.perms != nil && rt.perms.IsGitAllowed()
 	}
@@ -2539,6 +2548,8 @@ func (rt *runtimeState) confirmLabel(question string) string {
 		hint = localizedText(rt.cfg, "[y/N/a=auto-accept, Esc=cancel]", "[y/N/a=자동 수락, Esc=취소]")
 	} else if isAutoVerificationQuestion(question) {
 		hint = localizedText(rt.cfg, "[y/N/a=auto-run, Esc=cancel]", "[y/N/a=자동 실행, Esc=취소]")
+	} else if isModelReviewQuestion(question) {
+		hint = "[y/N/a=auto-review for this session]"
 	} else if supportsAlwaysApproval(question) {
 		hint = localizedText(rt.cfg, "[y/N/a=always, Esc=cancel]", "[y/N/a=항상 승인, Esc=취소]")
 	}
@@ -2546,7 +2557,7 @@ func (rt *runtimeState) confirmLabel(question string) string {
 }
 
 func supportsAlwaysApproval(question string) bool {
-	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question) || isAutoVerificationQuestion(question) || isGitApprovalQuestion(question)
+	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question) || isAutoVerificationQuestion(question) || isModelReviewQuestion(question) || isGitApprovalQuestion(question)
 }
 
 func isWriteApprovalQuestion(question string) bool {
@@ -2614,6 +2625,10 @@ func (rt *runtimeState) rememberConfirmationApproval(question string) {
 	}
 	if isAutoVerificationQuestion(question) {
 		rt.alwaysApproveVerification = true
+		return
+	}
+	if isModelReviewQuestion(question) {
+		rt.alwaysApproveModelReview = true
 		return
 	}
 	if isGitApprovalQuestion(question) && rt.perms != nil {
@@ -2829,6 +2844,19 @@ func (rt *runtimeState) printProviderChoiceOptions() {
 	for _, option := range providerChoiceOptions() {
 		fmt.Fprintln(rt.writer, rt.ui.info("  "+option.Number+". "+option.Label))
 	}
+}
+
+func (rt *runtimeState) printProviderChoiceOptionsWithReset(resetLabel string) {
+	resetLabel = strings.TrimSpace(resetLabel)
+	if resetLabel != "" {
+		fmt.Fprintln(rt.writer, rt.ui.info("  0. "+resetLabel))
+	}
+	rt.printProviderChoiceOptions()
+}
+
+func isProviderResetChoice(choice string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(choice))
+	return normalized == "0" || normalized == "reset" || normalized == "clear" || normalized == "default"
 }
 
 func defaultProviderChoice(provider string) string {
@@ -4830,7 +4858,10 @@ func (rt *runtimeState) handleModelAnalysisRoleCommand(role string, fields []str
 			}
 			return err
 		}
-		return fmt.Errorf("usage: /model analysis-%s <provider> <model> [reasoning_effort]", role)
+		return fmt.Errorf("usage: /model analysis-%s <provider> <model> [reasoning_effort] or /model analysis-%s 0", role, role)
+	}
+	if len(fields) == 1 && isProviderResetChoice(fields[0]) {
+		return rt.clearProjectAnalysisModelRole(role)
 	}
 	provider, ok := resolveProviderChoice(fields[0])
 	if !ok {
@@ -4844,7 +4875,7 @@ func (rt *runtimeState) handleModelAnalysisRoleCommand(role string, fields []str
 			}
 			return err
 		}
-		return fmt.Errorf("usage: /model analysis-%s %s <model> [reasoning_effort]", role, provider)
+		return fmt.Errorf("usage: /model analysis-%s %s <model> [reasoning_effort] or /model analysis-%s 0", role, provider, role)
 	}
 	modelParts := append([]string(nil), fields[1:]...)
 	effort := ""
@@ -5244,6 +5275,7 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review", rt.describeCrossReviewModel()))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("model_review_consent", configModelReviewConsent(rt.cfg)+"; session_auto="+fmt.Sprintf("%t", rt.alwaysApproveModelReview)))
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /model cross-review for the optional cross route."))
 	profiles := explicitSpecialistModelProfiles(rt.cfg)
 	if len(profiles) == 0 {
@@ -6618,6 +6650,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.printKVGroup("Approvals",
 			kv("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "auto-approve")),
 			kv("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "auto-accept")),
+			kv("model_review", sessionApprovalStateLabel(rt.alwaysApproveModelReview, "auto-review")+" policy="+configModelReviewConsent(rt.cfg)),
 			kv("shell_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsShellAllowed(), "allowed")),
 			kv("git_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsGitAllowed(), "allowed")),
 		)
@@ -7898,6 +7931,27 @@ func (rt *runtimeState) clearProjectAnalysisModelRoutes() error {
 	return nil
 }
 
+func (rt *runtimeState) clearProjectAnalysisModelRole(role string) error {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "worker":
+		rt.cfg.ProjectAnalysis.WorkerProfile = nil
+	case "reviewer":
+		rt.cfg.ProjectAnalysis.ReviewerProfile = nil
+	default:
+		return fmt.Errorf("unsupported analysis role: %s", role)
+	}
+	rt.rememberCurrentProfile()
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(role), "worker") {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Project analysis worker model reset to the main active model."))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Project analysis reviewer model reset to the inherited analysis worker/main model."))
+	}
+	return nil
+}
+
 func parsePlanItemsFromText(plan string) []PlanItem {
 	plan = strings.ReplaceAll(plan, "\r\n", "\n")
 	plan = strings.TrimSpace(plan)
@@ -8198,9 +8252,13 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 
 func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, providerArg string) error {
 	provider := normalizeProviderName(providerArg)
+	if isProviderResetChoice(providerArg) {
+		return rt.clearProjectAnalysisModelRole(role)
+	}
 	if provider == "" {
 		fmt.Fprintln(rt.writer, rt.ui.section("Set Analysis "+strings.Title(role)))
-		rt.printProviderChoiceOptions()
+		resetLabel := "reset analysis " + role + " to inherited default"
+		rt.printProviderChoiceOptionsWithReset(resetLabel)
 		defaultChoice := defaultProviderChoice("")
 		current := rt.cfg.ProjectAnalysis.WorkerProfile
 		if role == "reviewer" {
@@ -8215,6 +8273,9 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		}
 		if strings.TrimSpace(choice) == "" {
 			choice = defaultChoice
+		}
+		if isProviderResetChoice(choice) {
+			return rt.clearProjectAnalysisModelRole(role)
 		}
 		resolved, ok := resolveProviderChoice(choice)
 		if !ok {
@@ -8685,6 +8746,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	}, func(debug string) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("analysis: "+debug))
 	})
+	analyzer.confirmModelReview = rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	previewSnapshot, err := analyzer.scanProject()
 	if err != nil {
@@ -8812,6 +8874,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	}
 
 	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, analysisStatus, analysisDebug)
+	analyzer.confirmModelReview = rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	analyzer.explicitScope = explicitScope
 	analyzer.onProgress = analysisProgress
@@ -8828,6 +8891,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 				rt.printPersistentWhileThinking(rt.ui.warnLine("Project analysis hit a model/provider timeout or transient error; retrying once with smaller shards."))
 				rt.printPersistentWhileThinking(rt.ui.statusKV("adaptive_retry_shards", recoveryNote))
 				analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, analysisStatus, analysisDebug)
+				analyzer.confirmModelReview = rt.confirmImplicitModelReview
 				analyzer.analysisCfg = recoveryCfg
 				analyzer.explicitScope = explicitScope
 				analyzer.onProgress = analysisProgress

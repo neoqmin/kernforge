@@ -61,6 +61,19 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	if run.Redaction.Redacted {
 		fmt.Fprintf(&b, "- Redaction: %s\n", strings.Join(run.Redaction.Patterns, ", "))
 	}
+	if strings.TrimSpace(run.ModelReviewConsent) != "" {
+		fmt.Fprintf(&b, "- Model review consent: `%s`", run.ModelReviewConsent)
+		if strings.TrimSpace(run.ConsentSource) != "" {
+			fmt.Fprintf(&b, " source=`%s`", run.ConsentSource)
+		}
+		if strings.TrimSpace(run.SkipReason) != "" {
+			fmt.Fprintf(&b, " skip_reason=`%s`", run.SkipReason)
+		}
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(run.OriginalMainProposalRef) != "" {
+		fmt.Fprintf(&b, "- Original main proposal: `%s`\n", filepath.ToSlash(run.OriginalMainProposalRef))
+	}
 	if run.SingleModelPolicy.Enabled {
 		fmt.Fprintf(&b, "- Independence: `%s` (%s)\n", run.SingleModelPolicy.IndependenceLevel, run.SingleModelPolicy.NoCrossReviewReason)
 	}
@@ -80,6 +93,18 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	b.WriteString("\n## Summary\n\n")
 	b.WriteString(valueOrDefault(run.Result.Summary, run.Gate.Reason))
 	b.WriteString("\n\n")
+	if strings.TrimSpace(run.OriginalMainProposalRef) != "" || strings.TrimSpace(run.OriginalMainProposal) != "" {
+		b.WriteString("## Original Main Proposal\n\n")
+		if strings.TrimSpace(run.OriginalMainProposalRef) != "" {
+			fmt.Fprintf(&b, "- ref: `%s`\n", filepath.ToSlash(run.OriginalMainProposalRef))
+		}
+		if strings.TrimSpace(run.OriginalMainProposal) != "" {
+			b.WriteString("\n```text\n")
+			b.WriteString(compactPromptSection(run.OriginalMainProposal, 2000))
+			b.WriteString("\n```\n")
+		}
+		b.WriteString("\n")
+	}
 	if second := buildReviewSecondPassObservability(run); second != nil {
 		b.WriteString("## Single-Model Second Pass\n\n")
 		fmt.Fprintf(&b, "- status: `%s`\n", second.Status)

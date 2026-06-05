@@ -163,9 +163,10 @@ func (rt *runtimeState) printCrossReviewModelStatus() {
 	fmt.Fprintln(rt.writer, rt.ui.infoLine("Use /model cross-review to configure the optional independent second-pass reviewer route. Domain specialization is applied through review lenses, not extra routes."))
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.section("Automatic Review"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("after_change", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoAfterChange), "review code-changing agent edits by default")))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("after_goal_iteration", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoAfterGoalIteration), "review autonomous goal iterations before continuing")))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("before_git_write", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoBeforeGitWrite), "gate commit/push/write-side git actions with review")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("model_review_consent", reviewSettingLine(reviewCfg.ModelReviewConsent, "ask before implicit model-backed reviews; a allows this session only")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("after_change", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoAfterChange), "eligible; review code-changing agent edits by default after consent")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("after_goal_iteration", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoAfterGoalIteration), "eligible to review autonomous goal iterations before continuing")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("before_git_write", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoBeforeGitWrite), "eligible to gate commit/push/write-side git actions with review")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("follow_up", reviewSettingLine(reviewCfg.AutoFollowUp, "allow safe next-command recommendations after review")))
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.section("Reviewer Routes"))
@@ -444,15 +445,18 @@ func (rt *runtimeState) configureCrossReviewModelFromFields(fields []string) err
 		if rt.interactive {
 			return rt.configureReviewModelInteractive("cross_reviewer")
 		}
-		return fmt.Errorf("usage: /model cross-review <provider> <model> [reasoning_effort]")
+		return fmt.Errorf("usage: /model cross-review <provider> <model> [reasoning_effort] or /model cross-review 0")
+	}
+	if len(fields) == 1 && isProviderResetChoice(fields[0]) {
+		return rt.clearReviewModelRole("cross_reviewer")
 	}
 	provider, ok := resolveProviderChoice(fields[0])
 	if !ok {
 		if legacy, legacyOK := resolveReviewModelRoleChoice(fields[0]); legacyOK {
 			if legacy.Role == "primary_reviewer" {
-				return fmt.Errorf("primary review route follows the active main model; use /model to change it, or /model cross-review <provider> <model> for an independent reviewer route")
+				return fmt.Errorf("primary review route follows the active main model; use /model to change it, /model cross-review <provider> <model> for an independent reviewer route, or /model cross-review 0 to clear it")
 			}
-			return fmt.Errorf("%s is now a review lens, not a model route; use /model cross-review <provider> <model> for an independent reviewer route", legacy.Token)
+			return fmt.Errorf("%s is now a review lens, not a model route; use /model cross-review <provider> <model> for an independent reviewer route or /model cross-review 0 to clear it", legacy.Token)
 		}
 		return fmt.Errorf("unknown provider: %s", fields[0])
 	}
@@ -460,7 +464,7 @@ func (rt *runtimeState) configureCrossReviewModelFromFields(fields []string) err
 		if rt.interactive {
 			return rt.configureReviewModelInteractiveForProvider("cross_reviewer", provider)
 		}
-		return fmt.Errorf("usage: /model cross-review %s <model> [reasoning_effort]", provider)
+		return fmt.Errorf("usage: /model cross-review %s <model> [reasoning_effort] or /model cross-review 0", provider)
 	}
 	modelParts := append([]string(nil), fields[1:]...)
 	effort := ""
@@ -507,12 +511,15 @@ func (rt *runtimeState) configureReviewModelInteractiveForProvider(role string, 
 	if !ok {
 		return fmt.Errorf("unknown review model route: %s", role)
 	}
+	if isProviderResetChoice(providerArg) {
+		return rt.clearReviewModelRole(roleChoice.Role)
+	}
 	provider := normalizeProviderName(providerArg)
 	reviewCfg := configReviewHarness(rt.cfg)
 	current := reviewCfg.RoleModels[roleChoice.Role]
 	if provider == "" {
 		fmt.Fprintln(rt.writer, rt.ui.section("Set Review "+strings.Title(roleChoice.Label)+" Route"))
-		rt.printProviderChoiceOptions()
+		rt.printProviderChoiceOptionsWithReset("reset review " + roleChoice.Label + " route to default")
 		defaultProvider := current.Provider
 		if strings.TrimSpace(defaultProvider) == "" {
 			defaultProvider = rt.cfg.Provider
@@ -524,6 +531,9 @@ func (rt *runtimeState) configureReviewModelInteractiveForProvider(role string, 
 		}
 		if strings.TrimSpace(choice) == "" {
 			choice = defaultChoice
+		}
+		if isProviderResetChoice(choice) {
+			return rt.clearReviewModelRole(roleChoice.Role)
 		}
 		resolved, ok := resolveProviderChoice(choice)
 		if !ok {

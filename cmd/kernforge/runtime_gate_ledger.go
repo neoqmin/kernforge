@@ -20,31 +20,35 @@ const (
 )
 
 type RuntimeGateLedger struct {
-	ID                    string                           `json:"id,omitempty"`
-	GeneratedAt           time.Time                        `json:"generated_at,omitempty"`
-	Action                string                           `json:"action,omitempty"`
-	Status                string                           `json:"status,omitempty"`
-	Ready                 bool                             `json:"ready"`
-	RequestClass          string                           `json:"request_class,omitempty"`
-	Lifecycle             *ReviewRequestLifecycle          `json:"lifecycle,omitempty"`
-	Branch                string                           `json:"branch,omitempty"`
-	ReviewRunID           string                           `json:"review_run_id,omitempty"`
-	PatchTransactionID    string                           `json:"patch_transaction_id,omitempty"`
-	VerificationReportID  string                           `json:"verification_report_id,omitempty"`
-	CompletionAuditID     string                           `json:"completion_audit_id,omitempty"`
-	FinalAnswerReviewID   string                           `json:"final_answer_review_id,omitempty"`
-	ReviewTransaction     ReviewTransaction                `json:"review_transaction,omitempty"`
-	ChangedPaths          []string                         `json:"changed_paths,omitempty"`
-	Blockers              []string                         `json:"blockers,omitempty"`
-	Warnings              []string                         `json:"warnings,omitempty"`
-	StaleReasons          []string                         `json:"stale_reasons,omitempty"`
-	Waivers               []string                         `json:"waivers,omitempty"`
-	NextCommands          []ReviewNextCommand              `json:"next_commands,omitempty"`
-	ReviewObservability   *ReviewDecisionObservability     `json:"review_observability,omitempty"`
-	FinalAnswerCorrection *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
-	StaleContextSummary   *StaleContextSummary             `json:"stale_context_summary,omitempty"`
-	RouteHealthEvents     []ReviewRouteHealthEvent         `json:"route_health_events,omitempty"`
-	LiveProviderDrill     *LiveProviderDrillReport         `json:"live_provider_drill,omitempty"`
+	ID                      string                           `json:"id,omitempty"`
+	GeneratedAt             time.Time                        `json:"generated_at,omitempty"`
+	Action                  string                           `json:"action,omitempty"`
+	Status                  string                           `json:"status,omitempty"`
+	Ready                   bool                             `json:"ready"`
+	RequestClass            string                           `json:"request_class,omitempty"`
+	Lifecycle               *ReviewRequestLifecycle          `json:"lifecycle,omitempty"`
+	Branch                  string                           `json:"branch,omitempty"`
+	ReviewRunID             string                           `json:"review_run_id,omitempty"`
+	ModelReviewConsent      string                           `json:"model_review_consent,omitempty"`
+	ConsentSource           string                           `json:"consent_source,omitempty"`
+	SkipReason              string                           `json:"skip_reason,omitempty"`
+	OriginalMainProposalRef string                           `json:"original_main_proposal_ref,omitempty"`
+	PatchTransactionID      string                           `json:"patch_transaction_id,omitempty"`
+	VerificationReportID    string                           `json:"verification_report_id,omitempty"`
+	CompletionAuditID       string                           `json:"completion_audit_id,omitempty"`
+	FinalAnswerReviewID     string                           `json:"final_answer_review_id,omitempty"`
+	ReviewTransaction       ReviewTransaction                `json:"review_transaction,omitempty"`
+	ChangedPaths            []string                         `json:"changed_paths,omitempty"`
+	Blockers                []string                         `json:"blockers,omitempty"`
+	Warnings                []string                         `json:"warnings,omitempty"`
+	StaleReasons            []string                         `json:"stale_reasons,omitempty"`
+	Waivers                 []string                         `json:"waivers,omitempty"`
+	NextCommands            []ReviewNextCommand              `json:"next_commands,omitempty"`
+	ReviewObservability     *ReviewDecisionObservability     `json:"review_observability,omitempty"`
+	FinalAnswerCorrection   *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
+	StaleContextSummary     *StaleContextSummary             `json:"stale_context_summary,omitempty"`
+	RouteHealthEvents       []ReviewRouteHealthEvent         `json:"route_health_events,omitempty"`
+	LiveProviderDrill       *LiveProviderDrillReport         `json:"live_provider_drill,omitempty"`
 }
 
 type ReviewTransaction struct {
@@ -246,6 +250,12 @@ func (l *RuntimeGateLedger) Normalize() {
 	}
 	l.Branch = strings.TrimSpace(l.Branch)
 	l.ReviewRunID = strings.TrimSpace(l.ReviewRunID)
+	if strings.TrimSpace(l.ModelReviewConsent) != "" {
+		l.ModelReviewConsent = normalizeModelReviewConsent(l.ModelReviewConsent)
+	}
+	l.ConsentSource = strings.TrimSpace(l.ConsentSource)
+	l.SkipReason = strings.TrimSpace(l.SkipReason)
+	l.OriginalMainProposalRef = strings.TrimSpace(l.OriginalMainProposalRef)
 	l.PatchTransactionID = strings.TrimSpace(l.PatchTransactionID)
 	l.VerificationReportID = strings.TrimSpace(l.VerificationReportID)
 	l.CompletionAuditID = strings.TrimSpace(l.CompletionAuditID)
@@ -354,6 +364,19 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 	}
 	if l.ReviewRunID != "" {
 		lines = append(lines, "- Review run: "+l.ReviewRunID)
+	}
+	if l.ModelReviewConsent != "" {
+		line := "- Model review consent: " + l.ModelReviewConsent
+		if l.ConsentSource != "" {
+			line += " source=" + l.ConsentSource
+		}
+		if l.SkipReason != "" {
+			line += " skip_reason=" + l.SkipReason
+		}
+		lines = append(lines, line)
+	}
+	if l.OriginalMainProposalRef != "" {
+		lines = append(lines, "- Original main proposal: "+l.OriginalMainProposalRef)
 	}
 	if l.PatchTransactionID != "" {
 		lines = append(lines, "- Patch transaction: "+l.PatchTransactionID)
@@ -612,6 +635,10 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		tx.Status = "fresh"
 	}
 	ledger.ReviewRunID = strings.TrimSpace(review.ID)
+	ledger.ModelReviewConsent = strings.TrimSpace(review.ModelReviewConsent)
+	ledger.ConsentSource = strings.TrimSpace(review.ConsentSource)
+	ledger.SkipReason = strings.TrimSpace(review.SkipReason)
+	ledger.OriginalMainProposalRef = strings.TrimSpace(review.OriginalMainProposalRef)
 	ledger.ReviewTransaction = tx
 	ledger.Waivers = append(ledger.Waivers, waivers...)
 	ledger.NextCommands = append(ledger.NextCommands, review.Gate.NextCommands...)

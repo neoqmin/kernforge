@@ -627,6 +627,113 @@ func TestGoalReviewerSkipsImplicitMainModelFallback(t *testing.T) {
 	}
 }
 
+func TestGoalSemanticReviewerConsentDeclineSkipsModelRequest(t *testing.T) {
+	root := initTestGitRepo(t)
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "APPROVED: should not run"},
+	}}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	rt := &runtimeState{
+		cfg:                             cfg,
+		writer:                          &bytes.Buffer{},
+		session:                         session,
+		interactive:                     false,
+		modelReviewConsentPromptEnabled: true,
+		agent: &Agent{
+			Config:         cfg,
+			Session:        session,
+			ReviewerClient: reviewer,
+			ReviewerModel:  "reviewer-model",
+		},
+	}
+
+	reply, err := rt.runGoalReviewerReply(context.Background(), "Final semantic goal review")
+	if err != nil {
+		t.Fatalf("runGoalReviewerReply: %v", err)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("declined goal semantic consent must not call reviewer, got %d request(s)", len(reviewer.requests))
+	}
+	if !strings.HasPrefix(reply, "NEEDS_REVISION: semantic goal review skipped") || !strings.Contains(reply, modelReviewSkipNoInteractiveConsent) {
+		t.Fatalf("expected conservative skipped semantic reply, got %q", reply)
+	}
+}
+
+func TestGoalIterationAutoFlagDisabledDoesNotFallbackToReviewerModel(t *testing.T) {
+	root := initTestGitRepo(t)
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	cfg.Review.AutoAfterGoalIteration = boolPtr(false)
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "NEEDS_REVISION: should not run"},
+	}}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	rt := &runtimeState{
+		cfg:       cfg,
+		writer:    &bytes.Buffer{},
+		session:   session,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		agent: &Agent{
+			Config:         cfg,
+			Session:        session,
+			ReviewerClient: reviewer,
+			ReviewerModel:  "reviewer-model",
+		},
+	}
+
+	reply, err := rt.runGoalReviewHarnessReply(
+		context.Background(),
+		GoalState{ID: "goal-1", Objective: "finish the goal"},
+		GoalIteration{Index: 1, ImplementReply: "main model implementation summary"},
+		root,
+	)
+	if err != nil {
+		t.Fatalf("runGoalReviewHarnessReply: %v", err)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("disabled goal auto review flag must not fall back to reviewer model, got %d request(s)", len(reviewer.requests))
+	}
+	if !strings.HasPrefix(reply, "APPROVED: goal iteration model review skipped") || !strings.Contains(reply, "auto_after_goal_iteration is disabled") {
+		t.Fatalf("expected disabled auto-review skip reply, got %q", reply)
+	}
+}
+
+func TestGoalIterationAutoFlagDisabledSkipsGoalReplyHook(t *testing.T) {
+	root := initTestGitRepo(t)
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	cfg.Review.AutoAfterGoalIteration = boolPtr(false)
+	called := false
+	rt := &runtimeState{
+		cfg:       cfg,
+		writer:    &bytes.Buffer{},
+		session:   NewSession(root, "scripted", "main-model", "", "default"),
+		workspace: Workspace{BaseRoot: root, Root: root},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			called = true
+			return "APPROVED: should not run", nil
+		},
+	}
+
+	reply, err := rt.runGoalReviewHarnessReply(
+		context.Background(),
+		GoalState{ID: "goal-1", Objective: "finish the goal"},
+		GoalIteration{Index: 1, ImplementReply: "main model implementation summary"},
+		root,
+	)
+	if err != nil {
+		t.Fatalf("runGoalReviewHarnessReply: %v", err)
+	}
+	if called {
+		t.Fatalf("disabled goal auto review flag must skip goalReply review hook")
+	}
+	if !strings.Contains(reply, "auto_after_goal_iteration is disabled") {
+		t.Fatalf("expected disabled auto-review skip reply, got %q", reply)
+	}
+}
+
 func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)

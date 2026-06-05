@@ -469,26 +469,27 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		return nil, err
 	}
 	rt := &runtimeState{
-		cfg:            cfg,
-		reader:         bufio.NewReader(strings.NewReader("")),
-		writer:         writer,
-		ui:             NewUI(),
-		store:          store,
-		session:        sess,
-		memory:         mem,
-		longMem:        NewPersistentMemoryStore(),
-		evidence:       NewEvidenceStore(),
-		investigations: NewInvestigationStore(),
-		simulations:    NewSimulationStore(),
-		functionFuzz:   NewFunctionFuzzStore(),
-		fuzzCampaigns:  NewFuzzCampaignStore(),
-		sourceScan:     NewSourceScanStore(),
-		hookOverrides:  NewHookOverrideStore(),
-		checkpoints:    NewCheckpointManager(),
-		autoCP:         &AutoCheckpointController{},
-		verifyHistory:  NewVerificationHistoryStore(),
-		modelRoutes:    defaultModelRouteScheduler(),
-		interactive:    false,
+		cfg:                             cfg,
+		reader:                          bufio.NewReader(strings.NewReader("")),
+		writer:                          writer,
+		ui:                              NewUI(),
+		store:                           store,
+		session:                         sess,
+		memory:                          mem,
+		longMem:                         NewPersistentMemoryStore(),
+		evidence:                        NewEvidenceStore(),
+		investigations:                  NewInvestigationStore(),
+		simulations:                     NewSimulationStore(),
+		functionFuzz:                    NewFunctionFuzzStore(),
+		fuzzCampaigns:                   NewFuzzCampaignStore(),
+		sourceScan:                      NewSourceScanStore(),
+		hookOverrides:                   NewHookOverrideStore(),
+		checkpoints:                     NewCheckpointManager(),
+		autoCP:                          &AutoCheckpointController{},
+		verifyHistory:                   NewVerificationHistoryStore(),
+		modelRoutes:                     defaultModelRouteScheduler(),
+		interactive:                     false,
+		modelReviewConsentPromptEnabled: true,
 	}
 	rt.perms = NewPermissionManager(ParseMode(cfg.PermissionMode), nil)
 	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(sessionBaseWorkingDir(sess), userConfigDirName, "jobs"), sess, store)
@@ -539,6 +540,9 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		VerifyHistory: rt.verifyHistory,
 		FunctionFuzz:  rt.functionFuzz,
 		FuzzCampaigns: rt.fuzzCampaigns,
+		PromptConfirmModelReview: func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+			return rt.confirmImplicitModelReview(req)
+		},
 	}
 	rt.reloadHooks()
 	if err := rt.runSessionStartHook(context.Background(), sessionStartHookSourceForResumeID(resumeID)); err != nil {
@@ -4513,6 +4517,7 @@ func (s *kernforgeMCPServer) toolAnalyzeProject(ctx context.Context, args map[st
 	}, func(debug string) {
 		logs = append(logs, "debug: "+debug)
 	})
+	analyzer.confirmModelReview = s.rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	analyzer.explicitScope = explicitScope
 	run, err := analyzer.Run(ctx, goal, mode)
@@ -4561,6 +4566,7 @@ func (s *kernforgeMCPServer) toolFindRootCause(ctx context.Context, args map[str
 	}, func(debug string) {
 		logs = append(logs, "debug: "+debug)
 	})
+	analyzer.confirmModelReview = s.rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	analyzer.rootCausePatternPacks = append([]string(nil), stringSliceValue(args, "pattern_pack_paths")...)
 	run, err := analyzer.Run(ctx, goal, "root-cause")
@@ -4589,6 +4595,7 @@ func (s *kernforgeMCPServer) prepareMCPAnalysis(mode string, goal string, paths 
 		return analysisWorkspace, analysisCfg, AnalysisGoalScope{}, err
 	}
 	analyzer := newProjectAnalyzer(s.rt.cfg, s.rt.agent.Client, analysisWorkspace, nil, nil)
+	analyzer.confirmModelReview = s.rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	previewSnapshot, err := analyzer.scanProject()
 	if err != nil {

@@ -76,6 +76,105 @@ func (c *stubAnalysisClient) Complete(ctx context.Context, req ChatRequest) (Cha
 	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
 }
 
+func TestProjectAnalysisReviewerConsentDeclineSkipsModelRequest(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	client := &stubAnalysisClient{}
+	analyzer := newProjectAnalyzer(cfg, client, Workspace{BaseRoot: root, Root: root}, nil, nil)
+	analyzer.confirmModelReview = func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+		if req.Trigger != "analysis reviewer" {
+			t.Fatalf("unexpected trigger: %#v", req)
+		}
+		return ModelReviewConsentDecision{
+			Allowed:       false,
+			Policy:        modelReviewConsentAsk,
+			ConsentSource: "user",
+			SkipReason:    modelReviewSkipByUser,
+		}
+	}
+	report := WorkerReport{
+		ShardID:          "shard-core",
+		Title:            "core",
+		ScopeSummary:     "Core runtime behavior.",
+		Responsibilities: []string{"Owns runtime loop"},
+		KeyFiles:         []string{"main.go"},
+		EntryPoints:      []string{"main.go"},
+		InternalFlow:     []string{"main.go initializes runtime state"},
+		Dependencies:     []string{"session.go"},
+		Collaboration:    []string{"uses session persistence"},
+		Risks:            []string{"large runtime surface"},
+		EvidenceFiles:    []string{"main.go"},
+		Claims: []AnalysisClaim{{
+			Claim:         "main.go initializes runtime state.",
+			SourceAnchors: []string{"main.go:1"},
+		}},
+	}
+	decision, err := analyzer.reviewReport(
+		context.Background(),
+		ProjectSnapshot{Root: root, AnalysisMode: "map"},
+		AnalysisShard{ID: "shard-core", Name: "core", PrimaryFiles: []string{"main.go"}},
+		report,
+		"map the project",
+		nil,
+		analysisReuseState{},
+	)
+	if err != nil {
+		t.Fatalf("reviewReport: %v", err)
+	}
+	if client.reviewerCalls != 0 {
+		t.Fatalf("declined analysis reviewer consent must not call reviewer, got %d call(s)", client.reviewerCalls)
+	}
+	if decision.Status != "model_review_skipped" || decision.ClaimCoverageStatus != "model_review_skipped_consent" || decision.RevisionPrompt != "" {
+		t.Fatalf("declined analysis reviewer consent must be recorded as skipped without worker revision, got %#v", decision)
+	}
+	if !strings.Contains(decision.Raw, modelReviewSkipByUser) {
+		t.Fatalf("expected skip reason in review decision raw output, got %#v", decision)
+	}
+}
+
+func TestProjectAnalysisReviewerAskWithoutRuntimeSkipsModelRequest(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	client := &stubAnalysisClient{}
+	analyzer := newProjectAnalyzer(cfg, client, Workspace{BaseRoot: root, Root: root}, nil, nil)
+	report := WorkerReport{
+		ShardID:          "shard-core",
+		Title:            "core",
+		ScopeSummary:     "Core runtime behavior.",
+		Responsibilities: []string{"Owns runtime loop"},
+		KeyFiles:         []string{"main.go"},
+		EntryPoints:      []string{"main.go"},
+		InternalFlow:     []string{"main.go initializes runtime state"},
+		Dependencies:     []string{"session.go"},
+		Collaboration:    []string{"uses session persistence"},
+		Risks:            []string{"large runtime surface"},
+		EvidenceFiles:    []string{"main.go"},
+	}
+
+	decision, err := analyzer.reviewReport(
+		context.Background(),
+		ProjectSnapshot{Root: root, AnalysisMode: "map"},
+		AnalysisShard{ID: "shard-core", Name: "core", PrimaryFiles: []string{"main.go"}},
+		report,
+		"map the project",
+		nil,
+		analysisReuseState{},
+	)
+	if err != nil {
+		t.Fatalf("reviewReport: %v", err)
+	}
+	if client.reviewerCalls != 0 {
+		t.Fatalf("ask without runtime consent must not call analysis reviewer, got %d call(s)", client.reviewerCalls)
+	}
+	if decision.Status != "model_review_skipped" || decision.ClaimCoverageStatus != "model_review_skipped_consent" || decision.RevisionPrompt != "" {
+		t.Fatalf("ask without runtime consent must be recorded as skipped without worker revision, got %#v", decision)
+	}
+	if !strings.Contains(decision.Raw, modelReviewSkipNoInteractiveConsent) {
+		t.Fatalf("expected no-interactive skip reason in review decision raw output, got %#v", decision)
+	}
+}
+
 type namedAnalysisClient struct {
 	name  string
 	calls int
@@ -364,6 +463,7 @@ func TestProjectAnalyzerRunCreatesArtifacts(t *testing.T) {
 
 	cfg := DefaultConfig(root)
 	cfg.Model = "stub-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &stubAnalysisClient{}
 	ws := Workspace{
@@ -457,6 +557,7 @@ func TestProjectAnalyzerParsesFencedWorkerAndReviewerJSON(t *testing.T) {
 
 	cfg := DefaultConfig(root)
 	cfg.Model = "stub-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &fencedAnalysisClient{}
 	ws := Workspace{
@@ -519,6 +620,7 @@ func TestProjectAnalyzerRunScopesShardsToRequestedDirectory(t *testing.T) {
 
 	cfg := DefaultConfig(root)
 	cfg.Model = "stub-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &stubAnalysisClient{}
 	ws := Workspace{
@@ -552,6 +654,7 @@ func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
 
 	cfg := DefaultConfig(root)
 	cfg.Model = "stub-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.ProjectAnalysis.MaxProviderRetries = -1
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &reviewerFailureAnalysisClient{}
@@ -3773,6 +3876,7 @@ func TestExecuteShardUsesDedicatedWorkerAndReviewerClients(t *testing.T) {
 		t.Fatalf("write main.go: %v", err)
 	}
 	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	ws := Workspace{
 		BaseRoot: root,
 		Root:     root,
@@ -3816,6 +3920,7 @@ func TestProjectAnalyzerIncrementalReuseSkipsWorkerAndReviewer(t *testing.T) {
 	}
 	cfg := DefaultConfig(root)
 	cfg.Model = "stub-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &stubAnalysisClient{}
 	ws := Workspace{
@@ -5293,6 +5398,7 @@ func TestRunDowngradesToDraftWhenNoShardApproved(t *testing.T) {
 		t.Fatalf("write main.go: %v", err)
 	}
 	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &draftAnalysisClient{}
 	ws := Workspace{

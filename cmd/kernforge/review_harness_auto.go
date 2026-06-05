@@ -1480,6 +1480,11 @@ func formatPostChangeReviewFeedback(cfg Config, run ReviewRun, needsRevision boo
 		fmt.Fprintf(&b, "\n%s: %s", reviewRunLocalizedText(cfg, run, "Summary", "요약"), run.Result.Summary)
 	}
 	if needsRevision {
+		if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+			fmt.Fprintf(&b, "\n%s", original)
+		}
+	}
+	if needsRevision {
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
 			b.WriteString("\n\n")
 			b.WriteString(run.RepairPlan.Prompt)
@@ -1563,6 +1568,9 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
 		}
+		if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+			fmt.Fprintf(&b, "\n%s", original)
+		}
 		if carried := formatPreWriteCarriedRepairObligationsFeedback(run, true); carried != "" {
 			b.WriteString("\n\n")
 			b.WriteString(carried)
@@ -1596,6 +1604,9 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 	}
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
+	}
+	if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+		fmt.Fprintf(&b, "\n%s", original)
 	}
 	if carried := formatPreWriteCarriedRepairObligationsFeedback(run, false); carried != "" {
 		b.WriteString("\n\n")
@@ -1649,6 +1660,9 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n요약: %s", run.Result.Summary)
 		}
+		if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+			fmt.Fprintf(&b, "\n%s", original)
+		}
 		if carried := formatPreWriteCarriedRepairObligationsFeedback(run, true); carried != "" {
 			b.WriteString("\n\n")
 			b.WriteString(carried)
@@ -1678,6 +1692,9 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 	}
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		fmt.Fprintf(&b, "\nSummary: %s", run.Result.Summary)
+	}
+	if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+		fmt.Fprintf(&b, "\n%s", original)
 	}
 	if carried := formatPreWriteCarriedRepairObligationsFeedback(run, false); carried != "" {
 		b.WriteString("\n\n")

@@ -551,6 +551,13 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 	if client == nil || strings.TrimSpace(model) == "" {
 		return skippedGoalReviewerReply(prompt), nil
 	}
+	decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{
+		Trigger:              goalReviewerConsentTrigger(prompt),
+		OriginalMainProposal: prompt,
+	})
+	if !decision.Allowed {
+		return skippedGoalReviewerReplyByConsent(prompt, decision), nil
+	}
 	resp, err := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
 		Model: model,
 		System: strings.Join([]string{
@@ -575,21 +582,22 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 }
 
 func (rt *runtimeState) runGoalReviewHarnessReply(ctx context.Context, goal GoalState, iteration GoalIteration, root string) (string, error) {
+	reviewCfg := configReviewHarness(rt.cfg)
+	if reviewCfg.AutoAfterGoalIteration == nil || !*reviewCfg.AutoAfterGoalIteration {
+		return skippedGoalReviewerReplyByAutoFlagDisabled(), nil
+	}
 	if rt != nil && rt.goalReply != nil {
 		return rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, root, rt.checkpoints))
 	}
-	reviewCfg := configReviewHarness(rt.cfg)
-	if reviewCfg.AutoAfterGoalIteration == nil || !*reviewCfg.AutoAfterGoalIteration {
-		return rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, root, rt.checkpoints))
-	}
 	opts := ReviewHarnessOptions{
-		Trigger:         "goal_iteration",
-		Target:          reviewTargetGoal,
-		Mode:            reviewModeGeneralChange,
-		Request:         goal.Objective,
-		IncludeGitDiff:  true,
-		AutoTriggered:   true,
-		MaxContextChars: reviewDefaultMaxContextChars,
+		Trigger:              "goal_iteration",
+		Target:               reviewTargetGoal,
+		Mode:                 reviewModeGeneralChange,
+		Request:              goal.Objective,
+		IncludeGitDiff:       true,
+		AutoTriggered:        true,
+		MaxContextChars:      reviewDefaultMaxContextChars,
+		OriginalMainProposal: iteration.ImplementReply,
 	}
 	run, err := runReviewHarness(ctx, rt, opts)
 	if err != nil {
@@ -612,6 +620,25 @@ func skippedGoalReviewerReply(prompt string) string {
 		return "APPROVED: independent semantic reviewer skipped because no cross review route is configured; relying on completion audit and verification evidence."
 	}
 	return "APPROVED: independent reviewer skipped because no cross review route is configured; relying on the main implementation pass and subsequent verification."
+}
+
+func skippedGoalReviewerReplyByAutoFlagDisabled() string {
+	return "APPROVED: goal iteration model review skipped because review.auto_after_goal_iteration is disabled. No reviewer model request was sent; relying on deterministic evidence, verification, and completion audit."
+}
+
+func goalReviewerConsentTrigger(prompt string) string {
+	if strings.Contains(prompt, "Final semantic goal review") {
+		return "goal semantic"
+	}
+	return "goal iteration"
+}
+
+func skippedGoalReviewerReplyByConsent(prompt string, decision ModelReviewConsentDecision) string {
+	reason := firstNonBlankString(decision.SkipReason, "model review consent not granted")
+	if strings.Contains(prompt, "Final semantic goal review") {
+		return "NEEDS_REVISION: semantic goal review skipped because " + reason + ". No reviewer model request was sent; keep the goal active unless deterministic audit evidence is sufficient."
+	}
+	return "SKIPPED: goal iteration model review skipped because " + reason + ". No reviewer model request was sent; continue with deterministic evidence and normal goal safety checks."
 }
 
 func buildGoalImplementationPrompt(goal GoalState, iteration int) string {

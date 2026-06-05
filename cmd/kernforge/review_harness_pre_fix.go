@@ -226,7 +226,7 @@ func (rt *runtimeState) reviewBeforeFixOptions(input string, images []MessageIma
 		Paths:               paths,
 		IncludeGitDiff:      includeGitDiff,
 		IncludeFileContents: includeFileContents,
-		AutoTriggered:       true,
+		AutoTriggered:       false,
 		AutoFollowUp:        "none",
 		MaxContextChars:     maxContextChars,
 		RawArgs:             request,

@@ -43,6 +43,7 @@ type Agent struct {
 	Hooks                          *HookRuntime
 	VerifyChanges                  func(context.Context) (VerificationReport, bool)
 	PromptConfirmAutoVerify        func(VerificationPlan) (bool, error)
+	PromptConfirmModelReview       func(ModelReviewConsentRequest) ModelReviewConsentDecision
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
 	PromptContinueReviewRepair     func(string) (bool, error)
 	UserChangeIsolation            *UserChangeIsolationState

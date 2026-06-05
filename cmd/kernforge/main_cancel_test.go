@@ -1835,6 +1835,72 @@ func TestRuntimeStateHandleModelCommandInteractiveRoutesToAnalysisReviewer(t *te
 	}
 }
 
+func TestRuntimeStateHandleModelCommandInteractiveZeroResetsAnalysisRoutes(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var out bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.ProjectAnalysis.WorkerProfile = &Profile{
+		Provider: "deepseek",
+		Model:    "deepseek-v4-pro",
+	}
+	cfg.ProjectAnalysis.ReviewerProfile = &Profile{
+		Provider: "openai",
+		Model:    "gpt-analysis-review",
+	}
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("2\n0\n3\n0\n")),
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+		cfg:         cfg,
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-main",
+			PermissionMode: "default",
+		},
+	}
+
+	if err := rt.handleModelCommand(""); err != nil {
+		t.Fatalf("handleModelCommand worker reset: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+		t.Fatalf("expected worker profile reset, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
+		t.Fatalf("reviewer profile should remain configured until separately reset")
+	}
+	if err := rt.handleModelCommand(""); err != nil {
+		t.Fatalf("handleModelCommand reviewer reset: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+		t.Fatalf("expected reviewer profile reset, got %#v", rt.cfg.ProjectAnalysis.ReviewerProfile)
+	}
+	rendered := out.String()
+	for _, needle := range []string{
+		"0. reset analysis worker to inherited default",
+		"0. reset analysis reviewer to inherited default",
+		"Project analysis worker model reset",
+		"Project analysis reviewer model reset",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected output to contain %q, got %q", needle, rendered)
+		}
+	}
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ProjectAnalysis.WorkerProfile != nil || loaded.ProjectAnalysis.ReviewerProfile != nil {
+		t.Fatalf("expected reset analysis routes to persist, got worker=%#v reviewer=%#v", loaded.ProjectAnalysis.WorkerProfile, loaded.ProjectAnalysis.ReviewerProfile)
+	}
+}
+
 func TestRuntimeStateHandleSetSpecialistModelCommandPersistsWorkspaceOverride(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()

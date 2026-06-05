@@ -32,6 +32,8 @@ type TaskState struct {
 	LastRecoveryReason       string      `json:"last_recovery_reason,omitempty"`
 	FinalReviewCount         int         `json:"final_review_count,omitempty"`
 	FinalReviewVerdict       string      `json:"final_review_verdict,omitempty"`
+	OriginalMainProposal     string      `json:"original_main_proposal,omitempty"`
+	OriginalMainProposalRef  string      `json:"original_main_proposal_ref,omitempty"`
 	NextStep                 string      `json:"next_step,omitempty"`
 	Events                   []TaskEvent `json:"events,omitempty"`
 	LastUpdated              time.Time   `json:"last_updated,omitempty"`
@@ -266,6 +268,8 @@ func (t *TaskState) Normalize() {
 	t.ExecutorParallelGuidance = normalizeTaskStateList(t.ExecutorParallelGuidance, 8)
 	t.LastRecoveryReason = strings.TrimSpace(t.LastRecoveryReason)
 	t.FinalReviewVerdict = strings.TrimSpace(strings.ToLower(t.FinalReviewVerdict))
+	t.OriginalMainProposal = compactPromptSection(strings.TrimSpace(t.OriginalMainProposal), 2000)
+	t.OriginalMainProposalRef = strings.TrimSpace(t.OriginalMainProposalRef)
 	t.NextStep = strings.TrimSpace(t.NextStep)
 	t.Events = normalizeTaskEvents(t.Events, 48, 12)
 }
@@ -283,7 +287,7 @@ func (t *TaskState) ApproxChars() int {
 	}
 	total := len(t.Goal) + len(t.Phase) + len(t.PlanSummary) + len(t.PlannerProfile) + len(t.ReviewerProfile)
 	total += len(t.CurrentHypothesis) + len(t.ReviewerGuidance) + len(t.ExecutorFocusNode) + len(t.ExecutorAction)
-	total += len(t.ExecutorReason) + len(t.ExecutorGuidance) + len(t.LastRecoveryReason) + len(t.FinalReviewVerdict) + len(t.NextStep)
+	total += len(t.ExecutorReason) + len(t.ExecutorGuidance) + len(t.LastRecoveryReason) + len(t.FinalReviewVerdict) + len(t.OriginalMainProposal) + len(t.OriginalMainProposalRef) + len(t.NextStep)
 	for _, item := range t.ConfirmedFacts {
 		total += len(item)
 	}
@@ -442,6 +446,15 @@ func (t *TaskState) NoteFinalReview(verdict string, guidance string) {
 	if strings.TrimSpace(guidance) != "" {
 		t.ReviewerGuidance = strings.TrimSpace(guidance)
 	}
+	t.Touch()
+}
+
+func (t *TaskState) NoteOriginalMainProposal(proposal string, ref string) {
+	if t == nil {
+		return
+	}
+	t.OriginalMainProposal = compactPromptSection(strings.TrimSpace(proposal), 2000)
+	t.OriginalMainProposalRef = strings.TrimSpace(ref)
 	t.Touch()
 }
 
@@ -619,6 +632,11 @@ func (t *TaskState) RenderPromptSection() string {
 	}
 	if t.FinalReviewVerdict != "" {
 		lines = append(lines, "- Final answer review: "+t.FinalReviewVerdict)
+	}
+	if t.OriginalMainProposalRef != "" {
+		lines = append(lines, "- Original main proposal ref: "+t.OriginalMainProposalRef)
+	} else if t.OriginalMainProposal != "" {
+		lines = append(lines, "- Original main proposal: "+compactPromptSection(t.OriginalMainProposal, 240))
 	}
 	if t.NextStep != "" {
 		lines = append(lines, "- Next step: "+compactPromptSection(t.NextStep, 200))

@@ -70,6 +70,7 @@ func (rt *runtimeState) handleFindRootCauseCommand(args string) error {
 	}, func(debug string) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("root-cause: "+debug))
 	})
+	analyzer.confirmModelReview = rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	analyzer.rootCausePatternPacks = append([]string(nil), options.PatternPackPaths...)
 	previewSnapshot, err := analyzer.scanProject()
@@ -103,6 +104,7 @@ func (rt *runtimeState) handleFindRootCauseCommand(args string) error {
 			rt.printPersistentWhileThinking(rt.ui.infoLine("root-cause: " + debug))
 		}
 	})
+	analyzer.confirmModelReview = rt.confirmImplicitModelReview
 	analyzer.analysisCfg = analysisCfg
 	analyzer.rootCausePatternPacks = append([]string(nil), options.PatternPackPaths...)
 	run, err := analyzer.Run(requestCtx, goal, "root-cause")

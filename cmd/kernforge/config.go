@@ -399,6 +399,7 @@ func DefaultConfig(cwd string) Config {
 			AutoAfterChange:               boolPtr(true),
 			AutoAfterGoalIteration:        boolPtr(true),
 			AutoBeforeGitWrite:            boolPtr(true),
+			ModelReviewConsent:            modelReviewConsentAsk,
 			AutoFollowUp:                  "safe",
 			AutoRepairMaxRounds:           2,
 			RepeatedFindingBlockThreshold: 2,
@@ -1191,6 +1192,9 @@ func mergeReviewHarnessConfig(dst *ReviewHarnessConfig, src ReviewHarnessConfig)
 		value := *src.AutoBeforeGitWrite
 		dst.AutoBeforeGitWrite = &value
 	}
+	if strings.TrimSpace(src.ModelReviewConsent) != "" {
+		dst.ModelReviewConsent = normalizeModelReviewConsent(src.ModelReviewConsent)
+	}
 	if strings.TrimSpace(src.AutoFollowUp) != "" {
 		dst.AutoFollowUp = strings.TrimSpace(src.AutoFollowUp)
 	}
@@ -1227,6 +1231,7 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 	if cfg.AutoBeforeGitWrite == nil {
 		cfg.AutoBeforeGitWrite = boolPtr(true)
 	}
+	cfg.ModelReviewConsent = normalizeModelReviewConsent(cfg.ModelReviewConsent)
 	if strings.TrimSpace(cfg.AutoFollowUp) == "" {
 		cfg.AutoFollowUp = "safe"
 	}
@@ -3261,6 +3266,10 @@ Provider And Models:
 /model                 Show all model routing and interactively reconfigure one target
 /model analysis-worker <provider> <model> [reasoning_effort] Configure the project-analysis worker route
 /model analysis-reviewer <provider> <model> [reasoning_effort] Configure the project-analysis reviewer route
+/model analysis-worker 0 Reset only the project-analysis worker route to inherited default
+/model analysis-reviewer 0 Reset only the project-analysis reviewer route to inherited default
+/model cross-review [provider] [model] [reasoning_effort] Configure the optional independent second-pass reviewer route
+/model cross-review 0 Reset the optional cross-review route to default single-model mode
 /model analysis clear  Reset project-analysis worker/reviewer routes to inherited defaults
 /model task-owner [status|clear <owner-profile|all>|<owner-profile> <provider> <model> [reasoning_effort]] Configure optional task-owner model overrides
 /effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
@@ -3499,7 +3508,7 @@ func HelpDetail(topic string) (string, bool) {
 - Re-run /session audit for the goal objective and attach the result to the goal state without marking it complete.
 
 /goal complete [id|latest]
-- Re-run completion audit, run the final semantic goal reviewer, and mark the goal complete only when both gates approve.
+- Re-run completion audit, request the final semantic goal reviewer only with model-review consent, and mark the goal complete only when both gates approve.
 
 /goal cancel [id|latest]
 - Mark a goal canceled without deleting its artifact history.
@@ -3688,10 +3697,13 @@ Provider and model commands control which model is active and how planning/revie
 - Show current model routing, including the main model, project-analysis models, and explicit task-owner model overrides.
 - The primary /review route follows the active main model; use /model cross-review only for the optional independent cross reviewer route.
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
+- In the interactive provider picker for analysis worker, analysis reviewer, or cross-review, choose 0 to reset that target to its inherited/default route.
 - Changing the main model changes the primary review route. It does not overwrite the independent cross reviewer route.
 - Main profiles store their own analysis models and optional task-owner model overrides. When you change analysis or task-owner models through /model, the active main profile remembers those role models; activating that profile restores the full set.
 - /model cross-review [provider] [model] [reasoning_effort] configures the optional independent second-pass reviewer route.
+- /model cross-review 0 clears the independent route and returns reviews to default single-model mode.
 - /model clear cross-review clears the independent route and returns reviews to single-model mode.
+- /model cross-review status shows review.model_review_consent. Automatic review flags make a review eligible; consent still controls implicit model-backed review requests.
 
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 - Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
@@ -3805,6 +3817,7 @@ Provider and model commands control which model is active and how planning/revie
 - Use /model analysis status to show the current analysis model configuration.
 - Use /model analysis clear to reset worker and reviewer to the main active model.
 - Use /model analysis-worker <provider> <model> [reasoning_effort] or /model analysis-reviewer <provider> <model> [reasoning_effort] for scriptable setup.
+- Use /model analysis-worker 0 or /model analysis-reviewer 0 to reset only one analysis role; the interactive provider picker also accepts 0.
 
 /model task-owner
 - Configure an optional provider/model override for a specific task owner profile.
@@ -4088,6 +4101,8 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 	case "review", "reviews", "review-harness", "review-pr", "review-selection", "do-plan-review":
 		return strings.TrimSpace(`
 Review commands all go through the common ReviewRun harness and write .kernforge/reviews/latest.json plus latest.md.
+Implicit automatic model-backed reviews obey review.model_review_consent: ask (default), always, or never.
+When an automatic review is skipped or blocked, review artifacts preserve the original user-visible main-model proposal when available.
 
 /review change [diff-or-note]
 - Review the current workspace diff, a patch transaction, or supplied diff/code.

@@ -195,6 +195,27 @@ func TestModelHubScriptableAnalysisAndTaskOwnerRoutes(t *testing.T) {
 	if got := rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort; got != "high" {
 		t.Fatalf("analysis worker reasoning effort = %q", got)
 	}
+	if _, err := rt.handleCommand(Command{Name: "model", Args: "analysis-reviewer openai gpt-analysis"}); err != nil {
+		t.Fatalf("configure analysis reviewer through /model: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
+		t.Fatalf("expected analysis reviewer profile to be configured")
+	}
+	if _, err := rt.handleCommand(Command{Name: "model", Args: "analysis-worker 0"}); err != nil {
+		t.Fatalf("reset analysis worker through /model: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+		t.Fatalf("expected analysis worker profile to be reset")
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
+		t.Fatalf("analysis reviewer profile should remain configured after worker reset")
+	}
+	if _, err := rt.handleCommand(Command{Name: "model", Args: "analysis reviewer 0"}); err != nil {
+		t.Fatalf("reset analysis reviewer through /model alias: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+		t.Fatalf("expected analysis reviewer profile to be reset")
+	}
 	if _, err := rt.handleCommand(Command{Name: "model", Args: "analysis clear"}); err != nil {
 		t.Fatalf("clear analysis routes through /model: %v", err)
 	}

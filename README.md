@@ -118,6 +118,7 @@ Its current differentiators are:
 - Out-of-scope automatic verification failures now switch the next model turn to final-answer-only by withholding tool definitions. If a local or scripted route still emits a tool call, Kernforge returns `NOT_EXECUTED` and repeats the final-answer-only guidance instead of letting the turn drift into read/probe/build loops.
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
 - Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows, including main-first review, optional cross reviewers, request-class-aware orchestration, read-only review mode, mixed edit-tool isolation, workspace-contained mentions, original-request isolation from internal repair guidance, typed action envelopes, separated approval ledgers, route-health-aware retries, local-code web-research blocking, high-budget pre-write evidence that preserves edit proposals, original repair findings, after excerpts, and focused file context before optional compaction, pre-write repair recovery with explicit `y/N` continuation, line-range-aware artifact integrity checks, replay fixtures, patch-transaction-scoped freshness, and final review details before diff preview. General agent and goal prompts include a Codex-grade request-handling contract, and the runtime now enforces the key parts: requests are classified as `review_only`, `document_artifact`, `review_then_modify`, `modify_then_review`, `verification_only`, `validation_only`, or `general` with confidence, ambiguity warnings, and class-specific contracts; no distinct cross-review route triggers a separate single-model second-pass review call or an explicit skipped-state disclosure; a configured reviewer-only post-change path avoids redundant single-model calls while keeping the single-model policy state visible; actionable cross-review findings must be reconciled in `cross_review_triage` as `accepted_fixed`, `accepted_deferred`, `rejected_with_reason`, or `needs_user_decision`; `needs_user_decision` includes what to inspect, what is safe to change, what not to change yet, and the next command; document artifacts are gated by artifact existence/topic/placeholder/claim checks instead of shell-review overblocking; and pre-final coding harness correction blocks incomplete edit/review/document final answers without legacy generic phrase whitelists. UI-polish review routing requires primary reviewer coverage unless collected changed paths prove the scope is style/asset/markup-only; executable source files keep primary correctness coverage even when their names look UI-related.
+- Implicit model-backed review requests now obey `review.model_review_consent` (`ask` by default, `always`, or `never`). Automatic review flags only make reviews eligible; explicit `/review`, natural-language review requests, `kernforge_review`, and explicitly registered review automation remain explicit. Skipped or blocked automatic reviews preserve the user-visible original main-model proposal in review/session artifacts when available.
 - Runtime review/final/completion ledgers prefer the current patch transaction over ambient dirty git state, while commit/push gates still account for all changed files. This keeps unrelated dirty worktree files from becoming false review blockers for the current repair.
 - Post-change diff review is isolated from final-answer coding-harness state. Coding-harness blockers such as missing worker causal evidence remain final/completion-audit obligations, but they are not injected into post-change code evidence or deterministic diff-review blockers.
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
@@ -423,7 +424,7 @@ With multiple images:
 
 ### Run With A Specific Provider
 
-Interactive provider pickers and `/model cross-review` use this user-facing order: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `OpenCode Zen`, `OpenCode Go`, `ollama`, `LM Studio`, `vLLM`, `llama.cpp`.
+Interactive provider pickers and `/model cross-review` use this user-facing order: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `OpenCode Zen`, `OpenCode Go`, `ollama`, `LM Studio`, `vLLM`, `llama.cpp`. The analysis worker, analysis reviewer, and cross-review model pickers show `0` before the provider list to reset that target to its default route.
 
 Anthropic:
 
@@ -1217,12 +1218,15 @@ Explain the structure of this repository
 /provider status
 /model
 /model cross-review [provider] [model] [reasoning_effort]
+/model cross-review 0
 /model clear cross-review
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 /profile [list|<number>|rN|dN|pN]
 /model analysis
 /model analysis-worker <provider> <model> [reasoning_effort]
 /model analysis-reviewer <provider> <model> [reasoning_effort]
+/model analysis-worker 0
+/model analysis-reviewer 0
 /model task-owner [status|clear <owner-profile|all>|<owner-profile> <provider> <model> [reasoning_effort]]
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
 /analyze-dashboard [latest|path]
@@ -1240,12 +1244,12 @@ Explain the structure of this repository
 /locale-auto [on|off]
 ```
 
-- `/model` first shows the current routing, then in interactive mode asks which target you want to change. Scripted cross-review updates use `/model cross-review <provider> <model> [reasoning_effort]`; `/model clear cross-review` returns reviews to single-model mode.
+- `/model` first shows the current routing, then in interactive mode asks which target you want to change. Scripted cross-review updates use `/model cross-review <provider> <model> [reasoning_effort]`; `/model cross-review 0` or `/model clear cross-review` returns reviews to single-model mode.
 - `/model` is the main entry point for changing the main model, analysis worker/reviewer, optional cross-review route, and optional task-owner model overrides.
 - `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort analysis-worker high` or `/effort specialist <name> low` changes an analysis or task-owner model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
 - If a model change selects an effort-capable provider while that target's effort is `undefined`, Kernforge saves `low` as the starting effort instead of leaving that route ambiguous.
 - `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
-- Changing only the main model also changes the primary review route. The optional cross route, analysis worker/reviewer routes, and task-owner routes keep their explicit overrides. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/model analysis clear`.
+- Changing only the main model also changes the primary review route. The optional cross route, analysis worker/reviewer routes, and task-owner routes keep their explicit overrides. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/model analysis clear`; use `/model analysis-worker 0` or `/model analysis-reviewer 0` to reset only one analysis role.
 - `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and optional task-owner model override set. Changing those route models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
 - `/model cross-review` is the single supported path for the optional `cross` review route. `design`, `security`, `false_positive`, `regression`, `test`, and `final_gate` are review lenses selected by the planner, not model routes.

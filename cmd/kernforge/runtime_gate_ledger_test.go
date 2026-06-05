@@ -1148,6 +1148,36 @@ func TestRuntimeGateFeedbackBlocksGitWriteOnReviewBlocker(t *testing.T) {
 	}
 }
 
+func TestGitWriteGateDoesNotAutoRunImplicitModelReview(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("reviewer should not run")}}
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:         cfg,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+	}
+
+	blocked, feedback := agent.runtimeGateFeedbackForAction(runtimeGateActionGitWrite)
+
+	if !blocked {
+		t.Fatalf("expected git write gate to block until an explicit review exists")
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("git write gate must not send an implicit reviewer request, got %d request(s)", len(reviewer.requests))
+	}
+	if !strings.Contains(feedback, "/review") || session.RuntimeGateLedger == nil {
+		t.Fatalf("expected deterministic git-write gate feedback to point at explicit review, got %q %#v", feedback, session.RuntimeGateLedger)
+	}
+}
+
 func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {

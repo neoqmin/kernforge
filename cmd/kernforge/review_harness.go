@@ -101,6 +101,7 @@ type ReviewHarnessConfig struct {
 	AutoAfterChange               *bool                        `json:"auto_after_change,omitempty"`
 	AutoAfterGoalIteration        *bool                        `json:"auto_after_goal_iteration,omitempty"`
 	AutoBeforeGitWrite            *bool                        `json:"auto_before_git_write,omitempty"`
+	ModelReviewConsent            string                       `json:"model_review_consent,omitempty"`
 	AutoFollowUp                  string                       `json:"auto_follow_up,omitempty"`
 	AutoRepairMaxRounds           int                          `json:"auto_repair_max_rounds,omitempty"`
 	RepeatedFindingBlockThreshold int                          `json:"repeated_finding_block_threshold,omitempty"`
@@ -108,64 +109,69 @@ type ReviewHarnessConfig struct {
 }
 
 type ReviewRun struct {
-	ID                    string                       `json:"id"`
-	SchemaVersion         string                       `json:"schema_version"`
-	KernforgeVersion      string                       `json:"kernforge_version,omitempty"`
-	KernforgeBuild        KernforgeBuildIdentity       `json:"kernforge_build,omitempty"`
-	PolicyPackVersions    map[string]string            `json:"policy_pack_versions,omitempty"`
-	ReviewFingerprint     string                       `json:"review_fingerprint,omitempty"`
-	Trigger               string                       `json:"trigger,omitempty"`
-	Target                string                       `json:"target,omitempty"`
-	Mode                  string                       `json:"mode,omitempty"`
-	Flow                  string                       `json:"flow,omitempty"`
-	RequestClass          string                       `json:"request_class,omitempty"`
-	RequestAnalysis       ReviewRequestAnalysis        `json:"request_analysis,omitempty"`
-	AutoTriggered         bool                         `json:"auto_triggered,omitempty"`
-	Status                string                       `json:"status,omitempty"`
-	MachineStatus         string                       `json:"machine_status,omitempty"`
-	ExitCode              int                          `json:"exit_code,omitempty"`
-	Objective             string                       `json:"objective,omitempty"`
-	ImplementationReply   string                       `json:"implementation_reply,omitempty"`
-	CreatedAt             time.Time                    `json:"created_at"`
-	Workspace             string                       `json:"workspace,omitempty"`
-	Branch                string                       `json:"branch,omitempty"`
-	Profiles              []string                     `json:"profiles,omitempty"`
-	ModelPlan             ReviewModelPlan              `json:"model_plan,omitempty"`
-	ChangeSet             ReviewChangeSet              `json:"change_set,omitempty"`
-	Evidence              ReviewEvidencePack           `json:"evidence,omitempty"`
-	Freshness             ReviewFreshness              `json:"freshness,omitempty"`
-	Redaction             ReviewRedactionReport        `json:"redaction,omitempty"`
-	EditProposals         []EditProposal               `json:"edit_proposals,omitempty"`
-	RepairFindings        []ReviewFinding              `json:"repair_findings,omitempty"`
-	ObligationLedger      ReviewObligationLedger       `json:"obligation_ledger,omitempty"`
-	StateTransitions      []ReviewStateTransition      `json:"state_transitions,omitempty"`
-	ActionEnvelopes       []ReviewActionEnvelope       `json:"action_envelopes,omitempty"`
-	ApprovalLedger        ReviewApprovalLedger         `json:"approval_ledger,omitempty"`
-	CapabilityManifest    ReviewCapabilityManifest     `json:"capability_manifest,omitempty"`
-	SingleModelPolicy     SingleModelReviewPolicy      `json:"single_model_policy,omitempty"`
-	SingleModelSecondPass *SingleModelSecondPassReview `json:"single_model_second_pass,omitempty"`
-	ExternalLookupIntents []ReviewExternalLookupIntent `json:"external_lookup_intents,omitempty"`
-	ArtifactIntegrity     ReviewArtifactIntegrity      `json:"artifact_integrity,omitempty"`
-	LedgerConsistency     ReviewLedgerConsistencyCheck `json:"ledger_consistency,omitempty"`
-	ResumeSanity          ReviewResumeSanityCheck      `json:"resume_sanity,omitempty"`
-	PolicyPacks           []string                     `json:"policy_packs,omitempty"`
-	ReviewerRuns          []ReviewReviewerRun          `json:"reviewer_runs,omitempty"`
-	CrossReviewTriage     *CrossReviewTriageLedger     `json:"cross_review_triage,omitempty"`
-	ReviewerGatePolicy    string                       `json:"reviewer_gate_policy,omitempty"`
-	MergeResult           ReviewMergeResult            `json:"merge_result,omitempty"`
-	Result                ReviewResult                 `json:"result,omitempty"`
-	Findings              []ReviewFinding              `json:"findings,omitempty"`
-	Gate                  GateDecision                 `json:"gate,omitempty"`
-	Waivers               []ReviewWaiver               `json:"waivers,omitempty"`
-	RepairPlan            ReviewRepairPlan             `json:"repair_plan,omitempty"`
-	RuntimeGateLedger     RuntimeGateLedger            `json:"runtime_gate_ledger,omitempty"`
-	Lifecycle             *ReviewRequestLifecycle      `json:"lifecycle,omitempty"`
-	DecisionObservability *ReviewDecisionObservability `json:"decision_observability,omitempty"`
-	RouteHealthEvents     []ReviewRouteHealthEvent     `json:"route_health_events,omitempty"`
-	LiveProviderDrill     *LiveProviderDrillReport     `json:"live_provider_drill,omitempty"`
-	NextCommandResults    []ReviewNextCommandRun       `json:"next_command_results,omitempty"`
-	ArtifactRefs          []string                     `json:"artifact_refs,omitempty"`
-	AuditTrail            []string                     `json:"audit_trail,omitempty"`
+	ID                      string                       `json:"id"`
+	SchemaVersion           string                       `json:"schema_version"`
+	KernforgeVersion        string                       `json:"kernforge_version,omitempty"`
+	KernforgeBuild          KernforgeBuildIdentity       `json:"kernforge_build,omitempty"`
+	PolicyPackVersions      map[string]string            `json:"policy_pack_versions,omitempty"`
+	ReviewFingerprint       string                       `json:"review_fingerprint,omitempty"`
+	Trigger                 string                       `json:"trigger,omitempty"`
+	Target                  string                       `json:"target,omitempty"`
+	Mode                    string                       `json:"mode,omitempty"`
+	Flow                    string                       `json:"flow,omitempty"`
+	ModelReviewConsent      string                       `json:"model_review_consent,omitempty"`
+	ConsentSource           string                       `json:"consent_source,omitempty"`
+	SkipReason              string                       `json:"skip_reason,omitempty"`
+	OriginalMainProposal    string                       `json:"original_main_proposal,omitempty"`
+	OriginalMainProposalRef string                       `json:"original_main_proposal_ref,omitempty"`
+	RequestClass            string                       `json:"request_class,omitempty"`
+	RequestAnalysis         ReviewRequestAnalysis        `json:"request_analysis,omitempty"`
+	AutoTriggered           bool                         `json:"auto_triggered,omitempty"`
+	Status                  string                       `json:"status,omitempty"`
+	MachineStatus           string                       `json:"machine_status,omitempty"`
+	ExitCode                int                          `json:"exit_code,omitempty"`
+	Objective               string                       `json:"objective,omitempty"`
+	ImplementationReply     string                       `json:"implementation_reply,omitempty"`
+	CreatedAt               time.Time                    `json:"created_at"`
+	Workspace               string                       `json:"workspace,omitempty"`
+	Branch                  string                       `json:"branch,omitempty"`
+	Profiles                []string                     `json:"profiles,omitempty"`
+	ModelPlan               ReviewModelPlan              `json:"model_plan,omitempty"`
+	ChangeSet               ReviewChangeSet              `json:"change_set,omitempty"`
+	Evidence                ReviewEvidencePack           `json:"evidence,omitempty"`
+	Freshness               ReviewFreshness              `json:"freshness,omitempty"`
+	Redaction               ReviewRedactionReport        `json:"redaction,omitempty"`
+	EditProposals           []EditProposal               `json:"edit_proposals,omitempty"`
+	RepairFindings          []ReviewFinding              `json:"repair_findings,omitempty"`
+	ObligationLedger        ReviewObligationLedger       `json:"obligation_ledger,omitempty"`
+	StateTransitions        []ReviewStateTransition      `json:"state_transitions,omitempty"`
+	ActionEnvelopes         []ReviewActionEnvelope       `json:"action_envelopes,omitempty"`
+	ApprovalLedger          ReviewApprovalLedger         `json:"approval_ledger,omitempty"`
+	CapabilityManifest      ReviewCapabilityManifest     `json:"capability_manifest,omitempty"`
+	SingleModelPolicy       SingleModelReviewPolicy      `json:"single_model_policy,omitempty"`
+	SingleModelSecondPass   *SingleModelSecondPassReview `json:"single_model_second_pass,omitempty"`
+	ExternalLookupIntents   []ReviewExternalLookupIntent `json:"external_lookup_intents,omitempty"`
+	ArtifactIntegrity       ReviewArtifactIntegrity      `json:"artifact_integrity,omitempty"`
+	LedgerConsistency       ReviewLedgerConsistencyCheck `json:"ledger_consistency,omitempty"`
+	ResumeSanity            ReviewResumeSanityCheck      `json:"resume_sanity,omitempty"`
+	PolicyPacks             []string                     `json:"policy_packs,omitempty"`
+	ReviewerRuns            []ReviewReviewerRun          `json:"reviewer_runs,omitempty"`
+	CrossReviewTriage       *CrossReviewTriageLedger     `json:"cross_review_triage,omitempty"`
+	ReviewerGatePolicy      string                       `json:"reviewer_gate_policy,omitempty"`
+	MergeResult             ReviewMergeResult            `json:"merge_result,omitempty"`
+	Result                  ReviewResult                 `json:"result,omitempty"`
+	Findings                []ReviewFinding              `json:"findings,omitempty"`
+	Gate                    GateDecision                 `json:"gate,omitempty"`
+	Waivers                 []ReviewWaiver               `json:"waivers,omitempty"`
+	RepairPlan              ReviewRepairPlan             `json:"repair_plan,omitempty"`
+	RuntimeGateLedger       RuntimeGateLedger            `json:"runtime_gate_ledger,omitempty"`
+	Lifecycle               *ReviewRequestLifecycle      `json:"lifecycle,omitempty"`
+	DecisionObservability   *ReviewDecisionObservability `json:"decision_observability,omitempty"`
+	RouteHealthEvents       []ReviewRouteHealthEvent     `json:"route_health_events,omitempty"`
+	LiveProviderDrill       *LiveProviderDrillReport     `json:"live_provider_drill,omitempty"`
+	NextCommandResults      []ReviewNextCommandRun       `json:"next_command_results,omitempty"`
+	ArtifactRefs            []string                     `json:"artifact_refs,omitempty"`
+	AuditTrail              []string                     `json:"audit_trail,omitempty"`
 }
 
 type ReviewRequestAnalysis struct {
@@ -454,25 +460,26 @@ type ReviewRepairPlan struct {
 }
 
 type ReviewHarnessOptions struct {
-	Trigger             string
-	Target              string
-	Mode                string
-	Flow                string
-	Request             string
-	Paths               []string
-	ProvidedDiff        string
-	ProvidedCode        string
-	ImplementationReply string
-	IncludeGitDiff      bool
-	IncludeFileContents bool
-	NoModel             bool
-	AutoTriggered       bool
-	AutoFollowUp        string
-	EditProposals       []EditProposal
-	RepairFindings      []ReviewFinding
-	MaxContextChars     int
-	ReviewerGatePolicy  string
-	RawArgs             string
+	Trigger              string
+	Target               string
+	Mode                 string
+	Flow                 string
+	Request              string
+	Paths                []string
+	ProvidedDiff         string
+	ProvidedCode         string
+	ImplementationReply  string
+	IncludeGitDiff       bool
+	IncludeFileContents  bool
+	NoModel              bool
+	AutoTriggered        bool
+	AutoFollowUp         string
+	EditProposals        []EditProposal
+	RepairFindings       []ReviewFinding
+	MaxContextChars      int
+	ReviewerGatePolicy   string
+	OriginalMainProposal string
+	RawArgs              string
 }
 
 func configReviewHarness(cfg Config) ReviewHarnessConfig {
@@ -486,6 +493,7 @@ func configReviewHarness(cfg Config) ReviewHarnessConfig {
 	if out.AutoBeforeGitWrite == nil {
 		out.AutoBeforeGitWrite = boolPtr(true)
 	}
+	out.ModelReviewConsent = normalizeModelReviewConsent(out.ModelReviewConsent)
 	if strings.TrimSpace(out.AutoFollowUp) == "" {
 		out.AutoFollowUp = "safe"
 	}
@@ -620,6 +628,17 @@ func writeReviewRunArtifacts(root string, run *ReviewRun) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	originalProposalRef := strings.TrimSpace(run.OriginalMainProposalRef)
+	if originalProposalRef == "" {
+		ref, err := writeReviewOriginalMainProposalArtifact(root, run)
+		if err != nil {
+			return err
+		}
+		originalProposalRef = ref
+	}
+	if originalProposalRef != "" {
+		run.OriginalMainProposalRef = originalProposalRef
+	}
 	reviewJSON := filepath.Join(dir, "review.json")
 	reviewMD := filepath.Join(dir, "review.md")
 	evidenceMD := filepath.Join(dir, "evidence.md")
@@ -630,6 +649,9 @@ func writeReviewRunArtifacts(root string, run *ReviewRun) error {
 		return err
 	}
 	run.ArtifactRefs = append([]string{reviewMD, reviewJSON, evidenceMD, latestMD, latestJSON}, protocolRefs...)
+	if originalProposalRef != "" {
+		run.ArtifactRefs = append(run.ArtifactRefs, originalProposalRef)
+	}
 	data, err := json.MarshalIndent(run, "", "  ")
 	if err != nil {
 		return err
@@ -802,8 +824,10 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Flow = analysis.SelectedFlow
 	run.RequestClass = analysis.RequestClass
 	run.RequestAnalysis = analysis
+	run.ModelReviewConsent = configModelReviewConsent(rt.cfg)
 	run.ImplementationReply = strings.TrimSpace(opts.ImplementationReply)
 	run.EditProposals = normalizeEditProposals(opts.EditProposals)
+	run.OriginalMainProposal = reviewOriginalMainProposalForOptions(opts)
 	run.RepairFindings = normalizeReviewFindingCopies(opts.RepairFindings)
 	run.ReviewerGatePolicy = normalizeReviewReviewerGatePolicy(opts.ReviewerGatePolicy)
 	run.PolicyPacks = analysis.PolicyPacks
@@ -822,8 +846,31 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.ModelPlan = planReviewModels(rt.cfg, run)
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(run, reviewRuntimeHasDistinctCrossReviewer(rt))
 	run.Findings = append(run.Findings, deterministicReviewFindings(rt, run)...)
+	if strings.TrimSpace(run.OriginalMainProposal) != "" {
+		ref, err := writeReviewOriginalMainProposalArtifact(root, &run)
+		if err != nil {
+			return run, err
+		}
+		run.OriginalMainProposalRef = ref
+	}
 	emitReviewPipelineProgress(rt, run, 3, "model review", "모델 검토", "Run the main code review and the configured cross-review when available.", "메인 코드 검토와 설정된 교차 리뷰를 실행합니다.")
-	if !opts.NoModel && len(run.Evidence.Sources) > 0 {
+	modelReviewSkippedByConsent := false
+	if opts.AutoTriggered && !opts.NoModel && len(run.Evidence.Sources) > 0 {
+		decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{
+			Trigger:              reviewConsentTriggerForRun(run),
+			OriginalMainProposal: run.OriginalMainProposal,
+		})
+		applyModelReviewConsentToRun(&run, decision)
+		if !decision.Allowed {
+			modelReviewSkippedByConsent = true
+			emitReviewPipelineProgress(rt, run, 3, "model review skipped", "모델 검토 생략", "Implicit model review was skipped because consent was not granted.", "사용자 동의가 없어 암시적 모델 리뷰를 생략했습니다.")
+		}
+	} else if opts.AutoTriggered {
+		run.ConsentSource = firstNonBlankString(run.ConsentSource, "not_applicable")
+	} else {
+		run.ConsentSource = firstNonBlankString(run.ConsentSource, "explicit_review")
+	}
+	if !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
 		modelFindings, reviewerRuns := executeReviewModelRuns(ctx, rt, root, &run)
 		if err := ctx.Err(); err != nil {
 			return run, err

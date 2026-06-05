@@ -482,6 +482,64 @@ func TestReviewBeforeFixRoutesBugFindAndFixWithoutReviewWord(t *testing.T) {
 	}
 }
 
+func TestReviewBeforeFixExplicitRequestDoesNotRequireImplicitConsent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int value()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: explicit pre-fix review found a bug",
+				"findings:",
+				"- severity: high",
+				"  title: Wrong return value",
+				"  category: correctness",
+				"  path: main.cpp",
+				"  evidence: value returns 0",
+				"  impact: callers observe the wrong result",
+				"  required_fix: return 1 instead",
+				"  test_recommendation: add a focused value test",
+			}, "\n")}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	ran, err := agent.maybeRunReviewBeforeFix(context.Background(), "@main.cpp 검토하고 버그 수정해", nil, false, true)
+	if err != nil {
+		t.Fatalf("review before fix: %v", err)
+	}
+	if !ran {
+		t.Fatalf("expected explicit review-before-fix request to run")
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("explicit review-before-fix must call the requested review model once, got %d", len(provider.requests))
+	}
+	if session.LastReviewRun == nil {
+		t.Fatalf("expected review run to be stored")
+	}
+	if session.LastReviewRun.AutoTriggered {
+		t.Fatalf("explicit review-before-fix must not be recorded as an implicit auto review")
+	}
+	if session.LastReviewRun.ConsentSource != "explicit_review" || session.LastReviewRun.SkipReason != "" {
+		t.Fatalf("expected explicit review consent metadata, got source=%q skip=%q", session.LastReviewRun.ConsentSource, session.LastReviewRun.SkipReason)
+	}
+}
+
 func TestReviewBeforeFixSkipsGenericBugFixWithoutTarget(t *testing.T) {
 	root := t.TempDir()
 	rt := &runtimeState{

@@ -30,6 +30,9 @@ func redactReviewRunEvidence(run *ReviewRun) ReviewRedactionReport {
 	request, requestReport := redactSensitiveText(run.RequestAnalysis.OriginalRequest)
 	run.RequestAnalysis.OriginalRequest = request
 	run.Redaction = mergeReviewRedactionReports(run.Redaction, requestReport)
+	original, originalReport := redactSensitiveText(run.OriginalMainProposal)
+	run.OriginalMainProposal = original
+	run.Redaction = mergeReviewRedactionReports(run.Redaction, originalReport)
 	text, textReport := redactSensitiveText(run.Evidence.Text)
 	run.Evidence.Text = text
 	run.Redaction = mergeReviewRedactionReports(run.Redaction, textReport)

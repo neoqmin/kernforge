@@ -160,6 +160,41 @@ func TestMCPRuntimeUsesConfiguredPermissionMode(t *testing.T) {
 	}
 }
 
+func TestMCPRuntimeAskConsentSkipsImplicitModelReview(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = ""
+	cfg.Model = ""
+	cfg.BaseURL = ""
+	cfg.SessionDir = filepath.Join(root, ".kernforge", "sessions")
+	cfg.HooksEnabled = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+
+	rt, err := newRuntimeStateForMCPServer(root, cfg, "", io.Discard)
+	if err != nil {
+		t.Fatalf("newRuntimeStateForMCPServer: %v", err)
+	}
+	defer rt.closeExtensions()
+
+	decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{
+		Trigger:              "MCP auto review",
+		OriginalMainProposal: "implicit MCP analysis reviewer payload",
+	})
+	if decision.Allowed {
+		t.Fatalf("non-interactive MCP ask policy must skip implicit model review: %#v", decision)
+	}
+	if decision.SkipReason != modelReviewSkipNoInteractiveConsent || decision.ConsentSource != "non_interactive" {
+		t.Fatalf("expected non-interactive consent skip, got %#v", decision)
+	}
+	if rt.agent == nil || rt.agent.PromptConfirmModelReview == nil {
+		t.Fatalf("expected MCP agent to share the central model-review consent helper")
+	}
+	agentDecision := rt.agent.confirmImplicitModelReview("MCP auto review", "implicit MCP analysis reviewer payload")
+	if agentDecision.Allowed || agentDecision.SkipReason != modelReviewSkipNoInteractiveConsent {
+		t.Fatalf("agent-routed MCP implicit review must also skip without consent, got %#v", agentDecision)
+	}
+}
+
 func TestKernforgeMCPServerRecordsEntrypointTelemetry(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)

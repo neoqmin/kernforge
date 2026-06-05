@@ -1681,6 +1681,7 @@ type projectAnalyzer struct {
 	onStatus              func(string)
 	onDebug               func(string)
 	onProgress            func(ProgressEvent)
+	confirmModelReview    func(ModelReviewConsentRequest) ModelReviewConsentDecision
 	debugMu               sync.Mutex
 	debugEvents           []string
 }
@@ -6960,6 +6961,10 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 		a.debug(fmt.Sprintf("reviewer done: shard=%s attempt=%d status=%s issues=%d", shard.Name, attempt+1, review.Status, len(review.Issues)))
 		lastReport = report
 		lastReview = review
+		if strings.EqualFold(review.Status, "model_review_skipped") {
+			a.debug(fmt.Sprintf("shard model review skipped without worker retry: %s", shard.Name))
+			return report, review, shard, nil
+		}
 		if strings.EqualFold(review.Status, "approved") {
 			a.debug(fmt.Sprintf("shard approved: %s", shard.Name))
 			return report, review, shard, nil
@@ -7833,11 +7838,27 @@ func (a *projectAnalyzer) repairWorkerReport(ctx context.Context, snapshot Proje
 
 func (a *projectAnalyzer) reviewReport(ctx context.Context, snapshot ProjectSnapshot, shard AnalysisShard, report WorkerReport, goal string, previousRun *ProjectAnalysisRun, reuseState analysisReuseState) (ReviewDecision, error) {
 	previousReport, hasPreviousReport := a.previousReportForShard(previousRun, shard, reuseState)
+	prompt := buildReviewerPrompt(snapshot, shard, report, goal, previousReport, hasPreviousReport)
+	consent := a.confirmImplicitModelReview(projectAnalysisReviewerConsentTrigger(snapshot), prompt)
+	if !consent.Allowed {
+		raw := "analysis reviewer model skipped: " + firstNonBlankString(consent.SkipReason, "model review consent not granted")
+		review := heuristicReviewDecision(report, raw)
+		review.ShardID = shard.ID
+		review.Status = "model_review_skipped"
+		review.ClaimCoverageStatus = "model_review_skipped_consent"
+		review.Issues = analysisUniqueStrings(append(review.Issues, raw))
+		review.RevisionPrompt = ""
+		review.FailureKind = ""
+		if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+			review = enforceRootCauseReviewContract(review)
+		}
+		return review, nil
+	}
 
 	resp, err := a.completeAnalysisRequestWithRetry(ctx, a.reviewerOrDefaultClient(), "reviewer", shard.Name, a.reviewerModel(), ChatRequest{
 		Model:       a.reviewerModel(),
 		System:      reviewerSystemPrompt(),
-		Messages:    []Message{{Role: "user", Text: buildReviewerPrompt(snapshot, shard, report, goal, previousReport, hasPreviousReport)}},
+		Messages:    []Message{{Role: "user", Text: prompt}},
 		MaxTokens:   a.reviewerMaxTokens(),
 		Temperature: a.cfg.Temperature,
 		WorkingDir:  a.workspace.Root,
@@ -7856,6 +7877,35 @@ func (a *projectAnalyzer) reviewReport(ctx context.Context, snapshot ProjectSnap
 		decision = enforceRootCauseReviewContract(decision)
 	}
 	return decision, nil
+}
+
+func (a *projectAnalyzer) confirmImplicitModelReview(trigger string, originalMainProposal string) ModelReviewConsentDecision {
+	req := ModelReviewConsentRequest{
+		Trigger:              trigger,
+		OriginalMainProposal: originalMainProposal,
+	}
+	if a != nil && a.confirmModelReview != nil {
+		return normalizeModelReviewConsentDecision(a.confirmModelReview(req), a.cfg)
+	}
+	policy := configModelReviewConsent(Config{})
+	if a != nil {
+		policy = configModelReviewConsent(a.cfg)
+	}
+	switch policy {
+	case modelReviewConsentAlways:
+		return ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "config_always"}
+	case modelReviewConsentNever:
+		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "config_never", SkipReason: modelReviewSkipConfigNever}
+	default:
+		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "no_runtime_prompt", SkipReason: modelReviewSkipNoInteractiveConsent}
+	}
+}
+
+func projectAnalysisReviewerConsentTrigger(snapshot ProjectSnapshot) string {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+		return "root-cause reviewer"
+	}
+	return "analysis reviewer"
 }
 
 func enforceRootCauseReviewContract(decision ReviewDecision) ReviewDecision {

@@ -229,10 +229,15 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"analysis status":     "Show current project-analysis worker and reviewer routes.",
 		"analysis clear":      "Reset project-analysis worker and reviewer routes to inherited defaults.",
 		"analysis worker":     "Configure the project-analysis worker model.",
+		"analysis worker 0":   "Reset only the project-analysis worker route to inherited default.",
 		"analysis reviewer":   "Configure the project-analysis reviewer model.",
+		"analysis reviewer 0": "Reset only the project-analysis reviewer route to inherited default.",
 		"analysis-worker":     "Configure the project-analysis worker model.",
+		"analysis-worker 0":   "Reset only the project-analysis worker route to inherited default.",
 		"analysis-reviewer":   "Configure the project-analysis reviewer model.",
+		"analysis-reviewer 0": "Reset only the project-analysis reviewer route to inherited default.",
 		"cross-review":        "Configure the optional independent second-pass reviewer route.",
+		"cross-review 0":      "Clear the optional independent route and return reviews to default single-model mode.",
 		"cross-review status": "Show common review routes, lenses, automation, and route health.",
 		"clear":               "Clear a model route override.",
 		"clear cross-review":  "Clear the optional independent second-pass reviewer route.",
@@ -588,6 +593,10 @@ func allCompletionMatchesArePlaceholders(matches []string) bool {
 	return true
 }
 
+func providerChoiceResetCompletionTokens() []string {
+	return append([]string{"0"}, providerChoiceCompletionTokens()...)
+}
+
 func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, fields []string, endsWithSpace bool) (string, []string, bool) {
 	if commandName != "fuzz-func" || endsWithSpace || len(fields) == 0 {
 		return "", nil, false
@@ -915,13 +924,13 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return []string{"status", "worker", "reviewer", "clear"}, 1, true
 			}
 			if len(fields) == 3 && (strings.EqualFold(fields[1], "worker") || strings.EqualFold(fields[1], "reviewer")) {
-				return providerChoiceCompletionTokens(), 2, true
+				return providerChoiceResetCompletionTokens(), 2, true
 			}
 			return nil, 0, false
 		}
 		if strings.EqualFold(fields[0], "analysis-worker") || strings.EqualFold(fields[0], "analysis-reviewer") {
 			if len(fields) == 2 {
-				return providerChoiceCompletionTokens(), 1, true
+				return providerChoiceResetCompletionTokens(), 1, true
 			}
 			return nil, 0, false
 		}
@@ -946,7 +955,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if strings.EqualFold(fields[0], "cross-review") {
 			if len(fields) == 2 {
-				options := append([]string{"status"}, providerChoiceCompletionTokens()...)
+				options := append([]string{"status"}, providerChoiceResetCompletionTokens()...)
 				return options, 1, true
 			}
 			return nil, 0, false

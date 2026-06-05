@@ -8485,6 +8485,7 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 	runTestGit(t, root, "add", "main.cpp")
 	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	cfg := Config{AutoLocale: boolPtr(false)}
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "main-model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
@@ -11058,7 +11059,8 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 	ws := Workspace{BaseRoot: root, Root: root}
 	agent := &Agent{
 		Config: Config{
-			Model: "model",
+			Model:  "model",
+			Review: ReviewHarnessConfig{ModelReviewConsent: modelReviewConsentAlways},
 		},
 		Client:         mainProvider,
 		ReviewerClient: reviewer,
@@ -16487,7 +16489,8 @@ func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 	ws := Workspace{BaseRoot: root, Root: root}
 	agent := &Agent{
 		Config: Config{
-			Model: "model",
+			Model:  "model",
+			Review: ReviewHarnessConfig{ModelReviewConsent: modelReviewConsentAlways},
 		},
 		Client:         mainProvider,
 		ReviewerClient: reviewer,
@@ -16588,7 +16591,8 @@ func TestBuildRecoveryGuidanceCanRefreshExecutionPlan(t *testing.T) {
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	agent := &Agent{
 		Config: Config{
-			Model: "model",
+			Model:  "model",
+			Review: ReviewHarnessConfig{ModelReviewConsent: modelReviewConsentAlways},
 		},
 		Client:         mainProvider,
 		ReviewerClient: reviewer,

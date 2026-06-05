@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +26,47 @@ func TestShouldPrimeInteractivePlanSkipsLatestWebResearchRequests(t *testing.T) 
 
 	if shouldPrimeInteractivePlan(state, true, false, false) {
 		t.Fatalf("expected latest web research request to skip interactive preflight planning")
+	}
+}
+
+func TestInteractiveFinalAnswerConsentDeclineSkipsReviewer(t *testing.T) {
+	root := t.TempDir()
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "NEEDS_REVISION: should not run"},
+	}}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.TaskState = &TaskState{Goal: "finish the change"}
+	agent := &Agent{
+		Config:         DefaultConfig(root),
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		PromptConfirmModelReview: func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+			if req.Trigger != "final-answer" || !strings.Contains(req.OriginalMainProposal, "draft final answer") {
+				t.Fatalf("unexpected consent request: %#v", req)
+			}
+			return ModelReviewConsentDecision{
+				Allowed:       false,
+				Policy:        modelReviewConsentAsk,
+				ConsentSource: "user",
+				SkipReason:    modelReviewSkipByUser,
+			}
+		},
+	}
+
+	approved, feedback := agent.reviewInteractiveFinalAnswer(context.Background(), "draft final answer", false)
+	if !approved {
+		t.Fatalf("skipped final-answer review should not start a repair loop: %q", feedback)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("declined final-answer consent must not call reviewer, got %d request(s)", len(reviewer.requests))
+	}
+	if session.TaskState.FinalReviewVerdict != "skipped" || !strings.Contains(session.TaskState.OriginalMainProposal, "draft final answer") {
+		t.Fatalf("expected skipped final review and original proposal, got %#v", session.TaskState)
+	}
+	if !strings.Contains(feedback, "Original final-answer draft") {
+		t.Fatalf("expected skipped feedback to expose original draft, got %q", feedback)
 	}
 }
 
