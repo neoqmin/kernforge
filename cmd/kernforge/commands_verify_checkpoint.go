@@ -44,7 +44,7 @@ func (rt *runtimeState) handleVerifyCommandContext(ctx context.Context, args str
 	}
 	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, mode, tuning)
 	if len(plan.Steps) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No recommended verification steps were found for this workspace."))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("No recommended verification steps were found for this workspace."))
 		return nil
 	}
 	if verdict, err := rt.workspace.Hook(ctx, HookPreVerification, HookPayload{
@@ -83,13 +83,15 @@ func (rt *runtimeState) handleVerifyCommandContext(ctx context.Context, args str
 		"output":        report.SummaryLine(),
 		"error":         report.FailureSummary(),
 	})
-	fmt.Fprintln(rt.writer, rt.ui.section("Verification"))
-	fmt.Fprintln(rt.writer, report.RenderTerminal(rt.ui))
+	lines := []string{
+		rt.ui.section("Verification"),
+		report.RenderTerminal(rt.ui),
+	}
 	activeFeature, hasActiveFeature := rt.activeFeatureForHandoff()
 	if handoff := verificationHandoff(report, activeFeature, hasActiveFeature); strings.TrimSpace(handoff) != "" {
-		fmt.Fprintln(rt.writer)
-		fmt.Fprintln(rt.writer, handoff)
+		lines = append(lines, "", handoff)
 	}
+	rt.printPersistentBlockWhileThinking(lines...)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}

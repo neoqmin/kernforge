@@ -18,8 +18,9 @@ const (
 )
 
 type ModelReviewConsentRequest struct {
-	Trigger              string
-	OriginalMainProposal string
+	Trigger                 string
+	OriginalMainProposal    string
+	OriginalMainProposalRef string
 }
 
 type ModelReviewConsentDecision struct {
@@ -98,7 +99,7 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 	if trigger == "" {
 		trigger = "implicit"
 	}
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("model_review_trigger", trigger))
+	rt.printModelReviewConsentContext(req, trigger)
 	beforeAlways := rt.alwaysApproveModelReview
 	allowed, err := rt.confirm(modelReviewQuestion(rt.cfg))
 	if err != nil {
@@ -112,6 +113,43 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 		return ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: source}
 	}
 	return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "user", SkipReason: modelReviewSkipByUser}
+}
+
+func (rt *runtimeState) printModelReviewConsentContext(req ModelReviewConsentRequest, trigger string) {
+	if rt == nil {
+		return
+	}
+	lines := []string{rt.ui.statusKV("model_review_trigger", strings.TrimSpace(trigger))}
+	if context := formatModelReviewConsentOriginalProposal(rt.cfg, req); context != "" {
+		lines = append(lines, strings.Split(context, "\n")...)
+	}
+	rt.printPersistentWhileThinking(lines...)
+}
+
+func formatModelReviewConsentOriginalProposal(cfg Config, req ModelReviewConsentRequest) string {
+	ref := strings.TrimSpace(req.OriginalMainProposalRef)
+	proposal := strings.TrimSpace(req.OriginalMainProposal)
+	if ref == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(localizedText(cfg, "Main model proposal awaiting review:", "리뷰 전 메인 모델 제안:"))
+	fmt.Fprintf(&b, "\n- %s: %s", localizedText(cfg, "artifact", "artifact"), filepath.ToSlash(ref))
+	if proposal != "" {
+		preview := compactPromptSection(proposal, 2400)
+		if strings.TrimSpace(preview) != "" {
+			fmt.Fprintf(&b, "\n- %s:", localizedText(cfg, "preview", "preview"))
+			for _, line := range strings.Split(preview, "\n") {
+				if strings.TrimSpace(line) == "" {
+					b.WriteString("\n  ")
+					continue
+				}
+				b.WriteString("\n  ")
+				b.WriteString(line)
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func normalizeModelReviewConsentDecision(decision ModelReviewConsentDecision, cfg Config) ModelReviewConsentDecision {

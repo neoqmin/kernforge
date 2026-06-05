@@ -190,6 +190,67 @@ func TestRecoverExecuteSafeRunsWhitelistedActionAndLogsStatus(t *testing.T) {
 	}
 }
 
+func TestRecoverExecuteSafeGoalSuppressesNestedArtifactOutput(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		GeneratedAt:  time.Now(),
+		Trigger:      "manual",
+		Mode:         VerificationAdaptive,
+		Workspace:    root,
+		ChangedPaths: []string{"Tavern/TavernUpd/ProcessEventMonitor.cpp"},
+		Steps: []VerificationStep{{
+			Label:       "msbuild Tavern/TavernUpd/TavernUpd.vcxproj Debug|x64",
+			Command:     `msbuild "Tavern/TavernUpd/TavernUpd.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`,
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output:      "fatal compiler error",
+			Hint:        "Fix the first compiler error before retrying verification.",
+		}},
+	}
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleRecoverCommandContext(context.Background(), "execute-safe goal goal-123"); err != nil {
+		t.Fatalf("handleRecoverCommandContext: %v", err)
+	}
+
+	out := output.String()
+	if !strings.Contains(out, "Generated recovery brief") {
+		t.Fatalf("expected recovery summary output, got %q", out)
+	}
+	for _, unwanted := range []string{
+		"Generated continuity packet",
+		"Generated completion audit",
+	} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("goal recovery should suppress nested artifact output %q, got %q", unwanted, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, ".kernforge", "continuity", "latest.md")); err != nil {
+		t.Fatalf("expected nested continuity artifact despite suppressed output: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".kernforge", "completion_audit", "latest.md")); err != nil {
+		t.Fatalf("expected nested completion audit artifact despite suppressed output: %v", err)
+	}
+	kinds := map[string]bool{}
+	for _, event := range session.ConversationEvents {
+		kinds[event.Kind] = true
+	}
+	if !kinds[conversationEventKindContinuity] || !kinds[conversationEventKindCompletionAudit] || !kinds[conversationEventKindRecovery] {
+		t.Fatalf("expected continuity, completion audit, and recovery events, got %#v", kinds)
+	}
+}
+
 func TestRecoverExecuteSafeHonorsCanceledContext(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")

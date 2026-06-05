@@ -5684,6 +5684,35 @@ func TestPreWriteVisibleSummaryOverridesRepairStatusForUnresolvedBlocker(t *test
 	}
 }
 
+func TestPreWriteVisibleSummaryShowsSkippedModelReviewAndOriginalProposal(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict: reviewVerdictApprovedWithWarnings,
+		},
+		Result: ReviewResult{
+			Summary: "Deterministic checks allowed diff preview after model review consent was declined.",
+		},
+		ModelReviewConsent:      modelReviewConsentAsk,
+		ConsentSource:           "user",
+		SkipReason:              modelReviewSkipByUser,
+		OriginalMainProposal:    "Proposed diff:\ndiff --git a/main.cpp b/main.cpp\n+return 1;",
+		OriginalMainProposalRef: "C:/tmp/review/original_main_proposal.md",
+	}
+
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
+	for _, want := range []string{
+		"Model review: skipped (skipped_by_user, source=user)",
+		"Original main-model proposal",
+		"C:/tmp/review/original_main_proposal.md",
+		"Summary: Proposed diff:",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected visible summary to contain %q, got:\n%s", want, visible)
+		}
+	}
+}
+
 func TestPreWriteRunStoresRepairFindingsForFinalSummary(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.cpp")

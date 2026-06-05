@@ -106,7 +106,14 @@ func (rt *runtimeState) handleRecoverCommandContext(ctx context.Context, args st
 	}
 	brief := rt.buildRecoveryBrief(root, options.Note)
 	if options.ExecuteSafe {
-		rt.executeRecoverySafePlanContext(ctx, &brief)
+		executeSafe := func() {
+			rt.executeRecoverySafePlanContext(ctx, &brief)
+		}
+		if recoveryNoteIsGoal(options.Note) {
+			rt.withSuppressedArtifactOutput(executeSafe)
+		} else {
+			executeSafe()
+		}
 		brief.LastVerification = ""
 		brief.VerificationFailure = ""
 		if rt.session.LastVerification != nil {
@@ -159,20 +166,24 @@ func (rt *runtimeState) handleRecoverCommandContext(ctx context.Context, args st
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Generated recovery brief: "+mdPath))
+	lines := []string{rt.ui.successLine("Generated recovery brief: " + mdPath)}
 	if strings.TrimSpace(brief.PrimaryFailure) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Primary failure: "+brief.PrimaryFailure))
+		lines = append(lines, rt.ui.warnLine("Primary failure: "+compactPromptSection(brief.PrimaryFailure, 260)))
 	}
 	if len(brief.RecoveryActions) > 0 {
 		if brief.Diagnosis.Blocking || strings.TrimSpace(brief.PrimaryFailure) != "" {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("Recovery actions:"))
+			lines = append(lines, rt.ui.warnLine(fmt.Sprintf("Recovery actions (%d):", len(brief.RecoveryActions))))
 		} else {
-			fmt.Fprintln(rt.writer, rt.ui.successLine("Recovery actions:"))
+			lines = append(lines, rt.ui.successLine(fmt.Sprintf("Recovery actions (%d):", len(brief.RecoveryActions))))
 		}
-		for _, action := range brief.RecoveryActions {
-			fmt.Fprintln(rt.writer, "- "+action)
+		for _, action := range limitStrings(brief.RecoveryActions, 5) {
+			lines = append(lines, "- "+compactPromptSection(action, 260))
+		}
+		if extra := len(brief.RecoveryActions) - 5; extra > 0 {
+			lines = append(lines, rt.ui.hintLine(fmt.Sprintf("%d more action(s). Inspect: %s", extra, mdPath)))
 		}
 	}
+	rt.printPersistentBlockWhileThinking(lines...)
 	return nil
 }
 
@@ -196,6 +207,11 @@ func parseRecoverCommandOptions(args string) recoverCommandOptions {
 	default:
 		return recoverCommandOptions{Note: strings.TrimSpace(args)}
 	}
+}
+
+func recoveryNoteIsGoal(note string) bool {
+	fields := strings.Fields(strings.TrimSpace(note))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "goal")
 }
 
 func (rt *runtimeState) buildRecoveryBrief(root string, note string) RecoveryBrief {
@@ -851,17 +867,21 @@ func (rt *runtimeState) printRecoveryTasks() error {
 		return fmt.Errorf("no active session")
 	}
 	if len(rt.session.Plan) == 0 && (rt.session.TaskGraph == nil || len(rt.session.TaskGraph.Nodes) == 0) {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No active plan."))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("No active plan."))
 		return nil
 	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
 	if rt.session.TaskGraph != nil && len(rt.session.TaskGraph.Nodes) > 0 {
-		fmt.Fprintln(rt.writer, rt.session.TaskGraph.RenderExportSection())
+		rt.printPersistentBlockWhileThinking(
+			rt.ui.section("Tasks"),
+			rt.session.TaskGraph.RenderExportSection(),
+		)
 		return nil
 	}
+	lines := []string{rt.ui.section("Tasks")}
 	for i, item := range rt.session.Plan {
-		fmt.Fprintln(rt.writer, rt.ui.planItem(i, item.Status, item.Step))
+		lines = append(lines, rt.ui.planItem(i, item.Status, item.Step))
 	}
+	rt.printPersistentBlockWhileThinking(lines...)
 	return nil
 }
 

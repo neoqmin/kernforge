@@ -2181,6 +2181,14 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n- 요약: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
+		if skip := strings.TrimSpace(run.SkipReason); skip != "" {
+			source := strings.TrimSpace(run.ConsentSource)
+			if source != "" {
+				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
+			} else {
+				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s)", skip)
+			}
+		}
 	} else {
 		b.WriteString("Final review result:")
 		fmt.Fprintf(&b, "\n- Verdict: %s", verdict)
@@ -2197,6 +2205,18 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n- Summary: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
+		if skip := strings.TrimSpace(run.SkipReason); skip != "" {
+			source := strings.TrimSpace(run.ConsentSource)
+			if source != "" {
+				fmt.Fprintf(&b, "\n- Model review: skipped (%s, source=%s)", skip, source)
+			} else {
+				fmt.Fprintf(&b, "\n- Model review: skipped (%s)", skip)
+			}
+		}
+	}
+	if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+		b.WriteString("\n")
+		b.WriteString(original)
 	}
 	if len(run.RepairFindings) > 0 {
 		if korean {

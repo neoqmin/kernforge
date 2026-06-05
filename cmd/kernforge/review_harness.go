@@ -857,8 +857,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	modelReviewSkippedByConsent := false
 	if opts.AutoTriggered && !opts.NoModel && len(run.Evidence.Sources) > 0 {
 		decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{
-			Trigger:              reviewConsentTriggerForRun(run),
-			OriginalMainProposal: run.OriginalMainProposal,
+			Trigger:                 reviewConsentTriggerForRun(run),
+			OriginalMainProposal:    run.OriginalMainProposal,
+			OriginalMainProposalRef: run.OriginalMainProposalRef,
 		})
 		applyModelReviewConsentToRun(&run, decision)
 		if !decision.Allowed {

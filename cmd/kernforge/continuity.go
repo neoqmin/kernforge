@@ -85,13 +85,20 @@ func (rt *runtimeState) handleContinuityCommand(args string) error {
 			return err
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Generated continuity packet: "+mdPath))
+	if rt.artifactOutputSuppressed() {
+		return nil
+	}
+	lines := []string{rt.ui.successLine("Generated continuity packet: " + mdPath)}
 	if len(packet.RecoveryActions) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Recovery actions:"))
-		for _, action := range packet.RecoveryActions {
-			fmt.Fprintln(rt.writer, "- "+action)
+		lines = append(lines, rt.ui.warnLine(fmt.Sprintf("Recovery actions (%d):", len(packet.RecoveryActions))))
+		for _, action := range limitStrings(packet.RecoveryActions, 4) {
+			lines = append(lines, "- "+compactPromptSection(action, 260))
+		}
+		if extra := len(packet.RecoveryActions) - 4; extra > 0 {
+			lines = append(lines, rt.ui.hintLine(fmt.Sprintf("%d more action(s). Inspect: %s", extra, mdPath)))
 		}
 	}
+	rt.printPersistentBlockWhileThinking(lines...)
 	return nil
 }
 

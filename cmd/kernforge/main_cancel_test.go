@@ -896,6 +896,48 @@ func TestRuntimeStateWithPinnedPromptClearsFooterBeforePrompt(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateModelReviewConsentClearsFooterAndShowsProposal(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.AutoLocale = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	var out bytes.Buffer
+	rt := &runtimeState{
+		reader:                          bufio.NewReader(strings.NewReader("n\n")),
+		writer:                          &out,
+		ui:                              UI{},
+		cfg:                             cfg,
+		interactive:                     true,
+		modelReviewConsentPromptEnabled: true,
+	}
+
+	rt.renderFooterLine("[thinking] [-] Main model prepared an edit proposal. [0s | Esc]")
+	decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{
+		Trigger:                 "pre-write",
+		OriginalMainProposal:    "Proposed diff:\ndiff --git a/main.cpp b/main.cpp\n+return 1;",
+		OriginalMainProposalRef: "C:/tmp/review/original_main_proposal.md",
+	})
+
+	if decision.Allowed || decision.SkipReason != modelReviewSkipByUser {
+		t.Fatalf("expected declined model review consent, got %#v", decision)
+	}
+	rendered := out.String()
+	for _, want := range []string{
+		"model_review_trigger",
+		"pre-write",
+		"Main model proposal awaiting review:",
+		"C:/tmp/review/original_main_proposal.md",
+		"Proposed diff:",
+		"Run model review now?",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Esc]model_review_trigger") {
+		t.Fatalf("model review trigger should not be appended to the transient footer, got %q", rendered)
+	}
+}
+
 func TestRuntimeStateRenderFooterTextClearsWrappedPanel(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{

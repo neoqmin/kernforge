@@ -89,6 +89,19 @@ func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 	if !strings.Contains(strings.ToLower(session.LastVerification.Decision), "full regression") {
 		t.Fatalf("expected decision to mention full regression cadence, got %q", session.LastVerification.Decision)
 	}
+	out := output.String()
+	for _, want := range []string{
+		"Goal iteration 1",
+		"goal_step",
+		"iteration 1 / implementation",
+		"iteration 1 / review",
+		"iteration 1 / verification",
+		"adaptive",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected goal output to contain %q, got %q", want, out)
+		}
+	}
 	goal, ok := session.ActiveGoal()
 	if !ok {
 		t.Fatalf("expected active goal")

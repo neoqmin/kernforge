@@ -14,6 +14,8 @@ const (
 	completionAuditStatusBlocked = "blocked"
 	completionAuditStatusWarning = "warning"
 	completionAuditStatusUnknown = "unknown"
+
+	completionAuditVerificationRequirement = "Latest verification status"
 )
 
 type CompletionAuditArtifact struct {
@@ -102,21 +104,35 @@ func (rt *runtimeState) handleCompletionAuditCommand(args string) error {
 			return err
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Generated completion audit: "+mdPath))
+	if rt.artifactOutputSuppressed() {
+		return nil
+	}
+	rt.printPersistentBlockWhileThinking(renderCompletionAuditTerminalLines(rt.ui, mdPath, artifact)...)
+	return nil
+}
+
+func renderCompletionAuditTerminalLines(ui UI, mdPath string, artifact CompletionAuditArtifact) []string {
+	lines := []string{ui.successLine("Generated completion audit: " + mdPath)}
 	if len(artifact.Blockers) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Completion is blocked:"))
-		for _, blocker := range artifact.Blockers {
-			fmt.Fprintln(rt.writer, "- "+blocker)
+		lines = append(lines, ui.warnLine(fmt.Sprintf("Completion is blocked (%d):", len(artifact.Blockers))))
+		for _, blocker := range limitStrings(artifact.Blockers, 4) {
+			lines = append(lines, "- "+compactPromptSection(blocker, 260))
+		}
+		if extra := len(artifact.Blockers) - 4; extra > 0 {
+			lines = append(lines, ui.hintLine(fmt.Sprintf("%d more blocker(s). Inspect: %s", extra, mdPath)))
 		}
 	} else if len(artifact.Warnings) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Completion has warnings:"))
-		for _, warning := range artifact.Warnings {
-			fmt.Fprintln(rt.writer, "- "+warning)
+		lines = append(lines, ui.warnLine(fmt.Sprintf("Completion has warnings (%d):", len(artifact.Warnings))))
+		for _, warning := range limitStrings(artifact.Warnings, 4) {
+			lines = append(lines, "- "+compactPromptSection(warning, 260))
+		}
+		if extra := len(artifact.Warnings) - 4; extra > 0 {
+			lines = append(lines, ui.hintLine(fmt.Sprintf("%d more warning(s). Inspect: %s", extra, mdPath)))
 		}
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Completion audit is ready."))
+		lines = append(lines, ui.successLine("Completion audit is ready."))
 	}
-	return nil
+	return lines
 }
 
 func (rt *runtimeState) buildCompletionAuditArtifact(root string, note string) CompletionAuditArtifact {
@@ -334,7 +350,7 @@ func completionAuditAcceptance(root string, session *Session, artifact *Completi
 func completionAuditVerification(session *Session, artifact *CompletionAuditArtifact) {
 	if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest verification has no failures",
+			Requirement: completionAuditVerificationRequirement,
 			Evidence:    "Generated document artifact quality gate accepted this documentation-only change; code verification is not required for this artifact turn.",
 			Status:      completionAuditStatusPassed,
 			Source:      "verification",
@@ -349,7 +365,7 @@ func completionAuditVerification(session *Session, artifact *CompletionAuditArti
 			evidence = "Workspace has changed files but no latest verification report."
 		}
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest verification has no failures",
+			Requirement: completionAuditVerificationRequirement,
 			Evidence:    evidence,
 			Status:      status,
 			Source:      "verification",
@@ -360,7 +376,7 @@ func completionAuditVerification(session *Session, artifact *CompletionAuditArti
 	if report.HasFailures() {
 		evidence := compactPromptSection(firstNonBlankString(report.FailureSummary(), report.RenderShort()), 500)
 		completionAuditAddItem(artifact, CompletionAuditItem{
-			Requirement: "Latest verification has no failures",
+			Requirement: completionAuditVerificationRequirement,
 			Evidence:    evidence,
 			Status:      completionAuditStatusBlocked,
 			Source:      "verification",
@@ -368,7 +384,7 @@ func completionAuditVerification(session *Session, artifact *CompletionAuditArti
 		return
 	}
 	completionAuditAddItem(artifact, CompletionAuditItem{
-		Requirement: "Latest verification has no failures",
+		Requirement: completionAuditVerificationRequirement,
 		Evidence:    completionAuditVerificationEvidence(report),
 		Status:      completionAuditVerificationStatus(report),
 		Source:      "verification",

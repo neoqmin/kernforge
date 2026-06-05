@@ -100,6 +100,7 @@ type runtimeState struct {
 	alwaysApproveVerification       bool
 	alwaysApproveModelReview        bool
 	modelReviewConsentPromptEnabled bool
+	suppressedArtifactOutputDepth   int
 	autoAcceptPreviewOnce           bool
 }
 
@@ -1392,8 +1393,46 @@ func (rt *runtimeState) printPersistentWhileThinking(lines ...string) {
 	rt.outputMu.Unlock()
 }
 
+func (rt *runtimeState) printPersistentBlockWhileThinking(lines ...string) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	rt.flushAssistantStream()
+	rt.clearThinkingDetails()
+	resumeThinking := rt.suspendThinkingIndicator()
+	defer resumeThinking()
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	rt.clearFooterLineLocked()
+	for _, line := range lines {
+		fmt.Fprintln(rt.writer, line)
+	}
+}
+
 func (rt *runtimeState) printWhileThinking(lines ...string) {
 	rt.printPersistentWhileThinking(lines...)
+}
+
+func (rt *runtimeState) withSuppressedArtifactOutput(fn func()) {
+	if fn == nil {
+		return
+	}
+	if rt == nil {
+		fn()
+		return
+	}
+	rt.suppressedArtifactOutputDepth++
+	defer func() {
+		rt.suppressedArtifactOutputDepth--
+		if rt.suppressedArtifactOutputDepth < 0 {
+			rt.suppressedArtifactOutputDepth = 0
+		}
+	}()
+	fn()
+}
+
+func (rt *runtimeState) artifactOutputSuppressed() bool {
+	return rt != nil && rt.suppressedArtifactOutputDepth > 0
 }
 
 func (rt *runtimeState) showTransientProgressFooter(text string) bool {

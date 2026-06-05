@@ -104,7 +104,7 @@ func TestCompletionAuditCommandBlocksMissingArtifactAndFailedVerification(t *tes
 		t.Fatalf("read completion audit markdown: %v", err)
 	}
 	text := string(md)
-	for _, want := range []string{"# Completion Audit", "Status: blocked", "Required artifact exists", "Latest verification has no failures", "job-1", "bundle-1", "Final state overclaims verification"} {
+	for _, want := range []string{"# Completion Audit", "Status: blocked", "Required artifact exists", completionAuditVerificationRequirement, "job-1", "bundle-1", "Final state overclaims verification"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected completion audit markdown to contain %q, got %q", want, text)
 		}
@@ -286,7 +286,7 @@ func TestCompletionAuditUsesVerificationHistoryForStandaloneAudit(t *testing.T) 
 		t.Fatalf("expected standalone audit to be ready, got %#v", artifact)
 	}
 	for _, requirement := range []string{
-		"Latest verification has no failures",
+		completionAuditVerificationRequirement,
 		"Changed files are accounted for",
 		"Pre-final coding harness has no blockers",
 	} {
@@ -325,7 +325,7 @@ func TestCompletionAuditDoesNotAcceptSkippedOnlyVerification(t *testing.T) {
 
 	artifact := rt.buildCompletionAuditArtifact(root, "finish skipped verification case")
 
-	item, ok := completionAuditChecklistItem(artifact, "Latest verification has no failures")
+	item, ok := completionAuditChecklistItem(artifact, completionAuditVerificationRequirement)
 	if !ok {
 		t.Fatalf("expected verification checklist item in %#v", artifact.Checklist)
 	}

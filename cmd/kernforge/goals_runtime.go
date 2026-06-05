@@ -257,6 +257,47 @@ func goalVerificationPlanLifecycleSummary(iteration int) string {
 	return "Adaptive verification command completed; full regression remains on the five-cycle cadence."
 }
 
+func (rt *runtimeState) printGoalStep(iteration int, phase string, detail string) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		phase = "working"
+	}
+	lines := []string{
+		rt.ui.statusKV("goal_step", fmt.Sprintf("iteration %d / %s", iteration, phase)),
+	}
+	if strings.TrimSpace(detail) != "" {
+		lines = append(lines, rt.ui.statusKV("goal_detail", strings.TrimSpace(detail)))
+	}
+	rt.printPersistentWhileThinking(lines...)
+}
+
+func (rt *runtimeState) goalVerificationStepDetail(iteration int) string {
+	changedCount := 0
+	cfg := Config{}
+	if rt != nil {
+		cfg = rt.cfg
+		root := ""
+		if strings.TrimSpace(rt.workspace.Root) != "" {
+			root = rt.workspace.Root
+		} else if rt.session != nil {
+			root = rt.session.WorkingDir
+		}
+		changedCount = len(collectVerificationChangedPaths(root, rt.session))
+	}
+	if goalShouldRunFullVerification(iteration) {
+		return localizedText(cfg,
+			fmt.Sprintf("full verification; scheduled every %d goal iterations; changed_paths=%d", defaultAdaptiveFullRegressionInterval, changedCount),
+			fmt.Sprintf("전체 검증; goal %d회마다 실행되는 정기 회귀 검증; changed_paths=%d", defaultAdaptiveFullRegressionInterval, changedCount))
+	}
+	next := goalNextFullVerificationIteration(iteration)
+	return localizedText(cfg,
+		fmt.Sprintf("adaptive verification; targeted checks only; next full verification at iteration %d; changed_paths=%d", next, changedCount),
+		fmt.Sprintf("adaptive 검증; 변경 파일 중심의 좁은 검증만 실행; 다음 전체 검증은 iteration %d; changed_paths=%d", next, changedCount))
+}
+
 func (rt *runtimeState) handleGoalVerifyCommandContext(ctx context.Context, iteration int) error {
 	if goalShouldRunFullVerification(iteration) {
 		return rt.handleVerifyCommandContext(ctx, "--full")
@@ -281,7 +322,7 @@ func (rt *runtimeState) handleGoalAdaptiveVerifyCommandContext(ctx context.Conte
 	tuning.AdaptiveRuns = (iteration - 1) % defaultAdaptiveFullRegressionInterval
 	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, VerificationAdaptive, tuning)
 	if len(plan.Steps) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No recommended verification steps were found for this workspace."))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("No recommended verification steps were found for this workspace."))
 		return nil
 	}
 	if verdict, err := rt.workspace.Hook(ctx, HookPreVerification, HookPayload{
@@ -332,13 +373,15 @@ func (rt *runtimeState) handleGoalAdaptiveVerifyCommandContext(ctx context.Conte
 		"output":        report.SummaryLine(),
 		"error":         report.FailureSummary(),
 	})
-	fmt.Fprintln(rt.writer, rt.ui.section("Verification"))
-	fmt.Fprintln(rt.writer, report.RenderTerminal(rt.ui))
+	lines := []string{
+		rt.ui.section("Verification"),
+		report.RenderTerminal(rt.ui),
+	}
 	activeFeature, hasActiveFeature := rt.activeFeatureForHandoff()
 	if handoff := verificationHandoff(report, activeFeature, hasActiveFeature); strings.TrimSpace(handoff) != "" {
-		fmt.Fprintln(rt.writer)
-		fmt.Fprintln(rt.writer, handoff)
+		lines = append(lines, "", handoff)
 	}
+	rt.printPersistentBlockWhileThinking(lines...)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -369,7 +412,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		if rt.store != nil {
 			_ = rt.store.Save(rt.session)
 		}
-		fmt.Fprintln(rt.writer, rt.ui.warnLine(goal.LastError))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine(goal.LastError))
 		return goal, true, nil
 	}
 	goal.updateUsageTelemetry(rt.session)
@@ -382,7 +425,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		if rt.store != nil {
 			_ = rt.store.Save(rt.session)
 		}
-		fmt.Fprintln(rt.writer, rt.ui.warnLine(goal.LastError))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine(goal.LastError))
 		return goal, true, nil
 	}
 	iteration := GoalIteration{
@@ -390,9 +433,12 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		Status:    goalStatusRunning,
 		StartedAt: time.Now(),
 	}
-	fmt.Fprintln(rt.writer, rt.ui.subsection(fmt.Sprintf("Goal iteration %d", iteration.Index)))
+	rt.printPersistentBlockWhileThinking(rt.ui.subsection(fmt.Sprintf("Goal iteration %d", iteration.Index)))
 	rt.primeGoalRuntimeState(&goal, fmt.Sprintf("iteration-%d", iteration.Index))
 	rt.session.SetPlanNodeLifecycle("plan-01", "in_progress", "Inspecting goal state for autonomous iteration.")
+	rt.printGoalStep(iteration.Index, "implementation", localizedText(rt.cfg,
+		"main model is inspecting the current goal state and applying the next safe change",
+		"메인 모델이 goal 상태를 점검하고 다음 안전한 변경을 적용합니다"))
 	if ref, err := rt.createGoalCheckpoint(goal, iteration.Index); err == nil && strings.TrimSpace(ref.ID) != "" {
 		iteration.CheckpointID = ref.ID
 		iteration.CheckpointName = ref.Name
@@ -417,11 +463,17 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 
 	documentArtifactGateAccepted := rt.goalIterationGeneratedDocumentArtifactGateAccepted(goal, iteration)
 	if documentArtifactGateAccepted {
+		rt.printGoalStep(iteration.Index, "review", localizedText(rt.cfg,
+			"generated-document gate accepted this documentation-only change; model review is skipped",
+			"문서 산출물 게이트가 문서 전용 변경을 승인하여 모델 리뷰를 생략합니다"))
 		reviewReply := "APPROVED: generated document artifact quality gate accepted this documentation-only change; skipping goal review model."
 		iteration.ReviewReply = reviewReply
 		iteration.ReviewerVerdict = "approved"
 		iteration.ReviewerFeedback = reviewReply
 	} else {
+		rt.printGoalStep(iteration.Index, "review", localizedText(rt.cfg,
+			"checking the implementation with the goal review gate before verification",
+			"검증 전에 goal review gate로 구현 결과를 확인합니다"))
 		reviewRoot := rt.goalWorkspaceRoot()
 		reviewReply, err := rt.runGoalReviewHarnessReply(ctx, goal, iteration, reviewRoot)
 		iteration.ReviewReply = compactPromptSection(reviewReply, 900)
@@ -441,6 +493,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	}
 	rt.session.SetPlanNodeLifecycle("plan-03", "completed", "Review pass completed and concrete findings were repaired or cleared.")
 
+	rt.printGoalStep(iteration.Index, "verification", rt.goalVerificationStepDetail(iteration.Index))
 	verifyCommand := startGoalCommand(iteration.Index, "verify", goalVerificationCommandSummary(iteration.Index))
 	verifyErr := rt.handleGoalVerifyCommandContext(ctx, iteration.Index)
 	verifyCommand.finish(statusForErr(verifyErr), verificationSummaryOrError(rt.session, verifyErr))
@@ -464,6 +517,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		return rt.finishGoalIterationError(goal, iteration, err)
 	}
 	rt.session.SetPlanNodeLifecycle("plan-05", "completed", "Completion audit is being generated for the goal.")
+	rt.printGoalStep(iteration.Index, "completion audit", localizedText(rt.cfg,
+		"checking blockers, warnings, verification evidence, tasks, reviews, and runtime gates",
+		"blocker, warning, 검증 증거, task, review, runtime gate를 종합 확인합니다"))
 	auditCommand := startGoalCommand(iteration.Index, "completion-audit", "/session audit <goal objective>")
 	audit, auditErr := rt.runGoalCompletionAudit(goal)
 	auditCommand.finish(statusForErr(auditErr), completionAuditSummaryOrError(audit, auditErr))
@@ -481,6 +537,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		iteration.ChangedFiles = append([]string(nil), progress.ChangedFiles...)
 		goal.applyProgress(progress)
 		if audit.Ready {
+			rt.printGoalStep(iteration.Index, "semantic review", localizedText(rt.cfg,
+				"final reviewer checks whether the actual workspace state satisfies the goal",
+				"최종 reviewer가 실제 워크스페이스 상태가 goal을 만족하는지 확인합니다"))
 			semanticCommand := startGoalCommand(iteration.Index, "semantic-review", "independent semantic goal review")
 			var semanticReview GoalSemanticReview
 			var semanticErr error
@@ -537,6 +596,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			} else {
 				iteration.Status = goalStatusPending
 				rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Completion audit is not ready; executing safe recovery actions.")
+				rt.printGoalStep(iteration.Index, "recovery", localizedText(rt.cfg,
+					"completion audit is blocked; refreshing recovery artifacts and running only safe deterministic actions",
+					"completion audit가 차단되어 recovery artifact를 갱신하고 안전한 결정적 action만 실행합니다"))
 				if err := ctx.Err(); err != nil {
 					return rt.finishGoalIterationError(goal, iteration, err)
 				}
@@ -660,7 +722,7 @@ func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration Go
 	if rt.store != nil {
 		_ = rt.store.Save(rt.session)
 	}
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal interrupted: "+goal.ID+" (goal remains active)"))
+	rt.printPersistentBlockWhileThinking(rt.ui.infoLine("Goal interrupted: " + goal.ID + " (goal remains active)"))
 	return goal, true, nil
 }
 
@@ -702,13 +764,13 @@ func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIterat
 		_ = rt.store.Save(rt.session)
 	}
 	if goal.Status == goalStatusComplete {
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Goal complete: "+goal.ID))
+		rt.printPersistentBlockWhileThinking(rt.ui.successLine("Goal complete: " + goal.ID))
 	} else if goal.Status == goalStatusBlocked {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal blocked: "+goal.LastError))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal blocked: " + goal.LastError))
 	} else if goal.Status == goalStatusUsageLimited {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal usage-limited: "+goal.LastError))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal usage-limited: " + goal.LastError))
 	} else if goal.Status == goalStatusBudgetLimited {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal budget-limited: "+goal.LastError))
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal budget-limited: " + goal.LastError))
 	}
 	return goal
 }
