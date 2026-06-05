@@ -896,8 +896,14 @@ func TestGoalSemanticReviewerConsentDeclineSkipsModelRequest(t *testing.T) {
 	if len(reviewer.requests) != 0 {
 		t.Fatalf("declined goal semantic consent must not call reviewer, got %d request(s)", len(reviewer.requests))
 	}
-	if !strings.HasPrefix(reply, "NEEDS_REVISION: model_review_status="+modelReviewSkipNoInteractiveConsent) || !strings.Contains(reply, "Semantic goal review skipped") {
-		t.Fatalf("expected conservative skipped semantic reply, got %q", reply)
+	if !strings.HasPrefix(reply, "APPROVED: model_review_status="+modelReviewSkipNoInteractiveConsent) ||
+		!strings.Contains(reply, "Semantic goal review skipped") ||
+		!strings.Contains(reply, "No reviewer model request was sent") {
+		t.Fatalf("expected skipped semantic reviewer approval, got %q", reply)
+	}
+	decision := parseGoalReviewDecision(reply)
+	if decision.NeedsRevision {
+		t.Fatalf("skipped semantic model review should not start a repair loop, got %#v from %q", decision, reply)
 	}
 }
 

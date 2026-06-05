@@ -200,6 +200,30 @@ func TestSingleModelPreWriteDoesNotAddRFStatusBlockerOnRequiredReviewerFailure(t
 	}
 }
 
+func TestSingleModelPreWriteDoesNotAddRFStatusBlockerWhenModelReviewSkipped(t *testing.T) {
+	run := ReviewRun{
+		Trigger:       "pre_write",
+		SkipReason:    modelReviewSkipByUser,
+		ConsentSource: "user",
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:                    true,
+			RequiresRFObligationStatus: true,
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-100",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "main.cpp",
+			Title:       "return value is wrong",
+			RequiredFix: "return the requested value",
+		}},
+	}
+
+	if got := singleModelPreWritePolicyFindings(run); len(got) != 0 {
+		t.Fatalf("skipped model review must not create RF status blocker, got %#v", got)
+	}
+}
+
 func TestSingleModelPreWriteReviewUsesFrozenDiff(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.cpp")

@@ -256,6 +256,9 @@ func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || !run.SingleModelPolicy.Enabled {
 		return nil
 	}
+	if reviewRunModelReviewSkipped(run) {
+		return nil
+	}
 	if reviewRunHasRequiredReviewerFailure(run) {
 		return nil
 	}
@@ -1069,12 +1072,19 @@ func reviewRunDegradedShouldWarn(run ReviewRun) bool {
 	if !run.Result.Degraded {
 		return false
 	}
+	if reviewRunModelReviewSkipped(run) {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") &&
 		reviewRunHasUsableCrossReviewer(run) &&
 		len(reviewFailedRequiredReviewerRuns(run)) == 0 {
 		return false
 	}
 	return true
+}
+
+func reviewRunModelReviewSkipped(run ReviewRun) bool {
+	return strings.TrimSpace(run.SkipReason) != ""
 }
 
 func normalizePreWriteVerificationOnlyFindings(run *ReviewRun) {
@@ -2146,6 +2156,25 @@ func reviewResultSummaryForConfig(cfg Config, run ReviewRun) string {
 }
 
 func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
+	if reviewRunModelReviewSkipped(run) {
+		switch {
+		case len(run.Gate.BlockingFindings) > 0:
+			if korean {
+				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 finding %d개가 남았습니다.", len(run.Gate.BlockingFindings))
+			}
+			return fmt.Sprintf("Model review was skipped. Deterministic checks found %d blocking finding(s).", len(run.Gate.BlockingFindings))
+		case len(run.Gate.WarningFindings) > 0:
+			if korean {
+				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 경고 finding %d개가 남았고 차단은 없습니다.", len(run.Gate.WarningFindings))
+			}
+			return fmt.Sprintf("Model review was skipped. Deterministic checks found %d warning finding(s) and no blockers.", len(run.Gate.WarningFindings))
+		default:
+			if korean {
+				return "모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 finding은 없습니다."
+			}
+			return "Model review was skipped. Deterministic checks found no blocking findings."
+		}
+	}
 	switch run.Gate.Verdict {
 	case reviewVerdictApproved:
 		if korean {

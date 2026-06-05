@@ -2165,7 +2165,47 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 	korean := reviewRunPrefersKorean(cfg, run)
 	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
 	var b strings.Builder
-	if korean {
+	if reviewRunModelReviewSkipped(run) {
+		skip := strings.TrimSpace(run.SkipReason)
+		source := strings.TrimSpace(run.ConsentSource)
+		if korean {
+			b.WriteString("모델 리뷰 생략 결과:")
+			if source != "" {
+				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
+			} else {
+				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s)", skip)
+			}
+			fmt.Fprintf(&b, "\n- 결정적 게이트: %s", verdict)
+			fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
+			fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
+			if proceedToPreview {
+				b.WriteString("\n- 진행: 모델 리뷰 없이 diff preview로 진행합니다.")
+			} else {
+				b.WriteString("\n- 진행: 결정적 차단 finding 때문에 diff preview로 진행하지 않습니다.")
+			}
+			if strings.TrimSpace(run.Result.Summary) != "" {
+				fmt.Fprintf(&b, "\n- 요약: %s", reviewVisibleInlineText(run.Result.Summary))
+			}
+		} else {
+			b.WriteString("Model review skipped:")
+			if source != "" {
+				fmt.Fprintf(&b, "\n- Model review: skipped (%s, source=%s)", skip, source)
+			} else {
+				fmt.Fprintf(&b, "\n- Model review: skipped (%s)", skip)
+			}
+			fmt.Fprintf(&b, "\n- Deterministic gate: %s", verdict)
+			fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
+			fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
+			if proceedToPreview {
+				b.WriteString("\n- Next: proceed to diff preview without model review.")
+			} else {
+				b.WriteString("\n- Next: do not proceed to diff preview because deterministic blockers remain.")
+			}
+			if strings.TrimSpace(run.Result.Summary) != "" {
+				fmt.Fprintf(&b, "\n- Summary: %s", reviewVisibleInlineText(run.Result.Summary))
+			}
+		}
+	} else if korean {
 		b.WriteString("최종 검토 결과:")
 		fmt.Fprintf(&b, "\n- 판정: %s", verdict)
 		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))

@@ -304,6 +304,14 @@ func TestAgentPreWriteConsentAskWithoutRuntimeSkipsReviewerAndAllowsPreview(t *t
 	if session.LastReviewRun.SkipReason != modelReviewSkipNoInteractiveConsent {
 		t.Fatalf("expected no-interactive skip, got %#v", session.LastReviewRun)
 	}
+	if session.LastReviewRun.Gate.Verdict == reviewVerdictInsufficientEvidence ||
+		session.LastReviewRun.Gate.Verdict == reviewVerdictNeedsRevision ||
+		session.LastReviewRun.Gate.Action == reviewGateActionRepairRequired {
+		t.Fatalf("skipped pre-write model review must not be treated as failed review, got gate=%#v", session.LastReviewRun.Gate)
+	}
+	if reviewFindingsContainTitle(session.LastReviewRun.Findings, "Single-model pre-write review lacks repair obligation status") {
+		t.Fatalf("skipped pre-write model review must not create RF obligation-status blocker, got %#v", session.LastReviewRun.Findings)
+	}
 	if !strings.Contains(session.LastReviewRun.OriginalMainProposal, "Proposed diff:") || strings.TrimSpace(session.LastReviewRun.OriginalMainProposalRef) == "" {
 		t.Fatalf("expected original proposed diff to be preserved, got proposal=%q ref=%q", session.LastReviewRun.OriginalMainProposal, session.LastReviewRun.OriginalMainProposalRef)
 	}
@@ -5702,14 +5710,66 @@ func TestPreWriteVisibleSummaryShowsSkippedModelReviewAndOriginalProposal(t *tes
 
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
 	for _, want := range []string{
+		"Model review skipped:",
 		"Model review: skipped (skipped_by_user, source=user)",
+		"Next: proceed to diff preview without model review.",
 		"Original main-model proposal",
 		"C:/tmp/review/original_main_proposal.md",
 		"Summary: Proposed diff:",
+		"Review items:",
+		"No key findings.",
 	} {
 		if !strings.Contains(visible, want) {
 			t.Fatalf("expected visible summary to contain %q, got:\n%s", want, visible)
 		}
+	}
+	if strings.Contains(visible, "Final review result:") {
+		t.Fatalf("skipped model review summary should not look like a completed model review, got:\n%s", visible)
+	}
+	if strings.Count(visible, "C:/tmp/review/original_main_proposal.md") != 1 {
+		t.Fatalf("original proposal ref should be shown once, got:\n%s", visible)
+	}
+}
+
+func TestPreWriteVisibleSummaryShowsDeterministicBlockerWhenModelReviewSkipped(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Result: ReviewResult{
+			Summary: "Deterministic checks found a blocker after model review consent was declined.",
+		},
+		ModelReviewConsent:      modelReviewConsentAsk,
+		ConsentSource:           "user",
+		SkipReason:              modelReviewSkipByUser,
+		OriginalMainProposalRef: "C:/tmp/review/original_main_proposal.md",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "deterministic",
+			Severity:    reviewSeverityBlocker,
+			Category:    "correctness",
+			Title:       "Proposed edit omits required dispatch wiring",
+			RequiredFix: "Wire the new operation before writing the patch.",
+			BlocksGate:  true,
+		}},
+	}
+
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, false)
+	for _, want := range []string{
+		"Model review skipped:",
+		"Next: do not proceed to diff preview because deterministic blockers remain.",
+		"Review items:",
+		"Proposed edit omits required dispatch wiring",
+		"Wire the new operation before writing the patch.",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected skipped review blocker summary to contain %q, got:\n%s", want, visible)
+		}
+	}
+	if strings.Contains(visible, "No key findings.") {
+		t.Fatalf("skipped review blocker summary must not hide deterministic findings, got:\n%s", visible)
 	}
 }
 

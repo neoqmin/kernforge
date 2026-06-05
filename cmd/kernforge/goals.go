@@ -694,7 +694,7 @@ func skippedGoalReviewerReplyByConsent(prompt string, decision ModelReviewConsen
 	status := firstNonBlankString(decision.SkipReason, "model review consent not granted")
 	source := firstNonBlankString(decision.ConsentSource, "unknown")
 	if strings.Contains(prompt, "Final semantic goal review") {
-		return "NEEDS_REVISION: model_review_status=" + status + "; consent_source=" + source + ". Semantic goal review skipped because " + reason + ". No reviewer model request was sent; keep the goal active unless deterministic audit evidence is sufficient."
+		return "APPROVED: model_review_status=" + status + "; consent_source=" + source + ". Semantic goal review skipped because " + reason + ". No reviewer model request was sent; relying on deterministic completion audit and verification evidence."
 	}
 	return "SKIPPED: model_review_status=" + status + "; consent_source=" + source + ". Goal iteration model review skipped because " + reason + ". No reviewer model request was sent; continue with deterministic evidence and normal goal safety checks."
 }
