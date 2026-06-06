@@ -8,3 +8,4 @@ versioninfo_windows_*.syso
 /kernforge.zip
 /cmd/kernforge/kernforge.exe
 /release/
+/AGENTS.md
