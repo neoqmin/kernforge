@@ -4776,9 +4776,9 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 		b.WriteString(proposalText)
 	}
 	if korean {
-		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할까요? [y/N]\n`y` 또는 `n`만 입력해 주세요.")
+		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
 	} else {
-		b.WriteString("\n\n[3] Next decision\nShould I keep repairing from this review result? [y/N]\nReply with exactly `y` or `n`.")
+		b.WriteString("\n\n[3] Next decision\nShould I keep repairing from this review result? [y=continue, n=stop]\nReply with exactly `y` or `n`.")
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -4883,12 +4883,12 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		if korean {
 			b.WriteString("\n\n[3] 다음 선택\n위의 코드 finding을 기준으로 계속 수리할 수 있습니다.")
 			if includeInlinePrompt {
-				b.WriteString(" 계속 수리할까요? [y/N]\n`y` 또는 `n`만 입력해 주세요.")
+				b.WriteString(" 계속 수리할까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
 			}
 		} else {
 			b.WriteString("\n\n[3] Next decision\nI can keep repairing from the code findings above.")
 			if includeInlinePrompt {
-				b.WriteString(" Should I keep repairing? [y/N]\nReply with exactly `y` or `n`.")
+				b.WriteString(" Should I keep repairing? [y=continue, n=stop]\nReply with exactly `y` or `n`.")
 			}
 		}
 	} else if korean {
@@ -4898,7 +4898,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n- `cross` 또는 전용 reviewer가 보이면 `/model cross-review`로 해당 reviewer route를 정상 동작하는 모델로 바꾸거나 `/model clear cross-review`로 single-model mode를 사용하세요.")
 		b.WriteString("\n- route를 복구한 뒤 같은 요청을 다시 실행하세요.")
 		if includeInlinePrompt {
-			b.WriteString("\n- 이 상태에서는 `y/N` 선택을 받지 않습니다.")
+			b.WriteString("\n- 이 상태에서는 `y`/`n` 계속 선택을 받지 않습니다.")
 		}
 	} else {
 		b.WriteString("\n\n[3] Next step\nThis stop was caused by a required review-stage model route failure or weak output, not by a code finding.")
@@ -4907,7 +4907,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n- If it shows `cross`, use `/model cross-review` to switch that reviewer route to a working model or `/model clear cross-review` for single-model mode.")
 		b.WriteString("\n- Restore the route, then rerun the same request.")
 		if includeInlinePrompt {
-			b.WriteString("\n- No `y/N` continuation is offered in this state.")
+			b.WriteString("\n- No `y`/`n` continuation is offered in this state.")
 		}
 	}
 	return strings.TrimSpace(b.String())

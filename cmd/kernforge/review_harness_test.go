@@ -6743,7 +6743,7 @@ func TestPreFixUnreliableNoActionableReplyDoesNotOfferRepairChoice(t *testing.T)
 			t.Fatalf("expected no-actionable reply to contain %q, got %q", want, reply)
 		}
 	}
-	if strings.Contains(reply, "[y/N]") || strings.Contains(reply, "Should I keep repairing") {
+	if strings.Contains(reply, "[y=continue") || strings.Contains(reply, "Should I keep repairing") {
 		t.Fatalf("no-actionable unreliable pre-fix state must not offer repair choice, got %q", reply)
 	}
 }

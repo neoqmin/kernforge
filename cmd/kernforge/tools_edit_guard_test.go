@@ -2077,14 +2077,17 @@ func TestRunShellRememberedApprovalSkipsPermissionRequestHook(t *testing.T) {
 	root := t.TempDir()
 	promptCalls := 0
 	permissionHookCalls := 0
+	var perms *PermissionManager
+	perms = NewPermissionManager(ModeDefault, func(string) (bool, error) {
+		promptCalls++
+		perms.RememberShellApproval()
+		return true, nil
+	})
 	tool := NewRunShellTool(Workspace{
 		BaseRoot: root,
 		Root:     root,
 		Shell:    defaultShell(),
-		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
-			promptCalls++
-			return true, nil
-		}),
+		Perms:    perms,
 		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
 			_ = ctx
 			_ = payload
@@ -2110,18 +2113,58 @@ func TestRunShellRememberedApprovalSkipsPermissionRequestHook(t *testing.T) {
 	}
 }
 
-func TestRunShellRememberedShellApprovalDoesNotSkipVerificationConfirmation(t *testing.T) {
+func TestRunShellPlainApprovalDoesNotSkipLaterPermissionRequestHook(t *testing.T) {
 	root := t.TempDir()
-	shellPromptCalls := 0
-	verificationPromptCalls := 0
+	promptCalls := 0
+	permissionHookCalls := 0
 	tool := NewRunShellTool(Workspace{
 		BaseRoot: root,
 		Root:     root,
 		Shell:    defaultShell(),
 		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
-			shellPromptCalls++
+			promptCalls++
 			return true, nil
 		}),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			_ = payload
+			if event == HookPermissionRequest {
+				permissionHookCalls++
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	for i := 0; i < 2; i++ {
+		if _, err := tool.Execute(context.Background(), map[string]any{
+			"command": "echo once",
+		}); err != nil {
+			t.Fatalf("shell run %d: %v", i+1, err)
+		}
+	}
+	if promptCalls != 2 {
+		t.Fatalf("plain shell approval should ask each time, got %d prompt(s)", promptCalls)
+	}
+	if permissionHookCalls != 2 {
+		t.Fatalf("plain shell approval should not skip PermissionRequest hooks, got %d call(s)", permissionHookCalls)
+	}
+}
+
+func TestRunShellRememberedShellApprovalDoesNotSkipVerificationConfirmation(t *testing.T) {
+	root := t.TempDir()
+	shellPromptCalls := 0
+	verificationPromptCalls := 0
+	var perms *PermissionManager
+	perms = NewPermissionManager(ModeDefault, func(string) (bool, error) {
+		shellPromptCalls++
+		perms.RememberShellApproval()
+		return true, nil
+	})
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms:    perms,
 		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
 			verificationPromptCalls++
 			if len(plan.Steps) != 1 || !strings.Contains(plan.Steps[0].Command, "go test") {

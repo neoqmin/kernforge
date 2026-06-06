@@ -2841,6 +2841,9 @@ func analysisDirectoryCandidateReasonLabel(reason string) string {
 }
 
 func (rt *runtimeState) autoApproveConfirmation(question string) bool {
+	if isShellApprovalQuestion(question) {
+		return rt.perms != nil && rt.perms.IsShellAllowed()
+	}
 	if isWriteApprovalQuestion(question) {
 		return rt.alwaysApproveWrites
 	}
@@ -2860,21 +2863,31 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 }
 
 func (rt *runtimeState) confirmLabel(question string) string {
-	hint := localizedText(rt.cfg, "[y/N, Esc=cancel]", "[y/N, Esc=취소]")
-	if isDiffPreviewQuestion(question) {
-		hint = localizedText(rt.cfg, "[y/N/a=auto-accept, Esc=cancel]", "[y/N/a=자동 수락, Esc=취소]")
+	hint := localizedText(rt.cfg, "[y=yes, n=no, Esc=cancel]", "[y=예, n=아니오, Esc=취소]")
+	if isPermissionApprovalQuestion(question) {
+		hint = localizedText(rt.cfg, "[y=allow once, a=allow for session, n=deny, Esc=cancel]", "[y=이번만 허용, a=세션 허용, n=거부, Esc=취소]")
+	} else if isDiffPreviewQuestion(question) {
+		hint = localizedText(rt.cfg, "[y=open once, a=accept edits for session, n=cancel edit, Esc=cancel]", "[y=이번만 열기, a=세션 편집 승인, n=편집 취소, Esc=취소]")
 	} else if isAutoVerificationQuestion(question) {
-		hint = localizedText(rt.cfg, "[y/N/a=auto-run, Esc=cancel]", "[y/N/a=자동 실행, Esc=취소]")
+		hint = localizedText(rt.cfg, "[y=run once, a=session auto-run, n=skip, Esc=cancel]", "[y=이번만 실행, a=세션 자동 실행, n=건너뛰기, Esc=취소]")
 	} else if isModelReviewQuestion(question) {
-		hint = "[y/N/a=auto-review for this session]"
-	} else if supportsAlwaysApproval(question) {
-		hint = localizedText(rt.cfg, "[y/N/a=always, Esc=cancel]", "[y/N/a=항상 승인, Esc=취소]")
+		hint = localizedText(rt.cfg, "[y=run once, a=session auto-review, n=skip, Esc=cancel]", "[y=이번만 실행, a=세션 자동 리뷰, n=건너뛰기, Esc=취소]")
+	} else if isReviewRepairContinuationQuestion(question) {
+		hint = localizedText(rt.cfg, "[y=continue, n=stop, Esc=cancel]", "[y=계속, n=중지, Esc=취소]")
+	} else if isRequestCancelQuestion(question) {
+		hint = localizedText(rt.cfg, "[y=cancel request, n=keep running, Esc=cancel]", "[y=요청 취소, n=계속 실행, Esc=취소]")
 	}
 	return rt.ui.warnLine(question) + " " + rt.ui.dim(hint)
 }
 
-func supportsAlwaysApproval(question string) bool {
-	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question) || isAutoVerificationQuestion(question) || isModelReviewQuestion(question) || isGitApprovalQuestion(question)
+func isPermissionApprovalQuestion(question string) bool {
+	return isShellApprovalQuestion(question) || isWriteApprovalQuestion(question) || isGitApprovalQuestion(question)
+}
+
+func isShellApprovalQuestion(question string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(question))
+	return strings.HasPrefix(normalized, "allow shell?") ||
+		strings.HasPrefix(normalized, "allow shell write?")
 }
 
 func isWriteApprovalQuestion(question string) bool {
@@ -2912,6 +2925,15 @@ func reviewRepairContinuationQuestion(cfg Config) string {
 	return localizedText(cfg, reviewRepairQuestionEnglish, reviewRepairQuestionKorean)
 }
 
+func isReviewRepairContinuationQuestion(question string) bool {
+	normalized := strings.TrimSpace(question)
+	return strings.EqualFold(normalized, reviewRepairQuestionEnglish) || normalized == reviewRepairQuestionKorean
+}
+
+func isRequestCancelQuestion(question string) bool {
+	return strings.EqualFold(strings.TrimSpace(question), "Cancel current request?")
+}
+
 func isGitApprovalQuestion(question string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(question)), "allow git?")
 }
@@ -2931,6 +2953,10 @@ func parseConfirmationAnswer(answer string) (bool, bool, bool) {
 }
 
 func (rt *runtimeState) rememberConfirmationApproval(question string) {
+	if isShellApprovalQuestion(question) && rt.perms != nil {
+		rt.perms.RememberShellApproval()
+		return
+	}
 	if isWriteApprovalQuestion(question) {
 		rt.alwaysApproveWrites = true
 		return
@@ -7258,8 +7284,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Approvals",
-			kv("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "auto-approve")),
-			kv("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "auto-accept")),
+			kv("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "allow")),
+			kv("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "accept")),
 			kv("model_review", sessionApprovalStateLabel(rt.alwaysApproveModelReview, "auto-review")+" policy="+configModelReviewConsent(rt.cfg)),
 			kv("shell_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsShellAllowed(), "allowed")),
 			kv("git_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsGitAllowed(), "allowed")),

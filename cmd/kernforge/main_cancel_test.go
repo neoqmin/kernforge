@@ -3416,7 +3416,7 @@ func TestParseConfirmationAnswerRecognizesAlways(t *testing.T) {
 	}
 }
 
-func TestRuntimeStateConfirmAlwaysApprovesFutureWritePrompts(t *testing.T) {
+func TestRuntimeStateConfirmSessionApprovesFutureWritePrompts(t *testing.T) {
 	rt := &runtimeState{
 		reader:      bufio.NewReader(strings.NewReader("always\n")),
 		writer:      &bytes.Buffer{},
@@ -3424,7 +3424,7 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureWritePrompts(t *testing.T) {
 		interactive: true,
 	}
 
-	allowed, err := rt.confirm("Allow write? C:\\git\\kernforge\\main.go (add 'always' to allow for entire session)")
+	allowed, err := rt.confirm("Allow write? C:\\git\\kernforge\\main.go")
 	if err != nil {
 		t.Fatalf("confirm returned error: %v", err)
 	}
@@ -3434,12 +3434,37 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureWritePrompts(t *testing.T) {
 	if !rt.alwaysApproveWrites {
 		t.Fatalf("expected write prompts to be auto-approved for the rest of the session")
 	}
-	if !rt.autoApproveConfirmation("Allow write? C:\\git\\kernforge\\other.go (add 'always' to allow for entire session)") {
+	if !rt.autoApproveConfirmation("Allow write? C:\\git\\kernforge\\other.go") {
 		t.Fatalf("expected subsequent write prompt to be auto-approved")
 	}
 }
 
-func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T) {
+func TestRuntimeStateConfirmSessionApprovesFutureShellPrompts(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: true,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	allowed, err := rt.confirm("Allow shell? go test ./...")
+	if err != nil {
+		t.Fatalf("confirm returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected shell prompt to be allowed")
+	}
+	if rt.perms == nil || !rt.perms.IsShellAllowed() {
+		t.Fatalf("expected shell prompts to be allowed for the rest of the session")
+	}
+	if !rt.autoApproveConfirmation("Allow shell? go test ./cmd/kernforge") {
+		t.Fatalf("expected subsequent shell prompt to be auto-approved")
+	}
+}
+
+func TestRuntimeStateConfirmSessionAcceptsFutureDiffPreviewPrompts(t *testing.T) {
 	rt := &runtimeState{
 		reader:      bufio.NewReader(strings.NewReader("a\n")),
 		writer:      &bytes.Buffer{},
@@ -3459,14 +3484,14 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T)
 		t.Fatalf("expected diff preview prompts to be auto-approved for the rest of the session")
 	}
 	if !rt.autoAcceptPreviewOnce {
-		t.Fatalf("expected first diff preview always answer to auto-accept the current edit")
+		t.Fatalf("expected first diff preview session answer to accept the current edit without preview")
 	}
 	if !rt.autoApproveConfirmation("Open diff preview?") {
 		t.Fatalf("expected subsequent diff preview prompt to be auto-approved")
 	}
 }
 
-func TestRuntimeStatePromptContinueReviewRepairUsesPinnedYNPrompt(t *testing.T) {
+func TestRuntimeStatePromptContinueReviewRepairUsesPinnedDecisionPrompt(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{
 		reader:      bufio.NewReader(strings.NewReader("y\n")),
@@ -3487,15 +3512,15 @@ func TestRuntimeStatePromptContinueReviewRepairUsesPinnedYNPrompt(t *testing.T) 
 	if !strings.Contains(text, "review summary") {
 		t.Fatalf("expected prompt body to be printed, got %q", text)
 	}
-	if !strings.Contains(text, "Continue repairing?") || !strings.Contains(text, "[y/N, Esc=cancel]") {
-		t.Fatalf("expected y/N runtime prompt, got %q", text)
+	if !strings.Contains(text, "Continue repairing?") || !strings.Contains(text, "[y=continue, n=stop, Esc=cancel]") {
+		t.Fatalf("expected continuation runtime prompt, got %q", text)
 	}
-	if strings.Contains(text, "a=auto-accept") {
-		t.Fatalf("review repair prompt must not offer auto-accept, got %q", text)
+	if strings.Contains(text, "accept edits for session") {
+		t.Fatalf("review repair prompt must not offer diff-preview session accept, got %q", text)
 	}
 }
 
-func TestRuntimeStateConfirmAlwaysApprovesFutureGitPrompts(t *testing.T) {
+func TestRuntimeStateConfirmSessionApprovesFutureGitPrompts(t *testing.T) {
 	rt := &runtimeState{
 		reader:      bufio.NewReader(strings.NewReader("a\n")),
 		writer:      &bytes.Buffer{},
@@ -3504,7 +3529,7 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureGitPrompts(t *testing.T) {
 		perms:       NewPermissionManager(ModeDefault, nil),
 	}
 
-	allowed, err := rt.confirm("Allow git? create commit: test subject (add 'always' to allow for entire session)")
+	allowed, err := rt.confirm("Allow git? create commit: test subject")
 	if err != nil {
 		t.Fatalf("confirm returned error: %v", err)
 	}
@@ -3514,7 +3539,7 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureGitPrompts(t *testing.T) {
 	if rt.perms == nil || !rt.perms.IsGitAllowed() {
 		t.Fatalf("expected git prompts to be auto-approved for the rest of the session")
 	}
-	if !rt.autoApproveConfirmation("Allow git? stage changes with git_add (add 'always' to allow for entire session)") {
+	if !rt.autoApproveConfirmation("Allow git? stage changes with git_add") {
 		t.Fatalf("expected subsequent git prompt to be auto-approved")
 	}
 }
@@ -4273,7 +4298,7 @@ func TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveDefaultDeclines(t *tes
 		t.Fatalf("noninteractive default mode should not run verification without approval")
 	}
 	output := out.String()
-	for _, want := range []string{"Automatic verification plan:", "focused verification", "Run automatic verification now?", "a=auto-run"} {
+	for _, want := range []string{"Automatic verification plan:", "focused verification", "Run automatic verification now?", "a=session auto-run"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected noninteractive verification prompt output to contain %q, got %q", want, output)
 		}
@@ -4306,7 +4331,7 @@ func TestRuntimeStatePromptConfirmAutoVerifyNonInteractiveReadsPipedAnswer(t *te
 		t.Fatalf("expected piped verification answer to allow verification")
 	}
 	output := out.String()
-	for _, want := range []string{"Automatic verification plan:", "Run automatic verification now?", "a=auto-run"} {
+	for _, want := range []string{"Automatic verification plan:", "Run automatic verification now?", "a=session auto-run"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected piped verification prompt output to contain %q, got %q", want, output)
 		}
@@ -4351,8 +4376,8 @@ func TestConfirmLabelUsesAutoAcceptHintForDiffPreview(t *testing.T) {
 	}
 
 	label := rt.confirmLabel("Open diff preview?")
-	if !strings.Contains(label, "a=auto-accept") {
-		t.Fatalf("expected diff preview hint to advertise auto-accept, got %q", label)
+	if !strings.Contains(label, "a=accept edits for session") {
+		t.Fatalf("expected diff preview hint to advertise session edit acceptance, got %q", label)
 	}
 }
 
@@ -4364,12 +4389,12 @@ func TestConfirmLabelLocalizesDiffPreviewHintForKoreanLocale(t *testing.T) {
 	}
 
 	label := rt.confirmLabel(diffPreviewQuestion(rt.cfg))
-	for _, want := range []string{"변경 미리보기를 열까요?", "a=자동 수락", "Esc=취소"} {
+	for _, want := range []string{"변경 미리보기를 열까요?", "a=세션 편집 승인", "Esc=취소"} {
 		if !strings.Contains(label, want) {
 			t.Fatalf("expected localized diff preview label to contain %q, got %q", want, label)
 		}
 	}
-	if strings.Contains(label, "Open diff preview?") || strings.Contains(label, "auto-accept") || strings.Contains(label, "cancel") {
+	if strings.Contains(label, "Open diff preview?") || strings.Contains(label, "accept edits for session") || strings.Contains(label, "cancel") {
 		t.Fatalf("expected localized diff preview label, got %q", label)
 	}
 }

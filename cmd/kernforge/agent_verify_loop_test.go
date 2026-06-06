@@ -9284,7 +9284,7 @@ func TestAgentReviewerGateUnavailableShowsReviewProposalAndYN(t *testing.T) {
 		"Latest edit proposal",
 		"*** Begin Patch",
 		"[3] Next decision",
-		"[y/N]",
+		"[y=continue, n=stop]",
 		"exactly `y` or `n`",
 	} {
 		if !strings.Contains(reply, want) {
@@ -9545,19 +9545,19 @@ func TestAgentReviewerGateUnavailableWithoutActionableFindingDoesNotPrompt(t *te
 		t.Fatalf("Reply: %v", err)
 	}
 	if promptCalls != 0 {
-		t.Fatalf("route-only reviewer failure should not ask y/N, got %d prompt calls", promptCalls)
+		t.Fatalf("route-only reviewer failure should not ask for continuation, got %d prompt calls", promptCalls)
 	}
 	for _, want := range []string{
 		"not by a code finding",
 		"/model cross-review",
-		"No `y/N` continuation is offered",
+		"No `y`/`n` continuation is offered",
 	} {
 		if !strings.Contains(reply, want) {
 			t.Fatalf("expected route-repair instruction %q in reply, got %q", want, reply)
 		}
 	}
 	if session.PendingReviewRepairConfirm != nil {
-		t.Fatalf("expected pending confirmation to be cleared when no y/N is offered")
+		t.Fatalf("expected pending confirmation to be cleared when no continuation is offered")
 	}
 	if len(provider.requests) != 1 {
 		t.Fatalf("route-only reviewer failure should stop without retry, got %d requests", len(provider.requests))
@@ -9595,11 +9595,11 @@ func TestReviewerGateUnavailableRouteOnlyReplyDoesNotRecordPendingConfirmation(t
 	}
 
 	reply := formatReviewerGateUnavailableUserDecisionReply(Config{AutoLocale: boolPtr(false)}, session)
-	if !strings.Contains(reply, "No `y/N` continuation is offered") {
-		t.Fatalf("expected route-only reply to avoid y/N, got %q", reply)
+	if !strings.Contains(reply, "No `y`/`n` continuation is offered") {
+		t.Fatalf("expected route-only reply to avoid continuation, got %q", reply)
 	}
 	if session.PendingReviewRepairConfirm != nil {
-		t.Fatalf("route-only reviewer failure must not record pending y/N state")
+		t.Fatalf("route-only reviewer failure must not record pending continuation state")
 	}
 }
 
@@ -9634,8 +9634,8 @@ func TestReviewerGateUnavailableUserDecisionReplyDoesNotMutateSession(t *testing
 	}
 
 	reply := formatReviewerGateUnavailableUserDecisionReply(Config{AutoLocale: boolPtr(false)}, session)
-	if !strings.Contains(reply, "[y/N]") {
-		t.Fatalf("expected actionable formatter content to include y/N guidance, got %q", reply)
+	if !strings.Contains(reply, "[y=continue, n=stop]") {
+		t.Fatalf("expected actionable formatter content to include continuation guidance, got %q", reply)
 	}
 	if session.PendingReviewRepairConfirm != nil {
 		t.Fatalf("formatter must not mutate pending confirmation state")

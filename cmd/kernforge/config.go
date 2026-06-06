@@ -3280,10 +3280,9 @@ Provider And Models:
 /profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
 /provider              Choose and configure a provider
 /provider status       Show provider connectivity, key state, and budget visibility
-- Write approval prompts accept y/N/a. Using a on "Allow write?" enables write auto-approval for the current session only.
-- Diff preview prompts accept y/N/a. Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.
-- Git approval prompts accept y/N/a. Using a on "Allow git?" enables git auto-approval for the current session only.
-- Shell approval is tracked separately for the current session. Once a shell command is approved, later run_shell calls can proceed without another shell prompt in the same session.
+- Permission prompts use the same keys: y allows once, a allows for the current session, n denies, and Esc cancels.
+- Diff preview asks: y opens once, a accepts edits for the current session, n cancels the edit, and Esc cancels. Automatic verification asks: y runs once, a enables session auto-run, n skips, and Esc cancels.
+- Shell, write, and git approvals are tracked separately for the current session.
 - Kernforge does not allow run_shell to modify workspace files. File edits must go through apply_patch, write_file, or replace_in_file so diff preview and write approval rules can still apply.
 - Use /status to inspect the current session approval state for writes, diff previews, shell access, and git actions.
 - Use /config to inspect effective settings such as provider, token limits, progress display, hooks, and verification defaults.
@@ -3485,7 +3484,7 @@ func HelpDetail(topic string) (string, bool) {
 /goal --until-complete <objective>
 - Create the goal and keep running Kernforge's autonomous goal loop until completion or a concrete blocker.
 - Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without write, diff preview, shell, or git confirmation prompts.
-- Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y/N/a=auto-review for this session].
+- Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y=run once, a=session auto-review, n=skip, Esc=cancel].
 - Each loop iteration runs the agent, adaptive verification with scheduled full cadence, /session audit, final semantic review, and when needed /session recover execute-safe.
 - Generated/runtime/build artifacts are filtered out of goal patch scope; repeated failing verification without new patch-scope edits records a blocker instead of rerunning the same command.
 - Verification summaries show the first actionable compiler/linker/test error in the terminal and keep full raw output in artifacts.
@@ -4486,16 +4485,10 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
 	}
 	question := permissionQuestion(action, detail)
-	if permissionActionSupportsAlwaysApproval(action) {
-		question += " (add 'always' to allow for entire session)"
-	}
 	if m.userInputRequests != nil {
 		m.userInputRequests.MarkRequested()
 	}
 	allowed, err := m.prompt(question)
-	if allowed && action == ActionShell {
-		m.shellAllowed = true
-	}
 	return allowed, err
 }
 
@@ -4517,7 +4510,7 @@ func (m *PermissionManager) allowWithoutPrompt(action Action) (bool, bool, error
 			return true, true, nil
 		}
 	}
-	if action == ActionShell && m.shellAllowed {
+	if (action == ActionShell || action == ActionShellWrite) && m.shellAllowed {
 		return true, true, nil
 	}
 	if action == ActionGit && m.gitAllowed {
@@ -4535,18 +4528,13 @@ func permissionQuestion(action Action, detail string) string {
 	}
 }
 
-func permissionActionSupportsAlwaysApproval(action Action) bool {
-	switch action {
-	case ActionWrite, ActionGit:
-		return true
-	default:
-		return false
-	}
-}
-
 // IsShellAllowed returns whether shell permissions have been granted for this session.
 func (m *PermissionManager) IsShellAllowed() bool {
 	return m.shellAllowed
+}
+
+func (m *PermissionManager) RememberShellApproval() {
+	m.shellAllowed = true
 }
 
 func (m *PermissionManager) IsGitAllowed() bool {

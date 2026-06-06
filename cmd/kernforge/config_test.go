@@ -2824,10 +2824,9 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/session events [tail|export]",
 		"/session audit [note]",
 		"/session recover [note]",
-		`Using a on "Allow write?" enables write auto-approval for the current session only.`,
-		`Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.`,
-		`Using a on "Allow git?" enables git auto-approval for the current session only.`,
-		"Shell approval is tracked separately for the current session.",
+		"Permission prompts use the same keys: y allows once, a allows for the current session, n denies, and Esc cancels.",
+		"Diff preview and automatic verification use the same shape: y runs once, a enables the matching session auto-action, n skips, and Esc cancels.",
+		"Shell, write, and git approvals are tracked separately for the current session.",
 		"run_shell to modify workspace files",
 		"/status to inspect the current session approval state",
 		"/config to inspect effective settings",
@@ -3290,10 +3289,39 @@ func TestPlatformUserConfigBaseDirUsesHomeDir(t *testing.T) {
 	}
 }
 
-func TestPermissionManagerShellPromptDoesNotAdvertiseAlways(t *testing.T) {
+func TestPermissionManagerShellPromptAllowsOnceByDefault(t *testing.T) {
 	var prompted string
+	promptCount := 0
 	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
 		prompted = question
+		promptCount++
+		return true, nil
+	})
+
+	for i := 0; i < 2; i++ {
+		allowed, err := perms.Allow(ActionShell, "go test ./...")
+		if err != nil {
+			t.Fatalf("Allow %d: %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("expected shell permission to be allowed")
+		}
+	}
+	if !strings.Contains(prompted, "Allow shell? go test ./...") {
+		t.Fatalf("unexpected shell prompt: %q", prompted)
+	}
+	if promptCount != 2 {
+		t.Fatalf("plain shell approval should be once-only, got %d prompt(s)", promptCount)
+	}
+}
+
+func TestPermissionManagerShellSessionApprovalCanBeRemembered(t *testing.T) {
+	promptCount := 0
+	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
+		if !strings.Contains(question, "Allow shell? go test ./...") {
+			t.Fatalf("unexpected shell prompt: %q", question)
+		}
+		promptCount++
 		return true, nil
 	})
 
@@ -3304,18 +3332,25 @@ func TestPermissionManagerShellPromptDoesNotAdvertiseAlways(t *testing.T) {
 	if !allowed {
 		t.Fatalf("expected shell permission to be allowed")
 	}
-	if !strings.Contains(prompted, "Allow shell? go test ./...") {
-		t.Fatalf("unexpected shell prompt: %q", prompted)
+	perms.RememberShellApproval()
+	allowed, err = perms.Allow(ActionShell, "go test ./...")
+	if err != nil {
+		t.Fatalf("Allow remembered: %v", err)
 	}
-	if strings.Contains(strings.ToLower(prompted), "always") {
-		t.Fatalf("shell prompt should not advertise always, got %q", prompted)
+	if !allowed {
+		t.Fatalf("expected remembered shell permission to be allowed")
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected session shell approval to skip later prompts, got %d", promptCount)
 	}
 }
 
-func TestPermissionManagerShellWritePromptDoesNotAdvertiseAlways(t *testing.T) {
+func TestPermissionManagerShellWritePromptAllowsSessionScope(t *testing.T) {
 	var prompted string
+	promptCount := 0
 	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
 		prompted = question
+		promptCount++
 		return true, nil
 	})
 
@@ -3329,12 +3364,20 @@ func TestPermissionManagerShellWritePromptDoesNotAdvertiseAlways(t *testing.T) {
 	if !strings.Contains(prompted, "Allow shell write? fmt ./... (scoped to main.go)") {
 		t.Fatalf("unexpected shell write prompt: %q", prompted)
 	}
-	if strings.Contains(strings.ToLower(prompted), "always") {
-		t.Fatalf("shell write prompt should not advertise always, got %q", prompted)
+	perms.RememberShellApproval()
+	allowed, err = perms.Allow(ActionShellWrite, "fmt ./... (scoped to main.go)")
+	if err != nil {
+		t.Fatalf("Allow remembered: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected remembered shell write permission to be allowed")
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected remembered shell write approval to skip later prompts, got %d", promptCount)
 	}
 }
 
-func TestPermissionManagerGitPromptAdvertisesAlways(t *testing.T) {
+func TestPermissionManagerGitPromptUsesPlainApprovalQuestion(t *testing.T) {
 	var prompted string
 	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
 		prompted = question
@@ -3350,9 +3393,6 @@ func TestPermissionManagerGitPromptAdvertisesAlways(t *testing.T) {
 	}
 	if !strings.Contains(prompted, "Allow git? create commit: test subject") {
 		t.Fatalf("unexpected git prompt: %q", prompted)
-	}
-	if !strings.Contains(strings.ToLower(prompted), "always") {
-		t.Fatalf("git prompt should advertise always, got %q", prompted)
 	}
 }
 
