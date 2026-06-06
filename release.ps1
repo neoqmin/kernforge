@@ -15,6 +15,8 @@ $releaseThirdPartyRipgrepDir = Join-Path $releaseDir "third_party\ripgrep"
 $thirdPartyRipgrepDir = Join-Path $root "third_party\ripgrep"
 $thirdPartyRipgrepExe = Join-Path $thirdPartyRipgrepDir "rg.exe"
 $ripgrepLicenseNames = @("LICENSE-MIT", "UNLICENSE", "LICENSE")
+$requiredRipgrepLicenseNames = @("LICENSE-MIT", "UNLICENSE")
+$ripgrepMetadataNames = @("README.md", "NOTICE")
 
 function Get-ReleaseVersion {
 	if (Test-Path $statePath) {
@@ -68,24 +70,43 @@ Set-Content -Path $versionPath -Value $versionJson -Encoding UTF8
 
 $bundledRipgrep = Test-Path $thirdPartyRipgrepExe
 $ripgrepLicenseFiles = @()
+$ripgrepThirdPartyFiles = @()
 foreach ($licenseName in $ripgrepLicenseNames) {
 	$licensePath = Join-Path $thirdPartyRipgrepDir $licenseName
 	if (Test-Path $licensePath) {
-		$ripgrepLicenseFiles += [pscustomobject]@{
+		$file = [pscustomobject]@{
 			Name = $licenseName
 			Path = $licensePath
+		}
+		$ripgrepLicenseFiles += $file
+		$ripgrepThirdPartyFiles += $file
+	}
+}
+foreach ($metadataName in $ripgrepMetadataNames) {
+	$metadataPath = Join-Path $thirdPartyRipgrepDir $metadataName
+	if (Test-Path $metadataPath) {
+		$ripgrepThirdPartyFiles += [pscustomobject]@{
+			Name = $metadataName
+			Path = $metadataPath
 		}
 	}
 }
 if ($bundledRipgrep) {
-	if ($ripgrepLicenseFiles.Count -eq 0) {
-		throw "ripgrep sidecar found at $thirdPartyRipgrepExe, but no license files were found in $thirdPartyRipgrepDir. Add LICENSE-MIT and UNLICENSE before release."
+	$missingRipgrepLicenses = @()
+	foreach ($licenseName in $requiredRipgrepLicenseNames) {
+		$licensePath = Join-Path $thirdPartyRipgrepDir $licenseName
+		if (-not (Test-Path $licensePath)) {
+			$missingRipgrepLicenses += $licenseName
+		}
+	}
+	if ($missingRipgrepLicenses.Count -gt 0) {
+		throw "ripgrep sidecar found at $thirdPartyRipgrepExe, but required license files are missing in $($thirdPartyRipgrepDir): $($missingRipgrepLicenses -join ', ')"
 	}
 	New-Item -ItemType Directory -Force $releaseToolsDir | Out-Null
 	New-Item -ItemType Directory -Force $releaseThirdPartyRipgrepDir | Out-Null
 	Copy-Item -LiteralPath $thirdPartyRipgrepExe -Destination (Join-Path $releaseToolsDir "rg.exe") -Force
-	foreach ($license in $ripgrepLicenseFiles) {
-		Copy-Item -LiteralPath $license.Path -Destination (Join-Path $releaseThirdPartyRipgrepDir $license.Name) -Force
+	foreach ($file in $ripgrepThirdPartyFiles) {
+		Copy-Item -LiteralPath $file.Path -Destination (Join-Path $releaseThirdPartyRipgrepDir $file.Name) -Force
 	}
 }
 
@@ -97,9 +118,9 @@ try {
 	[System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $versionPath, "kernforge-version.json") | Out-Null
 	if ($bundledRipgrep) {
 		[System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $releaseToolsDir "rg.exe"), "tools/rg.exe") | Out-Null
-		foreach ($license in $ripgrepLicenseFiles) {
-			$licensePath = Join-Path $releaseThirdPartyRipgrepDir $license.Name
-			[System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $licensePath, "third_party/ripgrep/$($license.Name)") | Out-Null
+		foreach ($file in $ripgrepThirdPartyFiles) {
+			$filePath = Join-Path $releaseThirdPartyRipgrepDir $file.Name
+			[System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $filePath, "third_party/ripgrep/$($file.Name)") | Out-Null
 		}
 	}
 }

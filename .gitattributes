@@ -1,4 +1,8 @@
 .gitattributes text eol=lf
 *.go text eol=lf
+*.ps1 text eol=lf
 *.md text eol=lf
 *.golden text eol=lf
+LICENSE* text eol=lf
+UNLICENSE text eol=lf
+*.exe binary
