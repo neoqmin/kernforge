@@ -53,6 +53,8 @@ var slashCommands = []string{
 	"source-scan",
 	"create-driver-poc",
 	"find-root-cause",
+	"fix-vulnerabilities",
+	"fix-vulns",
 	"root-cause-patterns",
 	"simulate-dashboard",
 	"simulate-dashboard-html",
@@ -175,6 +177,8 @@ var slashCommandDescriptions = map[string]string{
 	"source-scan":                "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
 	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution, optionally selecting objectfilter, minifilter, registryfilter, or wfpcallout.",
 	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
+	"fix-vulnerabilities":        "Use LLM assistance to bump vulnerable dependencies to fixed versions, run tests, and re-scan via the Dependency-Track MCP server to confirm findings clear. Destructive git is blocked and writes are restricted to dependency manifests.",
+	"fix-vulns":                  "Alias for /fix-vulnerabilities.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
 	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",
@@ -442,6 +446,15 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 	},
 	"find-root-cause": {
 		"<problem>": "Describe the runtime symptom or failure; Kernforge selects likely source shards and reports plausible root causes.",
+	},
+	"fix-vulnerabilities": {
+		"[project-name]":     "Dependency-Track project to remediate; defaults to the workspace directory name.",
+		"--severity=":        "Minimum severity to attempt (CRITICAL, HIGH, MEDIUM, LOW). Default HIGH.",
+		"--max=":             "Maximum findings to attempt this run (0 = no limit).",
+		"--dry-run":          "Plan the remediation without editing files, regenerating lockfiles, or re-submitting.",
+		"--no-test":          "Run a build/compile only instead of the full test suite after each fix.",
+		"--no-advise":        "Skip the pre-edit advisory step where the model reports its planned change per finding.",
+		"--max-iterations=":  "Cap autonomous goal iterations (0 = until complete).",
 	},
 	"root-cause-patterns": {
 		"list":          "List built-in root-cause patterns, optionally filtered by project type.",
@@ -801,6 +814,8 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
 		"source-scan":           {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
 		"create-driver-poc":     {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
+		"fix-vulnerabilities":   {"[project-name]", "--severity=HIGH", "--max=", "--dry-run", "--no-test", "--no-advise", "--max-iterations="},
+		"fix-vulns":             {"[project-name]", "--severity=HIGH", "--max=", "--dry-run", "--no-test", "--no-advise", "--max-iterations="},
 		"automation":            {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}

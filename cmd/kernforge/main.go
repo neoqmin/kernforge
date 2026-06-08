@@ -52,6 +52,7 @@ type runtimeState struct {
 	sourceScan                 *SourceScanStore
 	hookOverrides              *HookOverrideStore
 	checkpoints                *CheckpointManager
+	fixVulnGuard               *FixVulnGuard
 	autoCP                     *AutoCheckpointController
 	verifyHistory              *VerificationHistoryStore
 	backgroundJobs             *BackgroundJobManager
@@ -364,6 +365,7 @@ func run(args []string) error {
 		sourceScan:     NewSourceScanStore(),
 		hookOverrides:  NewHookOverrideStore(),
 		checkpoints:    NewCheckpointManager(),
+		fixVulnGuard:   &FixVulnGuard{},
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
 		modelRoutes:    defaultModelRouteScheduler(),
@@ -418,6 +420,7 @@ func run(args []string) error {
 		BackgroundJobs: rt.backgroundJobs,
 		GoalSession:    rt.session,
 		GoalStore:      rt.store,
+		FixVulnGuard:   rt.fixVulnGuard,
 	}
 	rt.syncWorkspaceFromSession()
 	if err := rt.ensureConfigured(); err != nil {
@@ -6831,6 +6834,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "find-root-cause":
 		if err := rt.handleFindRootCauseCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "fix-vulnerabilities", "fix-vulns":
+		if err := rt.handleFixVulnerabilitiesCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "root-cause-patterns":

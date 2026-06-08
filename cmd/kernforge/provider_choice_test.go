@@ -18,6 +18,7 @@ func TestProviderChoiceOptionsUsePreferredOrder(t *testing.T) {
 		{Number: "11", ID: "lmstudio", Label: "LM Studio"},
 		{Number: "12", ID: "vllm", Label: "vLLM"},
 		{Number: "13", ID: "llama.cpp", Label: "llama.cpp"},
+		{Number: "14", ID: "open-webui", Label: "Open WebUI"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("provider choices len = %d, want %d: %#v", len(got), len(want), got)
