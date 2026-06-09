@@ -1,0 +1,204 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (amd64)
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Parse version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart('v')
+          $parts = $ver.Split('.')
+          while ($parts.Count -lt 4) { $parts += '0' }
+          $version = $parts[0..3] -join '.'
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "Resolved version: $version"
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: |
+          $version   = "${{ steps.version.outputs.version }}"
+          $gitCommit = (git rev-parse --short=12 HEAD).Trim()
+          $buildTime = (Get-Date).ToUniversalTime().ToString("o")
+
+          $ldflags = "-X main.appVersion=$version -X main.appCommit=$gitCommit -X main.appBuildTime=$buildTime"
+          go build -buildvcs=false -ldflags $ldflags -o kernforge.exe ./cmd/kernforge
+          if ($LASTEXITCODE -ne 0) { throw "go build failed" }
+
+      - name: Embed PE version and icon
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $parts   = $version.Split('.')
+          $source  = Get-Content buildtools\VersionResourceWriter.cs -Raw
+          $typeHash = (Get-FileHash -Path buildtools\VersionResourceWriter.cs -Algorithm SHA256).Hash.Substring(0, 12)
+          $typeName = "VersionResourceWriter_$typeHash"
+          $compiled = $source -replace 'public static class VersionResourceWriter', "public static class $typeName"
+          Add-Type -TypeDefinition $compiled -Language CSharp
+
+          $type = [AppDomain]::CurrentDomain.GetAssemblies() |
+                    ForEach-Object { $_.GetType($typeName, $false, $false) } |
+                    Where-Object { $_ -ne $null } |
+                    Select-Object -First 1
+
+          $type::Apply(
+            [string](Resolve-Path kernforge.exe),
+            [uint16]$parts[0],
+            [uint16]$parts[1],
+            [uint16]$parts[2],
+            [uint16]$parts[3],
+            [string](Resolve-Path kernforge.ico)
+          )
+
+      - name: Package Windows release
+        shell: pwsh
+        run: |
+          $version    = "${{ steps.version.outputs.version }}"
+          $releaseDir = "release\windows-amd64"
+          New-Item -ItemType Directory -Force $releaseDir | Out-Null
+
+          Copy-Item kernforge.exe $releaseDir\kernforge.exe -Force
+
+          $versionJson = "{`n  ""version"": ""$version""`n}`n"
+          Set-Content -Path "$releaseDir\kernforge-version.json" -Value $versionJson -Encoding UTF8
+
+          # Bundle ripgrep sidecar if present
+          $rgSrc = "third_party\ripgrep\rg.exe"
+          if (Test-Path $rgSrc) {
+            New-Item -ItemType Directory -Force "$releaseDir\tools" | Out-Null
+            Copy-Item $rgSrc "$releaseDir\tools\rg.exe" -Force
+
+            New-Item -ItemType Directory -Force "$releaseDir\third_party\ripgrep" | Out-Null
+            foreach ($f in @("LICENSE-MIT","UNLICENSE","LICENSE","README.md","NOTICE")) {
+              $src = "third_party\ripgrep\$f"
+              if (Test-Path $src) {
+                Copy-Item $src "$releaseDir\third_party\ripgrep\$f" -Force
+              }
+            }
+          }
+
+          # Create zip
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipPath = "kernforge-windows-amd64.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory($releaseDir, $zipPath)
+          Write-Host "Created $zipPath"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: kernforge-windows-amd64.zip
+
+  build-linux:
+    name: Build Linux (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Parse version from tag
+        id: version
+        run: |
+          tag="${{ github.ref_name }}"
+          ver="${tag#v}"
+          IFS='.' read -ra parts <<< "$ver"
+          while [ ${#parts[@]} -lt 4 ]; do parts+=("0"); done
+          version="${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+      - name: Build Linux binary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          GIT_COMMIT=$(git rev-parse --short=12 HEAD)
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          LDFLAGS="-X main.appVersion=${VERSION} -X main.appCommit=${GIT_COMMIT} -X main.appBuildTime=${BUILD_TIME}"
+          GOOS=linux GOARCH=amd64 go build -buildvcs=false -ldflags "${LDFLAGS}" -o kernforge ./cmd/kernforge
+
+      - name: Download ripgrep for Linux
+        run: |
+          RG_VERSION="14.1.1"
+          curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            -o rg.tar.gz
+          tar -xzf rg.tar.gz
+          RG_DIR="ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          mkdir -p linux-ripgrep/tools linux-ripgrep/third_party/ripgrep
+          cp "${RG_DIR}/rg" linux-ripgrep/tools/rg
+          chmod +x linux-ripgrep/tools/rg
+          for f in LICENSE-MIT UNLICENSE LICENSE README.md NOTICE; do
+            [ -f "${RG_DIR}/${f}" ] && cp "${RG_DIR}/${f}" linux-ripgrep/third_party/ripgrep/ || true
+          done
+
+      - name: Package Linux release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASE_DIR="release/linux-amd64"
+          mkdir -p "${RELEASE_DIR}/tools" "${RELEASE_DIR}/third_party/ripgrep"
+
+          cp kernforge "${RELEASE_DIR}/kernforge"
+          chmod +x "${RELEASE_DIR}/kernforge"
+          printf '{\n  "version": "%s"\n}\n' "${VERSION}" > "${RELEASE_DIR}/kernforge-version.json"
+
+          if [ -f linux-ripgrep/tools/rg ]; then
+            cp linux-ripgrep/tools/rg "${RELEASE_DIR}/tools/rg"
+            cp -r linux-ripgrep/third_party/ripgrep/. "${RELEASE_DIR}/third_party/ripgrep/"
+          fi
+
+          tar -czf "kernforge-linux-amd64.tar.gz" -C "${RELEASE_DIR}" .
+          echo "Created kernforge-linux-amd64.tar.gz"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: kernforge-linux-amd64.tar.gz
+
+  release:
+    name: Create GitHub Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: kernforge ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            artifacts/windows-amd64/kernforge-windows-amd64.zip
+            artifacts/linux-amd64/kernforge-linux-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
