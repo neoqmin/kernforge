@@ -877,6 +877,8 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 		return NewOpenCodeGoClient(cfg.BaseURL, cfg.APIKey), nil
 	case "ollama":
 		return NewOllamaClient(cfg.BaseURL, cfg.APIKey), nil
+	case "open-webui":
+		return NewOpenWebUIClient(cfg.BaseURL, cfg.APIKey), nil
 	case "lmstudio", "vllm", "llama.cpp":
 		return NewOpenAICompatibleClient(cfg.Provider, cfg.BaseURL, cfg.APIKey), nil
 	case "openai-codex":
@@ -924,6 +926,8 @@ func normalizeProviderName(provider string) string {
 		return "vllm"
 	case "llama.cpp", "llamacpp", "llama-cpp", "llama_cpp", "llama cpp":
 		return "llama.cpp"
+	case "open-webui", "open_webui", "openwebui", "open webui":
+		return "open-webui"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}
@@ -1303,7 +1307,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			payload.Messages = append(payload.Messages, openAIMessage{Role: "user", Content: content})
 		case "assistant":
 			assistantContent := assistantMessageContent(msg.Text, len(msg.ToolCalls) > 0)
-			if strings.EqualFold(providerName, "deepseek") && assistantContent == nil {
+			if assistantContent == nil && (strings.EqualFold(providerName, "deepseek") || strings.EqualFold(providerName, "open-webui")) {
 				assistantContent = ""
 			}
 			item := openAIMessage{Role: "assistant", Content: assistantContent}
@@ -1318,9 +1322,13 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			}
 			payload.Messages = append(payload.Messages, item)
 		case "tool":
+			toolContent := any(msg.Text)
+			if strings.EqualFold(providerName, "open-webui") && strings.TrimSpace(msg.Text) == "" {
+				toolContent = " "
+			}
 			payload.Messages = append(payload.Messages, openAIMessage{
 				Role:       "tool",
-				Content:    msg.Text,
+				Content:    toolContent,
 				Name:       msg.ToolName,
 				ToolCallID: firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName),
 			})
@@ -1346,6 +1354,22 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 	if req.OnTextDelta != nil || req.OnProgressEvent != nil {
 		payload.Stream = true
+	}
+
+	// Open WebUI rejects requests with no user-role message ("No user query found").
+	// This can happen when the conversation tail is tool results without a follow-up
+	// user turn. Append a zero-width placeholder so the pipeline doesn't error.
+	if strings.EqualFold(providerName, "open-webui") {
+		hasUser := false
+		for _, m := range payload.Messages {
+			if m.Role == "user" {
+				hasUser = true
+				break
+			}
+		}
+		if !hasUser {
+			payload.Messages = append(payload.Messages, openAIMessage{Role: "user", Content: "​"})
+		}
 	}
 
 	body, err := json.Marshal(payload)
@@ -2267,6 +2291,47 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaMod
 	return decoded.Models, normalized, nil
 }
 
+func normalizeOpenWebUIBaseURL(baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		base = "http://localhost:3000"
+	}
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+	return strings.TrimRight(base, "/")
+}
+
+type OpenWebUIClient struct {
+	inner *OpenAIClient
+}
+
+func NewOpenWebUIClient(baseURL, apiKey string) *OpenWebUIClient {
+	return &OpenWebUIClient{
+		inner: &OpenAIClient{
+			apiKey:     strings.TrimSpace(apiKey),
+			baseURL:    normalizeOpenWebUIBaseURL(baseURL),
+			name:       "open-webui",
+			httpClient: &http.Client{},
+		},
+	}
+}
+
+func (c *OpenWebUIClient) Name() string {
+	return "open-webui"
+}
+
+func (c *OpenWebUIClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "open-webui"}
+	}
+	return ModelRouteMetadata{Provider: "open-webui", BaseURL: c.inner.baseURL}
+}
+
+func (c *OpenWebUIClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	return c.inner.Complete(ctx, req)
+}
+
 func normalizeOllamaBaseURL(baseURL string) string {
 	base := strings.TrimSpace(baseURL)
 	if base == "" {
@@ -2378,6 +2443,8 @@ func normalizeProviderBaseURL(provider, baseURL string) string {
 		return normalizeOpenCodeGoBaseURL(baseURL)
 	case "ollama":
 		return normalizeOllamaBaseURL(baseURL)
+	case "open-webui":
+		return normalizeOpenWebUIBaseURL(baseURL)
 	case "lmstudio", "vllm", "llama.cpp":
 		return normalizeLocalOpenAICompatibleBaseURL(provider, baseURL)
 	case "openai-codex":
@@ -2454,10 +2521,23 @@ func openAIAPIURL(baseURL, path string) string {
 }
 
 func openAICompatibleAPIURL(provider, baseURL, path string) string {
-	if normalizeProviderName(provider) == "deepseek" {
+	switch normalizeProviderName(provider) {
+	case "deepseek":
 		return deepSeekAPIURL(baseURL, path)
+	case "open-webui":
+		// Open WebUI: chat at /openai/chat/completions, models at /api/models
+		base := normalizeOpenWebUIBaseURL(baseURL)
+		switch strings.TrimLeft(path, "/") {
+		case "v1/chat/completions":
+			return base + "/openai/chat/completions"
+		case "v1/models":
+			return base + "/api/models"
+		default:
+			return base + "/" + strings.TrimLeft(path, "/")
+		}
+	default:
+		return openAIAPIURL(baseURL, path)
 	}
-	return openAIAPIURL(baseURL, path)
 }
 
 func deepSeekAPIURL(baseURL, path string) string {
@@ -2759,6 +2839,38 @@ func FetchOpenAICompatibleModels(ctx context.Context, provider, baseURL, apiKey 
 		models = decoded.Models
 	}
 	return dedupeOpenAICompatibleModels(models), normalized, nil
+}
+
+func FetchOpenWebUIModels(ctx context.Context, baseURL, apiKey string) ([]OpenAICompatibleModelInfo, string, error) {
+	normalized := normalizeOpenWebUIBaseURL(baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized+"/api/models", nil)
+	if err != nil {
+		return nil, normalized, err
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, normalized, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, normalized, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, normalized, newProviderHTTPError("open-webui", resp.StatusCode, resp.Status, data, "")
+	}
+	type openWebUIModelsResponse struct {
+		Data []OpenAICompatibleModelInfo `json:"data"`
+	}
+	var decoded openWebUIModelsResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, normalized, err
+	}
+	return dedupeOpenAICompatibleModels(decoded.Data), normalized, nil
 }
 
 func dedupeOpenAICompatibleModels(models []OpenAICompatibleModelInfo) []OpenAICompatibleModelInfo {

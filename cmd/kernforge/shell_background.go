@@ -742,6 +742,9 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			command = updatedCommand
 			commands[index] = command
 		}
+		if err := t.ws.guardShellCommand(command); err != nil {
+			return ToolExecutionResult{}, err
+		}
 		assessment := assessShellCommandMutation(command)
 		if assessment.Class == shellMutationUnsafe {
 			return ToolExecutionResult{}, shellCommandUnsafeError("run_shell_bundle_background", assessment)
@@ -913,6 +916,9 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	} else if changed {
 		command = strings.TrimSpace(updatedCommand)
 		args["command"] = command
+	}
+	if err := t.ws.guardShellCommand(command); err != nil {
+		return ToolExecutionResult{}, err
 	}
 	assessment := assessShellCommandMutation(command)
 	if assessment.Class == shellMutationUnsafe {

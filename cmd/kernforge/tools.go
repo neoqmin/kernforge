@@ -1324,6 +1324,7 @@ type Workspace struct {
 	ResolveShellRoot      func(string) (ShellRoutingResult, error)
 	GoalSession           *Session
 	GoalStore             *SessionStore
+	FixVulnGuard          *FixVulnGuard
 }
 
 type EditPreview struct {
@@ -1949,6 +1950,9 @@ func workspacePathsAreCaseInsensitiveByDefault() bool {
 }
 
 func (w Workspace) CheckEditBoundary(path string) error {
+	if err := w.guardWritePath(path); err != nil {
+		return err
+	}
 	if err := w.ensureProtectedEditPath(path); err != nil {
 		return err
 	}
@@ -2107,6 +2111,9 @@ func (w Workspace) EnsureGit(detail string) error {
 }
 
 func (w Workspace) EnsureGitWithContext(ctx context.Context, detail string) error {
+	if err := w.guardGitAction(detail); err != nil {
+		return err
+	}
 	if w.Perms == nil {
 		return nil
 	}
@@ -4666,6 +4673,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	}
 	if guidance := runShellCompatibilityGuidance(t.ws.Shell, command); guidance != "" {
 		return guidance, fmt.Errorf("shell command is incompatible with the active shell")
+	}
+	if err := t.ws.guardShellCommand(command); err != nil {
+		return "", err
 	}
 	assessment := assessShellCommandMutation(command)
 	if assessment.Class == shellMutationUnsafe {

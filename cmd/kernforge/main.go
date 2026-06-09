@@ -52,6 +52,7 @@ type runtimeState struct {
 	sourceScan                      *SourceScanStore
 	hookOverrides                   *HookOverrideStore
 	checkpoints                     *CheckpointManager
+	fixVulnGuard                    *FixVulnGuard
 	autoCP                          *AutoCheckpointController
 	verifyHistory                   *VerificationHistoryStore
 	backgroundJobs                  *BackgroundJobManager
@@ -266,6 +267,8 @@ func run(args []string) error {
 			cfg.BaseURL = normalizeOpenAICodexBaseURL("")
 		case "lmstudio", "vllm", "llama.cpp":
 			cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(providerFlag, "")
+		case "open-webui":
+			cfg.BaseURL = normalizeOpenWebUIBaseURL("")
 		case "codex-cli", "anthropic-claude-cli":
 			cfg.BaseURL = ""
 		}
@@ -365,6 +368,7 @@ func run(args []string) error {
 		sourceScan:                      NewSourceScanStore(),
 		hookOverrides:                   NewHookOverrideStore(),
 		checkpoints:                     NewCheckpointManager(),
+		fixVulnGuard:                    &FixVulnGuard{},
 		autoCP:                          &AutoCheckpointController{},
 		verifyHistory:                   NewVerificationHistoryStore(),
 		modelRoutes:                     defaultModelRouteScheduler(),
@@ -420,6 +424,7 @@ func run(args []string) error {
 		BackgroundJobs: rt.backgroundJobs,
 		GoalSession:    rt.session,
 		GoalStore:      rt.store,
+		FixVulnGuard:   rt.fixVulnGuard,
 	}
 	rt.syncWorkspaceFromSession()
 	if err := rt.ensureConfigured(); err != nil {
@@ -3149,6 +3154,7 @@ func providerChoiceOptions() []providerChoiceOption {
 		{Number: "11", ID: "lmstudio", Label: "LM Studio"},
 		{Number: "12", ID: "vllm", Label: "vLLM"},
 		{Number: "13", ID: "llama.cpp", Label: "llama.cpp"},
+		{Number: "14", ID: "open-webui", Label: "Open WebUI"},
 	}
 }
 
@@ -3167,6 +3173,7 @@ func providerChoiceCompletionTokens() []string {
 		"lmstudio",
 		"vllm",
 		"llama.cpp",
+		"open-webui",
 	}
 }
 
@@ -3345,6 +3352,18 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 			localBaseURL = ""
 		}
 		model, normalized, apiKey, err := rt.configureLocalOpenAICompatibleModel(provider, nextModel, localBaseURL, nextAPIKey, "main provider")
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalized
+		nextAPIKey = apiKey
+	case "open-webui":
+		localBaseURL := nextBaseURL
+		if !strings.EqualFold(normalizeProviderName(rt.cfg.Provider), provider) {
+			localBaseURL = ""
+		}
+		model, normalized, apiKey, err := rt.configureOpenWebUIModel(nextModel, localBaseURL, nextAPIKey, "main provider")
 		if err != nil {
 			return err
 		}
@@ -6107,6 +6126,50 @@ func (rt *runtimeState) configureLocalOpenAICompatibleModel(provider string, cur
 	return model, normalized, strings.TrimSpace(apiKey), nil
 }
 
+func (rt *runtimeState) configureOpenWebUIModel(currentModel string, baseURL string, apiKey string, scope string) (string, string, string, error) {
+	defaultURL := normalizeOpenWebUIBaseURL(baseURL)
+	url := defaultURL
+	if rt.interactive {
+		var err error
+		url, err = rt.promptValue("Open WebUI URL", defaultURL)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	url = normalizeOpenWebUIBaseURL(url)
+	nextAPIKey := strings.TrimSpace(apiKey)
+	if rt.interactive && nextAPIKey == "" {
+		key, err := rt.promptValue("Open WebUI API key (leave blank if not required)", "")
+		if err != nil {
+			return "", "", "", err
+		}
+		nextAPIKey = strings.TrimSpace(key)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, normalized, err := FetchOpenWebUIModels(ctx, url, nextAPIKey)
+	if err != nil {
+		return "", normalized, "", fmt.Errorf("could not load Open WebUI models for %s from %s: %w", strings.TrimSpace(scope), normalized, err)
+	}
+	if len(models) == 0 {
+		return "", normalized, "", fmt.Errorf("Open WebUI models API returned no models from %s", normalized)
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Open WebUI Models"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("server", normalized))
+	for i, m := range models {
+		label := strings.TrimSpace(m.Name)
+		if label == "" {
+			label = m.ID
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s  %s\n", i+1, label, rt.ui.dim(m.ID))
+	}
+	model, err := rt.chooseOpenAICompatibleModel("open-webui", models, currentModel)
+	if err != nil {
+		return "", normalized, "", err
+	}
+	return model, normalized, nextAPIKey, nil
+}
+
 func (rt *runtimeState) fetchAndShowOpenAICompatibleModels(provider string, url string, apiKey string) ([]OpenAICompatibleModelInfo, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -7472,6 +7535,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "find-root-cause":
 		if err := rt.handleFindRootCauseCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "fix-vulnerabilities", "fix-vulns":
+		if err := rt.handleFixVulnerabilitiesCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "root-cause-patterns":
@@ -8860,6 +8927,14 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextModel = model
 			nextBaseURL = normalized
 			nextAPIKey = apiKey
+		case "open-webui":
+			model, normalized, apiKey, err := rt.configureOpenWebUIModel(currentModel, nextBaseURL, nextAPIKey, "specialist "+profile.Name)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+			nextBaseURL = normalized
+			nextAPIKey = apiKey
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
 		}
@@ -8873,7 +8948,7 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
 		case "deepseek":
 			nextBaseURL = normalizeDeepSeekBaseURL(nextBaseURL)
-		case "anthropic", "openai", "codex-cli", "anthropic-claude-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp":
+		case "anthropic", "openai", "codex-cli", "anthropic-claude-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp", "open-webui":
 			nextBaseURL = normalizeProfileBaseURL(provider, nextBaseURL)
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
@@ -9046,6 +9121,14 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		nextModel = model
 		nextBaseURL = ""
 		nextAPIKey = ""
+	case "open-webui":
+		model, normalized, apiKey, err := rt.configureOpenWebUIModel(nextModel, nextBaseURL, nextAPIKey, "analysis "+role)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalized
+		nextAPIKey = apiKey
 	default:
 		return fmt.Errorf("unsupported provider: %s", provider)
 	}
