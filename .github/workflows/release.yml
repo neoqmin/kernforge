@@ -111,78 +111,9 @@ jobs:
           name: windows-amd64
           path: kernforge-windows-amd64.zip
 
-  build-linux:
-    name: Build Linux (amd64)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Parse version from tag
-        id: version
-        run: |
-          tag="${{ github.ref_name }}"
-          ver="${tag#v}"
-          IFS='.' read -ra parts <<< "$ver"
-          while [ ${#parts[@]} -lt 4 ]; do parts+=("0"); done
-          version="${parts[0]}.${parts[1]}.${parts[2]}.${parts[3]}"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: $version"
-
-      - name: Build Linux binary
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          GIT_COMMIT=$(git rev-parse --short=12 HEAD)
-          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          LDFLAGS="-X main.appVersion=${VERSION} -X main.appCommit=${GIT_COMMIT} -X main.appBuildTime=${BUILD_TIME}"
-          GOOS=linux GOARCH=amd64 go build -buildvcs=false -ldflags "${LDFLAGS}" -o kernforge ./cmd/kernforge
-
-      - name: Download ripgrep for Linux
-        run: |
-          RG_VERSION="14.1.1"
-          curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            -o rg.tar.gz
-          tar -xzf rg.tar.gz
-          RG_DIR="ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
-          mkdir -p linux-ripgrep/tools linux-ripgrep/third_party/ripgrep
-          cp "${RG_DIR}/rg" linux-ripgrep/tools/rg
-          chmod +x linux-ripgrep/tools/rg
-          for f in LICENSE-MIT UNLICENSE LICENSE README.md NOTICE; do
-            [ -f "${RG_DIR}/${f}" ] && cp "${RG_DIR}/${f}" linux-ripgrep/third_party/ripgrep/ || true
-          done
-
-      - name: Package Linux release
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          RELEASE_DIR="release/linux-amd64"
-          mkdir -p "${RELEASE_DIR}/tools" "${RELEASE_DIR}/third_party/ripgrep"
-
-          cp kernforge "${RELEASE_DIR}/kernforge"
-          chmod +x "${RELEASE_DIR}/kernforge"
-          printf '{\n  "version": "%s"\n}\n' "${VERSION}" > "${RELEASE_DIR}/kernforge-version.json"
-
-          if [ -f linux-ripgrep/tools/rg ]; then
-            cp linux-ripgrep/tools/rg "${RELEASE_DIR}/tools/rg"
-            cp -r linux-ripgrep/third_party/ripgrep/. "${RELEASE_DIR}/third_party/ripgrep/"
-          fi
-
-          tar -czf "kernforge-linux-amd64.tar.gz" -C "${RELEASE_DIR}" .
-          echo "Created kernforge-linux-amd64.tar.gz"
-
-      - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-amd64
-          path: kernforge-linux-amd64.tar.gz
-
   release:
     name: Create GitHub Release
-    needs: [build-windows, build-linux]
+    needs: [build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -199,6 +130,5 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/windows-amd64/kernforge-windows-amd64.zip
-            artifacts/linux-amd64/kernforge-linux-amd64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
